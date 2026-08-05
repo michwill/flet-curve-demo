@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <!--
+    Custom Flet index.html. `flet publish` copies src/assets/* over the
+    generated web root, so this file replaces the stock one and is the
+    supported way to get our own script tag onto the page.
+
+    Three things here are load-bearing and must survive edits, because
+    flet_web/patch_index.py rewrites them at publish time:
+      1. the base href tag below    - rewritten to match --base-url
+      2. the fletAppConfig marker   - replaced with the build config
+      3. the "var flet = {...}"     - the config above *mutates* that
+         block                        object, so it must come first
+
+    Do not write either marker literally in a comment: the patcher does a
+    plain string replace over the whole file, so a mention in prose gets
+    substituted too, and an injected "-->" would then end the comment early.
+    Everything else here is ordinary HTML.
+  -->
+  <base href="/">
+
+  <meta charset="UTF-8">
+  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
+  <meta name="description" content="Send tokens from a Flet app in Python.">
+
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="Flet Pay">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon-192.png">
+
+  <link rel="icon" type="image/png" href="favicon.png" />
+
+  <title>Flet Pay</title>
+  <link rel="manifest" href="manifest.json">
+
+  <script>
+    var flet = {
+      pyodide: false,
+      multiView: false,
+      noCdn: false,
+      webSocketEndpoint: "/ws",
+      entrypointBaseUrl: "/",
+      assetBase: "/",
+      routeUrlStrategy: "path",
+      canvasKitBaseUrl: "/canvaskit/",
+      pyodideUrl: "/pyodide/pyodide.mjs",
+      webRenderer: "auto",
+      fontFallbackBaseUrl: "assets/fonts/",
+      appPackageUrl: "app.tar.gz"
+    }
+
+    flet.flutterAppLoaded = new Promise((resolve) => {
+      flet.flutterAppResolve = resolve;
+    });
+  </script>
+
+  <!-- fletAppConfig -->
+
+  <script src="python.js"></script>
+
+  <!--
+    Wallet connector configuration comes from Python at startup
+    (wallet/settings.py -> bridge_configure), so a plain `flet publish`
+    yields a configured build with no post-processing step.
+
+    To pin values in the page instead, define window.FLET_PAY here; anything
+    set that way wins over what Python sends.
+  -->
+
+  <!--
+    The wallet bridge. Loaded on the main thread (where window.ethereum
+    lives) and long before Pyodide finishes booting, so the Python worker
+    always finds it listening. See src/wallet/browser.py for the other end.
+  -->
+  <script src="wallet_bridge.js"></script>
+
+  <!--
+    Development only: ?mock=1 loads a fake EIP-6963 wallet so the whole
+    send flow can be exercised without a real wallet or real money.
+    Never loaded on a normal visit.
+  -->
+  <script>
+    if (new URLSearchParams(location.search).has("mock")) {
+      document.write('<script src="mock_wallet.js"><\/script>');
+    }
+  </script>
+</head>
+
+<body>
+  <div id="loading">
+    <style>
+      body {
+        inset: 0;
+        overflow: hidden;
+        margin: 0;
+        padding: 0;
+        position: fixed;
+      }
+
+      #loading {
+        align-items: center;
+        display: flex;
+        height: 100%;
+        justify-content: center;
+        width: 100%;
+      }
+
+      #loading img {
+        animation: 1s ease-in-out 0s infinite alternate breathe;
+        opacity: .66;
+        transition: opacity .4s;
+      }
+
+      #loading.main_done img {
+        opacity: 1;
+      }
+
+      #loading.init_done img {
+        animation: .33s ease-in-out 0s 1 forwards zooooom;
+        opacity: .05;
+      }
+
+      @keyframes breathe {
+        from {
+          transform: scale(0.4);
+          opacity: 1.0;
+        }
+
+        to {
+          transform: scale(0.35);
+          opacity: .7;
+        }
+      }
+
+      @keyframes zooooom {
+        from {
+          transform: scale(0.4)
+        }
+
+        to {
+          transform: scale(10)
+        }
+      }
+    </style>
+    <img src="icons/loading-animation.png" alt="Loading..." />
+  </div>
+  <script src="flutter_bootstrap.js" async></script>
+</body>
+
+</html>

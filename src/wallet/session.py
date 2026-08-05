@@ -1,0 +1,305 @@
+"""The API the app actually uses.
+
+`base.WalletProvider` is the portability seam -- one method, EIP-1193, one
+implementation per platform. This module is the layer above it: everything
+a *token-sending app* needs, expressed in domain terms rather than RPC ones.
+
+The split matters. A UI written against raw EIP-1193 ends up carrying the
+whole wallet protocol -- discovery, account prompts, chain reads, ABI
+encoding, the native-versus-ERC-20 branch -- as boilerplate. Everything in
+this file is that boilerplate, written once:
+
+    wallet = await Wallet.connect()
+    for token in wallet.known_tokens():
+        print(token.symbol, wallet.format(await wallet.balance_of(token), token))
+    tx = await wallet.send(token=usdc, to="0x…", amount="12.5")
+
+Nothing here imports Flet, and nothing here knows which platform it is on.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Awaitable, Callable
+
+from . import chains, erc20, icons
+from .base import RpcError, WalletError, WalletProvider, WalletUnavailable
+from .browser import is_browser
+from .chains import Chain, Token
+
+
+class InvalidRecipient(WalletError):
+    """The destination address is missing, malformed, or fails EIP-55."""
+
+
+class InvalidAmount(WalletError):
+    """The amount is not a number, is out of range, or exceeds the balance."""
+
+
+class InvalidToken(WalletError):
+    """The address given for a custom token is not a readable ERC-20."""
+
+
+class ConnectionCancelled(WalletError):
+    """The user dismissed wallet selection."""
+
+    def __init__(self) -> None:
+        super().__init__("Wallet selection cancelled.")
+
+
+def _safe_icon(icon: object) -> str | None:
+    """Accept `data:image/…` URIs and nothing else.
+
+    Two reasons, and they happen to point the same way:
+
+      * Security -- anything with a scheme or a host would let a wallet
+        extension name a URL for the app to fetch merely by appearing in the
+        picker, which leaks that the user opened it. EIP-6963 mandates a
+        data URI precisely so a dapp never has to fetch anything.
+      * Portability -- a *relative* path is not off-origin, but it renders
+        on desktop and silently draws nothing on Flutter web (which resolves
+        it against its own asset bundle, not the site root). Refusing it
+        here means that trap cannot be re-introduced by accident; bundled
+        icons go through `wallet.icons`, which returns data URIs.
+    """
+    if isinstance(icon, str) and icon.startswith("data:image/"):
+        return icon
+    return None
+
+
+class WalletChoice:
+    """One option offered when a platform found several wallets.
+
+    `icon` is a `data:` URI ready to hand straight to an image widget --
+    either announced by the wallet or bundled by this app -- or None, in
+    which case draw a fallback from `initial`.
+    """
+
+    __slots__ = ("uuid", "name", "rdns", "icon")
+
+    def __init__(self, uuid: str, name: str, rdns: str = "", icon: str | None = None):
+        self.uuid = uuid
+        self.name = name
+        self.rdns = rdns
+        self.icon = _safe_icon(icon)
+
+    @property
+    def initial(self) -> str:
+        """Fallback avatar letter for a wallet that announced no icon."""
+        return (self.name or "?").strip()[:1].upper() or "?"
+
+
+#: Given the choices, return the uuid to use -- or None to cancel.
+Chooser = Callable[[list[WalletChoice]], Awaitable[str | None]]
+
+
+def autoconnect() -> bool:
+    """Should the app connect at startup, without waiting for a click?
+
+    Yes on desktop: the wallet is a local daemon the user already chose to
+    run, there is nothing to select, and no popup is triggered by asking --
+    so a "Connect wallet" button is pure ceremony. Either it is there and we
+    use it, or it is not and the app should say so immediately.
+
+    No in a browser: `eth_requestAccounts` raises a wallet popup, and doing
+    that unprompted on page load is both hostile and likely to be blocked.
+    """
+    return not is_browser()
+
+
+class Wallet:
+    """A connected wallet: an account, on a chain, that can send tokens."""
+
+    def __init__(self, provider: WalletProvider, address: str, chain: Chain) -> None:
+        self.provider = provider
+        self.address = address
+        self.chain = chain
+        self._change_handlers: list[Callable[[], None]] = []
+        self._disconnect_handlers: list[Callable[[], None]] = []
+        provider.on("accountsChanged", self._accounts_changed)
+        provider.on("chainChanged", self._chain_changed)
+
+    # -- lifecycle --------------------------------------------------------
+
+    @classmethod
+    async def connect(cls, choose: Chooser | None = None) -> "Wallet":
+        """Find a wallet, authorise an account, and return a live session.
+
+        `choose` is only consulted when a platform offers more than one
+        wallet -- in practice, a browser with several connectors available.
+        Omit it and the first is taken. Raises `WalletError` on every
+        failure path, so callers need exactly one `except`.
+        """
+        provider = await connect_provider()
+
+        options = [
+            WalletChoice(
+                w["uuid"],
+                w.get("name", "Wallet"),
+                w.get("rdns", ""),
+                # A wallet's own announced icon wins; otherwise fall back to
+                # one this app bundles (WalletConnect announces none, being a
+                # protocol rather than a wallet).
+                w.get("icon") or icons.for_connector(w.get("connector")),
+            )
+            for w in getattr(provider, "wallets", [])
+        ]
+        if len(options) > 1:
+            uuid = await choose(options) if choose else options[0].uuid
+            if not uuid:
+                await provider.close()
+                raise ConnectionCancelled()
+            await provider.select_wallet(uuid)  # type: ignore[attr-defined]
+
+        accounts = await provider.request_accounts()
+        if not accounts:
+            raise WalletUnavailable(
+                "The wallet returned no accounts. Is it unlocked?"
+            )
+
+        chain = chains.get_chain(await provider.chain_id())
+        return cls(provider, erc20.to_checksum_address(accounts[0]), chain)
+
+    async def disconnect(self) -> None:
+        await self.provider.close()
+
+    # -- identity ---------------------------------------------------------
+
+    @property
+    def name(self) -> str:
+        """Human-readable name of the wallet that answered."""
+        return self.provider.name
+
+    @property
+    def short_address(self) -> str:
+        return f"{self.address[:6]}…{self.address[-4:]}"
+
+    @property
+    def may_wait_on_cosigners(self) -> bool:
+        """See `WalletProvider.may_wait_on_cosigners`."""
+        return self.provider.may_wait_on_cosigners
+
+    # -- events -----------------------------------------------------------
+
+    def on_change(self, handler: Callable[[], None]) -> None:
+        """Called after the account or chain changed wallet-side."""
+        self._change_handlers.append(handler)
+
+    def on_disconnect(self, handler: Callable[[], None]) -> None:
+        """Called when the wallet drops the connection."""
+        self._disconnect_handlers.append(handler)
+
+    def _fire(self, handlers: list[Callable[[], None]]) -> None:
+        for handler in handlers:
+            try:
+                handler()
+            except Exception:  # a bad handler must not kill the event stream
+                pass
+
+    def _accounts_changed(self, accounts: Any) -> None:
+        if isinstance(accounts, list) and accounts:
+            self.address = erc20.to_checksum_address(accounts[0])
+            self._fire(self._change_handlers)
+        else:
+            self._fire(self._disconnect_handlers)
+
+    def _chain_changed(self, chain_id: Any) -> None:
+        try:
+            resolved = int(chain_id, 16) if isinstance(chain_id, str) else int(chain_id)
+        except (TypeError, ValueError):
+            return
+        self.chain = chains.get_chain(resolved)
+        self._fire(self._change_handlers)
+
+    # -- tokens -----------------------------------------------------------
+
+    def known_tokens(self) -> list[Token]:
+        """The chain's native asset first, then its curated ERC-20s."""
+        return [chains.native_token(self.chain), *self.chain.tokens]
+
+    async def token_at(self, address: str) -> Token:
+        """Read `symbol()`/`decimals()` off an arbitrary ERC-20.
+
+        Goes through the wallet endpoint like everything else -- see the
+        note in the README about WalletConnect being the one transport that
+        does not proxy reads to the user's own node.
+        """
+        if not erc20.is_address(address):
+            raise InvalidToken("That is not a valid contract address.")
+        try:
+            decimals = erc20.decode_uint(
+                await self.provider.call(address, erc20.encode_decimals())
+            )
+            symbol = erc20.decode_string(
+                await self.provider.call(address, erc20.encode_symbol())
+            )
+        except RpcError as exc:
+            raise InvalidToken(f"Could not read that token: {exc.message}") from exc
+        return Token(symbol or "TOKEN", erc20.to_checksum_address(address), decimals)
+
+    async def balance_of(self, token: Token) -> int:
+        """Balance in the token's smallest unit. Native and ERC-20 alike."""
+        if token.is_native:
+            return await self.provider.get_balance(self.address)
+        return erc20.decode_uint(
+            await self.provider.call(token.address, erc20.encode_balance_of(self.address))
+        )
+
+    @staticmethod
+    def format(value: int, token: Token, precision: int = 6) -> str:
+        return erc20.format_units(value, token.decimals, precision)
+
+    @staticmethod
+    def parse(amount: str, token: Token) -> int:
+        try:
+            return erc20.parse_units(amount, token.decimals)
+        except ValueError as exc:
+            raise InvalidAmount(str(exc)) from exc
+
+    # -- sending ----------------------------------------------------------
+
+    async def send(self, *, token: Token, to: str, amount: str, balance: int | None = None) -> str:
+        """Validate, build and submit a transfer. Returns the transaction hash.
+
+        Collapses the whole native-versus-ERC-20 distinction: same call
+        either way. Validation raises `InvalidRecipient`/`InvalidAmount` so
+        a UI can point at the offending field; pass `balance` to have the
+        "more than you have" check done here too.
+        """
+        recipient = (to or "").strip()
+        if not erc20.is_address(recipient):
+            raise InvalidRecipient("Enter a valid 0x address")
+        if erc20.has_checksum_case(recipient) and not erc20.is_checksum_address(recipient):
+            # Mixed case that fails EIP-55 is a typo, not an old client.
+            raise InvalidRecipient("Address checksum is invalid — check for typos")
+        recipient = erc20.to_checksum_address(recipient)
+
+        value = self.parse(amount, token)
+        if value == 0:
+            raise InvalidAmount("Amount must be greater than zero")
+        if balance is not None and value > balance:
+            raise InvalidAmount("More than your balance")
+
+        # Gas and nonce are deliberately omitted: every wallet in scope
+        # fills them in, and knows the chain better than this app does.
+        if token.is_native:
+            tx = {"from": self.address, "to": recipient, "value": hex(value)}
+        else:
+            tx = {
+                "from": self.address,
+                "to": token.address,
+                "value": "0x0",
+                "data": erc20.encode_transfer(recipient, value),
+            }
+        return await self.provider.send_transaction(tx)
+
+    # -- links ------------------------------------------------------------
+
+    def tx_url(self, tx_hash: str) -> str:
+        return self.chain.tx_url(tx_hash)
+
+
+async def connect_provider() -> WalletProvider:
+    """Pick the transport for this platform. See `wallet/__init__.py`."""
+    from . import connect_wallet
+
+    return await connect_wallet()

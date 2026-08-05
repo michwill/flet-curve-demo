@@ -17,3 +17,11 @@ storage/
 .vscode/
 .idea/
 .DS_Store
+
+# Flet publish output
+src/dist/
+.flet/
+src/.flet/
+
+# Local wallet config (see flet-pay-example README)
+src/local_config.toml

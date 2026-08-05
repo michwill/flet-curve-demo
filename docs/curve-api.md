@@ -150,7 +150,8 @@ each other, not the pool address. `start` / `end` are Unix seconds.
 
 `GET /v1/chains/{chain}` on the **Prices** API returns every pool on a chain in a
 single call (1298 on Ethereum, 2.4 MB) with `tvl_usd`, `trading_volume_24h`,
-`trading_fee_24h`, `trading_fee_24h`, balances and coins — no join required.
+`trading_fee_24h`, `liquidity_volume_24h`, `liquidity_fee_24h`, `balances`,
+`balances_usd` and `coins` — no join required.
 
 Trade-off: it carries **no gauge or CRV APY data**, so it can't drive a rewards
 column. Its `page` / `per_page` params are **broken — they return 500 Internal

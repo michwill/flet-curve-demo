@@ -122,6 +122,24 @@ and a label — which is what canvas is for, unlike the candles, which were not.
   Qt version throttles for the same reason.
 - **Double-tap** refits the whole series.
 
+No animation on any of it. A 250ms ease flatters a data swap and is actively
+wrong under direct manipulation: every drag frame sets a new window, so the
+chart spends its time easing towards where the cursor *was*. It felt like
+dragging through treacle until the animation came out.
+
+Only the visible window (plus a small margin) is sent to the chart, so a drag
+at 1Y serialises ~20 spots rather than 365.
+
+**Known limitation: candle width does not scale with zoom.**
+`CandlestickChart` draws candles at a fixed pixel width — there is no width
+property on the chart or on `CandlestickChartSpot`, and the rendered width is
+unchanged whether it is handed 365 spots across 90 days or 20 across 17. So
+zooming in spreads the candles apart instead of fattening them. Fixing it
+properly means painting the bodies onto the overlay canvas and leaving the
+control to draw only the axes and grid — a real option, since the overlay and
+the pixel mapping already exist, but it gives up the control for the part it
+was chosen for.
+
 The window is clamped to keep the data on screen, with half a window of
 overscroll at each end — stopping dead on the last candle reads as the chart
 being stuck — and never narrower than five candles, or one scroll burst zooms

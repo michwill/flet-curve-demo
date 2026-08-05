@@ -47,6 +47,11 @@ DATE_LABELS = 6
 #: the chart queues hundreds of redraws.
 HOVER_INTERVAL = 0.04
 
+#: Candles kept either side of the visible window. Only the window is sent
+#: to the chart -- see `build_spots` -- and the margin stops a fast drag
+#: showing empty space before the next update lands.
+SPOT_MARGIN = 8
+
 
 def price_decimals(span: float) -> int:
     """How many decimals a value needs across a given span."""
@@ -177,18 +182,50 @@ def date_axis(candles: list[Candle], view: Viewport) -> fc.ChartAxis:
     )
 
 
-def build_spots(candles: list[Candle]) -> list[fc.CandlestickChartSpot]:
+def visible_range(candles: list[Candle], view: Viewport) -> tuple[int, int]:
+    """The slice of candles worth sending for a given window."""
+    if not candles:
+        return 0, 0
+    start = max(0, int(math.floor(view.x_min)) - SPOT_MARGIN)
+    end = min(len(candles), int(math.ceil(view.x_max)) + SPOT_MARGIN + 1)
+    return start, max(start, end)
+
+
+def build_spots(
+    candles: list[Candle], view: Viewport | None = None
+) -> list[fc.CandlestickChartSpot]:
+    """Spots for the visible window, keyed by index into the full series.
+
+    Only the window is sent because at 1Y there is no point serialising 365
+    spots on every frame of a drag -- a zoomed-in view sends ~20.
+
+    It does **not** make the candles wider. `CandlestickChart` draws them at
+    a fixed pixel width: there is no width property on the chart or on
+    `CandlestickChartSpot`, and measuring the rendered result shows the
+    width unchanged whether it is handed 365 spots over a 90-day window or
+    20 over a 17-day one. Zooming in therefore spreads the candles apart
+    rather than fattening them. Getting proper width scaling would mean
+    painting the bodies onto the overlay canvas and leaving the control to
+    draw only the axes and grid.
+
+    `x` stays the index into the *full* series, so the viewport, the axis
+    labels and the crosshair all keep speaking one coordinate system.
+    """
+    if view is None:
+        start, end = 0, len(candles)
+    else:
+        start, end = visible_range(candles, view)
     return [
         fc.CandlestickChartSpot(
             x=index,
-            open=candle.open,
-            high=candle.high,
-            low=candle.low,
-            close=candle.close,
+            open=candles[index].open,
+            high=candles[index].high,
+            low=candles[index].low,
+            close=candles[index].close,
             # The crosshair readout replaces the control's own tooltip.
             show_tooltip=False,
         )
-        for index, candle in enumerate(candles)
+        for index in range(start, end)
     ]
 
 
@@ -281,7 +318,12 @@ class CandleChart(ft.Container):
             # The crosshair is the readout now, so the control's own touch
             # tooltip would only be a second, competing one.
             interactive=False,
-            animation=ft.Animation(250, ft.AnimationCurve.EASE_OUT),
+            # No animation. It flatters a data swap and is actively wrong
+            # under direct manipulation: every drag frame sets a new
+            # window, so an animated chart spends its time easing towards
+            # where the cursor *was*. Panning felt like dragging through
+            # treacle until this came out.
+            animation=None,
             horizontal_grid_lines=fc.ChartGridLines(
                 color=ft.Colors.OUTLINE_VARIANT, width=1
             ),
@@ -329,7 +371,6 @@ class CandleChart(ft.Container):
         self._candles = candles or []
         self._empty.visible = not self._candles
         self._chart.visible = bool(self._candles)
-        self._chart.spots = build_spots(self._candles)
         self._view = fit(self._candles)
         self._clear_crosshair(redraw=False)
         self._apply_view()
@@ -342,6 +383,7 @@ class CandleChart(ft.Container):
 
     def _apply_view(self) -> None:
         view = self._view
+        self._chart.spots = build_spots(self._candles, view)
         self._chart.min_x, self._chart.max_x = view.x_min, view.x_max
         self._chart.min_y, self._chart.max_y = view.y_min, view.y_max
         self._chart.left_axis = price_axis(view)

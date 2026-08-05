@@ -181,3 +181,27 @@ async def test_opening_a_pool_shows_the_action_panel(flet_app) -> None:
     # Let the chart request finish before the fixture tears the app down;
     # otherwise the Flutter process is killed mid-request and teardown errors.
     await wait_until_gone(tester, lambda: tester.find_by_text("Loading…"))
+
+
+async def test_the_chart_receives_candles(flet_app) -> None:
+    """The chart gets real data: the caption reports the window's change.
+
+    That caption is only produced once at least two candles have arrived,
+    so it is a proxy for "the chart has a series in it".
+
+    What this does *not* prove is that the tooltip renders on hover.
+    `find_by_key` does not reach inside a `flet-charts` control, and
+    synthetic pointer events do not reach Flutter's hover hit-testing from
+    Chrome DevTools either, so the interactivity is taken on the control's
+    documented behaviour plus the unit test that every spot carries a
+    tooltip string.
+    """
+    tester = flet_app.tester
+    await wait_for_pools(tester)
+    await tester.tap(await tester.find_by_key("pool-row-0"))
+
+    await wait_for(tester, lambda: tester.find_by_text_containing("LP token"))
+    caption = await wait_for(
+        tester, lambda: tester.find_by_text_containing(r"[+-]\d+\.\d\d%")
+    )
+    assert caption.count >= 1, "the chart never reported a series"

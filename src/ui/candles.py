@@ -1,283 +1,253 @@
-"""A candlestick chart, drawn by hand on a Flet canvas.
+"""The pool price chart, built on `flet-charts`' `CandlestickChart`.
 
-Flet 0.86 ships no chart controls in core at all -- and no charting package
-in the ecosystem draws candlesticks anyway -- so this renders the bars
-directly with `flet.canvas` primitives (Rect, Line, Text). That turns out to
-be the right level: a candle is two rectangles and a line, and drawing them
-ourselves is what makes the price-line, the axis labels and the theme
-colours behave.
+An earlier version of this file drew the candles by hand on `flet.canvas`,
+on the belief that nothing in the ecosystem drew candlesticks. That was
+wrong: `flet-charts` is an official Flet package, released on the same
+version line as flet itself, and it is pure Python -- the Dart side ships
+with the standard client, so `flet publish` still needs no Flutter build.
 
-The layout maths is deliberately kept in `plot_geometry`, which is a pure
-function of numbers and therefore testable without a canvas.
+Using it is not merely less code. The hand-drawn version was a *picture*:
+it could not be hovered, had no tooltips and no transitions, and every axis
+label was a `cv.Text` positioned by arithmetic. `CandlestickChart` is a
+real control -- interactive, with built-in tooltips, animated updates, and
+axes that lay themselves out.
+
+What stays here is the part that is genuinely this app's problem: what
+range to show, how many decimals an axis label needs, and how to phrase a
+tooltip.
 """
 
 from __future__ import annotations
 
 import math
 import time
-from dataclasses import dataclass
 
 import flet as ft
-import flet.canvas as cv
+import flet_charts as fc
 
 from curve.api import Candle
 from curve.format import token_amount
 
 from . import safe_update
 
-# A rising candle is green and a falling one red, which is conventional
-# enough that inverting it would be actively confusing. These are picked to
-# clear 3:1 contrast on both the light and dark surfaces -- Material 3 has
-# no semantic role for "up"/"down", so fixed shades are the honest choice.
-UP = ft.Colors.GREEN_600
-DOWN = ft.Colors.RED_400
-
-#: Room for the price axis on the right, in pixels.
-AXIS_WIDTH = 62.0
-#: Room for the date axis along the bottom.
-AXIS_HEIGHT = 22.0
-PADDING = 10.0
+#: Roughly how many labels to put on each axis.
+PRICE_LABELS = 5
+DATE_LABELS = 6
 
 
-@dataclass(slots=True, frozen=True)
-class Geometry:
-    """Where the candles go, given a canvas size and a price range."""
+def price_range(candles: list[Candle]) -> tuple[float, float]:
+    """The y-axis bounds for a series, padded so nothing sits on the frame.
 
-    low: float
-    high: float
-    plot_width: float
-    plot_height: float
-    candle_width: float
-    step: float
-
-    def y(self, price: float) -> float:
-        """Price -> pixels from the top of the plot area."""
-        if self.high <= self.low:
-            return self.plot_height / 2
-        ratio = (price - self.low) / (self.high - self.low)
-        return PADDING + (1.0 - ratio) * self.plot_height
-
-    def x(self, index: int) -> float:
-        """Candle index -> the pixel centre of its slot."""
-        return PADDING + index * self.step + self.step / 2
-
-
-def plot_geometry(candles: list[Candle], width: float, height: float) -> Geometry:
-    """Work out the scales for a set of candles in a given box.
-
-    The price range is padded by 4% so the extremes are not drawn flush
-    against the frame, and a flat series (every price identical, which
-    happens on pegged stable pairs) gets an artificial range rather than
-    dividing by zero.
+    A flat series -- every price identical, which pegged stable pairs
+    really do produce -- gets an invented range rather than a zero-height
+    axis the chart cannot scale.
     """
-    plot_width = max(width - AXIS_WIDTH - 2 * PADDING, 1.0)
-    plot_height = max(height - AXIS_HEIGHT - 2 * PADDING, 1.0)
-
     if not candles:
-        return Geometry(0.0, 1.0, plot_width, plot_height, 1.0, 1.0)
-
+        return 0.0, 1.0
     low = min(c.low for c in candles)
     high = max(c.high for c in candles)
     if high <= low:
-        # Perfectly flat: invent a range so the line lands mid-box.
         spread = abs(high) * 0.001 or 0.001
-        low, high = low - spread, high + spread
-    else:
-        margin = (high - low) * 0.04
-        low, high = low - margin, high + margin
-
-    step = plot_width / len(candles)
-    # Leave a hairline gap between candles, but never go sub-pixel.
-    candle_width = max(step * 0.7, 1.0)
-    return Geometry(low, high, plot_width, plot_height, candle_width, step)
+        return low - spread, high + spread
+    margin = (high - low) * 0.04
+    return low - margin, high + margin
 
 
-def _axis_prices(geometry: Geometry, count: int = 5) -> list[float]:
-    if geometry.high <= geometry.low:
-        return [geometry.low]
-    stride = (geometry.high - geometry.low) / (count - 1)
-    return [geometry.low + i * stride for i in range(count)]
+def price_decimals(span: float) -> int:
+    """How many decimals a value needs at a given tick interval.
 
-
-def _price_decimals(span: float) -> int:
-    """How many decimals it takes to tell two gridlines apart.
-
-    Choosing by magnitude alone is not enough: a stable pool ranging over
-    1.0268-1.0271 needs four decimals to separate its labels even though
-    the values are order-1, and rounding to a fixed 4 prints "1.027" three
-    times down the axis. Derive it from the *span* instead.
+    Magnitude alone is not enough: a stable pool ranging over 1.0268-1.0271
+    needs four decimals even though the values are order-1, and rounding to
+    a fixed 4 prints "1.027" three times down the axis.
     """
     if span <= 0:
         return 2
-    # One digit finer than the gap between labels.
     return max(2, min(10, int(math.ceil(-math.log10(span))) + 2))
 
 
-def _format_price(value: float, decimals: int = 4) -> str:
-    magnitude = abs(value)
-    if magnitude == 0:
+def interval_decimals(interval: float) -> int:
+    """Exactly the decimals needed to write `interval` without padding.
+
+    An axis stepping by 0.0001 wants four (1.0268); one stepping by 250
+    wants none. Deriving this from the span instead over-pads, printing
+    "1.026800" where "1.0268" is the number.
+    """
+    if interval <= 0:
+        return 2
+    for decimals in range(11):
+        scaled = interval * 10**decimals
+        if abs(scaled - round(scaled)) < 1e-9:
+            return decimals
+    return 10
+
+
+def format_price(value: float, decimals: int = 4) -> str:
+    if value == 0:
         return "0"
-    if magnitude >= 1000 and decimals <= 2:
+    if abs(value) >= 1000 and decimals <= 2:
         return f"{value:,.0f}"
     return f"{value:.{decimals}f}"
 
 
-def _format_date(timestamp: int) -> str:
+def format_date(timestamp: int) -> str:
     return time.strftime("%d %b", time.gmtime(timestamp))
 
 
-def build_shapes(
-    candles: list[Candle],
-    width: float,
-    height: float,
-    *,
-    grid_color: str,
-    text_color: str,
-) -> list[cv.Shape]:
-    """Every shape for one chart: gridlines, axes, candles, last-price line."""
-    geometry = plot_geometry(candles, width, height)
-    shapes: list[cv.Shape] = []
+def _axis_label(text: str) -> ft.Control:
+    return ft.Text(text, size=10, color=ft.Colors.ON_SURFACE_VARIANT)
 
-    grid_paint = ft.Paint(color=grid_color, stroke_width=1)
-    label_style = ft.TextStyle(size=10, color=text_color)
 
-    # -- horizontal gridlines and the price axis --
-    plot_right = PADDING + geometry.plot_width
-    decimals = _price_decimals(geometry.high - geometry.low)
-    for price in _axis_prices(geometry):
-        y = geometry.y(price)
-        shapes.append(cv.Line(PADDING, y, plot_right, y, paint=grid_paint))
-        shapes.append(
-            cv.Text(
-                plot_right + 6,
-                y - 7,
-                _format_price(price, decimals),
-                style=label_style,
-            )
-        )
+def nice_interval(span: float, target: int) -> float:
+    """A round tick interval covering `span` in about `target` steps.
 
+    Ticks land on 1, 2, 2.5 or 5 times a power of ten -- the intervals that
+    produce readable labels -- rather than on span/N, which gives values
+    like 0.003524.
+    """
+    if span <= 0 or target <= 0:
+        return 1.0
+    raw = span / target
+    magnitude = 10.0 ** math.floor(math.log10(raw))
+    for step in (1.0, 2.0, 2.5, 5.0, 10.0):
+        if raw <= step * magnitude:
+            return step * magnitude
+    return 10.0 * magnitude
+
+
+def price_axis(candles: list[Candle]) -> fc.ChartAxis:
+    """Price labels along the left edge.
+
+    Labels sit on **multiples of the interval**, not at `min_y + i*step`.
+    The chart draws its ticks at multiples of `label_spacing` counted from
+    zero, and only renders a label whose value matches a tick -- so labels
+    placed at an arbitrary offset from the axis minimum silently vanish,
+    leaving just the min and max. The date axis never hit this because its
+    values are integer multiples of the stride already.
+    """
+    low, high = price_range(candles)
+    interval = nice_interval(high - low, PRICE_LABELS - 1)
+    decimals = interval_decimals(interval)
+
+    values: list[float] = []
+    tick = math.ceil(low / interval) * interval
+    while tick <= high and len(values) < PRICE_LABELS + 2:
+        values.append(tick)
+        tick += interval
+
+    return fc.ChartAxis(
+        label_size=64,
+        label_spacing=interval,
+        labels=[
+            fc.ChartAxisLabel(value=v, label=_axis_label(format_price(v, decimals)))
+            for v in values
+        ],
+    )
+
+
+def date_axis(candles: list[Candle]) -> fc.ChartAxis:
+    """Dates along the bottom, thinned so they never collide.
+
+    Spots are indexed 0..n-1 rather than by timestamp, so the axis has no
+    gaps for hours a pool did not trade and the labels stay ours to place.
+    """
     if not candles:
-        return shapes
-
-    # -- date labels: about one per 90px, so they never collide --
-    label_every = max(1, int(len(candles) / max(geometry.plot_width / 90, 1)))
-    baseline = PADDING + geometry.plot_height
-    for index, candle in enumerate(candles):
-        if index % label_every == 0:
-            shapes.append(
-                cv.Text(
-                    geometry.x(index) - 14,
-                    baseline + 5,
-                    _format_date(candle.time),
-                    style=label_style,
-                )
-            )
-
-    # -- the candles --
-    for index, candle in enumerate(candles):
-        colour = UP if candle.rising else DOWN
-        paint = ft.Paint(color=colour, stroke_width=1)
-        centre = geometry.x(index)
-
-        # wick first, so the body draws over it
-        shapes.append(
-            cv.Line(centre, geometry.y(candle.high), centre, geometry.y(candle.low), paint=paint)
-        )
-
-        top = geometry.y(max(candle.open, candle.close))
-        bottom = geometry.y(min(candle.open, candle.close))
-        # A doji would otherwise be invisible: floor the body at 1px.
-        body_height = max(bottom - top, 1.0)
-        shapes.append(
-            cv.Rect(
-                centre - geometry.candle_width / 2,
-                top,
-                geometry.candle_width,
-                body_height,
-                paint=ft.Paint(color=colour, style=ft.PaintingStyle.FILL),
-            )
-        )
-
-    # -- last price, marked across the whole plot --
-    last = candles[-1]
-    last_colour = UP if last.rising else DOWN
-    y = geometry.y(last.close)
-    shapes.append(
-        cv.Line(
-            PADDING,
-            y,
-            plot_right,
-            y,
-            paint=ft.Paint(
-                color=last_colour,
-                stroke_width=1,
-                stroke_dash_pattern=[4, 3],
-            ),
-        )
+        return fc.ChartAxis(labels=[])
+    stride = max(1, len(candles) // DATE_LABELS)
+    return fc.ChartAxis(
+        label_size=28,
+        label_spacing=stride,
+        labels=[
+            fc.ChartAxisLabel(value=i, label=_axis_label(format_date(candles[i].time)))
+            for i in range(0, len(candles), stride)
+        ],
     )
-    shapes.append(
-        cv.Text(
-            plot_right + 6,
-            y - 7,
-            _format_price(last.close, decimals),
-            style=ft.TextStyle(size=10, color=last_colour, weight=ft.FontWeight.BOLD),
-        )
+
+
+def spot_tooltip(candle: Candle, decimals: int) -> str:
+    """One candle, spelled out. The chart shows this on hover."""
+    return (
+        f"{format_date(candle.time)}\n"
+        f"O {format_price(candle.open, decimals)}   "
+        f"H {format_price(candle.high, decimals)}\n"
+        f"L {format_price(candle.low, decimals)}   "
+        f"C {format_price(candle.close, decimals)}"
     )
-    return shapes
+
+
+def build_spots(candles: list[Candle]) -> list[fc.CandlestickChartSpot]:
+    low, high = price_range(candles)
+    decimals = price_decimals(high - low)
+    return [
+        fc.CandlestickChartSpot(
+            x=index,
+            open=candle.open,
+            high=candle.high,
+            low=candle.low,
+            close=candle.close,
+            tooltip=spot_tooltip(candle, decimals),
+        )
+        for index, candle in enumerate(candles)
+    ]
 
 
 class CandleChart(ft.Container):
-    """A canvas that redraws its candles whenever it is resized.
+    """A live candlestick chart. Swap its data with `set_candles`."""
 
-    Flet gives the canvas its size only at layout time, so the shapes are
-    built in `on_resize` rather than up front -- the same reason the geometry
-    is a pure function taking width and height.
-    """
-
-    def __init__(self, height: float = 320) -> None:
+    def __init__(self, height: float = 340) -> None:
         self._candles: list[Candle] = []
-        self._width = 800.0
-        self._height = height
-        self._canvas = cv.Canvas(shapes=[], expand=True, on_resize=self._resized)
+        self._chart = fc.CandlestickChart(
+            key="price-chart",
+            spots=[],
+            expand=True,
+            visible=False,
+            interactive=True,
+            # Transitions between timeframes rather than a hard cut -- the
+            # whole reason for a real chart control over a repainted canvas.
+            animation=ft.Animation(300, ft.AnimationCurve.EASE_OUT),
+            tooltip=fc.CandlestickChartTooltip(
+                bgcolor=ft.Colors.INVERSE_SURFACE,
+                border_radius=6,
+                fit_inside_horizontally=True,
+                fit_inside_vertically=True,
+            ),
+            horizontal_grid_lines=fc.ChartGridLines(
+                color=ft.Colors.OUTLINE_VARIANT, width=1
+            ),
+        )
         self._empty = ft.Text(
             "No price history for this pair.",
             size=12,
             color=ft.Colors.ON_SURFACE_VARIANT,
         )
-        self._stack = ft.Stack(
-            controls=[self._canvas, ft.Container(self._empty, alignment=ft.Alignment.CENTER)],
-            expand=True,
-        )
         super().__init__(
-            content=self._stack,
+            content=ft.Stack(
+                [
+                    self._chart,
+                    ft.Container(self._empty, alignment=ft.Alignment.CENTER),
+                ],
+                expand=True,
+            ),
             height=height,
             border_radius=8,
             bgcolor=ft.Colors.SURFACE_CONTAINER_LOW,
-            padding=4,
+            padding=8,
         )
-
-    def _resized(self, e: cv.CanvasResizeEvent) -> None:
-        self._width, self._height = e.width, e.height
-        self._redraw()
 
     def set_candles(self, candles: list[Candle]) -> None:
         self._candles = candles or []
-        self._redraw()
-
-    def _redraw(self) -> None:
         self._empty.visible = not self._candles
-        self._canvas.shapes = build_shapes(
-            self._candles,
-            self._width,
-            self._height,
-            grid_color=ft.Colors.OUTLINE_VARIANT,
-            text_color=ft.Colors.ON_SURFACE_VARIANT,
-        )
+        self._chart.visible = bool(self._candles)
+        self._chart.spots = build_spots(self._candles)
+        if self._candles:
+            low, high = price_range(self._candles)
+            self._chart.min_y, self._chart.max_y = low, high
+            self._chart.left_axis = price_axis(self._candles)
+            self._chart.bottom_axis = date_axis(self._candles)
         safe_update(self)
 
     @property
     def summary(self) -> str:
-        """A one-line change-over-window caption for the header."""
+        """A change-over-window caption for the header."""
         if len(self._candles) < 2:
             return ""
         first, last = self._candles[0].open, self._candles[-1].close
@@ -286,4 +256,3 @@ class CandleChart(ft.Container):
         change = (last - first) / first * 100
         arrow = "+" if change >= 0 else "-"
         return f"{token_amount(last)}   {arrow}{abs(change):.2f}%"
-

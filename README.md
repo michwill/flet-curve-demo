@@ -12,8 +12,8 @@ withdraw, swap and stake — all in-pool, no router.
 uv venv && uv pip install -r requirements.txt
 
 .venv/bin/flet run src/main.py        # desktop -> Frame / qeth on 127.0.0.1:1248
-.venv/bin/flet publish src/main.py    # browser -> ./src/dist
-python -m http.server 8000 -d src/dist
+.venv/bin/flet publish                # browser -> ./dist  (run from the repo root)
+python -m http.server 8000 -d dist
 ```
 
 The wallet layer is [`flet-pay-example`](https://github.com/michwill/flet-pay-example)'s
@@ -38,7 +38,7 @@ src/ui/        Flet controls. Imports curve/, never the reverse.
     pool_list.py   search, sortable columns, scroll-driven paging
     pool_detail.py chart + composition + yields + actions
     actions.py     deposit / withdraw / swap / stake
-    candles.py     a candlestick chart drawn on flet.canvas
+    candles.py     the price chart, on flet-charts' CandlestickChart
 
 src/wallet/    unchanged from flet-pay-example
 ```
@@ -91,6 +91,35 @@ whatever happened to be in memory. Search is debounced and sent as
 `aggregate_apr`, the API's combined base + CRV + tokens + merkle figure — there
 is no rewards-without-base field, and the difference is immaterial when base APR
 is low single digits and incentive APRs run to hundreds of percent.
+
+## The chart
+
+`flet-charts`' `CandlestickChart`, not shapes painted on a canvas. The
+difference is that this one is *live*: candles carry per-spot OHLC tooltips,
+switching timeframe animates rather than cutting, and the axes lay themselves
+out. Drawing it by hand produced a picture that could not be hovered.
+
+What stayed in `ui/candles.py` is the part that is genuinely this app's
+problem — the visible range, the tick interval, and how many decimals a label
+needs. That last one matters more than it sounds: a stable pool ranging over
+1.0268–1.0271 needs four decimals to tell its gridlines apart, and a fixed four
+prints "1.027" three times down the axis.
+
+Two gotchas, both found by looking at the rendered result:
+
+- Axis labels must land on **multiples of `label_spacing`**. The chart ticks at
+  multiples of the interval counted from zero, so labels at `min + i*step` are
+  dropped and the axis shows only its endpoints. `nice_interval` picks a round
+  step (1, 2, 2.5 or 5 × 10ⁿ) and labels go on multiples of it.
+- Derive label precision from the **interval**, not the span, or an axis
+  stepping by 0.0001 prints "1.026800" where "1.0268" is the number.
+
+Charts are also the one place `flet publish` bit: it resolves dependencies
+relative to the **script's** directory, so `flet publish src/main.py` never saw
+the root `pyproject.toml`, fell back to bare `flet`, and the published app died
+in Pyodide with `ModuleNotFoundError: No module named 'flet_charts'`. Publish
+from the project root instead — `flet publish`, no path — which reads
+`[tool.flet.app] path` and gets the dependency list right.
 
 ## Talking to the pools
 
@@ -146,7 +175,7 @@ Flet validates control arguments in `__init__`, so this catches the whole class 
 `on_scroll_interval` (it is `scroll_interval`) and `ft.Tab(content=…)` immediately.
 What it cannot see is layout, hit-testing or paint.
 
-**3. UI tests — `flet.testing`.** These start the real app and drive it:
+**3. UI tests — `flet.testing`.** Seven tests that start the real app and drive it:
 `find_by_key`, `tap`, `enter_text`, `pump_and_settle`, screenshots. They are
 marked `flet_ui` and excluded from the default run.
 
@@ -190,11 +219,16 @@ it live instead.
 Things that cost a debugging round here, beyond the ones already in
 flet-pay-example's README:
 
-- **There are no chart controls in core at all.** No line, bar or pie, let alone
-  candlestick. `flet.canvas` (`Rect`, `Line`, `Text`, `Paint`) is the answer, and
-  it is a good one — a candle is two rectangles and a line. The canvas learns its
-  size only at layout time, so shapes are built in `on_resize` and the geometry is
-  a pure function of `(candles, width, height)`.
+- **Charts are not in core — they are in `flet-charts`.** An earlier version of
+  this app drew candles by hand on `flet.canvas` because core has no chart
+  controls and I did not check for a separate package. `flet-charts` is official,
+  released on the same version line, and has `CandlestickChart` among others.
+  It is pure Python — the Dart side ships with the standard client — so
+  `flet publish` still needs no Flutter build. See the chart section above.
+- **`ChartAxis` labels must sit on multiples of `label_spacing`.** The chart ticks
+  at multiples of the interval counted from zero and only renders a label whose
+  value lands on a tick; labels at `min + i*step` are silently dropped, leaving
+  an axis showing just its min and max.
 - **`Tabs` was restructured.** `ft.Tab` no longer takes `content` — it is only the
   button. The container is `Tabs(length=N, content=…)` holding a `TabBar` of
   `Tab`s and a `TabBarView` of bodies, and `length` must match both. Size the
@@ -228,7 +262,11 @@ flet-pay-example's README:
   coroutine object and it raises `TypeError`.
 - `DataTable` sizes itself from its content and will not shrink, so it overflows
   a narrow parent. Plain `Row`s with fixed-width `Container` cells flex down.
-- `flet publish src/main.py` writes to **`src/dist`**, not `./dist`.
+- **`flet publish <path>` resolves dependencies relative to that path's
+  directory**, not the repo root — so it silently ignored the root
+  `pyproject.toml`, shipped a requirements list of just `flet`, and the app
+  failed in the browser with `ModuleNotFoundError`. Run `flet publish` from the
+  project root with no path; it reads `[tool.flet.app] path` and writes `./dist`.
 
 ## What was verified
 
@@ -250,7 +288,13 @@ Not claims — these were run:
   ("250 of 385 pools"), a pool opens onto a live candlestick chart, the
   timeframe buttons re-fetch, and all four action tabs render with their
   controls correctly disabled while no wallet is connected.
-- **118 unit tests** with no display and no Flutter, plus **6 UI tests** driving
+- **The chart** rendering in Chrome from the published build, with correct axis
+  labels at every scale, and switching timeframe re-fetching and re-drawing.
+  Not verified: that the OHLC tooltip paints on hover — synthetic pointer events
+  do not reach Flutter's hover hit-testing, and `find_by_key` does not reach
+  inside a `flet-charts` control. Every spot is unit-tested to carry a tooltip
+  string, and `interactive` is on, but the rendered tooltip is unconfirmed.
+- **129 unit tests** with no display and no Flutter, plus **7 UI tests** driving
   the real app through Flet's own framework.
 
 Not yet exercised: a signed transaction. The read path, the encoding and the

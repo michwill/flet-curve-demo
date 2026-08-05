@@ -25,3 +25,6 @@ src/.flet/
 
 # Local wallet config (see flet-pay-example README)
 src/local_config.toml
+
+# uv lockfile - the venv is reproducible from requirements.txt
+uv.lock

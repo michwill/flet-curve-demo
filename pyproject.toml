@@ -7,7 +7,7 @@ requires-python = ">=3.12"
 # Installed by micropip inside Pyodide on `flet publish`. Keep this list
 # pure-Python: the ABI encoding is hand-rolled in wallet/erc20.py and
 # curve/abi.py precisely so no wheel has to exist for wasm32.
-dependencies = ["flet==0.86.5"]
+dependencies = ["flet==0.86.5", "flet-charts==0.86.5"]
 
 [tool.flet]
 org = "com.example"

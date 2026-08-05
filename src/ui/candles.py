@@ -153,15 +153,14 @@ def nice_interval(span: float, target: int) -> float:
 WICK_HEADROOM = 3.0
 
 
-def fit(candles: list[Candle]) -> Viewport:
-    """The window showing the whole series, with the usual 4% headroom.
+def price_bounds(candles: list[Candle]) -> tuple[float, float]:
+    """The price range to show for a set of candles, padded by 4%.
 
-    The price axis is fitted to the candle *bodies* plus any wick within
-    `WICK_HEADROOM` of them, because a single bad wick otherwise sets the
-    whole scale. Strategic USD Reserves has a daily candle whose low is
-    0.024 against a body of 1.0158 -- an API glitch, not a two-cent trade
-    in a USDC/USDT pool -- and it flattened 200 days of history into a line
-    at the top of the chart.
+    Fitted to the candle *bodies* plus any wick within `WICK_HEADROOM` of
+    them, because one bad wick otherwise sets the whole scale. Strategic
+    USD Reserves has a daily candle whose low is 0.024 against a body of
+    1.0158 -- an API glitch, not a two-cent trade in a USDC/USDT pool --
+    and it flattened 200 days of history into a line at the top.
 
     A body is never excluded, and the rule is relative to how much the
     series actually moves, so a genuine 1.2% dip on the same pool still
@@ -173,12 +172,10 @@ def fit(candles: list[Candle]) -> Viewport:
     axis the chart cannot scale.
     """
     if not candles:
-        return Viewport(0.0, 1.0, 0.0, 1.0)
+        return 0.0, 1.0
 
     body_low = min(min(c.open, c.close) for c in candles)
     body_high = max(max(c.open, c.close) for c in candles)
-    # A perfectly flat series has no body span to scale by; fall back to a
-    # relative floor so the wick test stays meaningful.
     body_span = (body_high - body_low) or abs(body_high) * 0.001 or 0.001
 
     floor = body_low - WICK_HEADROOM * body_span
@@ -189,10 +186,23 @@ def fit(candles: list[Candle]) -> Viewport:
 
     if high <= low:
         spread = abs(high) * 0.001 or 0.001
-        low, high = low - spread, high + spread
-    else:
-        margin = (high - low) * 0.04
-        low, high = low - margin, high + margin
+        return low - spread, high + spread
+    margin = (high - low) * 0.04
+    return low - margin, high + margin
+
+
+def visible_slice(candles: list[Candle], view: Viewport) -> list[Candle]:
+    """The candles inside the window, for refitting the price axis."""
+    if not candles:
+        return []
+    start = max(0, int(math.floor(view.x_min)))
+    end = min(len(candles), int(math.ceil(view.x_max)) + 1)
+    return candles[start:end] or candles
+
+
+def fit(candles: list[Candle]) -> Viewport:
+    """The window showing the whole series."""
+    low, high = price_bounds(candles)
     return Viewport(-0.5, max(len(candles) - 0.5, 0.5), low, high)
 
 
@@ -394,6 +404,11 @@ class CandleChart(ft.Container):
         self._last_hover = 0.0
         self._on_capacity_change = on_capacity_change
         self._last_capacity = 0
+        # Price follows the visible candles until the user takes over. This
+        # is what makes zooming in useful: without it, ten candles keep the
+        # whole series' price range and stay squashed into a few pixels.
+        # pyqtgraph calls the same thing `enableAutoRange`.
+        self._auto_price = True
 
         self._chart = fc.CandlestickChart(
             key="price-chart",
@@ -464,6 +479,7 @@ class CandleChart(ft.Container):
 
     def set_candles(self, candles: list[Candle]) -> None:
         self._candles = candles or []
+        self._auto_price = True
         self._empty.visible = not self._candles
         self._chart.visible = bool(self._candles)
         self._view = fit(self._candles)
@@ -471,10 +487,18 @@ class CandleChart(ft.Container):
         self._apply_view()
 
     def reset_view(self) -> None:
-        """Back to the whole series. Bound to double-tap."""
+        """Back to the whole series, and back to auto price. Double-tap."""
+        self._auto_price = True
         self._view = fit(self._candles)
         self._clear_crosshair(redraw=False)
         self._apply_view()
+
+    def _refit_price(self) -> None:
+        """Rescale price to whatever is on screen, unless the user opted out."""
+        if not self._auto_price or not self._candles:
+            return
+        low, high = price_bounds(visible_slice(self._candles, self._view))
+        self._view = self._view.with_y(low, high)
 
     def _apply_view(self) -> None:
         view = self._view
@@ -517,6 +541,9 @@ class CandleChart(ft.Container):
             # Screen y grows downward, so dragging down must raise prices.
             self._plot.dy(delta.y, self._view),
         )
+        # Dragging is the user taking the price axis into their own hands.
+        if delta.y:
+            self._auto_price = False
         self._view = view.clamped(len(self._candles))
         self._clear_crosshair(redraw=False)
         self._apply_view()
@@ -527,11 +554,23 @@ class CandleChart(ft.Container):
             return
         direction = 1.0 if e.scroll_delta.y > 0 else -1.0
         factor = 1.0 + direction * ZOOM_STEP
+
+        # Over the price gutter the wheel scales price, the way a trading
+        # chart does it -- there are no modifier keys on a Flet scroll
+        # event, so position is the only thing to dispatch on.
+        if e.local_position.x < self._plot.left:
+            self._auto_price = False
+            focus = self._plot.data_y(e.local_position.y, self._view)
+            self._view = self._view.zoomed_y(factor, focus)
+            self._apply_view()
+            return
+
         focus = self._plot.data_x(e.local_position.x, self._view)
         zoomed = self._view.zoomed_x(factor, focus)
         if zoomed.x_span < MIN_VISIBLE and factor < 1.0:
             return  # already as tight as it goes
         self._view = zoomed.clamped(len(self._candles))
+        self._refit_price()
         self._apply_view()
 
     def _hovered(self, e: ft.HoverEvent) -> None:

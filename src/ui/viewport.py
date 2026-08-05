@@ -56,6 +56,15 @@ class Viewport:
             self.x_min + dx, self.x_max + dx, self.y_min + dy, self.y_max + dy
         )
 
+    def zoomed_y(self, factor: float, focus: float) -> "Viewport":
+        """Scale the price window, holding `focus` (a price) still."""
+        below = (focus - self.y_min) * factor
+        above = (self.y_max - focus) * factor
+        return Viewport(self.x_min, self.x_max, focus - below, focus + above)
+
+    def with_y(self, y_min: float, y_max: float) -> "Viewport":
+        return Viewport(self.x_min, self.x_max, y_min, y_max)
+
     def zoomed_x(self, factor: float, focus: float) -> "Viewport":
         """Scale the x window by `factor`, holding `focus` (a data x) still.
 

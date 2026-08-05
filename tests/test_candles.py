@@ -30,7 +30,9 @@ from ui.candles import (
     interval_decimals,
     nice_interval,
     price_axis,
+    price_bounds,
     price_decimals,
+    visible_slice,
 )
 from ui.viewport import Plot, Viewport
 
@@ -382,6 +384,115 @@ def test_the_chart_has_no_animation_at_all() -> None:
     assert duration.seconds == 0
     assert duration.milliseconds == 0
     assert duration.microseconds == 0
+
+
+# -- price auto-fit --------------------------------------------------------
+
+
+def rising(n: int) -> list[Candle]:
+    """A series that climbs, so a window's range differs from the whole."""
+    return series([(1.0 + i * 0.01, 1.0 + i * 0.01 + 0.005,
+                    1.0 + i * 0.01 - 0.005, 1.0 + i * 0.01) for i in range(n)])
+
+
+def test_visible_slice_follows_the_window() -> None:
+    candles = rising(100)
+    sliced = visible_slice(candles, Viewport(10.0, 20.0, 0, 1))
+    assert len(sliced) <= 12
+    assert sliced[0] in candles[9:12]
+
+
+def test_visible_slice_never_returns_nothing() -> None:
+    """An empty slice would leave the price axis with no range at all."""
+    candles = rising(10)
+    assert visible_slice(candles, Viewport(500.0, 600.0, 0, 1))
+    assert visible_slice([], Viewport(0, 10, 0, 1)) == []
+
+
+def test_price_refits_to_the_visible_candles_when_zoomed() -> None:
+    """Ten candles must not keep the whole series' price range.
+
+    Without this, zooming in leaves the candles squashed into a few pixels
+    -- which is the entire point of zooming in.
+    """
+    candles = rising(200)
+    chart = CandleChart()
+    chart.set_candles(candles)
+    whole = chart._view.y_span
+
+    chart._view = Viewport(10.0, 20.0, chart._view.y_min, chart._view.y_max)
+    chart._refit_price()
+    assert chart._view.y_span < whole / 5
+
+
+def test_price_stops_refitting_once_the_user_drags_it() -> None:
+    chart = CandleChart()
+    chart.set_candles(rising(200))
+    chart._auto_price = False
+    before = (chart._view.y_min, chart._view.y_max)
+    chart._view = Viewport(10.0, 20.0, *before)
+    chart._refit_price()
+    assert (chart._view.y_min, chart._view.y_max) == before
+
+
+def test_a_vertical_drag_takes_over_the_price_axis() -> None:
+    chart = CandleChart()
+    chart.set_candles(rising(100))
+    assert chart._auto_price
+    chart._panned(SimpleNamespace(local_delta=SimpleNamespace(x=0.0, y=-20.0)))
+    assert not chart._auto_price
+
+
+def test_a_purely_horizontal_drag_leaves_auto_price_on() -> None:
+    chart = CandleChart()
+    chart.set_candles(rising(100))
+    chart._panned(SimpleNamespace(local_delta=SimpleNamespace(x=-30.0, y=0.0)))
+    assert chart._auto_price
+
+
+def test_new_data_and_double_tap_both_restore_auto_price() -> None:
+    chart = CandleChart()
+    chart.set_candles(rising(100))
+    chart._auto_price = False
+    chart.reset_view()
+    assert chart._auto_price
+
+    chart._auto_price = False
+    chart.set_candles(rising(50))
+    assert chart._auto_price
+
+
+# -- vertical zoom ---------------------------------------------------------
+
+
+def scroll(x: float, y: float, dy: float) -> SimpleNamespace:
+    return SimpleNamespace(
+        local_position=SimpleNamespace(x=x, y=y),
+        scroll_delta=SimpleNamespace(y=dy),
+    )
+
+
+def test_wheel_over_the_price_gutter_zooms_price() -> None:
+    """No modifier keys on a Flet scroll event, so position dispatches."""
+    chart = CandleChart()
+    chart.set_candles(rising(100))
+    chart._plot = Plot(800.0, 340.0)
+    before = chart._view
+    chart._scrolled(scroll(x=20.0, y=150.0, dy=-1.0))  # inside the left gutter
+    assert chart._view.y_span < before.y_span
+    assert chart._view.x_span == pytest.approx(before.x_span)
+    assert not chart._auto_price
+
+
+def test_wheel_over_the_plot_zooms_time_and_refits_price() -> None:
+    chart = CandleChart()
+    chart.set_candles(rising(200))
+    chart._plot = Plot(800.0, 340.0)
+    before = chart._view
+    chart._scrolled(scroll(x=400.0, y=150.0, dy=-1.0))
+    assert chart._view.x_span < before.x_span
+    assert chart._view.y_span < before.y_span  # price followed the window
+    assert chart._auto_price
 
 
 # -- how many candles fit --------------------------------------------------

@@ -67,6 +67,27 @@ def test_zoom_leaves_the_price_axis_alone() -> None:
     assert (zoomed.y_min, zoomed.y_max) == (1.0, 2.0)
 
 
+def test_vertical_zoom_holds_the_focus_price_still() -> None:
+    original = view()
+    for focus in (1.0, 1.25, 2.0):
+        for factor in (0.5, 2.0):
+            zoomed = original.zoomed_y(factor, focus)
+            before = (focus - original.y_min) / original.y_span
+            after = (focus - zoomed.y_min) / zoomed.y_span
+            assert after == pytest.approx(before), (focus, factor)
+
+
+def test_vertical_zoom_leaves_time_alone() -> None:
+    zoomed = view().zoomed_y(0.5, 1.5)
+    assert (zoomed.x_min, zoomed.x_max) == (0.0, 100.0)
+
+
+def test_with_y_replaces_only_the_price_window() -> None:
+    replaced = view().with_y(5.0, 6.0)
+    assert (replaced.y_min, replaced.y_max) == (5.0, 6.0)
+    assert (replaced.x_min, replaced.x_max) == (0.0, 100.0)
+
+
 # -- clamping --------------------------------------------------------------
 
 

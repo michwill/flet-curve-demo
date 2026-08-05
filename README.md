@@ -113,8 +113,20 @@ and a label — which is what canvas is for, unlike the candles, which were not.
 - **Drag** pans both axes. Content follows the cursor, and dragging down raises
   prices, because screen y grows downward and a chart that inverts that is
   unreadable.
-- **Wheel** zooms in time, anchored on the candle under the pointer so it stays
-  under the pointer. Price is panned, not zoomed — same as the Qt version.
+- **Wheel over the plot** zooms in time, anchored on the candle under the
+  pointer so it stays under the pointer.
+- **Price follows the visible candles.** Zooming into ten candles rescales the
+  price axis to those ten — without it they keep the whole series' range and
+  stay squashed into a few pixels, which defeats the point of zooming in.
+  pyqtgraph calls the same thing `enableAutoRange`, and the Qt version this is
+  modelled on turns it on too.
+- **Wheel over the price gutter** scales price on its own, leaving time alone —
+  the way a trading chart does it. A Flet `ScrollEvent` carries no modifier
+  keys, so the cursor's position is the only thing available to dispatch on,
+  and the axis gutter is the conventional target anyway.
+- **Dragging vertically** takes the price axis over manually. Any manual price
+  gesture switches auto-fit off, so the chart stops fighting you; double-tap
+  (or a new series) hands it back.
 - **Hover** draws the crosshair: dashed lines through the cursor, the price
   boxed against the left axis, the timestamp boxed on the date axis, and the
   hovered candle's OHLC in the top-left corner rather than trailing the pointer.

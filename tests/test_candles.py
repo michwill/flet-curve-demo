@@ -10,6 +10,7 @@ from __future__ import annotations
 import math
 
 import flet_charts as fc
+import pytest
 
 from curve.api import Candle
 from ui.candles import (
@@ -193,6 +194,39 @@ def test_spots_carry_ohlc_and_are_indexed_from_zero() -> None:
 def test_spots_suppress_the_built_in_tooltip() -> None:
     """The crosshair readout replaces it; two tooltips would fight."""
     assert all(not s.show_tooltip for s in build_spots(flat(3)))
+
+
+def test_flat_candles_are_floored_so_they_still_draw() -> None:
+    """The chart renders nothing for a candle thinner than a pixel.
+
+    Not a hypothetical: Strategic USD Reserves over 7 days has 101 of 169
+    hourly candles under a pixel, which read as missing data.
+    """
+    candles = [Candle(1_700_000_000, 1.0, 1.0, 1.0, 1.0)]
+    spot = build_spots(candles, fit(candles), min_extent=0.01)[0]
+    assert spot.high - spot.low == pytest.approx(0.01)
+    # Widened about the midpoint, so the candle does not appear to move.
+    assert (spot.high + spot.low) / 2 == pytest.approx(1.0)
+
+
+def test_the_floor_leaves_normal_candles_untouched() -> None:
+    candles = [Candle(1_700_000_000, 1.0, 2.0, 0.5, 1.5)]
+    spot = build_spots(candles, fit(candles), min_extent=0.01)[0]
+    assert (spot.high, spot.low) == (2.0, 0.5)
+
+
+def test_the_floor_never_touches_open_or_close() -> None:
+    """Only the drawn extent is padded; the prices stay true."""
+    candles = [Candle(1_700_000_000, 1.0, 1.0, 1.0, 1.0)]
+    spot = build_spots(candles, fit(candles), min_extent=0.01)[0]
+    assert (spot.open, spot.close) == (1.0, 1.0)
+
+
+def test_the_crosshair_still_reads_the_true_prices() -> None:
+    """The floor is applied to the chart's copy, never to `_candles`."""
+    chart = CandleChart()
+    chart.set_candles([Candle(1_700_000_000, 1.0, 1.0, 1.0, 1.0)] * 5)
+    assert all(c.high == 1.0 and c.low == 1.0 for c in chart._candles)
 
 
 def test_build_spots_on_an_empty_series() -> None:

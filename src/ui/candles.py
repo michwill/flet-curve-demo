@@ -52,6 +52,19 @@ HOVER_INTERVAL = 0.04
 #: showing empty space before the next update lands.
 SPOT_MARGIN = 8
 
+#: Smallest high-low extent a candle is drawn with, in pixels.
+#:
+#: `CandlestickChart` draws nothing at all for a candle whose high and low
+#: land on the same pixel -- no doji line, no dot, just a gap. On a stable
+#: pool that is most of them: Strategic USD Reserves over 7 days has 101 of
+#: 169 hourly candles under a pixel, which is why the chart looked like it
+#: was missing data. It was not; those candles were rendering as nothing.
+#:
+#: The floor is applied symmetrically about the candle's midpoint, and only
+#: to the copy handed to the chart. `self._candles` keeps the true values,
+#: so the crosshair still reads out real numbers.
+MIN_CANDLE_PX = 1.5
+
 
 def price_decimals(span: float) -> int:
     """How many decimals a value needs across a given span."""
@@ -192,7 +205,9 @@ def visible_range(candles: list[Candle], view: Viewport) -> tuple[int, int]:
 
 
 def build_spots(
-    candles: list[Candle], view: Viewport | None = None
+    candles: list[Candle],
+    view: Viewport | None = None,
+    min_extent: float = 0.0,
 ) -> list[fc.CandlestickChartSpot]:
     """Spots for the visible window, keyed by index into the full series.
 
@@ -208,6 +223,10 @@ def build_spots(
     painting the bodies onto the overlay canvas and leaving the control to
     draw only the axes and grid.
 
+    `min_extent` is the smallest high-low a candle may be drawn with, in
+    price units -- see `MIN_CANDLE_PX`. Anything flatter is widened about
+    its own midpoint so it renders as a hairline instead of vanishing.
+
     `x` stays the index into the *full* series, so the viewport, the axis
     labels and the crosshair all keep speaking one coordinate system.
     """
@@ -215,18 +234,26 @@ def build_spots(
         start, end = 0, len(candles)
     else:
         start, end = visible_range(candles, view)
-    return [
-        fc.CandlestickChartSpot(
-            x=index,
-            open=candles[index].open,
-            high=candles[index].high,
-            low=candles[index].low,
-            close=candles[index].close,
-            # The crosshair readout replaces the control's own tooltip.
-            show_tooltip=False,
+
+    spots = []
+    for index in range(start, end):
+        candle = candles[index]
+        high, low = candle.high, candle.low
+        if min_extent > 0 and high - low < min_extent:
+            middle = (high + low) / 2
+            high, low = middle + min_extent / 2, middle - min_extent / 2
+        spots.append(
+            fc.CandlestickChartSpot(
+                x=index,
+                open=candle.open,
+                high=high,
+                low=low,
+                close=candle.close,
+                # The crosshair readout replaces the control's own tooltip.
+                show_tooltip=False,
+            )
         )
-        for index in range(start, end)
-    ]
+    return spots
 
 
 def crosshair_shapes(
@@ -393,7 +420,9 @@ class CandleChart(ft.Container):
 
     def _apply_view(self) -> None:
         view = self._view
-        self._chart.spots = build_spots(self._candles, view)
+        # One pixel's worth of price, so a flat candle still draws.
+        min_extent = view.y_span / self._plot.inner_height * MIN_CANDLE_PX
+        self._chart.spots = build_spots(self._candles, view, min_extent)
         self._chart.min_x, self._chart.max_x = view.x_min, view.x_max
         self._chart.min_y, self._chart.max_y = view.y_min, view.y_max
         self._chart.left_axis = price_axis(view)

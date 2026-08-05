@@ -130,6 +130,15 @@ dragging through treacle until the animation came out.
 Only the visible window (plus a small margin) is sent to the chart, so a drag
 at 1Y serialises ~20 spots rather than 365.
 
+**A candle thinner than a pixel is drawn as nothing.** Not a hairline, not a
+dot — a gap. On a stable pool that is most of them: Strategic USD Reserves over
+7 days has **101 of its 169 hourly candles under one pixel** of high-to-low, so
+the chart looked like it was missing data when the data was complete and
+gapless. Every candle handed to the chart is therefore floored to
+`MIN_CANDLE_PX` of extent, widened about its own midpoint. The floor applies
+only to the chart's copy — `_candles` keeps the true values, so the crosshair
+still reads out real numbers.
+
 **Known limitation: candle width does not scale with zoom.**
 `CandlestickChart` draws candles at a fixed pixel width — there is no width
 property on the chart or on `CandlestickChartSpot`, and the rendered width is

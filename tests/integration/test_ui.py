@@ -172,11 +172,11 @@ async def test_opening_a_pool_shows_the_action_panel(flet_app) -> None:
         found = await wait_for(tester, lambda label=label: tester.find_by_text(label))
         assert found.count >= 1, f"{label} tab missing from the detail page"
 
-    # The chart's series picker and its timeframe buttons are both there.
+    # The chart's series picker and its candle-size picker are both there.
     assert (
         await wait_for(tester, lambda: tester.find_by_text_containing("LP token"))
     ).count >= 1
-    assert (await tester.find_by_text("90D")).count == 1
+    assert (await tester.find_by_key("candle-size")).count == 1
 
     # Let the chart request finish before the fixture tears the app down;
     # otherwise the Flutter process is killed mid-request and teardown errors.

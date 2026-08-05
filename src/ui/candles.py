@@ -122,8 +122,27 @@ def nice_interval(span: float, target: int) -> float:
     return 10.0 * magnitude
 
 
+#: How far beyond the body range a wick may reach and still set the scale,
+#: in multiples of that range. Scale-free on purpose: 3x the body span is a
+#: long wick on any pool, whereas a fixed percentage would trim real moves
+#: on a volatile pool and admit nonsense on a pegged one.
+WICK_HEADROOM = 3.0
+
+
 def fit(candles: list[Candle]) -> Viewport:
     """The window showing the whole series, with the usual 4% headroom.
+
+    The price axis is fitted to the candle *bodies* plus any wick within
+    `WICK_HEADROOM` of them, because a single bad wick otherwise sets the
+    whole scale. Strategic USD Reserves has a daily candle whose low is
+    0.024 against a body of 1.0158 -- an API glitch, not a two-cent trade
+    in a USDC/USDT pool -- and it flattened 200 days of history into a line
+    at the top of the chart.
+
+    A body is never excluded, and the rule is relative to how much the
+    series actually moves, so a genuine 1.2% dip on the same pool still
+    sets the scale while the 97% one does not. The outlier is not deleted:
+    it is drawn clipped, and panning down reaches it.
 
     A flat series -- every price identical, which pegged stable pairs
     really do produce -- gets an invented range rather than a zero-height
@@ -131,8 +150,19 @@ def fit(candles: list[Candle]) -> Viewport:
     """
     if not candles:
         return Viewport(0.0, 1.0, 0.0, 1.0)
-    low = min(c.low for c in candles)
-    high = max(c.high for c in candles)
+
+    body_low = min(min(c.open, c.close) for c in candles)
+    body_high = max(max(c.open, c.close) for c in candles)
+    # A perfectly flat series has no body span to scale by; fall back to a
+    # relative floor so the wick test stays meaningful.
+    body_span = (body_high - body_low) or abs(body_high) * 0.001 or 0.001
+
+    floor = body_low - WICK_HEADROOM * body_span
+    ceiling = body_high + WICK_HEADROOM * body_span
+    low = min([c.low for c in candles if c.low >= floor], default=body_low)
+    high = max([c.high for c in candles if c.high <= ceiling], default=body_high)
+    low, high = min(low, body_low), max(high, body_high)
+
     if high <= low:
         spread = abs(high) * 0.001 or 0.001
         low, high = low - spread, high + spread

@@ -15,6 +15,7 @@ import pytest
 from curve.api import Candle
 from ui.candles import (
     DATE_LABELS,
+    WICK_HEADROOM,
     PRICE_LABELS,
     CandleChart,
     build_spots,
@@ -67,6 +68,46 @@ def test_fit_on_a_flat_series_invents_a_range() -> None:
 def test_fit_on_a_zero_priced_series_is_survivable() -> None:
     view = fit(series([(0.0, 0.0, 0.0, 0.0)]))
     assert view.y_max > view.y_min
+
+
+def test_fit_ignores_an_absurd_wick() -> None:
+    """One glitched candle otherwise sets the whole scale.
+
+    Strategic USD Reserves has a daily candle whose low is 0.024 against a
+    body of 1.0158 -- not a two-cent trade in a USDC/USDT pool -- and it
+    flattened 200 days of history into a line.
+    """
+    candles = series([(1.015, 1.017, 1.014, 1.016)] * 50)
+    candles[20] = Candle(candles[20].time, 1.0158, 1.0160, 0.0243, 1.0160)
+    view = fit(candles)
+    assert view.y_min > 1.0  # the glitch is outside the fitted window
+    assert view.y_min < 1.014  # but real lows are still inside
+
+
+def test_fit_keeps_a_plausible_wick() -> None:
+    """A real dip must still set the scale, only nonsense is trimmed."""
+    candles = series([(1.015, 1.017, 1.014, 1.016)] * 50)
+    body_span = 0.017 - 1.014
+    dip = 1.014 - body_span * (WICK_HEADROOM - 1)
+    candles[20] = Candle(candles[20].time, 1.015, 1.016, dip, 1.016)
+    assert fit(candles).y_min <= dip
+
+
+def test_fit_never_clips_a_body() -> None:
+    candles = series([(1.0, 1.0, 1.0, 1.0)] * 20)
+    candles[5] = Candle(candles[5].time, 1.0, 5.0, 1.0, 5.0)   # body reaches 5.0
+    view = fit(candles)
+    assert view.y_max >= 5.0
+
+
+def test_fit_leaves_a_volatile_series_alone() -> None:
+    """Wide-ranging pools must keep their full range -- nothing to trim."""
+    candles = series(
+        [(1400 + i * 4, 1420 + i * 4, 1380 + i * 4, 1410 + i * 4) for i in range(200)]
+    )
+    view = fit(candles)
+    assert view.y_min <= min(c.low for c in candles)
+    assert view.y_max >= max(c.high for c in candles)
 
 
 def test_fit_on_an_empty_series_is_usable() -> None:

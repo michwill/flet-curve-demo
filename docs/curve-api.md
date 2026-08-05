@@ -122,6 +122,23 @@ These names differ from v1's hyphenated registry ids (`factory-stable-ng`,
 v2 has none of these. The paths are **top-level, not nested under `/pools/`** —
 `/v1/pools/{chain}/{addr}/ohlc` returns 404.
 
+**`agg_units` accepts exactly `minute`, `hour`, `day`** (schema
+`api__routes__v1__utils__Units`), combined with any `agg_number`. All nine
+candle sizes this app offers were checked against `lp_ohlc` and come back at
+exactly the requested spacing:
+
+| picker | `agg_number` | `agg_units` |
+|---|---|---|
+| 15m / 30m | 15 / 30 | `minute` |
+| 1h / 4h / 6h / 12h | 1 / 4 / 6 / 12 | `hour` |
+| 1d / 7d / 14d | 1 / 7 / 14 | `day` |
+
+⚠️ **The OHLC data contains occasional glitched wicks.** A daily candle for
+`0x4f49…3c85` (Strategic USD Reserves, USDC/USDT) reports `low: 0.024289`
+alongside `open/high/close` all at ~1.0158. Fit a price axis to raw min/max and
+one such candle flattens the entire chart, so clamp against the candle bodies
+rather than trusting the wicks.
+
 ```
 GET /v1/lp_ohlc/{chain}/{address}
     required: start, end       optional: agg_number, agg_units, price_units

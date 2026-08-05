@@ -40,6 +40,53 @@ DEFAULT_MIN_TVL = 10_000.0
 #: Prices data is cached at the edge for ~5 minutes; match it.
 CACHE_TTL = 300.0
 
+#: How many candles to ask for, whatever their size. The window follows from
+#: the candle: 200 x 15m is about two days, 200 x 1d is about seven months.
+#: Curve's own chart works the same way -- you pick the candle, not the span.
+CANDLE_COUNT = 200
+
+
+@dataclass(slots=True, frozen=True)
+class CandleSize:
+    """One entry in the candle-size picker, and its API aggregation.
+
+    `agg_units` is one of `minute`, `hour`, `day` -- the whole enum the
+    Prices API accepts. Every combination below was checked against
+    `lp_ohlc` and returns candles at exactly `seconds` apart.
+    """
+
+    label: str
+    agg_number: int
+    agg_units: str
+    seconds: int
+
+    def window(self, count: int = CANDLE_COUNT) -> int:
+        """How far back to ask, in seconds, for `count` of these candles."""
+        return self.seconds * count
+
+
+CANDLE_SIZES: tuple[CandleSize, ...] = (
+    CandleSize("15m", 15, "minute", 900),
+    CandleSize("30m", 30, "minute", 1800),
+    CandleSize("1h", 1, "hour", 3600),
+    CandleSize("4h", 4, "hour", 14400),
+    CandleSize("6h", 6, "hour", 21600),
+    CandleSize("12h", 12, "hour", 43200),
+    CandleSize("1d", 1, "day", 86400),
+    CandleSize("7d", 7, "day", 604800),
+    CandleSize("14d", 14, "day", 1209600),
+)
+
+#: Matches what Curve's own pool chart opens on.
+DEFAULT_CANDLE_SIZE = "1d"
+
+_SIZES_BY_LABEL = {size.label: size for size in CANDLE_SIZES}
+
+
+def get_candle_size(label: str) -> CandleSize:
+    """Look up a candle size by label, falling back to the default."""
+    return _SIZES_BY_LABEL.get(label, _SIZES_BY_LABEL[DEFAULT_CANDLE_SIZE])
+
 
 @dataclass(slots=True, frozen=True)
 class Candle:
@@ -207,24 +254,23 @@ class CurveApi:
         chain: str,
         pool: str,
         *,
-        days: int = 90,
-        agg_number: int = 1,
-        agg_units: str = "day",
+        size: CandleSize,
+        count: int = CANDLE_COUNT,
         now: int | None = None,
     ) -> list[Candle]:
-        """Candles for the pool's LP token price."""
+        """Candles for the pool's LP token price, at the given candle size."""
         end = int(now if now is not None else time.time())
-        key = f"lp_ohlc:{chain}:{pool}:{days}:{agg_number}{agg_units}"
+        key = f"lp_ohlc:{chain}:{pool}:{size.label}:{count}"
         cached = self._cached(key)
         if cached is not None:
             return cached
         payload = await self._v1(
             f"/lp_ohlc/{chain}/{pool}",
             {
-                "start": end - days * 86400,
+                "start": end - size.window(count),
                 "end": end,
-                "agg_number": agg_number,
-                "agg_units": agg_units,
+                "agg_number": size.agg_number,
+                "agg_units": size.agg_units,
             },
         )
         candles = [Candle.from_api(c) for c in payload.get("data") or []]
@@ -237,9 +283,8 @@ class CurveApi:
         main_token: str,
         reference_token: str,
         *,
-        days: int = 90,
-        agg_number: int = 1,
-        agg_units: str = "day",
+        size: CandleSize,
+        count: int = CANDLE_COUNT,
         now: int | None = None,
     ) -> list[Candle]:
         """Candles for one coin priced in another, within a single pool.
@@ -248,10 +293,7 @@ class CurveApi:
         only says which market to read them from.
         """
         end = int(now if now is not None else time.time())
-        key = (
-            f"ohlc:{chain}:{pool}:{main_token}:{reference_token}"
-            f":{days}:{agg_number}{agg_units}"
-        )
+        key = f"ohlc:{chain}:{pool}:{main_token}:{reference_token}:{size.label}:{count}"
         cached = self._cached(key)
         if cached is not None:
             return cached
@@ -260,10 +302,10 @@ class CurveApi:
             {
                 "main_token": main_token,
                 "reference_token": reference_token,
-                "start": end - days * 86400,
+                "start": end - size.window(count),
                 "end": end,
-                "agg_number": agg_number,
-                "agg_units": agg_units,
+                "agg_number": size.agg_number,
+                "agg_units": size.agg_units,
             },
         )
         candles = [Candle.from_api(c) for c in payload.get("data") or []]

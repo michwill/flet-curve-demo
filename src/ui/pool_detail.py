@@ -12,7 +12,7 @@ from typing import Awaitable, Callable
 
 import flet as ft
 
-from curve.api import CurveApi
+from curve.api import CANDLE_SIZES, DEFAULT_CANDLE_SIZE, CurveApi, get_candle_size
 from curve.format import (
     apr_range,
     compact_usd,
@@ -27,14 +27,6 @@ from curve.pool import PoolContract
 
 from .actions import DepositTab, StakeTab, SwapTab, WithdrawTab
 from .candles import CandleChart
-
-#: (label, days, agg_number, agg_units) for the timeframe picker.
-RANGES: tuple[tuple[str, int, int, str], ...] = (
-    ("7D", 7, 1, "hour"),
-    ("30D", 30, 1, "day"),
-    ("90D", 90, 1, "day"),
-    ("1Y", 365, 1, "day"),
-)
 
 LP_SERIES = "__lp__"
 
@@ -60,7 +52,7 @@ class PoolDetailView(ft.Column):
         self.chart = CandleChart(height=340)
         self.chart_caption = ft.Text("", size=12, color=ft.Colors.ON_SURFACE_VARIANT)
         self.chart_error = ft.Text("", size=11, color=ft.Colors.ERROR)
-        self._range = "90D"
+        self._candle_size = DEFAULT_CANDLE_SIZE
 
         self.series = ft.Dropdown(
             options=self._series_options(),
@@ -77,11 +69,20 @@ class PoolDetailView(ft.Column):
         )
         self._yields_slot = ft.Container(self._yields())
 
-        self.range_buttons = ft.SegmentedButton(
-            segments=[ft.Segment(value=label, label=ft.Text(label)) for label, *_ in RANGES],
-            selected=[self._range],
-            on_change=self._range_changed,
-            allow_multiple_selection=False,
+        # A dropdown rather than a segmented button: nine candle sizes do
+        # not fit as buttons, and it is the control Curve uses for the same
+        # job. You pick the candle, not the window -- the window follows
+        # from it (200 candles of whatever size).
+        self.size_picker = ft.Dropdown(
+            key="candle-size",
+            options=[
+                ft.DropdownOption(key=size.label, text=size.label)
+                for size in CANDLE_SIZES
+            ],
+            value=self._candle_size,
+            width=110,
+            dense=True,
+            on_select=self._size_changed,
         )
 
         super().__init__(
@@ -96,7 +97,7 @@ class PoolDetailView(ft.Column):
                                         [
                                             self.series,
                                             ft.Container(expand=True),
-                                            self.range_buttons,
+                                            self.size_picker,
                                         ],
                                         vertical_alignment=ft.CrossAxisAlignment.CENTER,
                                     ),
@@ -360,16 +361,12 @@ class PoolDetailView(ft.Column):
     def _series_changed(self, _e: ft.ControlEvent) -> None:
         self._page.run_task(self.load_chart)
 
-    def _range_changed(self, e: ft.ControlEvent) -> None:
-        selected = e.control.selected
-        if selected:
-            self._range = next(iter(selected))
+    def _size_changed(self, _e: ft.ControlEvent) -> None:
+        self._candle_size = self.size_picker.value or DEFAULT_CANDLE_SIZE
         self._page.run_task(self.load_chart)
 
     async def load_chart(self) -> None:
-        label, days, agg_number, agg_units = next(
-            r for r in RANGES if r[0] == self._range
-        )
+        size = get_candle_size(self._candle_size)
         self.chart_error.value = ""
         self.chart_caption.value = "Loading…"
         self._page.update()
@@ -378,11 +375,7 @@ class PoolDetailView(ft.Column):
             value = self.series.value or LP_SERIES
             if value == LP_SERIES:
                 candles = await self.api.lp_candles(
-                    self.pool.chain,
-                    self.pool.address,
-                    days=days,
-                    agg_number=agg_number,
-                    agg_units=agg_units,
+                    self.pool.chain, self.pool.address, size=size
                 )
             else:
                 i, j = (int(x) for x in value.split(":"))
@@ -391,9 +384,7 @@ class PoolDetailView(ft.Column):
                     self.pool.address,
                     self.pool.coins[i].address,
                     self.pool.coins[j].address,
-                    days=days,
-                    agg_number=agg_number,
-                    agg_units=agg_units,
+                    size=size,
                 )
         except ApiError as exc:
             self.chart.set_candles([])
@@ -403,7 +394,11 @@ class PoolDetailView(ft.Column):
             return
 
         self.chart.set_candles(candles)
-        self.chart_caption.value = self.chart.summary or f"{len(candles)} candles"
+        self.chart_caption.value = (
+            f"{self.chart.summary}   ·   {len(candles)} x {size.label}"
+            if candles
+            else "No price history for this pair."
+        )
         self._page.update()
 
     async def _load_detail(self) -> None:

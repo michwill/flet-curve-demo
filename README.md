@@ -121,6 +121,11 @@ and a label — which is what canvas is for, unlike the candles, which were not.
   Hover is throttled to 25/s; every event is a round trip into Python, and the
   Qt version throttles for the same reason.
 - **Double-tap** refits the whole series.
+- **Candle size**, not window: 15m / 30m / 1h / 4h / 6h / 12h / 1d / 7d / 14d, the
+  way Curve's own chart does it. The span follows from the candle — 200 of
+  whatever you picked, so 15m is about two days and 1d is about seven months.
+  Every pair maps to a verified `(agg_number, agg_units)` on `lp_ohlc`;
+  `agg_units` accepts only `minute`, `hour`, `day`.
 
 No animation on any of it. A 250ms ease flatters a data swap and is actively
 wrong under direct manipulation: every drag frame sets a new window, so the
@@ -129,6 +134,16 @@ dragging through treacle until the animation came out.
 
 Only the visible window (plus a small margin) is sent to the chart, so a drag
 at 1Y serialises ~20 spots rather than 365.
+
+**One bad wick will set the whole scale.** Strategic USD Reserves has a daily
+candle whose low is `0.024` against a body of `1.0158` — an API glitch, not a
+two-cent trade in a USDC/USDT pool — and fitting the axis to the absolute
+min/max flattened 200 days of history into a line at the top of the chart. The
+price axis is therefore fitted to the candle *bodies* plus any wick within
+`WICK_HEADROOM` (3×) of that range. The rule is relative to how much the series
+actually moves, so a genuine 1.2% dip on the same pool still sets the scale
+while the 97% one does not; a body is never excluded; and the outlier is not
+deleted, just drawn clipped, so panning down still reaches it.
 
 **A candle thinner than a pixel is drawn as nothing.** Not a hairline, not a
 dot — a gap. On a stable pool that is most of them: Strategic USD Reserves over

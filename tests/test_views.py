@@ -20,6 +20,9 @@ Python-side control tree.
 
 from __future__ import annotations
 
+import asyncio
+from types import SimpleNamespace
+
 import flet as ft
 import pytest
 
@@ -28,6 +31,52 @@ from ui.actions import DepositTab, StakeTab, SwapTab, WithdrawTab
 from ui.candles import CandleChart
 from ui.pool_detail import PoolDetailView
 from ui.pool_list import PoolListView, PoolRow
+
+
+class FakeFeed:
+    """Stands in for `curve.api.PoolFeed`, without the network.
+
+    Mirrors the real cursor's contract closely enough to exercise the view:
+    a page at a time, a total, an exhausted flag, and a `reset` that drops
+    everything loaded so far.
+    """
+
+    def __init__(self, pools, page_size: int = 50) -> None:
+        self._all = pools
+        self._page_size = page_size
+        self.pools: list = []
+        self.total: int | None = None
+        self.loading = False
+        self.error = ""
+        self.sort_by = "volume"
+        self.search = ""
+        self.resets = 0
+
+    @property
+    def exhausted(self) -> bool:
+        return self.total is not None and len(self.pools) >= self.total
+
+    @property
+    def loaded(self) -> int:
+        return len(self.pools)
+
+    def reset(self, *, sort_by=None, direction=None, search=None) -> None:
+        if sort_by is not None:
+            self.sort_by = sort_by
+        if search is not None:
+            self.search = search
+        self.pools = []
+        self.total = None
+        self.resets += 1
+
+    async def load_more(self) -> list:
+        if self.exhausted:
+            return []
+        start = len(self.pools)
+        page = self._all[start : start + self._page_size]
+        self.total = len(self._all)
+        self.pools.extend(page)
+        return page
 
 
 class StubPage:
@@ -40,28 +89,39 @@ class StubPage:
     def update(self) -> None:
         self.updates += 1
 
-    def run_task(self, handler, *args) -> None:
+    def run_task(self, handler, *args):
+        """Record the call, and actually run it when there is a loop.
+
+        Sync tests have no running loop, so the coroutine is never even
+        created there -- constructing one only to drop it produces a
+        "never awaited" warning.
+        """
         self.tasks.append(handler)
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return None
+        return asyncio.ensure_future(handler(*args))
 
 
-def make_pool(n_coins: int = 2, *, registry: str = "factory-crvusd", gauge: str = "0xg") -> Pool:
-    return Pool.from_api(
+def make_pool(n_coins: int = 2, *, registry: str = "crvusd", gauge: str = "0xg") -> Pool:
+    return Pool.from_v2(
         {
             "address": "0x" + "1" * 40,
             "name": "Curve.fi Test",
-            "symbol": "TEST",
-            "registryId": registry,
-            "gaugeAddress": gauge,
-            "gaugeCrvApy": [2.93, 7.32],
-            "gaugeRewards": [{"symbol": "OP", "apy": 1.2, "tokenAddress": "0x" + "2" * 40}],
-            "usdTotal": 47_490_000.0,
+            "pool_type": registry,
+            "gauges": [{"address": gauge, "is_killed": False}] if gauge else [],
+            "crv_apr": 2.93,
+            "crv_apr_boosted": 7.32,
+            "extra_rewards_apr": [{"symbol": "OP", "apr": 1.2, "address": "0x" + "2" * 40}],
+            "tvl_usd": 47_490_000.0,
             "coins": [
                 {
+                    "pool_index": i,
                     "symbol": f"C{i}",
                     "address": "0x" + f"{i:02x}" * 20,
-                    "decimals": "18",
-                    "usdPrice": 1.0,
-                    "poolBalance": str(10**21),
+                    "decimals": 18,
+                    "usd_price": 1.0,
                 }
                 for i in range(n_coins)
             ],
@@ -72,28 +132,68 @@ def make_pool(n_coins: int = 2, *, registry: str = "factory-crvusd", gauge: str 
 # -- list ------------------------------------------------------------------
 
 
-def test_pool_list_builds_and_sorts_without_a_page() -> None:
-    view = PoolListView(on_open=lambda _p: None)
-    pools = [make_pool(), make_pool(3)]
-    view.set_pools(pools)
-    assert len(view.rows.controls) == 2
-    assert "2 pools" in view.count_label.value
+def test_pool_list_builds_and_attaches_a_feed() -> None:
+    view = PoolListView(StubPage(), on_open=lambda _p: None)
+    assert view.feed is None
+    view.attach(FakeFeed([make_pool(), make_pool(3)]))
+    assert view.rows.controls == []  # nothing until a page is pulled
 
 
-def test_pool_row_builds_for_every_shape_of_rewards() -> None:
-    for pool in (
-        make_pool(),  # CRV + one incentive
-        Pool.from_api({"address": "0x1", "coins": [{"symbol": "A"}]}),  # nothing
-    ):
-        assert PoolRow(pool, on_open=lambda _p: None) is not None
+async def test_pool_list_appends_pages_as_they_load() -> None:
+    view = PoolListView(StubPage(), on_open=lambda _p: None)
+    feed = FakeFeed([make_pool() for _ in range(7)], page_size=3)
+    view.attach(feed)
+
+    await view.load_more()
+    assert len(view.rows.controls) == 3
+    assert "3 of 7 pools" in view.count_label.value
+
+    await view.load_more()
+    await view.load_more()
+    assert len(view.rows.controls) == 7
+    assert view.count_label.value == "7 pools"
+
+    # Exhausted: further calls are harmless no-ops.
+    await view.load_more()
+    assert len(view.rows.controls) == 7
 
 
-def test_switching_sort_rebuilds_the_rows() -> None:
-    view = PoolListView(on_open=lambda _p: None)
-    view.set_pools([make_pool(), make_pool(3)])
-    for key in ("volume", "tvl", "incentives", "base"):
-        view._sort_by(key)
-        assert len(view.rows.controls) == 2
+async def test_scroll_near_the_end_is_what_triggers_a_page() -> None:
+    """The whole point of paging: rows arrive because the list scrolled."""
+    view = PoolListView(StubPage(), on_open=lambda _p: None)
+    view.attach(FakeFeed([make_pool() for _ in range(6)], page_size=3))
+    await view.load_more()
+    assert len(view.rows.controls) == 3
+
+    far = SimpleNamespace(pixels=0.0, max_scroll_extent=99_999.0)
+    view._scrolled(far)
+    assert len(view.rows.controls) == 3  # nowhere near the end; no fetch
+
+    near = SimpleNamespace(pixels=99_000.0, max_scroll_extent=99_100.0)
+    view._scrolled(near)
+    await asyncio.sleep(0)
+    assert len(view.rows.controls) == 6
+
+
+def test_sorting_resets_the_feed_rather_than_reordering_in_place() -> None:
+    """A client cannot sort what it has not fully loaded, so the server does."""
+    view = PoolListView(StubPage(), on_open=lambda _p: None)
+    feed = FakeFeed([make_pool() for _ in range(4)], page_size=2)
+    view.attach(feed)
+    view.rows.controls = [object(), object()]
+
+    view._sort_by("tvl")
+    assert feed.sort_by == "tvl"       # mapped to the v2 field name
+    assert feed.resets == 1
+    assert view.rows.controls == []    # cleared, awaiting page 1 of the new order
+
+
+def test_sorting_by_the_active_column_is_a_no_op() -> None:
+    view = PoolListView(StubPage(), on_open=lambda _p: None)
+    feed = FakeFeed([make_pool()])
+    view.attach(feed)
+    view._sort_by("volume")  # already the default
+    assert feed.resets == 0
 
 
 # -- detail ----------------------------------------------------------------

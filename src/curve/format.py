@@ -88,3 +88,17 @@ def units_to_float(value: int, decimals: int) -> float:
 
 def short_address(address: str) -> str:
     return f"{address[:6]}…{address[-4:]}" if len(address) > 12 else address
+
+
+def price(value: float) -> str:
+    """A coin's USD price, with enough precision to be useful.
+
+    Trailing zeros are trimmed, but never the decimal point with them --
+    naive rstrip turns $1.00000 into "$1." rather than "$1".
+    """
+    if not value:
+        return "-"
+    if abs(value) >= 1000:
+        return f"${value:,.2f}"
+    text = f"{value:,.5f}".rstrip("0").rstrip(".")
+    return f"${text}"

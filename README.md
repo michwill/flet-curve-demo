@@ -26,16 +26,16 @@ EIP-1193 seam and the browser bridge work; this one covers what was added on top
 
 ```
 src/curve/     no Flet anywhere in it — pure logic, directly testable
-    api.py         the two Curve APIs, with a 5-minute cache
+    api.py         Prices v2 (pools) + v1 (charts), and the paging cursor
     models.py      Pool/Coin/Incentive, and parsing the API's shapes
-    sort.py        the list's ordering and search rules
+    sort.py        column -> the v2 sort field it maps to
     format.py      numbers -> the strings a dense table can show
     abi.py         calldata for the pool contracts
     pool.py        those calls, bound to a connected wallet
     http.py        the browser/desktop fetch seam
 
 src/ui/        Flet controls. Imports curve/, never the reverse.
-    pool_list.py   search, sortable columns, virtualised rows
+    pool_list.py   search, sortable columns, scroll-driven paging
     pool_detail.py chart + composition + yields + actions
     actions.py     deposit / withdraw / swap / stake
     candles.py     a candlestick chart drawn on flet.canvas
@@ -49,21 +49,48 @@ pytest and no display, no Flutter, and no browser.
 
 ## Reading Curve
 
-Two public APIs, no keys. The full survey is in
+Public APIs, no keys. Pool data comes from the **Prices API v2**; charts from
+**v1**, which is the only one with OHLC. The full survey is in
 [`docs/curve-api.md`](docs/curve-api.md); the parts that shape the code:
 
-- **`getPools` carries no volume and no base APY** — only gauge CRV APR. The list
-  view is `getPools/big/{chain}` joined to `getVolumes/{chain}` on lowercased
-  address. Measured 382/382 on Ethereum.
-- **`big` rather than `all`**: 794 KB versus 4.7 MB, and the difference is all
-  dead pools.
-- Charts come from the *other* host, `prices.curve.finance`, whose time-series
-  paths are top-level (`/v1/lp_ohlc/…`, `/v1/ohlc/…`) rather than under `/pools/`.
-- Both hosts send `access-control-allow-origin: *`, so the browser build needs no
-  proxy.
-- **The API 403s the default `Python-urllib/*` User-Agent.** `requests`/`aiohttp`
-  are unaffected, but the desktop transport here *is* urllib, so every request
-  sets a name of its own.
+- **v2 returns everything about a pool in one object** — TVL, volume, base APR,
+  the CRV boost range, reward tokens and merkle rewards. The older main API split
+  those across `getPools` and `getVolumes` and needed a join by address; v2 is
+  also ~4× smaller (351 KB against 1.3 MB for Ethereum) and adds `merkle_apr`,
+  which v1 had no equivalent for.
+- **`pagination` is capped at 50**, and there is no "give me everything" call.
+  That one limit is why the list is a paged cursor and why the ordering moved
+  server-side — see below.
+- **The list endpoint omits `lp_token_address`, the reserves and per-coin
+  prices**, so opening a pool costs one more request. Without it there is nothing
+  to withdraw or stake.
+- **`gauges` has two shapes**: objects with a kill flag on the list endpoint,
+  bare strings on the detail endpoint.
+- v2 covers **12 chains against v1's 21**. All six offered here are in the twelve;
+  anything outside needs v1.
+- Every host sends `access-control-allow-origin: *`, so the browser build needs
+  no proxy.
+- **The v1 main API 403s the default `Python-urllib/*` User-Agent.**
+  `requests`/`aiohttp` are unaffected, but the desktop transport here *is*
+  urllib, so every request sets a name of its own.
+
+### Paging, and why sorting is the server's job
+
+The 50-row cap left two options: pull every page before painting anything (eight
+requests for Ethereum), or page as the list scrolls. This does the second — the
+first page appears after one request and the rest arrive as they are needed.
+
+The consequence is that ordering cannot be done on the client, because a client
+cannot sort a list it has not fully loaded. So changing the sort or the search
+resets the cursor and asks the server again. That is a round trip per sort, and
+in exchange the top of the list is always the true top rather than the top of
+whatever happened to be in memory. Search is debounced and sent as
+`search_string`, so it covers the whole chain rather than the rows on screen.
+
+`curve/sort.py` maps each column to a v2 `sort_by` field. "Incentives" maps to
+`aggregate_apr`, the API's combined base + CRV + tokens + merkle figure — there
+is no rewards-without-base field, and the difference is immaterial when base APR
+is low single digits and incentive APRs run to hundreds of percent.
 
 ## Talking to the pools
 
@@ -73,7 +100,7 @@ five fixed signatures; Curve's depend on the pool:
 
 | | StableSwap | CryptoSwap |
 |---|---|---|
-| registries | `main`, `factory`, `factory-crvusd`, `factory-stable-ng` | `crypto`, `factory-crypto`, `factory-twocrypto`, `factory-tricrypto` |
+| `pool_type` (v2) | `main`, `factory`, `crvusd`, `stableswapng` | `crypto`, `factory_crypto`, `factory_tricrypto`, `twocryptong` |
 | coin index type | `int128` | `uint256` |
 | `exchange` selector | `0x3df02124` | different |
 
@@ -97,37 +124,66 @@ Two smaller decisions worth stating: approvals are for the **exact amount**, not
 `MAX_UINT256`; and gas and nonce are never set, because every wallet in scope
 fills them in and knows the chain better than this app does.
 
-## Off-screen testing in Flet
+## Testing
 
-Short answer: **yes for the logic, and yes for building the control tree — but
-Flet's own UI-driving tests need the Flutter SDK.**
-
-Flet 0.86 ships a real integration-testing framework: `flet/testing/`, a
-`flet_app` pytest fixture, and a `Tester` with `find_by_key`, `tap`,
-`enter_text`, `pump_and_settle` and screenshot comparison. It drives a real app.
-Both of its modes need a Flutter *test host* directory — device mode provisions
-one via `flet-cli` (needs the Flutter SDK), host mode wants
-`FLET_TEST_FLUTTER_APP_DIR` pointing at one already built. There is no
-in-process, SDK-free renderer.
-
-So this project takes the two layers that need nothing:
+Three layers, and the first two need nothing at all:
 
 ```bash
-.venv/bin/python -m pytest tests/ -q      # 105 tests, ~0.4s, no display
+.venv/bin/python -m pytest tests/ -q                      # 118 tests, ~0.5s
+.venv/bin/python -m pytest tests/integration -m flet_ui   # 6 tests, ~25s each
 ```
 
-1. **Logic tests** — `curve/` imports no Flet, so its ABI encoding, parsing,
-   sorting, searching and formatting test as ordinary Python. `test_pool.py`
-   drives `PoolContract` against a fake EIP-1193 provider that records calldata
-   and answers from a script, which covers the transactions without a wallet.
-2. **Constructor tests** — `test_views.py` builds every view with a stub page.
-   Flet validates control arguments in `__init__`, so this catches the entire
-   class of "wrong keyword for this Flet version" bug in 0.4 seconds. It found
-   two real ones (below) that otherwise only appeared on the second click of a
-   published build.
+**1. Logic tests.** `curve/` imports no Flet, so its ABI encoding, parsing,
+sorting and formatting test as ordinary Python. `test_pool.py` drives
+`PoolContract` against a fake EIP-1193 provider that records calldata and answers
+from a script, covering every transaction without a wallet. `test_feed.py` covers
+the paging cursor, including the race where a page arrives after the query
+changed and must be discarded rather than appended to a different sort.
 
-What that does *not* cover is layout, hit-testing and paint — and one bug below
-lived exactly there, so a browser pass is still worth doing before shipping.
+**2. Constructor tests.** `test_views.py` builds every view against a stub page.
+Flet validates control arguments in `__init__`, so this catches the whole class of
+"wrong keyword for this Flet version" bug in half a second — it found
+`on_scroll_interval` (it is `scroll_interval`) and `ft.Tab(content=…)` immediately.
+What it cannot see is layout, hit-testing or paint.
+
+**3. UI tests — `flet.testing`.** These start the real app and drive it:
+`find_by_key`, `tap`, `enter_text`, `pump_and_settle`, screenshots. They are
+marked `flet_ui` and excluded from the default run.
+
+> An earlier version of this README claimed these needed a pre-installed Flutter
+> SDK. **That was wrong.** `flet-cli` downloads and provisions Flutter itself (to
+> `~/flutter/`) on first use. Budget ~5 minutes for that first run; warm runs are
+> ~25s per test.
+
+They earn their keep: every bug in this project so far has lived in exactly the
+layer only they can reach.
+
+- A `TextButton` column heading that hovered correctly but never fired
+  `on_click` in a published build — no exception, the event simply never arrived.
+- `ft.Tab(content=…)`, which blew up only when a pool page was opened.
+- **`ft.TabBarView(height=520)` raised a widget exception in a Flutter debug
+  build.** The browser release build rendered it perfectly, so nothing but this
+  suite was ever going to catch it. Sizing the view by `expand` inside an
+  expanded `Column` fixes it. Bisecting to that took a while — the first two
+  suspects (the composition `DataTable`, the fixed-width action panel) were both
+  wrong, though replacing the table with plain Rows did fix a real `$1.`
+  formatting bug on the way past.
+
+Two limits worth knowing before adding to `tests/integration/`:
+
+- In device mode (the default) `flet_app.tester` is a `RemoteTester`, whose API
+  is a **subset** of `Tester` — `find`/`tap`/`enter_text`/`take_screenshot` are
+  there, **`drag` is not**. So scrolling cannot be driven from a UI test, and the
+  scroll-triggered paging is covered by a unit test plus a manual browser pass
+  instead.
+- `pump_and_settle` returns when animations stop, which is long before a network
+  call answers. Every wait in that file is a polling loop.
+
+`tests/integration/conftest.py` raises `FletTestApp`'s output cap, because the
+default 256 KB keeps only a tail of the Flutter process's very chatty debug log —
+and the exception that actually failed the test scrolls off it, leaving nothing
+but `Test failed. See exception logs above.` Set `FLET_TEST_VERBOSE=1` to stream
+it live instead.
 
 ## Flet 0.86 notes
 
@@ -141,7 +197,13 @@ flet-pay-example's README:
   a pure function of `(candles, width, height)`.
 - **`Tabs` was restructured.** `ft.Tab` no longer takes `content` — it is only the
   button. The container is `Tabs(length=N, content=…)` holding a `TabBar` of
-  `Tab`s and a `TabBarView` of bodies, and `length` must match both.
+  `Tab`s and a `TabBarView` of bodies, and `length` must match both. Size the
+  `TabBarView` with `expand`, not a fixed `height`: a fixed height raises a
+  widget exception in a Flutter debug build while rendering fine on web.
+- **`ListView` uses `scroll_interval`, not `on_scroll_interval`**, and it
+  virtualises — only the rows currently on screen exist in the widget tree, so
+  `find_by_key` cannot see a row that has scrolled out of view.
+- **`Container` has no `scroll`**; wrap the child in a `Column` that does.
 - **`control.page` raises `RuntimeError` when the control is not mounted**, rather
   than returning `None`. So `if self.page: self.update()` raises the very error it
   looks like it is guarding. There is no public `is_mounted`; `ui.safe_update()`
@@ -162,16 +224,21 @@ flet-pay-example's README:
   stable pool ranging over 1.0268–1.0271 prints "1.027" three times at four
   decimals.
 - `SegmentedButton.selected` is a `list[str]`, not a set.
+- `page.run_task` wants a coroutine *function* plus its arguments; hand it a bare
+  coroutine object and it raises `TypeError`.
+- `DataTable` sizes itself from its content and will not shrink, so it overflows
+  a narrow parent. Plain `Row`s with fixed-width `Container` cells flex down.
 - `flet publish src/main.py` writes to **`src/dist`**, not `./dist`.
 
 ## What was verified
 
 Not claims — these were run:
 
-- **The API client against the live endpoints**: 382 Ethereum pools loaded and
-  joined, all four sorts, search, chain totals, and both candle series
-  (`lp_ohlc` and `ohlc`). Numbers match Curve's own UI — 3pool at $159.98m TVL,
-  crv2pool's CRV range at 1.57%→3.92% against Curve's 1.57%→3.91%.
+- **The API client against the live endpoints**: 385 Ethereum pools over the TVL
+  floor, all four server-side sorts, paging to 150 rows, search, the detail
+  endpoint, chain totals, and both candle series (`lp_ohlc` and `ohlc`). Numbers
+  match Curve's own UI — 3pool at $160.0m TVL, crv2pool's CRV range at
+  1.56%→3.90% against Curve's 1.57%→3.91%.
 - **The calldata against a mainnet node**, before it was wired to anything:
   `get_dy` (both index widths), `calc_token_amount` (both spellings) and
   `calc_withdraw_one_coin`, plus the confirmation that a wrong-width `get_dy`
@@ -179,11 +246,12 @@ Not claims — these were run:
 - **All twelve function selectors** against the values deployed on 3pool and
   tricrypto2.
 - **The browser build driven in Chrome**: Pyodide boots, `pyfetch` reaches both
-  APIs, the pool list renders 382 rows, sorting by incentives and by TVL both
-  reorder correctly, a pool opens onto a live candlestick chart, the timeframe
-  buttons re-fetch, and the Deposit/Withdraw/Swap/Stake tabs all render with
-  their controls correctly disabled while no wallet is connected.
-- **105 unit tests**, no display and no Flutter.
+  APIs, the list renders and reorders, scrolling to the end pulled pages 2-5
+  ("250 of 385 pools"), a pool opens onto a live candlestick chart, the
+  timeframe buttons re-fetch, and all four action tabs render with their
+  controls correctly disabled while no wallet is connected.
+- **118 unit tests** with no display and no Flutter, plus **6 UI tests** driving
+  the real app through Flet's own framework.
 
 Not yet exercised: a signed transaction. The read path, the encoding and the
 approve/submit gating are all verified, but nothing here has been broadcast from

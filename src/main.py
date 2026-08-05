@@ -22,14 +22,16 @@ import asyncio
 import flet as ft
 
 from curve import ApiError, CurveApi, Pool, PoolContract
+from curve.api import PoolFeed
 from curve.format import compact_usd
 from ui.pool_detail import PoolDetailView
 from ui.pool_list import PoolListView
 from wallet import Wallet, WalletChoice, WalletError, autoconnect, is_browser
 
 DEFAULT_CHAIN = "ethereum"
-#: Chains worth offering first. The rest are appended from `getPlatforms`,
-#: which is authoritative -- see docs/curve-api.md.
+#: Shown first in the picker; anything else the API reports is appended.
+#: v2 covers 12 chains against v1's 21 -- see docs/curve-api.md -- so the
+#: real list is read from `/pools/chains/` rather than hardcoded.
 PREFERRED_CHAINS = ("ethereum", "arbitrum", "base", "optimism", "polygon", "fraxtal")
 
 
@@ -39,7 +41,8 @@ class CurveApp:
         self.api = CurveApi()
         self.wallet: Wallet | None = None
         self.chain = DEFAULT_CHAIN
-        self.pools: list[Pool] = []
+        self.chains: dict[str, int] = {}
+        self.feed: PoolFeed | None = None
         self._detail: PoolDetailView | None = None
 
         self._build()
@@ -62,6 +65,7 @@ class CurveApp:
 
         self.chain_picker = ft.Dropdown(
             options=[ft.DropdownOption(key=c, text=c) for c in PREFERRED_CHAINS],
+            # Replaced by the API's own list once `load_pools` has run.
             value=self.chain,
             width=150,
             dense=True,
@@ -100,7 +104,7 @@ class CurveApp:
             bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
         )
 
-        self.list_view = PoolListView(on_open=self.open_pool)
+        self.list_view = PoolListView(page, on_open=self.open_pool)
         self.progress = ft.ProgressBar(visible=False)
         self.error = ft.Text("", size=12, color=ft.Colors.ERROR, visible=False)
         # One slot that holds either the list or a detail page. Simpler than
@@ -141,12 +145,27 @@ class CurveApp:
         self.page.run_task(self.load_pools)
 
     async def load_pools(self) -> None:
+        """Point the list at a fresh feed for the current chain.
+
+        Only the first page is fetched here; the rest arrive as the list
+        scrolls. See `curve.api.PoolFeed` for why paging beat loading
+        everything up front.
+        """
         self.progress.visible = True
         self.error.visible = False
         self.page.update()
         try:
-            self.pools = await self.api.pools(self.chain)
-            totals = await self.api.chain_totals(self.chain)
+            if not self.chains:
+                self.chains = await self.api.chains()
+                self._sync_chain_options()
+            chain_id = self.chains.get(self.chain)
+            if chain_id is None:
+                raise ApiError(f"Curve's v2 API does not cover {self.chain}.")
+            self.feed = PoolFeed(self.api, self.chain, chain_id)
+            self.list_view.attach(self.feed)
+            self.page.update()
+            await self.list_view.load_more()
+            totals = await self.api.chain_totals(chain_id)
         except ApiError as exc:
             self.error.value = str(exc)
             self.error.visible = True
@@ -154,14 +173,23 @@ class CurveApp:
             self.page.update()
             return
 
-        self.list_view.set_pools(self.pools)
-        tvl = sum(p.tvl for p in self.pools)
         self.totals.value = (
-            f"TVL {compact_usd(tvl)}   ·   24h volume {compact_usd(totals['volume'])}"
-            f"   ·   crypto share {totals['crypto_share']:.2f}%"
+            f"TVL {compact_usd(totals['tvl'])}"
+            f"   ·   24h volume {compact_usd(totals['volume'])}"
         )
         self.progress.visible = False
         self.page.update()
+
+    def _sync_chain_options(self) -> None:
+        """Offer every chain the API reports, preferred ones first."""
+        known = list(self.chains)
+        ordered = [c for c in PREFERRED_CHAINS if c in known] + sorted(
+            c for c in known if c not in PREFERRED_CHAINS
+        )
+        self.chain_picker.options = [ft.DropdownOption(key=c, text=c) for c in ordered]
+        if self.chain not in known and ordered:
+            self.chain = ordered[0]
+            self.chain_picker.value = self.chain
 
     # -- navigation -------------------------------------------------------
 

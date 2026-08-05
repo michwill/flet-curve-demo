@@ -8,19 +8,22 @@ from curve.sort import DEFAULT_SORT, get_sort, search_pools, sort_pools
 
 
 def make_pool(**kwargs) -> Pool:
+    crv = kwargs.pop("crv", [0.0, 0.0])
     raw = {
         "address": kwargs.pop("address", "0x" + "1" * 40),
-        "name": kwargs.pop("name", "Test Pool"),
-        "symbol": kwargs.pop("symbol", "TEST"),
-        "registryId": kwargs.pop("registry", "main"),
-        "gaugeCrvApy": kwargs.pop("crv", [0.0, 0.0]),
-        "gaugeRewards": kwargs.pop("rewards", []),
-        "usdTotal": kwargs.pop("tvl", 0.0),
-        "coins": kwargs.pop("coins", [{"symbol": "USDC", "address": "0xa0b8", "decimals": "6"}]),
+        "name": kwargs.pop("name", kwargs.get("symbol", "Test Pool")),
+        "pool_type": kwargs.pop("registry", "main"),
+        "crv_apr": crv[0],
+        "crv_apr_boosted": crv[1],
+        "extra_rewards_apr": kwargs.pop("rewards", []),
+        "merkle_apr": kwargs.pop("merkle", 0.0),
+        "tvl_usd": kwargs.pop("tvl", 0.0),
+        "trading_volume_24h": kwargs.pop("volume", 0.0),
+        "base_weekly_apr": kwargs.pop("base", 0.0),
+        "coins": kwargs.pop("coins", [{"symbol": "USDC", "address": "0xa0b8", "decimals": 6}]),
     }
-    pool = Pool.from_api(raw)
-    pool.volume_24h = kwargs.pop("volume", 0.0)
-    pool.base_apr = kwargs.pop("base", 0.0)
+    pool = Pool.from_v2(raw)
+    pool.name = kwargs.pop("symbol", pool.name)
     return pool
 
 
@@ -40,16 +43,16 @@ def test_sorts_descending_by_each_column() -> None:
     a = make_pool(symbol="A", volume=100, tvl=1, crv=[0, 1], base=9)
     b = make_pool(symbol="B", volume=1, tvl=100, crv=[0, 9], base=1)
     pools = [a, b]
-    assert [p.symbol for p in sort_pools(pools, "volume")] == ["A", "B"]
-    assert [p.symbol for p in sort_pools(pools, "tvl")] == ["B", "A"]
-    assert [p.symbol for p in sort_pools(pools, "incentives")] == ["B", "A"]
-    assert [p.symbol for p in sort_pools(pools, "base")] == ["A", "B"]
+    assert [p.name for p in sort_pools(pools, "volume")] == ["A", "B"]
+    assert [p.name for p in sort_pools(pools, "tvl")] == ["B", "A"]
+    assert [p.name for p in sort_pools(pools, "incentives")] == ["B", "A"]
+    assert [p.name for p in sort_pools(pools, "base")] == ["A", "B"]
 
 
 def test_incentives_sort_counts_crv_and_reward_tokens() -> None:
     crv_only = make_pool(symbol="CRVONLY", crv=[0, 5])
-    mixed = make_pool(symbol="MIXED", crv=[0, 2], rewards=[{"symbol": "OP", "apy": 4.0}])
-    assert [p.symbol for p in sort_pools([crv_only, mixed], "incentives")] == [
+    mixed = make_pool(symbol="MIXED", crv=[0, 2], rewards=[{"symbol": "OP", "apr": 4.0}])
+    assert [p.name for p in sort_pools([crv_only, mixed], "incentives")] == [
         "MIXED",
         "CRVONLY",
     ]
@@ -82,11 +85,10 @@ def test_sorting_does_not_mutate_the_input() -> None:
 
 def test_search_matches_name_symbol_and_coin() -> None:
     pool = make_pool(
-        symbol="3Crv",
         name="Curve.fi DAI/USDC/USDT",
-        coins=[{"symbol": "DAI", "address": "0x6B17", "decimals": "18"}],
+        coins=[{"symbol": "DAI", "address": "0x6B17", "decimals": 18}],
     )
-    for query in ("3crv", "CURVE.FI", "dai", "0x6b17"):
+    for query in ("dai/usdc", "CURVE.FI", "dai", "0x6b17"):
         assert search_pools([pool], query) == [pool]
 
 
@@ -102,7 +104,7 @@ def test_empty_query_returns_everything() -> None:
 
 
 def test_search_that_matches_nothing_returns_empty() -> None:
-    assert search_pools([make_pool(symbol="3Crv")], "zzz") == []
+    assert search_pools([make_pool(name="3Crv")], "zzz") == []
 
 
 # -- formatting ------------------------------------------------------------

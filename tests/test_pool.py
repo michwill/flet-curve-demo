@@ -54,16 +54,16 @@ class FakeProvider(WalletProvider):
         raise AssertionError(f"unexpected method {method}")
 
 
-def make_pool(registry: str = "factory-crvusd", *, gauge: str = GAUGE) -> Pool:
-    return Pool.from_api(
+def make_pool(registry: str = "crvusd", *, gauge: str = GAUGE) -> Pool:
+    return Pool.from_v2(
         {
             "address": POOL_ADDRESS,
-            "registryId": registry,
-            "lpTokenAddress": LP_TOKEN,
-            "gaugeAddress": gauge,
+            "pool_type": registry,
+            "lp_token_address": LP_TOKEN,
+            "gauges": [{"address": gauge, "is_killed": False}] if gauge else [],
             "coins": [
-                {"symbol": "USDT", "address": "0x" + "aa" * 20, "decimals": "6"},
-                {"symbol": "crvUSD", "address": "0x" + "bb" * 20, "decimals": "18"},
+                {"symbol": "USDT", "address": "0x" + "aa" * 20, "decimals": 6},
+                {"symbol": "crvUSD", "address": "0x" + "bb" * 20, "decimals": 18},
             ],
         }
     )
@@ -109,7 +109,7 @@ async def test_rpc_errors_become_pool_errors() -> None:
 async def test_get_dy_uses_the_stableswap_selector_for_a_stable_pool() -> None:
     provider = FakeProvider()
     provider.default = word(999)
-    await contract(provider, make_pool("factory-crvusd")).get_dy(0, 1, 1000)
+    await contract(provider, make_pool("crvusd")).get_dy(0, 1, 1000)
     to, data = provider.calls[-1]
     assert to == POOL_ADDRESS
     assert data.startswith("0x" + abi.selector("get_dy(int128,int128,uint256)"))
@@ -118,7 +118,7 @@ async def test_get_dy_uses_the_stableswap_selector_for_a_stable_pool() -> None:
 async def test_get_dy_uses_the_crypto_selector_for_a_crypto_pool() -> None:
     provider = FakeProvider()
     provider.default = word(999)
-    await contract(provider, make_pool("factory-twocrypto")).get_dy(0, 1, 1000)
+    await contract(provider, make_pool("twocryptong")).get_dy(0, 1, 1000)
     _, data = provider.calls[-1]
     assert data.startswith("0x" + abi.selector("get_dy(uint256,uint256,uint256)"))
 

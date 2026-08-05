@@ -1,78 +1,105 @@
 #!/usr/bin/env python3
-"""Fetch and rank Curve pools by TVL, joining volume/APY onto pool metadata.
+"""Fetch and rank Curve pools using the Prices API v2.
 
 Dependency-free reference implementation of the approach described in
-docs/curve-api.md. Run with:  python3 docs/examples/fetch_pools.py [chain]
+docs/curve-api.md. Run with:
 
-Note the User-Agent header: the API 403s the default `Python-urllib/*` agent.
+    python3 docs/examples/fetch_pools.py [chain] [sort]
+
+    sort: volume (default) | tvl | aggregate_apr | base_daily_apr
+
+Two things this demonstrates that the v1 client did not have to:
+
+  * `pagination` is capped at 50, so "all pools" is a paging loop;
+  * ordering is done by the server, because a client cannot sort a list it
+    has not fully loaded.
 """
 
 import json
 import sys
 import urllib.request
 
-API = "https://api.curve.finance/v1"
+API = "https://prices.curve.finance/v2"
 HEADERS = {"User-Agent": "flet-curve/0.1"}
 
+#: The v2 hard cap; larger values are rejected with a 422.
+MAX_PAGE_SIZE = 50
+#: Below this the list is mostly abandoned factory pools with no liquidity.
+MIN_TVL = 10_000
 
-def get(path):
-    req = urllib.request.Request(API + path, headers=HEADERS)
+
+def get(path, **params):
+    url = API + path
+    if params:
+        url += "?" + urllib.parse.urlencode(params)
+    req = urllib.request.Request(url, headers=HEADERS)
     with urllib.request.urlopen(req, timeout=60) as resp:
-        payload = json.load(resp)
-    if not payload.get("success"):
-        raise RuntimeError(f"API returned success=false for {path}")
-    return payload["data"]
+        return json.load(resp)
 
 
-def load_pools(chain="ethereum"):
-    """Return pools with TVL >= $10k, enriched with 24h volume and base APY."""
-    pools = get(f"/getPools/big/{chain}")["poolData"]
-    volumes = get(f"/getVolumes/{chain}")["pools"]
-    by_address = {v["address"].lower(): v for v in volumes}
+def chain_id(name):
+    for entry in get("/pools/chains/")["data"]:
+        if entry["name"] == name:
+            return entry["chain_id"]
+    raise SystemExit(f"v2 does not cover {name!r}; it has 12 chains, v1 has 21")
 
-    rows = []
-    for pool in pools:
-        if pool.get("isBroken"):
-            continue
-        vol = by_address.get(pool["address"].lower(), {})
-        crv_apy = pool.get("gaugeCrvApy") or [0, 0]
-        rows.append(
-            {
-                "address": pool["address"],
-                "symbol": pool.get("symbol") or pool["name"],
-                "registry": pool.get("registryId"),
-                "coins": [c["symbol"] for c in pool["coins"]],
-                "tvl": pool.get("usdTotal") or 0,
-                "volume_24h": vol.get("volumeUSD") or 0,
-                "base_apy": vol.get("latestWeeklyApyPcent") or 0,
-                "crv_apy": (crv_apy[0] or 0, crv_apy[1] or 0),
-                "rewards": [r.get("symbol") for r in pool.get("gaugeRewards") or []],
-            }
+
+def pools(chain, sort_by="volume", limit=None):
+    """Page through the list until `limit` rows, or everything matching."""
+    cid = chain_id(chain)
+    out, page, total = [], 1, None
+    while total is None or len(out) < (limit or total):
+        payload = get(
+            "/pools/",
+            chain_id=cid,
+            page=page,
+            pagination=MAX_PAGE_SIZE,
+            sort_by=sort_by,
+            sort_direction="desc",
+            min_tvl=MIN_TVL,
         )
-    rows.sort(key=lambda r: -r["tvl"])
-    return rows
+        total = payload["count"]
+        batch = payload["pools"]
+        if not batch:
+            break
+        out.extend(batch)
+        page += 1
+    return out[:limit] if limit else out, total
+
+
+def compact(value):
+    for cut, suffix in ((1e9, "b"), (1e6, "m"), (1e3, "k")):
+        if abs(value) >= cut:
+            return f"${value / cut:.2f}{suffix}"
+    return f"${value:.2f}"
 
 
 def main():
     chain = sys.argv[1] if len(sys.argv) > 1 else "ethereum"
-    rows = load_pools(chain)
-    total = sum(r["tvl"] for r in rows)
-    print(f"{chain}: {len(rows)} pools >= $10k TVL, ${total:,.0f} total\n")
+    sort_by = sys.argv[2] if len(sys.argv) > 2 else "volume"
 
-    header = (
-        f'{"SYMBOL":<16}{"REGISTRY":<20}{"COINS":<26}'
-        f'{"TVL":>14}{"VOL 24H":>13}{"BASE%":>7}{"CRV% min-max":>16}  REWARDS'
+    rows, total = pools(chain, sort_by, limit=20)
+    print(f"{chain}: {total} pools over ${MIN_TVL:,} TVL, sorted by {sort_by}\n")
+    print(
+        f'{"POOL":<30}{"COINS":<26}{"TVL":>13}{"VOL 24H":>13}'
+        f'{"BASE%":>8}{"CRV% min-max":>17}  REWARDS'
     )
-    print(header)
-    for r in rows[:20]:
-        lo, hi = r["crv_apy"]
+    for p in rows:
+        coins = "/".join(c["symbol"] for c in p["coins"])
+        rewards = [
+            f'{r["apr"]:.1f}% {r["symbol"]}' for r in p.get("extra_rewards_apr") or []
+        ]
+        if p.get("merkle_apr"):
+            rewards.append(f'{p["merkle_apr"]:.1f}% merkle')
         print(
-            f'{r["symbol"][:15]:<16}{(r["registry"] or "")[:19]:<20}'
-            f'{"/".join(r["coins"])[:25]:<26}'
-            f'{r["tvl"]:>14,.0f}{r["volume_24h"]:>13,.0f}{r["base_apy"]:>7.2f}'
-            f'{lo:>8.2f}-{hi:<7.2f}  {",".join(r["rewards"])}'
+            f'{p["name"][:29]:<30}{coins[:25]:<26}'
+            f'{compact(p["tvl_usd"]):>13}{compact(p["trading_volume_24h"]):>13}'
+            f'{p["base_weekly_apr"]:>8.2f}'
+            f'{p["crv_apr"]:>8.2f}-{p["crv_apr_boosted"]:<8.2f}  {",".join(rewards)}'
         )
 
 
 if __name__ == "__main__":
+    import urllib.parse  # noqa: E402  -- kept local so the imports read top-down
+
     main()

@@ -13,7 +13,14 @@ from typing import Awaitable, Callable
 import flet as ft
 
 from curve.api import CurveApi
-from curve.format import apr_range, compact_usd, percent, short_address, token_amount
+from curve.format import (
+    apr_range,
+    compact_usd,
+    percent,
+    price,
+    short_address,
+    token_amount,
+)
 from curve.http import ApiError
 from curve.models import Pool
 from curve.pool import PoolContract
@@ -62,6 +69,14 @@ class PoolDetailView(ft.Column):
             width=220,
             on_select=self._series_changed,
         )
+        # Filled in by `_load_detail`: the v2 list endpoint carries no
+        # reserves, no per-coin prices and no LP token, so there is nothing
+        # to draw here until the detail request lands.
+        self._composition_slot = ft.Container(
+            ft.Text("Loading pool details…", size=12, color=ft.Colors.ON_SURFACE_VARIANT)
+        )
+        self._yields_slot = ft.Container(self._yields())
+
         self.range_buttons = ft.SegmentedButton(
             segments=[ft.Segment(value=label, label=ft.Text(label)) for label, *_ in RANGES],
             selected=[self._range],
@@ -88,15 +103,20 @@ class PoolDetailView(ft.Column):
                                     self.chart_caption,
                                     self.chart,
                                     self.chart_error,
-                                    self._composition(),
-                                    self._yields(),
+                                    self._composition_slot,
+                                    self._yields_slot,
                                 ],
                                 spacing=10,
                                 scroll=ft.ScrollMode.AUTO,
                             ),
-                            expand=True,
+                            expand=2,
                         ),
-                        ft.Container(self._actions(), width=360),
+                        # Proportional rather than a fixed 360px: a fixed
+                        # width overflows its Row as soon as the window is
+                        # narrower than the sum of the two columns, which
+                        # Flutter raises as a widget exception rather than
+                        # just clipping.
+                        ft.Container(self._actions(), expand=1),
                     ],
                     vertical_alignment=ft.CrossAxisAlignment.START,
                     spacing=20,
@@ -145,63 +165,91 @@ class PoolDetailView(ft.Column):
     # -- left column ------------------------------------------------------
 
     def _composition(self) -> ft.Control:
-        rows = []
+        """What is in the pool, as plain Rows rather than a `DataTable`.
+
+        `DataTable` sizes itself from its content and does not shrink, so on
+        a narrow window it overflowed its parent -- which Flutter raises as a
+        widget exception, failing the integration tests outright rather than
+        just looking wrong. Everything else in this app lays out with
+        `Row` + fixed-width `Container` cells, which flex down cleanly; this
+        now does the same.
+        """
         total = sum(c.balance_usd for c in self.pool.coins) or 1.0
+
+        def cell(control: ft.Control, width: int | None = None, end: bool = False) -> ft.Control:
+            return ft.Container(
+                control,
+                width=width,
+                expand=width is None,
+                alignment=ft.Alignment.CENTER_RIGHT if end else ft.Alignment.CENTER_LEFT,
+            )
+
+        header = ft.Container(
+            ft.Row(
+                [
+                    cell(ft.Text("Asset", size=11, color=ft.Colors.ON_SURFACE_VARIANT)),
+                    cell(ft.Text("Price", size=11, color=ft.Colors.ON_SURFACE_VARIANT), 110, True),
+                    cell(ft.Text("Share", size=11, color=ft.Colors.ON_SURFACE_VARIANT), 80, True),
+                    cell(ft.Text("Balance", size=11, color=ft.Colors.ON_SURFACE_VARIANT), 150, True),
+                ]
+            ),
+            padding=ft.Padding.only(bottom=4),
+            border=ft.Border(bottom=ft.BorderSide(1, ft.Colors.OUTLINE_VARIANT)),
+        )
+
+        rows: list[ft.Control] = [header]
         for coin in self.pool.coins:
             rows.append(
-                ft.DataRow(
-                    cells=[
-                        ft.DataCell(
-                            ft.Column(
-                                [
-                                    ft.Text(coin.symbol, size=13),
-                                    ft.Text(
-                                        short_address(coin.address),
-                                        size=10,
-                                        color=ft.Colors.ON_SURFACE_VARIANT,
-                                    ),
-                                ],
-                                spacing=0,
-                            )
-                        ),
-                        ft.DataCell(ft.Text(f"${coin.usd_price:,.5f}".rstrip("0"), size=13)),
-                        ft.DataCell(
-                            ft.Text(f"{coin.balance_usd / total * 100:.2f}%", size=13)
-                        ),
-                        ft.DataCell(
-                            ft.Column(
-                                [
-                                    ft.Text(token_amount(coin.balance), size=13),
-                                    ft.Text(
-                                        compact_usd(coin.balance_usd),
-                                        size=10,
-                                        color=ft.Colors.ON_SURFACE_VARIANT,
-                                    ),
-                                ],
-                                spacing=0,
-                                horizontal_alignment=ft.CrossAxisAlignment.END,
-                            )
-                        ),
-                    ]
+                ft.Container(
+                    ft.Row(
+                        [
+                            cell(
+                                ft.Column(
+                                    [
+                                        ft.Text(coin.symbol, size=13),
+                                        ft.Text(
+                                            short_address(coin.address),
+                                            size=10,
+                                            color=ft.Colors.ON_SURFACE_VARIANT,
+                                        ),
+                                    ],
+                                    spacing=0,
+                                )
+                            ),
+                            cell(ft.Text(price(coin.usd_price), size=13), 110, True),
+                            cell(
+                                ft.Text(
+                                    f"{coin.balance_usd / total * 100:.2f}%", size=13
+                                ),
+                                80,
+                                True,
+                            ),
+                            cell(
+                                ft.Column(
+                                    [
+                                        ft.Text(token_amount(coin.balance), size=13),
+                                        ft.Text(
+                                            compact_usd(coin.balance_usd),
+                                            size=10,
+                                            color=ft.Colors.ON_SURFACE_VARIANT,
+                                        ),
+                                    ],
+                                    spacing=0,
+                                    horizontal_alignment=ft.CrossAxisAlignment.END,
+                                ),
+                                150,
+                                True,
+                            ),
+                        ],
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                    padding=ft.Padding.symmetric(vertical=6),
                 )
             )
+
         return ft.Column(
-            [
-                ft.Text("COMPOSITION", size=11, weight=ft.FontWeight.BOLD),
-                ft.DataTable(
-                    columns=[
-                        ft.DataColumn(ft.Text("Asset", size=11)),
-                        ft.DataColumn(ft.Text("Price", size=11)),
-                        ft.DataColumn(ft.Text("Share", size=11)),
-                        ft.DataColumn(ft.Text("Balance", size=11), numeric=True),
-                    ],
-                    rows=rows,
-                    column_spacing=24,
-                    heading_row_height=32,
-                    data_row_max_height=52,
-                ),
-            ],
-            spacing=6,
+            [ft.Text("COMPOSITION", size=11, weight=ft.FontWeight.BOLD), *rows],
+            spacing=2,
         )
 
     def _yields(self) -> ft.Control:
@@ -221,7 +269,7 @@ class PoolDetailView(ft.Column):
         facts = ft.Text(
             f"{self.pool.registry}  ·  {'metapool' if self.pool.is_meta else 'plain'}"
             f"  ·  {'gauge ' + short_address(self.pool.gauge) if self.pool.has_gauge else 'no gauge'}"
-            + (f"  ·  A = {self.pool.amplification}" if self.pool.amplification else ""),
+            + (f"  ·  A = {self.pool.amplification:,.0f}" if self.pool.amplification else ""),
             size=11,
             color=ft.Colors.ON_SURFACE_VARIANT,
         )
@@ -248,30 +296,45 @@ class PoolDetailView(ft.Column):
             SwapTab(self._page, self.pool, self.get_contract, self.refresh_actions),
             StakeTab(self._page, self.pool, self.get_contract, self.refresh_actions),
         ]
-        # Flet 0.86 splits this into three controls: `Tabs` is the container
-        # and owns `length`, `TabBar` holds the labels, `TabBarView` holds
-        # the bodies. A `Tab` is only the button -- it takes no content.
+        # Flet 0.86 splits this into three controls: `Tabs` is the
+        # container and owns `length`, `TabBar` holds the labels, and
+        # `TabBarView` holds the bodies. A `Tab` is only the button -- it
+        # takes no content.
+        #
+        # `TabBarView` takes its height from the surrounding box rather than
+        # a fixed one: given `height=520` it raised a widget exception in a
+        # Flutter debug build, which passes unnoticed in a release web build
+        # but fails the integration tests outright.
         return ft.Container(
             ft.Tabs(
                 length=len(self.tabs),
                 selected_index=0,
+                expand=True,
                 content=ft.Column(
                     [
                         ft.TabBar(tabs=[ft.Tab(label=tab.title) for tab in self.tabs]),
                         ft.TabBarView(
+                            expand=True,
                             controls=[
-                                ft.Container(tab.mount(), padding=14) for tab in self.tabs
+                                # A panel taller than the box scrolls rather
+                                # than overflowing; `Container` has no
+                                # `scroll`, so the Column carries it.
+                                ft.Container(
+                                    ft.Column(
+                                        [tab.mount()], scroll=ft.ScrollMode.AUTO
+                                    ),
+                                    padding=14,
+                                )
+                                for tab in self.tabs
                             ],
-                            height=520,
                         ),
                     ],
                     spacing=0,
+                    expand=True,
                 ),
             ),
             border=ft.Border.all(1, ft.Colors.OUTLINE_VARIANT),
             border_radius=10,
-            # TabBarView keeps every panel alive, so without clipping the
-            # inactive tabs' fields bleed out past the rounded border.
             clip_behavior=ft.ClipBehavior.HARD_EDGE,
         )
 
@@ -343,6 +406,31 @@ class PoolDetailView(ft.Column):
         self.chart_caption.value = self.chart.summary or f"{len(candles)} candles"
         self._page.update()
 
+    async def _load_detail(self) -> None:
+        """Fetch the fields only the detail endpoint has, then redraw.
+
+        The composition table and every write action depend on this: there
+        is no LP token to withdraw or stake without it, and no reserves to
+        tabulate.
+        """
+        if self.pool.detailed:
+            self._composition_slot.content = self._composition()
+            return
+        try:
+            raw = await self.api.pool_detail(self.pool.chain_id, self.pool.address)
+        except ApiError as exc:
+            self._composition_slot.content = ft.Text(
+                f"Could not load pool details: {exc}", size=12, color=ft.Colors.ERROR
+            )
+            self._page.update()
+            return
+        self.pool.merge_detail(raw)
+        self._composition_slot.content = self._composition()
+        self._yields_slot.content = self._yields()
+        self._page.update()
+
     async def load(self) -> None:
+        # Detail first: the action panels read the LP token it supplies.
+        await self._load_detail()
         await self.load_chart()
         await self.refresh_actions()

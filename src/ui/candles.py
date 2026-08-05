@@ -286,3 +286,4 @@ class CandleChart(ft.Container):
         change = (last - first) / first * 100
         arrow = "+" if change >= 0 else "-"
         return f"{token_amount(last)}   {arrow}{abs(change):.2f}%"
+

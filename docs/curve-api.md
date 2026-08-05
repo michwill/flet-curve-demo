@@ -1,215 +1,207 @@
 # Curve API reference
 
-Research notes for building a Curve Finance UI in Python/Flet. Everything here was
-verified against the live API on 2026-08-05, not just read from the docs.
+Research notes for building a Curve Finance UI in Python/Flet. Everything here
+was verified against the live API, not just read from the docs.
 
-## The two APIs
+**This app uses Prices API v2 for pool data and v1 for charts.** The v1 main API
+(`api.curve.finance`) is documented at the end for reference; it is no longer
+used here.
 
-| | Base URL | OpenAPI spec | Covers |
+## The three surfaces
+
+| | Base URL | Spec | Used for |
 |---|---|---|---|
-| **Main API** | `https://api.curve.finance/v1` | [`/v1/openapi.json`](https://api.curve.finance/v1/openapi.json) — 44 endpoints | Pool metadata, TVL, coins, gauges, CRV APY |
-| **Prices API** | `https://prices.curve.finance/v1` | [`/feeds-docs/openapi.json`](https://prices.curve.finance/feeds-docs/openapi.json) — 136 endpoints | OHLC, snapshots, volume history, crvUSD, lending, DAO |
+| **Prices v2** | `https://prices.curve.finance/v2` | [`/v2/docs/openapi.json`](https://prices.curve.finance/v2/docs/openapi.json) — 6 endpoints | **Pools**: TVL, volume, APR, gauges |
+| **Prices v1** | `https://prices.curve.finance/v1` | [`/feeds-docs/openapi.json`](https://prices.curve.finance/feeds-docs/openapi.json) — 136 endpoints | **Charts** (OHLC), crvUSD, lending, DAO |
+| **Main v1** | `https://api.curve.finance/v1` | [`/v1/openapi.json`](https://api.curve.finance/v1/openapi.json) — 44 endpoints | superseded by v2 for pools |
 
-Both are fully public — no API key, no auth, no rate-limit headers.
+All public — no key, no auth.
 
-Host notes:
-- `api.curve.fi` **301-redirects** to `api.curve.finance`. Use the `.finance` domain.
-- On the main API, `/api/…` is a legacy alias for `/v1/…`. Both work and return
-  identical payloads. Prefer `/v1/` — it's the one the OpenAPI spec describes.
-- The Prices API spec is served from `/feeds-docs/openapi.json`. There is **no**
-  spec at `/openapi.json` or `/docs` (both 404).
+---
 
-## ⚠️ Gotcha: User-Agent gating
+## Prices API v2 — pool data
 
-The API returns **403 Forbidden** to the default `urllib` User-Agent. Measured:
+Six endpoints:
 
-| User-Agent | Status |
+```
+GET /v2/ping
+GET /v2/pools/                              list, filtered + sorted + paged
+GET /v2/pools/{chain_id}/{address}          one pool, in full
+GET /v2/pools/chains/                       chain name <-> chain_id
+GET /v2/pools/registries/                   registry contracts per chain
+GET /v2/pools/{chain_id}/users/{user}/positions
+```
+
+### Why v2 over the v1 main API
+
+v1 needed **two** calls joined by address — `getPools/big` had no volume and no
+base APY, `getVolumes` had no pool metadata. v2 returns all of it in one object,
+and adds `merkle_apr`, which v1 had no equivalent for. It is also ~4× smaller
+(351 KB vs 1.3 MB for Ethereum) and sorts, searches and filters server-side.
+
+### ⚠️ Gotchas
+
+- **`pagination` is capped at 50.** Anything larger is a `422`. There is no
+  "give me everything" call — 385 Ethereum pools is 8 requests. This is the
+  single biggest constraint on how a list view can be built.
+- **`gauges` has two different shapes.** The list endpoint returns objects
+  (`[{"address": …, "is_killed": false}]`); the detail endpoint returns bare
+  strings (`["0x…"]`). Handle both. Skip killed gauges — they accept deposits
+  and pay nothing.
+- **The spec's own description says the endpoints "are scaffolds and return not
+  implemented responses".** They are not — every one returns real data. Treat
+  it as a signal that v2 is young, not that it is broken.
+- **12 chains, against v1's 21.** Missing: aurora, avalanche, celo, harmony,
+  kava, mantle, moonbeam, x-layer, zkevm, zksync. Gained: taiko. If you need a
+  chain outside the twelve, v1 is still the only source.
+- **v2 has no OHLC at all** — charts stay on v1.
+- Addressing is by numeric `chain_id`, not the chain *name* v1 used. Read
+  `/v2/pools/chains/` rather than hardcoding.
+
+### `GET /v2/pools/`
+
+| Param | Notes |
 |---|---|
-| `Python-urllib/3.13` | **403** |
-| `python-requests/2.32` | 200 |
-| `Python/3.13 aiohttp/3.9` | 200 |
-| `flet-curve/0.1` | 200 |
+| `chain_id` | numeric; from `/v2/pools/chains/` |
+| `page`, `pagination` | 1-based; **`pagination` max 50**, default 20 |
+| `sort_by` | `name` `base_daily_apr` `crv_apr` `crv_rewards_apr` `token_rewards_apr` `merkle_apr` `aggregate_apr` `volume` `tvl` |
+| `sort_direction` | `asc` \| `desc` |
+| `search_string` | matches pool and token names |
+| `pool_type` | `main` `factory` `crypto` `crvusd` `factory_tricrypto` `stableswapng` |
+| `min_tvl` / `max_tvl` | **`min_tvl=10000` takes Ethereum from 2210 pools to 385** and is what makes an APR sort useful — without it the top of an APR sort is all zero-TVL dust |
+| `min_volume` / `max_volume`, `min_apy` / `max_apy`, `min_merkle_apr` / `max_merkle_apr`, `min_creation_date` / `max_creation_date` | |
+| `user`, `include_blacklist` | |
 
-Only the literal `Python-urllib/*` string is blocked, so `requests` / `httpx` /
-`aiohttp` work untouched. Set an explicit UA anyway so a stdlib fallback path can
-never silently break:
+Response: `{page, pagination, count, pools: [...]}`. `count` is the total
+matching the filters, not the page size.
 
-```python
-headers = {"User-Agent": "flet-curve/0.1"}
-```
+**`aggregate_apr` = base + CRV + token rewards + merkle.** Verified by
+reproducing the ordering arithmetically. There is no rewards-without-base field,
+so it is the closest server-side match for "sort by incentives".
 
-## Pool list
+### Pool object (list endpoint)
 
-`getPools` returns **no volume and no base APY** — only gauge CRV APY. Confirmed
-against the full key union of all 382 Ethereum pools. Two calls, joined on
-lowercased pool address:
+`chain_id`, `name`, `address`, `creation_date`, `vyper_version`, `pool_type`,
+`is_metapool`, `base_pool`, `tvl_usd`, `trading_volume_24h`, `trading_fee_24h`,
+`liquidity_volume_24h`, `liquidity_fee_24h`, `base_daily_apr`,
+`base_weekly_apr`, `crv_apr`, `crv_apr_boosted`, `extra_rewards_apr[]`
+(`{symbol, apr}`), `merkle_apr`, `gauges[]`, and `coins[]` with
+`{pool_index, symbol, name, address, decimals}`.
 
-```
-GET /v1/getPools/big/{blockchainId}   → pool metadata + TVL
-GET /v1/getVolumes/{blockchainId}     → volumeUSD + base APY
-```
+`crv_apr` and `crv_apr_boosted` are the two ends of the veCRV boost range —
+what Curve's own UI prints as "1.56% → 3.90% CRV".
 
-Join coverage measured at **382/382 = 100%** on Ethereum. Addresses are
-checksummed in both responses, but lowercase them before matching anyway.
+### Detail endpoint adds
 
-### Size variants
+The list payload omits these entirely, so a pool page needs a second call:
 
-`getPools` comes in four TVL buckets. Each takes an optional `/{blockchainId}`;
-omit it to get every chain in one response.
+`lp_token_address` (**required for withdraw and stake**), `registry_type`,
+`n_coins`, `balances[]`, `balances_usd[]`, `coins[].usd_price`, `metadata`
+(`a`, `fee`, `virtual_price`, `gamma`, `price_scale`, …), `info`
+(`vyper_version`, `deployment_tx`, `deployment_block`), `asset_types`,
+`oracles`, `lending_indices`.
 
-| Endpoint | Meaning | Ethereum size |
-|---|---|---|
-| `/v1/getPools/big[/{chain}]` | TVL ≥ $10k | **794 KB** (382 pools) |
-| `/v1/getPools/small[/{chain}]` | TVL < $10k | — |
-| `/v1/getPools/empty[/{chain}]` | TVL == $0 | — |
-| `/v1/getPools/all[/{chain}]` | everything | 4.7 MB |
-| `/v1/getPools/{chain}/{registryId}` | one registry | 110 KB (`main`) |
+Note `balances` are already scaled to human units, unlike v1's raw integers.
 
-**Use `big`.** It is ~6× smaller than `all` and drops the thousands of dead
-zero-TVL pools that would otherwise need client-side filtering.
+### Pool type → ABI variant
 
-### Chains and registries
+`pool_type` / `registry_type` is the discriminator for which exchange ABI a pool
+speaks. Getting it wrong does not revert — it returns empty data (see below).
 
-`GET /v1/getPlatforms` returns the chain → registry map plus chain IDs. Build the
-chain selector from this rather than hardcoding — coverage changes over time.
-
-21 chains: `ethereum` `polygon` `fantom` `arbitrum` `avalanche` `optimism` `xdai`
-`aurora` `harmony` `moonbeam` `kava` `celo` `zkevm` `zksync` `base` `fraxtal`
-`bsc` `x-layer` `mantle` `sonic` `hyperliquid`
-
-9 registries: `main` `crypto` `factory` `factory-crypto` `factory-crvusd`
-`factory-tricrypto` `factory-twocrypto` `factory-stable-ng` `factory-eywa`
-
-Not every registry exists on every chain — e.g. Ethereum has 8, zksync has 3,
-harmony has 2. `factory-eywa` (Fantom only) is currently empty.
-
-Ethereum pool counts by registry: `factory-stable-ng` 1016, `factory-crypto` 401,
-`factory-twocrypto` 400, `factory` 381, `factory-tricrypto` 125, `main` 49,
-`factory-crvusd` 29, `crypto` 8.
-
-### Pool object fields
-
-From `getPools`:
-
-| Field | Notes |
+| StableSwap (`int128` indices) | CryptoSwap (`uint256` indices) |
 |---|---|
-| `address`, `name`, `symbol` | `symbol` may be empty on some factory pools — fall back to `name` |
-| `blockchainId`, `registryId` | Present on `big`/`all`/`small` variants; **absent** on the single-registry endpoint |
-| `usdTotal` | Pool TVL in USD. `usdTotalExcludingBasePool` for metapools |
-| `coins[]` | `{address, symbol, name, decimals, usdPrice, poolBalance, isBasePoolLpToken}` — enough to render balances with zero RPC calls |
-| `gaugeAddress` | `null` when the pool has no gauge |
-| `gaugeCrvApy` | `[min, max]` — the 1× → 2.5× veCRV boost range. Often `[0, 0]` |
-| `gaugeRewards[]` | Incentive tokens: `{symbol, name, tokenAddress, apy, tokenPrice, decimals}` |
-| `poolUrls` | Ready-made deep links: `{swap[], deposit[], withdraw[]}` into the real Curve UI |
-| `virtualPrice`, `amplificationCoefficient`, `totalSupply` | Strings holding raw integers — parse carefully |
-| `isMetaPool`, `basePoolAddress` | Metapool linkage |
-| `assetTypeName` | `usd` / `eth` / `btc` / `crypto` — good for grouping and filters |
-| `isBroken` | Filter these out of the UI |
-| `implementationAddress`, `zapAddress`, `lpTokenAddress` | |
-| `creationTs`, `creationBlockNumber` | |
+| `main`, `factory`, `crvusd`, `stableswapng` | `crypto`, `factory_crypto`, `factory_tricrypto`, `twocryptong` |
 
-From `getVolumes` (`data.pools[]`):
+These names differ from v1's hyphenated registry ids (`factory-stable-ng`,
+`factory-twocrypto`, …).
 
-`address`, `type`, `volumeUSD`, `latestDailyApyPcent`, `latestWeeklyApyPcent`,
-`includedApyPcentFromLsts`, `virtualPrice`. Also `data.totalVolumes` with
-chain-wide `totalVolume` / `totalStableVolume` / `totalCryptoVolume`.
+---
 
-Note the naming difference: `getVolumes` returns `…ApyPcent` (already ×100),
-while the older `getSubgraphData` returns `latestDailyApy` as a raw fraction.
-Prefer `getVolumes` — the spec marks it as the preferred source.
+## Prices API v1 — charts
 
-## Charts (Prices API)
-
-The time-series paths are **top-level, not nested under `/pools/`**.
-`/v1/pools/{chain}/{addr}/ohlc` returns 404 — that was a wrong guess worth
-recording.
+v2 has none of these. The paths are **top-level, not nested under `/pools/`** —
+`/v1/pools/{chain}/{addr}/ohlc` returns 404.
 
 ```
+GET /v1/lp_ohlc/{chain}/{address}
+    required: start, end       optional: agg_number, agg_units, price_units
+    -> the pool's LP token price; what Curve's pool page charts by default
+
 GET /v1/ohlc/{chain}/{address}
     required: main_token, reference_token, start, end
     optional: agg_number, agg_units
-    → {time, open, high, low, close}
+    -> one coin priced in another, within a single pool
 
 GET /v1/snapshots/{chain}/{address}
-    required: start, end     optional: unit
-    → 27 fields incl. base_daily_apr, base_weekly_apr, virtual_price,
-      fee, price_oracle, price_scale, a, gamma, xcp_profit
+    required: start, end       optional: unit
+    -> 27 fields incl. base_daily_apr, base_weekly_apr, virtual_price, fee
 
-GET /v1/volume/{chain}/{address}
-    required: main_token, reference_token, start, end   optional: interval
-
+GET /v1/chains/{chain}         chain-wide totals under `total`
 GET /v1/usd_price/{chain}/{address}[/history]
+GET /v1/volume/{chain}/{address}
 ```
 
-`main_token` / `reference_token` are the two **coin** addresses to price against
-each other, not the pool address. `start` / `end` are Unix seconds.
+`main_token`/`reference_token` are **coin** addresses; the pool address only says
+which market to read them from. `start`/`end` are Unix seconds. These use the
+chain *name*, not the id.
 
-`/v1/snapshots/…` is the APY-and-TVL-history source for a pool detail view.
+`/v1/chains/{chain}` also returns every pool on a chain in one call (1298 on
+Ethereum, 2.4 MB) — but its `page`/`per_page` params are broken (500).
 
-## One-shot alternative
+---
 
-`GET /v1/chains/{chain}` on the **Prices** API returns every pool on a chain in a
-single call (1298 on Ethereum, 2.4 MB) with `tvl_usd`, `trading_volume_24h`,
-`trading_fee_24h`, `liquidity_volume_24h`, `liquidity_fee_24h`, `balances`,
-`balances_usd` and `coins` — no join required.
+## Transport notes
 
-Trade-off: it carries **no gauge or CRV APY data**, so it can't drive a rewards
-column. Its `page` / `per_page` params are **broken — they return 500 Internal
-Server Error**, so it's all-or-nothing.
+- **CORS**: every host sends `access-control-allow-origin: *`, so a browser
+  build needs no proxy. Verified on all three.
+- **⚠️ The main v1 API 403s the default `Python-urllib/*` User-Agent.**
+  `requests`/`httpx`/`aiohttp` are unaffected. Only that literal string is
+  blocked, but a stdlib fallback would hit it, so set an explicit UA.
+- Cloudflare caches at `s-maxage=300`; polling faster returns the same bytes.
+- v1 main wraps everything as `{success, data, generatedTimeMs}`. The Prices
+  APIs do not — they return bare objects.
+- `api.curve.fi` 301s to `api.curve.finance`.
 
-Chain-wide totals come back under `total`: `total_tvl`, `trading_volume_24h`,
-`trading_fee_24h`, `liquidity_volume_24h`, `liquidity_fee_24h`.
+---
 
-## Caching
+## Main API v1 — for reference
 
-Responses are Cloudflare-cached with `cache-control: max-age=30, s-maxage=300`.
-Polling faster than ~5 min just returns the same cached bytes. Every main-API
-response carries `generatedTimeMs`, and payloads are wrapped as:
+Still the only source for chains v2 does not cover, and for gauges, lending
+vaults and crvUSD supply.
 
-```json
-{ "success": true, "data": { … }, "generatedTimeMs": 123 }
-```
+- `GET /v1/getPools/big[/{chain}]` — pools ≥$10k TVL. Variants: `big`, `small`,
+  `empty`, `all`; `/{chain}/{registryId}` for one registry.
+  **No volume or base APY in it** — join `getVolumes/{chain}` on lowercased
+  address (measured 382/382 on Ethereum).
+- `GET /v1/getPlatforms` — 21 chains and their registries.
+- `GET /v1/getVolumes/{chain}` — `volumeUSD`, `latestDailyApyPcent`,
+  `latestWeeklyApyPcent`. (`getSubgraphData` returns the same APY as a raw
+  fraction, not a percent.)
+- `GET /v1/getAllGauges`, `/v1/getLendingVaults/all`, `/v1/getHiddenPools`,
+  `/v1/getTokens/all/{chain}`, `/v1/getWeeklyFees`, `/v1/getGas`.
 
-The Prices API is **not** wrapped — it returns bare objects, usually with a
-`data` array plus `chain` / `count` / `cached_at`.
+Deprecated in favour of `getPools`: `getFactoryV2Pools`, `getFactoryCryptoPools`,
+`getFactoryTVL`, `getMainRegistryPools`, `getMainRegistryPoolsAndLpTokens`,
+`getMainPoolsGaugeRewards`, `getFactoGauges`. `getFactoryAPYs` and
+`getMainPoolsAPYs` are documented as *inaccurate*, and `getFactoryAPYs` needs a
+`/{version}` segment or it 301s.
 
-## Other endpoint groups
+Registry ids (v1 spelling): `main`, `crypto`, `factory`, `factory-crypto`,
+`factory-crvusd`, `factory-tricrypto`, `factory-twocrypto`,
+`factory-stable-ng`, `factory-eywa`.
 
-Main API:
-- `GET /v1/getAllGauges` — every gauge on every chain (2.5 MB), keyed by a
-  display name like `"CVX+bveCVX (0x04c9…7512)"`
-- `GET /v1/getLendingVaults/all[/{chain}]` — lending vaults.
-  Chains: `ethereum` `arbitrum` `optimism` `fraxtal` `sonic`. Registries: `oneway`, `oneway-v2`
-- `GET /v1/getHiddenPools` — known-dysfunctional pool IDs by chain, for filtering
-- `GET /v1/getTokens/all/{chain}` — all tokens across pools with ≥$10k TVL
-- `GET /v1/getPoolList/{chain}` — just addresses
-- `GET /v1/getWeeklyFees`, `/v1/getGas`, `/v1/getETHprice`
-- crvUSD supply: `/v1/getCrvusdTotalSupply`, `/v1/getScrvusdTotalSupplyNumber`
+---
 
-Prices API groups: `crvusd` (39), `lending` (35), `dao` (25), `refuel` (7),
-`chains` (6), `usd_price` (3), `volume` (3), `pools` (3), `liquidity` (3),
-`yield_basis` (3), `snapshots` (2), `trades` (2), `ohlc`, `lp_ohlc`, `oracles`, `gas`.
+## Contract-level gotcha
 
-## Deprecated — don't use
+Not an API issue, but it belongs with the pool-type mapping above:
 
-The spec explicitly deprecates these in favour of `getPools`:
-`getFactoryV2Pools`, `getFactoryCryptoPools`, `getFactoryTVL`,
-`getMainRegistryPools`, `getMainRegistryPoolsAndLpTokens`,
-`getMainPoolsGaugeRewards`, `getFactoGauges`.
+> **Calling a function a Curve pool does not implement returns empty data, not a
+> revert.** `decode_uint("0x")` is `0`, so a mis-typed pool quotes every swap at
+> zero output instead of failing.
 
-`getFactoryAPYs` and `getMainPoolsAPYs` are documented as returning *inaccurate*
-data for chains not indexed by the Prices API or subgraphs. `getFactoryAPYs`
-also needs a `/{version}` path segment — without it you get a 301.
-
-## Recommended plan for the Flet UI
-
-1. **Startup** — `GET /v1/getPlatforms` to populate the chain selector.
-2. **Pool list** — `GET /v1/getPools/big/{chain}` + `GET /v1/getVolumes/{chain}`,
-   joined on lowercased address. Filter out `isBroken`.
-3. **Pool detail** — render from the objects already in hand (`coins[]` has
-   balances and USD prices), then lazily fetch `/v1/snapshots/…` and `/v1/ohlc/…`
-   from the Prices API for charts.
-4. Cache responses for ~5 min client-side to match the CDN.
+Confirmed against mainnet: a StableSwap-signature `get_dy` sent to tricrypto2
+returns `0x`. Reject empty return data explicitly.
 
 See [`examples/fetch_pools.py`](examples/fetch_pools.py) for a working,
-dependency-free implementation of steps 1–2.
+dependency-free client for the v2 list endpoint.

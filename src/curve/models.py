@@ -2,17 +2,20 @@
 
 Everything here is a plain dataclass with no Flet and no network in sight,
 which is what makes the sorting, formatting and math testable without a
-running app. The API's own shapes leak into `from_api` and stop there.
+running app. The API's own shapes leak into the `from_*` classmethods and
+stop there.
 
-Two facts about the API drive most of this file, both verified against live
-responses (see docs/curve-api.md):
+These are built on the **Prices API v2** (`prices.curve.finance/v2`), which
+returns TVL, volume, base APR, the CRV boost range and extra reward tokens
+in a single object -- the v1 main API split those across two endpoints that
+had to be joined by address. Two v2 quirks are handled here rather than
+leaked upward:
 
-  * `getPools` carries no volume and no base APY -- only gauge CRV APR. The
-    rest arrives from `getVolumes` and is attached afterwards, which is why
-    those fields are mutable and default to zero.
-  * numeric fields arrive as strings holding raw integers (`"1039823717…"`),
-    as floats, or as null, sometimes for the same field on different pools.
-    Every read goes through the coercion helpers below.
+  * `gauges` is a list of *objects* (`{address, is_killed}`) on the list
+    endpoint and a list of *strings* on the detail endpoint;
+  * the list endpoint omits `lp_token_address`, `balances` and per-coin
+    `usd_price`, so a pool starts partial and is filled in by
+    `merge_detail` when its page is opened.
 """
 
 from __future__ import annotations
@@ -20,13 +23,26 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-#: Registries whose pools use the StableSwap ABI: `int128` coin indices.
-STABLE_REGISTRIES = frozenset(
-    {"main", "factory", "factory-crvusd", "factory-stable-ng", "factory-eywa"}
+#: `pool_type`/`registry_type` values whose pools use the StableSwap ABI:
+#: `int128` coin indices. Both the v2 spellings and the older hyphenated v1
+#: registry ids are listed, so a Pool built from either source dispatches
+#: correctly.
+STABLE_POOL_TYPES = frozenset(
+    {
+        # v2
+        "main", "factory", "crvusd", "stableswapng",
+        # v1 registry ids
+        "factory-crvusd", "factory-stable-ng", "factory-eywa",
+    }
 )
-#: Registries whose pools use the CryptoSwap ABI: `uint256` coin indices.
-CRYPTO_REGISTRIES = frozenset(
-    {"crypto", "factory-crypto", "factory-twocrypto", "factory-tricrypto"}
+#: Pool types using the CryptoSwap ABI: `uint256` coin indices.
+CRYPTO_POOL_TYPES = frozenset(
+    {
+        # v2
+        "crypto", "factory_crypto", "factory_tricrypto", "twocryptong",
+        # v1 registry ids
+        "factory-crypto", "factory-tricrypto", "factory-twocrypto",
+    }
 )
 
 
@@ -41,7 +57,6 @@ def _float(value: Any, default: float = 0.0) -> float:
 
 
 def _int(value: Any, default: int = 0) -> int:
-    """Coerce an API integer, which is usually a decimal string."""
     if value is None or value == "":
         return default
     try:
@@ -55,34 +70,29 @@ def _int(value: Any, default: int = 0) -> int:
 
 @dataclass(slots=True)
 class Coin:
-    """One asset in a pool."""
+    """One asset in a pool.
+
+    `balance` is a human number, not smallest units: v2 reports pool
+    reserves already scaled. It is display-only either way -- anything
+    headed for calldata is parsed from user input as an integer.
+    """
 
     address: str
     symbol: str
     decimals: int
+    index: int = 0
     usd_price: float = 0.0
-    #: Pool-held balance in the coin's smallest unit.
-    pool_balance: int = 0
-    is_base_pool_lp: bool = False
-
-    @property
-    def balance(self) -> float:
-        """Pool balance as a human number. Display only -- never for math."""
-        return self.pool_balance / (10**self.decimals) if self.decimals else 0.0
-
-    @property
-    def balance_usd(self) -> float:
-        return self.balance * self.usd_price
+    balance: float = 0.0
+    balance_usd: float = 0.0
 
     @classmethod
-    def from_api(cls, raw: dict[str, Any]) -> "Coin":
+    def from_v2(cls, raw: dict[str, Any]) -> "Coin":
         return cls(
             address=raw.get("address") or "",
             symbol=raw.get("symbol") or "?",
             decimals=_int(raw.get("decimals"), 18),
-            usd_price=_float(raw.get("usdPrice")),
-            pool_balance=_int(raw.get("poolBalance")),
-            is_base_pool_lp=bool(raw.get("isBasePoolLpToken")),
+            index=_int(raw.get("pool_index")),
+            usd_price=_float(raw.get("usd_price")),
         )
 
 
@@ -95,12 +105,32 @@ class Incentive:
     apr: float = 0.0
 
     @classmethod
-    def from_api(cls, raw: dict[str, Any]) -> "Incentive":
+    def from_v2(cls, raw: dict[str, Any]) -> "Incentive":
         return cls(
             symbol=raw.get("symbol") or "?",
-            token_address=raw.get("tokenAddress") or "",
-            apr=_float(raw.get("apy")),
+            token_address=raw.get("address") or raw.get("token_address") or "",
+            apr=_float(raw.get("apr")),
         )
+
+
+def _first_live_gauge(raw: Any) -> str:
+    """Pull a usable gauge address out of either shape v2 returns.
+
+    The list endpoint gives `[{"address": …, "is_killed": false}]` and the
+    detail endpoint gives `["0x…"]`. Killed gauges are skipped: they still
+    accept deposits but pay nothing, so offering one to stake into would be
+    actively misleading.
+    """
+    if not isinstance(raw, list):
+        return ""
+    for entry in raw:
+        if isinstance(entry, str) and entry:
+            return entry
+        if isinstance(entry, dict) and not entry.get("is_killed"):
+            address = entry.get("address")
+            if address:
+                return address
+    return ""
 
 
 @dataclass(slots=True)
@@ -109,23 +139,27 @@ class Pool:
 
     address: str
     name: str
-    symbol: str
-    chain: str
-    registry: str
-    coins: list[Coin]
+    chain: str = ""
+    chain_id: int = 0
+    registry: str = ""
+    coins: list[Coin] = field(default_factory=list)
     lp_token: str = ""
     tvl: float = 0.0
+    volume_24h: float = 0.0
+    base_apr: float = 0.0
     gauge: str = ""
     #: veCRV boost range: (unboosted, max-boost) APR in percent.
     crv_apr: tuple[float, float] = (0.0, 0.0)
     incentives: list[Incentive] = field(default_factory=list)
+    #: Off-gauge campaign rewards, claimed via a merkle drop. v1 had no
+    #: equivalent, so this column simply did not exist before.
+    merkle_apr: float = 0.0
     is_meta: bool = False
-    is_broken: bool = False
-    amplification: int = 0
-    virtual_price: int = 0
-    #: Attached from `getVolumes`, which `getPools` does not carry.
-    volume_24h: float = 0.0
-    base_apr: float = 0.0
+    amplification: float = 0.0
+    virtual_price: float = 0.0
+    #: False until `merge_detail` has run: the list endpoint omits the LP
+    #: token, the reserves and per-coin prices.
+    detailed: bool = False
 
     # -- derived ----------------------------------------------------------
 
@@ -134,18 +168,19 @@ class Pool:
         """Which exchange ABI this pool speaks.
 
         StableSwap declares coin indices as `int128` and CryptoSwap as
-        `uint256`. Same argument values, different function selectors, so
-        getting this wrong produces a call that simply reverts. The registry
-        is the reliable discriminator -- pool bytecode is not introspectable
-        from here.
+        `uint256`. Same argument values, different function selectors, and
+        a wrong guess produces a call that returns empty data rather than
+        reverting -- see `curve.pool`. The registry is the only reliable
+        discriminator available from the API.
         """
-        if self.registry in CRYPTO_REGISTRIES:
+        registry = (self.registry or "").lower()
+        if registry in CRYPTO_POOL_TYPES:
             return False
-        if self.registry in STABLE_REGISTRIES:
+        if registry in STABLE_POOL_TYPES:
             return True
-        # An unknown registry is far more likely to be a new stable factory
-        # than a new crypto one, and stable is also the safer default: its
-        # `get_dy` reverting is visible immediately in the UI.
+        # An unknown type is far likelier to be a new stable factory than a
+        # new crypto one, and a StableSwap `get_dy` that fails is visible
+        # immediately in the UI rather than silently mispricing.
         return True
 
     @property
@@ -162,84 +197,90 @@ class Pool:
 
     @property
     def incentives_apr(self) -> float:
-        """Total rewards APR: max-boost CRV plus every incentive token.
+        """Total rewards APR: max-boost CRV, every incentive token, merkle.
 
         This is what the "incentives" sort orders by. Max boost rather than
         minimum because it is the number a depositor can actually reach, and
-        it is what Curve's own UI shows as the top of its range.
+        it is the top of the range Curve's own UI prints.
         """
-        return self.crv_apr[1] + sum(i.apr for i in self.incentives)
+        return self.crv_apr[1] + sum(i.apr for i in self.incentives) + self.merkle_apr
 
     @property
     def total_apr(self) -> float:
         return self.base_apr + self.incentives_apr
 
-    # -- parsing ----------------------------------------------------------
-
-    @classmethod
-    def from_api(cls, raw: dict[str, Any], chain: str = "") -> "Pool":
-        """Build from one entry of `getPools/*`'s `data.poolData`."""
-        crv = raw.get("gaugeCrvApy") or []
-        crv_min = _float(crv[0]) if len(crv) > 0 else 0.0
-        crv_max = _float(crv[1]) if len(crv) > 1 else crv_min
-
-        # The single-registry endpoint omits blockchainId/registryId; the
-        # big/all/small variants include them. Prefer the payload, fall back
-        # to what the caller already knows.
-        return cls(
-            address=raw.get("address") or "",
-            name=raw.get("name") or "",
-            symbol=raw.get("symbol") or "",
-            chain=raw.get("blockchainId") or chain,
-            registry=raw.get("registryId") or "",
-            coins=[Coin.from_api(c) for c in raw.get("coins") or []],
-            lp_token=raw.get("lpTokenAddress") or raw.get("address") or "",
-            tvl=_float(raw.get("usdTotal")),
-            gauge=raw.get("gaugeAddress") or "",
-            crv_apr=(crv_min, crv_max),
-            incentives=[
-                Incentive.from_api(r)
-                for r in raw.get("gaugeRewards") or []
-                # CRV itself shows up here on some pools; it is already
-                # counted in gaugeCrvApy and would otherwise be double-added.
-                if (r.get("symbol") or "").upper() != "CRV"
-            ],
-            is_meta=bool(raw.get("isMetaPool")),
-            is_broken=bool(raw.get("isBroken")),
-            amplification=_int(raw.get("amplificationCoefficient")),
-            virtual_price=_int(raw.get("virtualPrice")),
-        )
-
     @property
     def display_name(self) -> str:
         """Something short and identifying, whatever the API gave us."""
-        if self.symbol:
-            return self.symbol
         name = self.name or ""
-        for prefix in ("Curve.fi ", "Curve.fi Factory Plain Pool: ", "Curve "):
+        for prefix in (
+            "Curve.fi Factory Plain Pool: ",
+            "Curve.fi Factory USD Metapool: ",
+            "Curve.fi ",
+            "Curve ",
+        ):
             if name.startswith(prefix):
                 name = name[len(prefix) :]
                 break
         return name or self.address[:10]
 
+    # -- parsing ----------------------------------------------------------
 
-def attach_volumes(pools: list[Pool], volumes: list[dict[str, Any]]) -> list[Pool]:
-    """Join `getVolumes` rows onto pools by address.
+    @classmethod
+    def from_v2(cls, raw: dict[str, Any], chain: str = "") -> "Pool":
+        """Build from one entry of the v2 `/pools/` list."""
+        return cls(
+            address=raw.get("address") or "",
+            name=raw.get("name") or "",
+            chain=chain,
+            chain_id=_int(raw.get("chain_id")),
+            registry=raw.get("pool_type") or raw.get("registry_type") or "",
+            coins=[Coin.from_v2(c) for c in raw.get("coins") or []],
+            lp_token=raw.get("lp_token_address") or "",
+            tvl=_float(raw.get("tvl_usd")),
+            volume_24h=_float(raw.get("trading_volume_24h")),
+            # Weekly rather than daily: a single day's fees on a quiet pool
+            # swing wildly, and weekly is what Curve's own list column shows.
+            base_apr=_float(raw.get("base_weekly_apr")),
+            gauge=_first_live_gauge(raw.get("gauges")),
+            crv_apr=(_float(raw.get("crv_apr")), _float(raw.get("crv_apr_boosted"))),
+            incentives=[
+                Incentive.from_v2(r)
+                for r in raw.get("extra_rewards_apr") or []
+                # CRV shows up here on some pools; it is already counted in
+                # crv_apr_boosted and would otherwise be added twice.
+                if (r.get("symbol") or "").upper() != "CRV"
+            ],
+            merkle_apr=_float(raw.get("merkle_apr")),
+            is_meta=bool(raw.get("is_metapool") or raw.get("metapool")),
+        )
 
-    Addresses are checksummed in both payloads, but they are matched
-    lowercased anyway -- the two endpoints are generated by different code
-    paths and the join is worth nothing if a casing change silently drops
-    every row. Measured 382/382 on Ethereum.
-    """
-    by_address = {
-        (row.get("address") or "").lower(): row for row in volumes if row.get("address")
-    }
-    for pool in pools:
-        row = by_address.get(pool.address.lower())
-        if row is None:
-            continue
-        pool.volume_24h = _float(row.get("volumeUSD"))
-        # `getVolumes` reports percent already multiplied out; the older
-        # getSubgraphData endpoint returns the same number as a fraction.
-        pool.base_apr = _float(row.get("latestWeeklyApyPcent"))
-    return pools
+    def merge_detail(self, raw: dict[str, Any]) -> "Pool":
+        """Fold in the extra fields only `/pools/{chain_id}/{address}` has.
+
+        Mutates in place and returns self, so a cached list entry gains its
+        detail once and keeps it. Everything here is absent from the list
+        payload: without it there is no LP token to withdraw or stake, and
+        no reserves to draw a composition table from.
+        """
+        self.lp_token = raw.get("lp_token_address") or self.lp_token or self.address
+        self.registry = raw.get("registry_type") or raw.get("pool_type") or self.registry
+        if raw.get("gauges"):
+            self.gauge = _first_live_gauge(raw["gauges"]) or self.gauge
+
+        detail_coins = raw.get("coins") or []
+        balances = raw.get("balances") or []
+        balances_usd = raw.get("balances_usd") or []
+        if detail_coins:
+            self.coins = [Coin.from_v2(c) for c in detail_coins]
+        for index, coin in enumerate(self.coins):
+            if index < len(balances):
+                coin.balance = _float(balances[index])
+            if index < len(balances_usd):
+                coin.balance_usd = _float(balances_usd[index])
+
+        metadata = raw.get("metadata") or {}
+        self.amplification = _float(metadata.get("a"))
+        self.virtual_price = _float(metadata.get("virtual_price"))
+        self.detailed = True
+        return self

@@ -38,7 +38,8 @@ src/ui/        Flet controls. Imports curve/, never the reverse.
     pool_list.py   search, sortable columns, scroll-driven paging
     pool_detail.py chart + composition + yields + actions
     actions.py     deposit / withdraw / swap / stake
-    candles.py     the price chart, on flet-charts' CandlestickChart
+    candles.py     the price chart: candles, axes, crosshair
+    viewport.py    pan/zoom window and the pixel<->data mapping
 
 src/wallet/    unchanged from flet-pay-example
 ```
@@ -94,23 +95,54 @@ is low single digits and incentive APRs run to hundreds of percent.
 
 ## The chart
 
-`flet-charts`' `CandlestickChart`, not shapes painted on a canvas. The
-difference is that this one is *live*: candles carry per-spot OHLC tooltips,
-switching timeframe animates rather than cutting, and the axes lay themselves
-out. Drawing it by hand produced a picture that could not be hovered.
+`flet-charts`' `CandlestickChart` draws the candles and axes. It has no pan,
+no zoom and no crosshair, so those are added around it the way the pyqtgraph
+dashboard this is modelled on does:
 
-What stayed in `ui/candles.py` is the part that is genuinely this app's
-problem — the visible range, the tick interval, and how many decimals a label
-needs. That last one matters more than it sounds: a stable pool ranging over
-1.0268–1.0271 needs four decimals to tell its gridlines apart, and a fixed four
-prints "1.027" three times down the axis.
+```
+GestureDetector        drag to pan, wheel to zoom, hover for the crosshair
+  Stack
+    CandlestickChart   the candles and axes
+    Canvas             a transparent overlay — crosshair only
+```
 
-Two gotchas, both found by looking at the rendered result:
+That split is the point. The chart never repaints for a mouse move; only the
+overlay does. And the overlay *is* a canvas, because a crosshair is two lines
+and a label — which is what canvas is for, unlike the candles, which were not.
+
+- **Drag** pans both axes. Content follows the cursor, and dragging down raises
+  prices, because screen y grows downward and a chart that inverts that is
+  unreadable.
+- **Wheel** zooms in time, anchored on the candle under the pointer so it stays
+  under the pointer. Price is panned, not zoomed — same as the Qt version.
+- **Hover** draws the crosshair: dashed lines through the cursor, the price
+  boxed against the left axis, the timestamp boxed on the date axis, and the
+  hovered candle's OHLC in the top-left corner rather than trailing the pointer.
+  Hover is throttled to 25/s; every event is a round trip into Python, and the
+  Qt version throttles for the same reason.
+- **Double-tap** refits the whole series.
+
+The window is clamped to keep the data on screen, with half a window of
+overscroll at each end — stopping dead on the last candle reads as the chart
+being stuck — and never narrower than five candles, or one scroll burst zooms
+until the chart is a single bar.
+
+`viewport.py` holds all of that arithmetic, which makes the awkward cases —
+zooming past the ends, panning off the data, a plot box too small to divide by
+— cheap to test without a mouse. One honest limitation: `CandlestickChart` does
+not expose where it drew its plot area, so `Plot` reconstructs it from the axis
+label sizes this app itself sets. The crosshair readout is therefore accurate to
+a pixel or two rather than exact.
+
+### Axis gotchas
+
+Both found by looking at the rendered result, and neither is obvious:
 
 - Axis labels must land on **multiples of `label_spacing`**. The chart ticks at
   multiples of the interval counted from zero, so labels at `min + i*step` are
   dropped and the axis shows only its endpoints. `nice_interval` picks a round
-  step (1, 2, 2.5 or 5 × 10ⁿ) and labels go on multiples of it.
+  step (1, 2, 2.5 or 5 × 10ⁿ) and labels go on multiples of it. The date axis
+  never hit this — its values are integer multiples of the stride already.
 - Derive label precision from the **interval**, not the span, or an axis
   stepping by 0.0001 prints "1.026800" where "1.0268" is the number.
 
@@ -118,8 +150,7 @@ Charts are also the one place `flet publish` bit: it resolves dependencies
 relative to the **script's** directory, so `flet publish src/main.py` never saw
 the root `pyproject.toml`, fell back to bare `flet`, and the published app died
 in Pyodide with `ModuleNotFoundError: No module named 'flet_charts'`. Publish
-from the project root instead — `flet publish`, no path — which reads
-`[tool.flet.app] path` and gets the dependency list right.
+from the project root instead — `flet publish`, no path.
 
 ## Talking to the pools
 
@@ -158,7 +189,7 @@ fills them in and knows the chain better than this app does.
 Three layers, and the first two need nothing at all:
 
 ```bash
-.venv/bin/python -m pytest tests/ -q                      # 118 tests, ~0.5s
+.venv/bin/python -m pytest tests/ -q                      # 154 tests, ~0.9s
 .venv/bin/python -m pytest tests/integration -m flet_ui   # 6 tests, ~25s each
 ```
 
@@ -229,6 +260,15 @@ flet-pay-example's README:
   at multiples of the interval counted from zero and only renders a label whose
   value lands on a tick; labels at `min + i*step` are silently dropped, leaving
   an axis showing just its min and max.
+- **`GestureDetector` is how you add pan/zoom/hover to anything.** `on_pan_update`
+  carries `local_delta`, `on_scroll` carries `scroll_delta` plus `local_position`,
+  and `on_hover`/`on_exit` carry `local_position` — enough to drive a viewport
+  without the wrapped control knowing. `drag_interval`/`hover_interval` throttle
+  at the Dart end, and it is worth throttling again in Python.
+- **A canvas overlay does not need to be hit-testable.** Stack the crosshair
+  canvas *over* the chart and wrap the whole stack in one `GestureDetector`:
+  the overlay never intercepts a drag, and the chart never repaints on a
+  mouse move.
 - **`Tabs` was restructured.** `ft.Tab` no longer takes `content` — it is only the
   button. The container is `Tabs(length=N, content=…)` holding a `TabBar` of
   `Tab`s and a `TabBarView` of bodies, and `length` must match both. Size the
@@ -288,13 +328,13 @@ Not claims — these were run:
   ("250 of 385 pools"), a pool opens onto a live candlestick chart, the
   timeframe buttons re-fetch, and all four action tabs render with their
   controls correctly disabled while no wallet is connected.
-- **The chart** rendering in Chrome from the published build, with correct axis
-  labels at every scale, and switching timeframe re-fetching and re-drawing.
-  Not verified: that the OHLC tooltip paints on hover — synthetic pointer events
-  do not reach Flutter's hover hit-testing, and `find_by_key` does not reach
-  inside a `flet-charts` control. Every spot is unit-tested to carry a tooltip
-  string, and `interactive` is on, but the rendered tooltip is unconfirmed.
-- **129 unit tests** with no display and no Flutter, plus **7 UI tests** driving
+- **The chart, driven in Chrome** from the published build: wheel-zoom narrowed
+  the window from May–August to 31 May–20 June anchored on the cursor, dragging
+  panned both time and price, and the crosshair read out `1.0250`, `05 Jun
+  00:00` and `O 1.0261 H 1.0262 L 1.0140 C 1.0254` for the candle under it.
+  Axis labels correct at every scale; switching timeframe re-fetches and
+  re-draws.
+- **154 unit tests** with no display and no Flutter, plus **7 UI tests** driving
   the real app through Flet's own framework.
 
 Not yet exercised: a signed transaction. The read path, the encoding and the

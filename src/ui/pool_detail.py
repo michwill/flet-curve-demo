@@ -49,7 +49,7 @@ class PoolDetailView(ft.Column):
         self.pool = pool
         self.get_contract = get_contract
 
-        self.chart = CandleChart(height=340)
+        self.chart = CandleChart(height=340, on_capacity_change=self._chart_resized)
         self.chart_caption = ft.Text("", size=12, color=ft.Colors.ON_SURFACE_VARIANT)
         self.chart_error = ft.Text("", size=11, color=ft.Colors.ERROR)
         self._candle_size = DEFAULT_CANDLE_SIZE
@@ -361,12 +361,24 @@ class PoolDetailView(ft.Column):
     def _series_changed(self, _e: ft.ControlEvent) -> None:
         self._page.run_task(self.load_chart)
 
+    def _chart_resized(self) -> None:
+        """The chart got materially wider or narrower -- refetch to suit.
+
+        A wider chart should show *more* candles at the same size, not the
+        same candles stretched.
+        """
+        self._page.run_task(self.load_chart)
+
     def _size_changed(self, _e: ft.ControlEvent) -> None:
         self._candle_size = self.size_picker.value or DEFAULT_CANDLE_SIZE
         self._page.run_task(self.load_chart)
 
     async def load_chart(self) -> None:
         size = get_candle_size(self._candle_size)
+        # As many candles as the chart has room for at a readable pitch,
+        # rather than a fixed number that looks cramped on one size and
+        # sparse on another.
+        count = self.chart.candle_capacity()
         self.chart_error.value = ""
         self.chart_caption.value = "Loading…"
         self._page.update()
@@ -375,7 +387,7 @@ class PoolDetailView(ft.Column):
             value = self.series.value or LP_SERIES
             if value == LP_SERIES:
                 candles = await self.api.lp_candles(
-                    self.pool.chain, self.pool.address, size=size
+                    self.pool.chain, self.pool.address, size=size, count=count
                 )
             else:
                 i, j = (int(x) for x in value.split(":"))
@@ -385,6 +397,7 @@ class PoolDetailView(ft.Column):
                     self.pool.coins[i].address,
                     self.pool.coins[j].address,
                     size=size,
+                    count=count,
                 )
         except ApiError as exc:
             self.chart.set_candles([])

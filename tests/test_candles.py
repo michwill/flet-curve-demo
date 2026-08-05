@@ -8,6 +8,7 @@ draws. The pan/zoom arithmetic is in `test_viewport.py`.
 from __future__ import annotations
 
 import math
+from types import SimpleNamespace
 
 import flet_charts as fc
 import pytest
@@ -15,6 +16,9 @@ import pytest
 from curve.api import Candle
 from ui.candles import (
     DATE_LABELS,
+    MAX_CANDLES,
+    MIN_CANDLES,
+    TARGET_PITCH_PX,
     WICK_HEADROOM,
     PRICE_LABELS,
     CandleChart,
@@ -378,6 +382,61 @@ def test_the_chart_has_no_animation_at_all() -> None:
     assert duration.seconds == 0
     assert duration.milliseconds == 0
     assert duration.microseconds == 0
+
+
+# -- how many candles fit --------------------------------------------------
+
+
+def test_capacity_holds_the_pitch_constant_across_widths() -> None:
+    """A wider chart shows more candles, not the same ones stretched."""
+    chart = CandleChart()
+    pitches = []
+    for width in (400, 800, 1200, 1600):
+        chart._plot = Plot(width, 340)
+        capacity = chart.candle_capacity()
+        pitches.append(chart._plot.inner_width / capacity)
+    assert max(pitches) - min(pitches) < 0.5, pitches
+    assert all(abs(p - TARGET_PITCH_PX) < 0.5 for p in pitches), pitches
+
+
+def test_capacity_grows_with_width() -> None:
+    chart = CandleChart()
+    chart._plot = Plot(400, 340)
+    narrow = chart.candle_capacity()
+    chart._plot = Plot(1200, 340)
+    assert chart.candle_capacity() > narrow
+
+
+def test_capacity_is_bounded_at_both_ends() -> None:
+    chart = CandleChart()
+    chart._plot = Plot(10, 340)
+    assert chart.candle_capacity() == MIN_CANDLES
+    chart._plot = Plot(100_000, 340)
+    assert chart.candle_capacity() == MAX_CANDLES
+
+
+def test_the_gap_is_never_wider_than_a_candle() -> None:
+    """The whole point of the pitch: ~3px candle in a ~5.5px slot."""
+    measured_candle_px = 3.0
+    assert TARGET_PITCH_PX - measured_candle_px <= measured_candle_px
+
+
+def test_a_small_resize_does_not_refetch() -> None:
+    """Otherwise dragging a window edge fires a request per pixel."""
+    calls = []
+    chart = CandleChart(on_capacity_change=lambda: calls.append(1))
+    chart._resized(SimpleNamespace(width=800.0, height=340.0))
+    assert calls == []  # first layout only records
+    chart._resized(SimpleNamespace(width=830.0, height=340.0))
+    assert calls == []  # under the tolerance
+
+
+def test_a_large_resize_refetches() -> None:
+    calls = []
+    chart = CandleChart(on_capacity_change=lambda: calls.append(1))
+    chart._resized(SimpleNamespace(width=800.0, height=340.0))
+    chart._resized(SimpleNamespace(width=1600.0, height=340.0))
+    assert calls == [1]
 
 
 def test_summary_reports_the_change_over_the_window() -> None:

@@ -122,10 +122,24 @@ and a label — which is what canvas is for, unlike the candles, which were not.
   Qt version throttles for the same reason.
 - **Double-tap** refits the whole series.
 - **Candle size**, not window: 15m / 30m / 1h / 4h / 6h / 12h / 1d / 7d / 14d, the
-  way Curve's own chart does it. The span follows from the candle — 200 of
-  whatever you picked, so 15m is about two days and 1d is about seven months.
-  Every pair maps to a verified `(agg_number, agg_units)` on `lp_ohlc`;
-  `agg_units` accepts only `minute`, `hour`, `day`.
+  way Curve's own chart does it. Every pair maps to a verified
+  `(agg_number, agg_units)` on `lp_ohlc`; `agg_units` accepts only `minute`,
+  `hour`, `day`.
+
+**How many candles is a function of the plot width, not a fixed number.**
+`CandlestickChart` draws bodies at a fixed width — measured at ~3 logical
+pixels, and unchanged whether it is handed 20 spots or 365 — so the only lever
+on how the chart reads is how many candles share the width. A fixed 200 looked
+cramped at one candle size and sparse at another. The count is now
+`plot_width / TARGET_PITCH_PX` (5.5px), which puts a 3px candle in a 2.5px gap:
+gaps never wider than the candles, candles never hairlines. Two consequences
+fall out of it — a candle is the same size at every candle size, and widening
+the chart shows *more* candles rather than the same ones stretched, which is
+why a material resize refetches.
+
+The exception is history: 7d and 14d on a young pool return fewer candles than
+the chart has room for (81 weeks is all that exists), so those spread out. That
+is the data running out, not the pitch.
 
 No animation on any of it. A 250ms ease flatters a data swap and is actively
 wrong under direct manipulation: every drag frame sets a new window, so the

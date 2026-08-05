@@ -32,6 +32,8 @@ import flet as ft
 import flet.canvas as cv
 import flet_charts as fc
 
+from typing import Callable
+
 from curve.api import Candle
 from curve.format import token_amount
 
@@ -51,6 +53,28 @@ HOVER_INTERVAL = 0.04
 #: to the chart -- see `build_spots` -- and the margin stops a fast drag
 #: showing empty space before the next update lands.
 SPOT_MARGIN = 8
+
+#: Target pixels per candle slot.
+#:
+#: `CandlestickChart` draws candle bodies at a fixed width -- measured at
+#: ~3 logical pixels, and unchanged whether it is handed 20 spots or 365 --
+#: so the only lever on how the chart *looks* is how many candles share the
+#: plot width. Too many and they merge into a block; too few and the gaps
+#: dwarf the candles. At ~5.5px a 3px candle sits in a 2.5px gap, which
+#: reads as a candle chart rather than a bar code or a dotted line.
+#:
+#: The count follows from this and the plot width, so a candle is the same
+#: size at every candle size, and a wider chart shows *more* candles rather
+#: than the same ones stretched.
+TARGET_PITCH_PX = 5.5
+
+#: Bounds on that count, for very small or very wide charts.
+MIN_CANDLES = 40
+MAX_CANDLES = 400
+
+#: How much the capacity must change before the series is refetched. Without
+#: a threshold, every pixel of a window drag would trigger a request.
+CAPACITY_TOLERANCE = 0.25
 
 #: Smallest high-low extent a candle is drawn with, in pixels.
 #:
@@ -361,11 +385,15 @@ class CandleChart(ft.Container):
     double-tap refits the whole series.
     """
 
-    def __init__(self, height: float = 340) -> None:
+    def __init__(
+        self, height: float = 340, on_capacity_change: Callable[[], None] | None = None
+    ) -> None:
         self._candles: list[Candle] = []
         self._view = Viewport(0.0, 1.0, 0.0, 1.0)
         self._plot = Plot(800.0, height)
         self._last_hover = 0.0
+        self._on_capacity_change = on_capacity_change
+        self._last_capacity = 0
 
         self._chart = fc.CandlestickChart(
             key="price-chart",
@@ -461,8 +489,23 @@ class CandleChart(ft.Container):
 
     # -- interaction ------------------------------------------------------
 
+    def candle_capacity(self) -> int:
+        """How many candles this chart has room for at the target pitch."""
+        raw = int(self._plot.inner_width / TARGET_PITCH_PX)
+        return max(MIN_CANDLES, min(MAX_CANDLES, raw))
+
     def _resized(self, e: cv.CanvasResizeEvent) -> None:
         self._plot = Plot(e.width, e.height)
+        capacity = self.candle_capacity()
+        # Refetch only when the width changed enough to matter, so dragging
+        # a window edge does not fire a request per pixel.
+        if self._last_capacity and self._on_capacity_change:
+            change = abs(capacity - self._last_capacity) / self._last_capacity
+            if change > CAPACITY_TOLERANCE:
+                self._last_capacity = capacity
+                self._on_capacity_change()
+                return
+        self._last_capacity = capacity
 
     def _panned(self, e: ft.DragUpdateEvent) -> None:
         """Drag the chart. The content follows the cursor, as it should."""

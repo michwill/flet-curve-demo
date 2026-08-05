@@ -287,6 +287,24 @@ def test_double_tap_resets_the_view() -> None:
     assert chart._view.x_span == fitted.x_span
 
 
+def test_the_chart_has_no_animation_at_all() -> None:
+    """Any tween makes direct manipulation trail the cursor.
+
+    `AnimationValue` is `Union[bool, int, Animation]` -- not Optional -- and
+    the field defaults to a 150ms tween, so passing `None` silently keeps
+    that default rather than disabling it. Only an explicit zero Duration
+    actually means none, and this is the guard against it drifting back.
+    """
+    animation = CandleChart()._chart.animation
+    duration = animation.duration
+    assert duration.days == 0
+    assert duration.hours == 0
+    assert duration.minutes == 0
+    assert duration.seconds == 0
+    assert duration.milliseconds == 0
+    assert duration.microseconds == 0
+
+
 def test_summary_reports_the_change_over_the_window() -> None:
     chart = CandleChart()
     chart.set_candles(series([(1.0, 1.0, 1.0, 1.0), (1.0, 1.1, 1.0, 1.1)]))

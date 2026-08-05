@@ -318,12 +318,22 @@ class CandleChart(ft.Container):
             # The crosshair is the readout now, so the control's own touch
             # tooltip would only be a second, competing one.
             interactive=False,
-            # No animation. It flatters a data swap and is actively wrong
-            # under direct manipulation: every drag frame sets a new
-            # window, so an animated chart spends its time easing towards
-            # where the cursor *was*. Panning felt like dragging through
-            # treacle until this came out.
-            animation=None,
+            # Zero animation, spelled explicitly.
+            #
+            # `AnimationValue` is `Union[bool, int, Animation]` -- **not**
+            # Optional -- and the field defaults to a 150ms linear tween.
+            # Passing `None` does not disable it; it falls through to that
+            # default, which is why panning still visibly trailed the
+            # cursor after the first attempt at turning it off. A zero
+            # Duration is the way to actually mean none.
+            #
+            # It matters because every drag frame sets a new window, so any
+            # tween at all leaves the chart easing towards where the cursor
+            # *was* rather than where it is.
+            animation=ft.Animation(
+                duration=ft.Duration(milliseconds=0),
+                curve=ft.AnimationCurve.LINEAR,
+            ),
             horizontal_grid_lines=fc.ChartGridLines(
                 color=ft.Colors.OUTLINE_VARIANT, width=1
             ),

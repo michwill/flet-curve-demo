@@ -17,7 +17,8 @@ from typing import Any, Callable
 
 import pytest
 
-from wallet.base import WalletProvider
+from wallet.base import WalletProvider, WalletUnavailable
+from wallet.desktop import DesktopWalletProvider
 from wallet.session import Wallet
 
 CHECKSUMMED = "0x6B175474E89094C44Da98b954EedeAC495271d0F"
@@ -228,3 +229,99 @@ async def test_a_desktop_provider_announces_nothing_and_still_connects(
     wallet = await connect_with(monkeypatch, [])
     assert wallet.address == CHECKSUMMED
     assert wallet.icon is None
+
+
+# -- the desktop poller ----------------------------------------------------
+#
+# An HTTP endpoint cannot push, so `DesktopWalletProvider` synthesises the
+# same events by asking. These drive it through one pass at a time rather
+# than waiting on the real interval.
+
+
+class ScriptedDesktop(DesktopWalletProvider):
+    """A desktop provider whose RPC answers come from a list."""
+
+    def __init__(self, answers: list[tuple[list[str], str]]) -> None:
+        super().__init__("http://127.0.0.1:1248")
+        self.answers = answers
+        self.events: list[tuple[str, Any]] = []
+        self.on("accountsChanged", lambda d: self.events.append(("accounts", d)))
+        self.on("chainChanged", lambda d: self.events.append(("chain", d)))
+
+    async def request(self, method: str, params: list[Any] | None = None) -> Any:
+        if not self.answers:
+            self._closed = True  # end the loop the way close() would
+            raise WalletUnavailable("no more answers")
+        accounts, chain = self.answers[0]
+        if method == "eth_accounts":
+            return accounts
+        if method == "eth_chainId":
+            self.answers.pop(0)
+            return chain
+        raise AssertionError(f"unexpected {method}")
+
+
+async def run_poller(provider: DesktopWalletProvider, monkeypatch) -> None:
+    """Run the poll loop with the wait taken out."""
+    import wallet.desktop as desktop
+
+    async def no_wait(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(desktop.asyncio, "sleep", no_wait)
+    await provider._poll()
+
+
+async def test_the_first_pass_only_seeds(monkeypatch) -> None:
+    """Connecting is not an account change."""
+    provider = ScriptedDesktop([([CHECKSUMMED], "0x1")])
+    await run_poller(provider, monkeypatch)
+    assert provider.events == []
+
+
+async def test_switching_account_in_the_wallet_is_reported(monkeypatch) -> None:
+    """The whole point: nothing in the app clicked anything."""
+    provider = ScriptedDesktop([([CHECKSUMMED], "0x1"), ([OTHER], "0x1")])
+    await run_poller(provider, monkeypatch)
+    assert provider.events == [("accounts", [OTHER])]
+
+
+async def test_switching_network_in_the_wallet_is_reported(monkeypatch) -> None:
+    provider = ScriptedDesktop([([CHECKSUMMED], "0x1"), ([CHECKSUMMED], "0xa4b1")])
+    await run_poller(provider, monkeypatch)
+    assert provider.events == [("chain", "0xa4b1")]
+
+
+async def test_locking_the_wallet_reports_no_accounts(monkeypatch) -> None:
+    """Which `Wallet` reads as a disconnection, exactly as in a browser."""
+    provider = ScriptedDesktop([([CHECKSUMMED], "0x1"), ([], "0x1")])
+    await run_poller(provider, monkeypatch)
+    assert provider.events == [("accounts", [])]
+
+
+async def test_a_steady_wallet_says_nothing(monkeypatch) -> None:
+    same = [([CHECKSUMMED], "0x1")] * 4
+    provider = ScriptedDesktop(same)
+    await run_poller(provider, monkeypatch)
+    assert provider.events == []
+
+
+async def test_a_wallet_that_stops_answering_is_not_a_disconnection(
+    monkeypatch,
+) -> None:
+    """A locked or restarting wallet must not drop the session.
+
+    `request` raising is the transient case; only an empty account list
+    means the site was actually revoked.
+    """
+    provider = ScriptedDesktop([([CHECKSUMMED], "0x1")])
+    await run_poller(provider, monkeypatch)  # runs dry, then raises
+    assert provider.events == []
+
+
+async def test_closing_stops_the_poller() -> None:
+    provider = DesktopWalletProvider("http://127.0.0.1:1248")
+    provider.on("accountsChanged", lambda _d: None)
+    assert provider._watch is not None
+    await provider.close()
+    assert provider._watch is None

@@ -121,26 +121,34 @@ stopped reverting:
 
 - **`get_dy` is exact** -- the maths the swap itself runs, fee included --
   so a swap allows `0.2 * fee` and nothing more.
-- **`a = 1`** is the tightest slope that covers every pool. What binds it is
-  the old StableSwap implementations, which quote fee-free: cvxCrv/Crv
-  mints 0.91x its fee below the quote, sdCRV/CRV 0.90x, 3pool 0.63x,
-  alETH/frxETH 0.13x, msETH/WETH 0.05x. The spread is how imbalanced each
-  pool already is; one whole fee is the ceiling for a two-coin pool.
-  Everything modern -- crvusd, stableswap-ng, tricrypto-ng, twocrypto-ng,
-  the old crypto pools -- mints *exactly* the quote at every size tried, so
-  there the fee term is margin, which is also what covers an implementation
-  this app has never seen.
-- **`b = 0.02%`** is what the same fit puts at *zero* -- and it is zero
-  across pools, because a cross-section has no time axis. What a quote
-  loses by being a few blocks old is measured separately, by calling
-  `calc_token_amount` against the archive at the block you would have
-  quoted at and the block you land in. It is bursty rather than
-  pool-shaped: the largest drop over five blocks across all 44 pools in a
-  quiet snapshot was 0.00022%, while a volatile one cost 0.0173% over three
-  blocks on TricryptoUSDC. `b` covers the worst of those.
+- **`a = 0.95`, `b = 0.005%`.** The two are a pair: with the constant held
+  at 0.005%, the smallest slope covering all 44 pools is 0.880, and 0.95 is
+  that plus headroom. What binds it is the old StableSwap implementations,
+  which quote fee-free: cvxCrv/Crv mints 0.91x its fee below the quote,
+  sdCRV/CRV 0.90x, 3pool 0.63x, alETH/frxETH 0.13x, msETH/WETH 0.05x -- the
+  spread is how imbalanced each pool already is. Everything modern --
+  crvusd, stableswap-ng, tricrypto-ng, twocrypto-ng, the old crypto pools --
+  mints *exactly* the quote, so there the fee term is margin, which is also
+  what covers an implementation this app has never seen.
+- **Keeping the slope is what keeps the constant small.** Flattening `a`
+  towards zero would push `b` to 0.137%, the whole of cvxCrv/Crv's
+  shortfall, and every pegged pool would then be given it. As it stands a
+  pool charging 0.001% is allowed 0.00595% and one charging 0.6% is allowed
+  0.575%.
+- **`b` is the time axis**, and it is zero *across pools* -- a cross-section
+  measured at one moment cannot see it. What a quote loses by going stale
+  is measured separately, against the archive: the worst five-block drop
+  across all 44 pools in a quiet snapshot was 0.00022%, while a volatile
+  moment cost 0.0173% over three blocks on TricryptoUSDC. The quiet case
+  fits inside 0.005%; the bursty one is absorbed by `a * fee`, because the
+  pools that lurch are the ones charging enough for that term to matter
+  (TricryptoUSDC allows 0.0335%) while the pools whose fees are too small
+  to help are the pegged ones that do not lurch.
 
-Which lands at 0.035% to deposit into 3pool and 0.003% to swap in it; 0.17%
-and 0.03% for cvxCrv/Crv, whose fee is 0.15%.
+Which lands at 0.0193% to deposit into 3pool and 0.003% to swap in it;
+0.148% and 0.03% for cvxCrv/Crv, whose fee is 0.15%. The shown figure is
+rounded *up* to three significant digits -- a floor displayed tighter than
+it was calculated is a floor that reverts.
 
 A caveat about measuring this yourself: `boa.deal` on a share-based token
 moves its exchange rate, and the pool prices deposits through that rate. A

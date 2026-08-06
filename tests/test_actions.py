@@ -419,15 +419,15 @@ def tab_with_fee(cls, flat: int, pair: int | None = None, registry: str = "crvus
     return tab, provider
 
 
-async def test_deposit_slippage_is_a_whole_fee_plus_the_drift() -> None:
-    """3pool: 0.015% fee -> 0.035%. Fitted to 88 deposits run on a fork;
-    the binding case is cvxCrv/Crv, which mints 0.91x its fee below the
-    quote, and one whole fee is the ceiling for a two-coin pool."""
+async def test_deposit_slippage_is_most_of_a_fee_plus_a_little() -> None:
+    """3pool: 0.015% fee -> 0.01925%. Fitted to deposits run on a fork
+    across 44 pools; cvxCrv/Crv binds the slope by minting 0.91x its fee
+    below the quote."""
     from ui.actions import DepositTab
 
     tab, _ = tab_with_fee(DepositTab, 1_500_000, registry="main")
     await tab.refresh()
-    assert tab.slippage.value == "0.035"
+    assert float(tab.slippage.value) == pytest.approx(0.0193)   # 0.01925, rounded up
 
 
 async def test_the_same_line_holds_whatever_the_implementation() -> None:
@@ -450,7 +450,7 @@ async def test_a_tiny_fee_still_gets_the_drift_allowance() -> None:
 
     tab, _ = tab_with_fee(DepositTab, 100_000, registry="stableswapng")
     await tab.refresh()
-    assert float(tab.slippage.value) == pytest.approx(0.001 + QUOTE_DRIFT)
+    assert float(tab.slippage.value) == pytest.approx(0.00095 + QUOTE_DRIFT)
 
 
 async def test_withdrawing_uses_the_flat_fee_too() -> None:
@@ -458,7 +458,7 @@ async def test_withdrawing_uses_the_flat_fee_too() -> None:
 
     tab, provider = tab_with_fee(WithdrawTab, 1_000_000, pair=9_999_999)
     await tab.refresh()
-    assert float(tab.slippage.value) == pytest.approx(0.01 + 0.02)
+    assert float(tab.slippage.value) == pytest.approx(0.0095 + 0.005)
     assert "0x" + abi.selector("dynamic_fee(int128,int128)") not in provider.reads
 
 
@@ -604,25 +604,39 @@ async def test_the_line_covers_every_measured_pool() -> None:
         assert allowed >= needed, f"fee {fee}: allows {allowed}, needs {needed}"
 
 
-def test_the_slope_is_the_tightest_that_covers_them() -> None:
-    """Fitted, not chosen: cvxCrv/Crv needs 0.91x its fee and binds the
-    line; a shallower slope would need a constant an order of magnitude
-    bigger to reach it, which every other pool would then carry."""
-    from ui.actions import ESTIMATE_FEE_SHARE
+def test_the_slope_carries_what_the_constant_does_not() -> None:
+    """The two are a pair: with b at 0.005% the smallest slope that covers
+    all 44 pools is 0.880, so 0.95 is that plus headroom. Dropping the
+    slope towards zero would push b to 0.137% -- the whole of cvxCrv/Crv's
+    shortfall -- and every pegged pool would then carry it."""
+    from ui.actions import ESTIMATE_FEE_SHARE, QUOTE_DRIFT, slippage_for
 
-    worst_ratio = 0.13696 / 0.15      # cvxCrv/Crv, the binding pool
-    assert ESTIMATE_FEE_SHARE >= worst_ratio
-    assert ESTIMATE_FEE_SHARE <= 1.5, "more than this is margin nobody needs"
+    binding_fee, binding_need = 15_000_000, 0.13696      # cvxCrv/Crv
+    assert slippage_for(binding_fee, ESTIMATE_FEE_SHARE, QUOTE_DRIFT) >= binding_need
+    minimum = (binding_need - QUOTE_DRIFT) / (binding_fee / 10**10 * 100)
+    assert ESTIMATE_FEE_SHARE >= minimum
+    assert ESTIMATE_FEE_SHARE <= 1.0, "more than a whole fee is margin nobody needs"
+
+
+def test_a_low_constant_is_what_the_slope_buys() -> None:
+    """A pegged pool charging 0.001% should not be given the tolerance a
+    volatile one needs; that is the point of keeping `a` above zero."""
+    from ui.actions import ESTIMATE_FEE_SHARE, QUOTE_DRIFT, slippage_for
+
+    pegged = slippage_for(100_000, ESTIMATE_FEE_SHARE, QUOTE_DRIFT)     # 0.001% fee
+    volatile = slippage_for(60_000_000, ESTIMATE_FEE_SHARE, QUOTE_DRIFT)  # 0.6% fee
+    assert pegged < 0.01, "a pegged pool should stay well under a hundredth"
+    assert volatile > 0.5, "a 0.6% fee pool needs room the constant cannot give"
 
 
 def test_the_arithmetic_is_a_times_fee_plus_b() -> None:
     from ui.actions import ESTIMATE_FEE_SHARE, QUOTE_DRIFT, SLIPPAGE_OF_FEE, slippage_for
 
-    assert (SLIPPAGE_OF_FEE, ESTIMATE_FEE_SHARE, QUOTE_DRIFT) == (0.2, 1.0, 0.02)  # a, b
+    assert (SLIPPAGE_OF_FEE, ESTIMATE_FEE_SHARE, QUOTE_DRIFT) == (0.2, 0.95, 0.005)
     # 1e10 is 100%, so 10_000_000 is 0.1%.
     assert slippage_for(10_000_000) == pytest.approx(0.02)
     assert slippage_for(0) == 0
-    assert slippage_for(10_000_000, ESTIMATE_FEE_SHARE, QUOTE_DRIFT) == pytest.approx(0.12)
+    assert slippage_for(10_000_000, ESTIMATE_FEE_SHARE, QUOTE_DRIFT) == pytest.approx(0.1 * 0.95 + 0.005)
     # The constant is what carries a pool whose fee rounds to nothing.
     assert slippage_for(0, ESTIMATE_FEE_SHARE, QUOTE_DRIFT) == pytest.approx(QUOTE_DRIFT)
 
@@ -745,3 +759,14 @@ async def test_a_confirmed_deposit_clears_the_amounts() -> None:
 
 async def _noop() -> None:
     return None
+
+
+def test_the_shown_tolerance_is_never_tighter_than_the_computed_one() -> None:
+    """Three significant figures, rounded up: `%.3g` would turn 0.01925
+    into 0.0192, and a floor shown tighter than it was calculated is a
+    floor that reverts."""
+    from ui.actions import ESTIMATE_FEE_SHARE, QUOTE_DRIFT, format_slippage, slippage_for
+
+    for fee in range(0, 200_000_000, 137_017):
+        exact = slippage_for(fee, ESTIMATE_FEE_SHARE, QUOTE_DRIFT)
+        assert float(format_slippage(exact)) >= exact, fee

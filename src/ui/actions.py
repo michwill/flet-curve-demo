@@ -22,6 +22,7 @@ Two rules hold everywhere in this file:
 
 from __future__ import annotations
 
+from decimal import ROUND_CEILING, Decimal
 from typing import Awaitable, Callable
 
 import flet as ft
@@ -66,8 +67,10 @@ SLIPPAGE_OF_FEE = 0.2
 #: through titanoboa, bisecting `min_mint` until `add_liquidity` stops
 #: reverting.
 #:
-#: `a = 1` is the tightest slope that covers every pool -- the fit lands at
-#: 0.92 and this rounds up. What binds it is
+#: `a = 0.95`. With `b` held at 0.005% the smallest slope that covers all
+#: 44 pools is 0.880 -- binding, as always, on cvxCrv/Crv -- and 0.95
+#: leaves that pool 0.005% of headroom rather than 0.00004%. What binds it
+#: is
 #: the old StableSwap implementations, whose `calc_token_amount` quotes
 #: fee-free so the mint lands short: cvxCrv/Crv by 0.91x its fee, 3pool by
 #: 0.63x, alETH/frxETH by 0.13x, msETH/WETH by 0.05x -- the spread is how
@@ -76,7 +79,7 @@ SLIPPAGE_OF_FEE = 0.2
 #: twocrypto-ng, the old crypto pools) mints *exactly* the quote at every
 #: size from 0.01% to 1% of the pool, so for those this is pure margin --
 #: which is also what covers an implementation this app has never seen.
-ESTIMATE_FEE_SHARE = 1.0
+ESTIMATE_FEE_SHARE = 0.95
 
 #: `b` is what the same fit says is zero -- and it is zero *across pools*,
 #: because a cross-section cannot see time. Every pool above was measured
@@ -85,10 +88,18 @@ ESTIMATE_FEE_SHARE = 1.0
 #: archive at the block you would have quoted at and the block you land in.
 #:
 #: That is bursty rather than pool-shaped: in a quiet snapshot the largest
-#: drop over five blocks across all 44 pools was 0.00022%, but a volatile
-#: one cost 0.0173% over three blocks on TricryptoUSDC. So `b` covers the
-#: worst of those rather than the median of nothing.
-QUOTE_DRIFT = 0.02
+#: drop over five blocks across all 44 pools was 0.00022%, while a volatile
+#: one cost 0.0173% over three blocks on TricryptoUSDC. Keeping `b` at
+#: 0.005% covers the quiet case outright, and the bursty one is covered by
+#: the fee term instead: the pools that lurch are the ones charging enough
+#: for `a * fee` to absorb it (TricryptoUSDC allows 0.0335% against that
+#: 0.0173% drop), while the pools with fees too small to help are the
+#: pegged ones that do not move -- Strategic USD Reserves charges 0.001%
+#: and its worst drift over a hundred blocks was 0.0019%, inside 0.00595%.
+#:
+#: Which is the whole reason to keep the slope: a low constant is only
+#: affordable because `a` is doing the work where the risk actually is.
+QUOTE_DRIFT = 0.005
 
 
 def slippage_for(
@@ -99,8 +110,20 @@ def slippage_for(
 
 
 def format_slippage(percent: float) -> str:
-    """Three significant figures, which is as fine as the field is read."""
-    return f"{percent:.3g}"
+    """Three significant figures, rounded *up*.
+
+    Up rather than nearest because this number is a floor being handed to
+    the chain: `%.3g` turns 0.01925 into 0.0192, which is a tolerance
+    slightly tighter than the one that was calculated, and the whole point
+    of calculating it was that tighter reverts.
+    """
+    if percent <= 0:
+        return "0"
+    value = Decimal(repr(percent))
+    step = Decimal(1).scaleb(value.adjusted() - 2)      # third significant digit
+    rounded = value.quantize(step, rounding=ROUND_CEILING)
+    text = format(rounded, "f").rstrip("0").rstrip(".")
+    return text or "0"
 
 
 def _stacked(*controls: ft.Control) -> ft.Column:

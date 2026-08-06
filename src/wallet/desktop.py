@@ -19,7 +19,7 @@ import json
 import os
 import urllib.error
 import urllib.request
-from typing import Any
+from typing import Any, Callable
 
 from .base import RpcError, WalletProvider, WalletUnavailable
 
@@ -29,6 +29,16 @@ DEFAULT_ENDPOINT = os.environ.get("FLET_PAY_RPC", "http://127.0.0.1:1248")
 #: How the wallet identifies us in its approval dialog. Frame and qeth both
 #: display the request Origin so the user can see who is asking.
 ORIGIN = "http://flet-pay-example.localhost"
+
+#: How often to ask the wallet whether the account or chain moved.
+#:
+#: A browser wallet pushes `accountsChanged`; an HTTP endpoint cannot push
+#: anything, so the only way to notice someone switching account in Frame
+#: or qeth is to ask. `eth_accounts` is not interactive -- it reports what
+#: is already authorised and raises no dialog -- so this is cheap and
+#: invisible. Four seconds is under the time it takes to switch account and
+#: look back at the app.
+POLL_INTERVAL = 4.0
 
 #: A read should fail fast; a signature waits on a human.
 READ_TIMEOUT = 30.0
@@ -59,6 +69,12 @@ class DesktopWalletProvider(WalletProvider):
         self.endpoint = endpoint
         self.name = name or f"Local wallet ({endpoint})"
         self._id = 0
+        self._handlers: dict[str, list[Callable[[Any], None]]] = {}
+        self._watch: asyncio.Task[None] | None = None
+        self._closed = False
+        #: Last `(accounts, chain_id)` seen by the poller. None until the
+        #: first pass, which seeds rather than reports.
+        self._seen: tuple[tuple[str, ...], str] | None = None
 
     # -- transport ---------------------------------------------------------
 
@@ -113,6 +129,70 @@ class DesktopWalletProvider(WalletProvider):
                 )
             raise RpcError(-32603, str(error))
         return response.get("result") if isinstance(response, dict) else None
+
+    # -- events ------------------------------------------------------------
+    #
+    # There is no push channel here, so these are synthesised by polling.
+    # The events and their payloads are exactly the browser's -- a list of
+    # accounts, a hex chain id -- so `Wallet` cannot tell the difference and
+    # neither can the UI.
+
+    def on(self, event: str, handler: Callable[[Any], None]) -> None:
+        self._handlers.setdefault(event, []).append(handler)
+        self._start_watching()
+
+    def _start_watching(self) -> None:
+        """Begin polling, if there is a loop to poll on."""
+        if self._watch is not None or self._closed:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # Subscribed outside async context; the next subscribe starts it.
+            return
+        self._watch = loop.create_task(self._poll())
+
+    def _emit(self, event: str, data: Any) -> None:
+        for handler in list(self._handlers.get(event, [])):
+            try:
+                handler(data)
+            except Exception:  # a bad handler must not kill the poller
+                pass
+
+    async def _poll(self) -> None:
+        # Reads first, sleeps after: the opening pass seeds the baseline, so
+        # a switch made in the first few seconds is still caught.
+        while not self._closed:
+            try:
+                accounts = await self.request("eth_accounts")
+                chain_id = await self.request("eth_chainId")
+            except (WalletUnavailable, RpcError):
+                # The wallet is locked, restarting, or gone. Say nothing and
+                # try again: a transient failure is not a disconnection, and
+                # announcing one would drop a session that is about to work.
+                await asyncio.sleep(POLL_INTERVAL)
+                continue
+
+            current = (
+                tuple(a for a in (accounts or []) if isinstance(a, str)),
+                str(chain_id or ""),
+            )
+            if self._seen is not None and current != self._seen:
+                was = self._seen
+                self._seen = current
+                if current[0] != was[0]:
+                    self._emit("accountsChanged", list(current[0]))
+                if current[1] != was[1] and current[1]:
+                    self._emit("chainChanged", current[1])
+            else:
+                self._seen = current
+            await asyncio.sleep(POLL_INTERVAL)
+
+    async def close(self) -> None:
+        self._closed = True
+        if self._watch is not None:
+            self._watch.cancel()
+            self._watch = None
 
     # -- discovery ---------------------------------------------------------
 

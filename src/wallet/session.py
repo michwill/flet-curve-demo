@@ -135,13 +135,20 @@ class Wallet:
     # -- lifecycle --------------------------------------------------------
 
     @classmethod
-    async def connect(cls, choose: Chooser | None = None) -> "Wallet":
+    async def connect(
+        cls, choose: Chooser | None = None, *, always_choose: bool = False
+    ) -> "Wallet":
         """Find a wallet, authorise an account, and return a live session.
 
-        `choose` is only consulted when a platform offers more than one
-        wallet -- in practice, a browser with several connectors available.
-        Omit it and the first is taken. Raises `WalletError` on every
-        failure path, so callers need exactly one `except`.
+        `choose` is consulted when a platform offers more than one wallet --
+        in practice, a browser with several connectors available. Omit it
+        and the first is taken. Raises `WalletError` on every failure path,
+        so callers need exactly one `except`.
+
+        `always_choose` asks even when there is a single option. That is for
+        "change wallet", where skipping the picker makes the command look
+        broken: the app reconnects to the wallet you were already using and
+        nothing on screen moves.
         """
         provider = await connect_provider()
 
@@ -158,7 +165,7 @@ class Wallet:
             for w in getattr(provider, "wallets", [])
         ]
         uuid = options[0].uuid if options else ""
-        if len(options) > 1:
+        if len(options) > 1 or (always_choose and options and choose):
             uuid = await choose(options) if choose else options[0].uuid
             if not uuid:
                 await provider.close()

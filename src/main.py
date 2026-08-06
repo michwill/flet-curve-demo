@@ -78,25 +78,31 @@ def chain_icon(chain: str) -> ft.Control | None:
 
 
 def wallet_mark(icon: str | None, name: str, size: float = 28) -> ft.Control:
-    """The wallet software's own face, or its initial.
+    """The wallet software's own face, or a generic wallet glyph.
 
     EIP-6963 requires a wallet to announce an icon, so this is usually the
     real thing; WalletConnect announces none -- it is a protocol, not a
-    wallet -- and gets the one this app bundles. Anything else falls back
-    to a letter, which is also what a `data:` URI that fails to decode
-    ends up as.
+    wallet -- and gets the one this app bundles. Two cases have no art at
+    all and get the glyph: a pre-EIP-6963 wallet that only sets
+    `window.ethereum`, and the desktop endpoint, which is Frame or qeth
+    with no way to tell which. A letter was worse than useless there -- the
+    desktop provider is called "Frame / qeth (127.0.0.1:1248)", so it drew
+    a large "F" for a wallet that may well be neither.
     """
-    initial = (name or "?").strip()[:1].upper() or "?"
-    fallback = ft.CircleAvatar(content=ft.Text(initial), radius=size / 2)
+    fallback = ft.CircleAvatar(
+        content=ft.Icon(ft.Icons.ACCOUNT_BALANCE_WALLET, size=size * 0.6),
+        radius=size / 2,
+    )
     if not icon:
         return fallback
+    # No `cache_width` here, unlike the token logos: wallet art arrives as a
+    # `data:` URI that is usually SVG, which has no pixel size to decode at
+    # and fails outright when asked for one.
     return ft.Image(
         src=icon,
         width=size,
         height=size,
         fit=ft.BoxFit.CONTAIN,
-        cache_width=int(size * 3),
-        filter_quality=ft.FilterQuality.MEDIUM,
         error_content=fallback,
     )
 
@@ -400,13 +406,17 @@ class CurveApp:
         if self.wallet is not None:
             self.page.show_dialog(self._wallet_dialog(self.wallet))
 
-    async def connect(self, _e: ft.ControlEvent | None) -> None:
+    async def connect(
+        self, _e: ft.ControlEvent | None, *, always_choose: bool = False
+    ) -> None:
         self.connect_button.disabled = True
         self.connect_button.content = "Connecting…"
         self.error.visible = False
         self.page.update()
         try:
-            self.wallet = await Wallet.connect(choose=self._choose_wallet)
+            self.wallet = await Wallet.connect(
+                choose=self._choose_wallet, always_choose=always_choose
+            )
         except WalletError as exc:
             # In the header a failure would be clipped by the chip's fixed
             # width; the error line under it has the whole page.
@@ -512,6 +522,17 @@ class CurveApp:
             self.page.pop_dialog()
             self.page.run_task(self._change_wallet)
 
+        # On the desktop there is one endpoint and no choice to offer: the
+        # account is whichever one Frame or qeth has selected, and the app
+        # now follows that by itself.
+        actions: list[ft.Control] = [ft.TextButton("Copy", on_click=copy)]
+        if is_browser():
+            actions.append(ft.TextButton("Change wallet", on_click=change))
+        actions += [
+            ft.TextButton("Disconnect", on_click=disconnect),
+            ft.TextButton("Close", on_click=lambda _e: self.page.pop_dialog()),
+        ]
+
         def disconnect(_e: ft.ControlEvent) -> None:
             self.page.pop_dialog()
             self.page.run_task(self._disconnect_wallet)
@@ -535,7 +556,8 @@ class CurveApp:
                     # clipboard, which a browser may refuse.
                     ft.Text(wallet.address, size=BODY, selectable=True),
                     ft.Text(
-                        f"On {wallet.chain.name}",
+                        f"On {wallet.chain.name}"
+                        + ("" if is_browser() else "  ·  switch account in the wallet"),
                         size=SMALL,
                         color=ft.Colors.ON_SURFACE_VARIANT,
                     ),
@@ -544,24 +566,18 @@ class CurveApp:
                 tight=True,
                 spacing=6,
             ),
-            actions=[
-                ft.TextButton("Copy", on_click=copy),
-                ft.TextButton("Change wallet", on_click=change),
-                ft.TextButton("Disconnect", on_click=disconnect),
-                ft.TextButton("Close", on_click=lambda _e: self.page.pop_dialog()),
-            ],
+            actions=actions,
         )
 
     async def _change_wallet(self) -> None:
         """Drop the current connection, then connect again from scratch.
 
-        `Wallet.connect` only offers the picker when the page announced
-        more than one wallet -- with a single extension installed this is
-        simply a reconnection, which is still the only way to reach another
-        account in that wallet.
+        The picker is forced open even when only one wallet answered:
+        without that this command silently reconnects to the wallet you
+        were already using and looks like it did nothing at all.
         """
         await self._disconnect_wallet()
-        await self.connect(None)
+        await self.connect(None, always_choose=True)
 
     async def _disconnect_wallet(self) -> None:
         if self.wallet is not None:

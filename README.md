@@ -126,6 +126,47 @@ transaction stopped reverting, and quote staleness against the archive.
 traps that produced wrong answers first, and why the fee term is what lets
 the constant stay at 0.005%.
 
+### Metapools
+
+A metapool holds two coins: its own, and the base pool's LP token. Almost
+nobody holds that LP token — what they have is USDC — so Deposit, Withdraw and
+Swap each offer a **Pool tokens / Underlying** switch, defaulting to underlying.
+
+Swapping is the easy half. `exchange_underlying` is on the pool itself, which
+does the base-pool leg internally, so it approves the pool like any other swap
+and works on every chain — including the ones where no zap was ever deployed.
+It is offered on StableSwap metapools only: the crypto ones (EURe/3Crv on
+Gnosis, USD-BTC-ETH on Polygon) have no `get_dy_underlying` at all, confirmed
+against the chain.
+
+Depositing and withdrawing need a zap, and `curve/zaps.py` is mostly a table of
+them, because there turned out to be **four dialects** and none is inferable
+from the others:
+
+| | pool argument | array | `is_deposit` flag | indices |
+|---|---|---|---|---|
+| StableSwap-NG factory | yes | `uint256[]` | yes | `int128` |
+| stable factory | yes | `uint256[N]` | yes | `int128` |
+| crypto factory | yes | `uint256[N]` | **no** | `uint256` |
+| per-pool crypto | **no** | `uint256[N]` | no | `uint256` |
+
+The last row is the older crypto metapools, which each got a zap of their own,
+so its calldata is exactly what the pool itself would take — just sent
+elsewhere. That is also why there are three tables rather than one: what
+*addresses* a zap differs, not only what it speaks.
+
+The addresses come from `zapAddress` in the v1 main API, swept across all 21
+chains and every registry, and each was then checked with an `eth_call` to that
+zap on its own chain, quoting a real deposit. The Gnosis gap that prompted this
+was a sweep bug: Curve's API calls that chain `xdai`, and asking for `gnosis`
+quietly returned nothing.
+
+A zap that will not answer costs nothing, since the route is gated on a working
+quote — no approve step appears and the pool-token route stays. One family is
+still unsupported for deposits: the `main`-registry metapools (GUSD/3Crv and
+friends), whose per-pool deposit contracts answered none of the spellings
+probed. Their underlying coins can still be swapped.
+
 ## Reading Curve
 
 Public APIs, no keys. Pool data comes from the **Prices API v2**; charts from
@@ -672,10 +713,12 @@ end against a real balance.
 
 ## Deliberately not built
 
-- **No router.** Swaps are `exchange` within the one pool, as asked. Cross-pool
-  routing is a different problem and a much larger one.
-- **No balanced-deposit helper, no zaps, no metapool underlying deposits.**
-  Deposits go to the pool's own `add_liquidity` with explicit per-coin amounts.
+- **No router.** Swaps are `exchange` — or `exchange_underlying` on a metapool,
+  which is still one pool doing both legs itself. Cross-pool routing is a
+  different problem and a much larger one.
+- **No balanced-deposit helper.** Deposits go to `add_liquidity` with explicit
+  per-coin amounts. (Metapool underlying deposits *are* built, through the
+  zaps — see below.)
 - **Withdrawal floors on the balanced path** are derived from the reserves the API
   reports rather than from `calc_token_amount(…, is_deposit=False)`. Sending zero
   floors would be simpler and is what many UIs do; it also offers no protection

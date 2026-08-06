@@ -683,3 +683,144 @@ async def test_the_pool_route_asks_about_the_pair() -> None:
     assert float(tab.slippage.value) == pytest.approx(
         slippage_for(9_999_999, SLIPPAGE_OF_FEE), rel=1e-3
     )
+
+
+# -- the other two dialects ------------------------------------------------
+#
+# Four exist, and none can be inferred from the others. Two more beyond the
+# NG and old-factory zaps above:
+#
+#   * the crypto factory's shared zaps -- a pool argument like the stable
+#     ones, but no `is_deposit` flag and uint256 indices;
+#   * the older crypto metapools' per-pool zaps -- no pool argument at all,
+#     so the calldata is exactly what the pool itself would take.
+#
+# All four were probed against deployed contracts, and the quotes below
+# were reproduced through `PoolContract` against live chains: EURe/3Crv on
+# Gnosis, cvxCRV/crvFRAX on Ethereum, World Liberty USD1, and MAI/x3CRV.
+
+EURE_3CRV = "0x056C6C5e684CeC248635eD86033378Cc444459B0"  # Gnosis, per-pool zap
+EURE_ZAP = "0xE3FFF29d4DC930EBb787FeCd49Ee5963DADf60b6"
+GNOSIS_3POOL = "0x7f90122BF0700F9E7e1F688fe926940E8839F353"
+
+
+def gnosis_crypto_metapool() -> Pool:
+    """EURe/x3CRV as v2 reports it: a `crypto` metapool, coins decomposed."""
+    pool = Pool(
+        address=EURE_3CRV,
+        name="EURe-3Crv",
+        chain="xdai",
+        chain_id=100,
+        registry="crypto",
+        base_pool=GNOSIS_3POOL,
+        lp_token=EURE_3CRV,
+        coins=[
+            Coin("0x" + f"{i:02x}" * 20, symbol, 18 if i < 3 else 6, index=i)
+            for i, symbol in enumerate(["EURe", "x3CRV", "WXDAI", "USDC", "USDT"])
+        ],
+    )
+    pool.onchain_coins = 2
+    return pool
+
+
+def test_a_crypto_metapool_gets_its_own_zap() -> None:
+    """Keyed by the pool, not the base pool: these were deployed one per
+    pool, so there is nothing else to key them by."""
+    zap = zap_for(gnosis_crypto_metapool())
+    assert zap is not None
+    assert zap.address == EURE_ZAP
+    assert (zap.pool_arg, zap.stableswap, zap.dynamic) == (False, False, False)
+    assert zap.coins == 4
+
+
+def test_the_per_pool_zap_takes_the_calldata_a_pool_would() -> None:
+    """No pool argument, no `is_deposit` flag, uint256 indices. Verified
+    against the deployed Gnosis zap, which answers this and reverts on
+    every spelling that carries a pool address."""
+    data = abi.encode_zap_calc_token_amount(None, [0, 5, 0, 0], stableswap=False)
+    assert data[:10] == "0x" + abi.selector("calc_token_amount(uint256[4])")
+    assert words_of(data) == [0, 5, 0, 0]
+
+    withdraw = abi.encode_zap_calc_withdraw_one_coin(None, 10**18, 2, stableswap=False)
+    assert withdraw[:10] == "0x" + abi.selector("calc_withdraw_one_coin(uint256,uint256)")
+    assert words_of(withdraw) == [10**18, 2]
+
+
+def test_the_crypto_factory_zap_takes_a_pool_but_no_flag() -> None:
+    data = abi.encode_zap_calc_token_amount(META, [1, 2, 3], stableswap=False)
+    assert data[:10] == "0x" + abi.selector("calc_token_amount(address,uint256[3])")
+    assert words_of(data) == [int(META, 16), 1, 2, 3]
+
+
+def test_the_four_dialects_are_four_functions() -> None:
+    """The whole reason the flags exist: same operation, four selectors."""
+    amounts = [1, 2, 3]
+    selectors = {
+        abi.encode_zap_calc_token_amount(META, amounts, dynamic=True)[:10],
+        abi.encode_zap_calc_token_amount(META, amounts)[:10],
+        abi.encode_zap_calc_token_amount(META, amounts, stableswap=False)[:10],
+        abi.encode_zap_calc_token_amount(None, amounts, stableswap=False)[:10],
+    }
+    assert len(selectors) == 4
+
+
+async def test_a_per_pool_zap_is_addressed_without_the_pool() -> None:
+    pool = gnosis_crypto_metapool()
+    provider = FakeProvider({"0x1a805185": word(44 * 10**18)})  # calc_token_amount(uint256[4])
+    contract = PoolContract(provider, pool, ACCOUNT)
+
+    assert await contract.zap_calc_token_amount([0, 100 * 10**18, 0, 0]) == 44 * 10**18
+    await contract.zap_add_liquidity([0, 100 * 10**18, 0, 0], 1)
+
+    sent = provider.sent[-1]
+    assert sent["to"] == EURE_ZAP
+    # First word is an amount, not an address: no pool argument at all.
+    assert words_of(sent["data"])[0] == 0
+
+
+async def test_a_crypto_withdrawal_indexes_with_uint256() -> None:
+    """int128 and uint256 encode the same for a positive index, but the
+    selector differs -- and a wrong selector is a call that does not
+    exist."""
+    pool = gnosis_crypto_metapool()
+    provider = FakeProvider()
+    contract = PoolContract(provider, pool, ACCOUNT)
+    await contract.zap_remove_liquidity_one_coin(10**18, 1, 0)
+    assert provider.sent[-1]["data"][:10] == "0x" + abi.selector(
+        "remove_liquidity_one_coin(uint256,uint256,uint256)"
+    )
+
+
+def test_a_crypto_metapool_still_has_no_underlying_swap() -> None:
+    """Its zap does deposits and withdrawals; the *pool* has no
+    `get_dy_underlying` at all, which is why the swap route is refused."""
+    pool = gnosis_crypto_metapool()
+    assert zap_for(pool) is not None
+    assert pool.has_underlying is False
+
+
+def test_the_stable_registry_reaches_gnosis_now() -> None:
+    """The gap that started this: the sweep behind the table used the
+    wrong name for Gnosis, so its metapools had no zap at all."""
+    pool = Pool(
+        address="0x" + "44" * 20,
+        name="MAI/x3CRV",
+        chain_id=100,
+        registry="factory",
+        base_pool=GNOSIS_3POOL,
+        coins=[Coin("0x" + f"{i:02x}" * 20, f"C{i}", 18, index=i) for i in range(5)],
+    )
+    pool.onchain_coins = 2
+    zap = zap_for(pool)
+    assert zap is not None and zap.coins == 4
+    assert zap.pool_arg and zap.stableswap
+
+
+@pytest.mark.parametrize("table", ["ZAPS", "CRYPTO_ZAPS", "POOL_ZAPS"])
+def test_every_table_is_keyed_lowercase(table: str) -> None:
+    """Addresses arrive checksummed from the API and are looked up from
+    `pool.address.lower()`; a mixed-case key is a silent miss."""
+    from curve import zaps
+
+    for key in getattr(zaps, table):
+        assert key[1] == key[1].lower()

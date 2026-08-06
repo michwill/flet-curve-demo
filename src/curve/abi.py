@@ -316,37 +316,66 @@ def encode_calc_token_amount_no_flag(amounts: list[int]) -> str:
 
 
 def encode_zap_calc_token_amount(
-    pool: str, amounts: list[int], *, deposit: bool = True, dynamic: bool = False
+    pool: str | None,
+    amounts: list[int],
+    *,
+    deposit: bool = True,
+    dynamic: bool = False,
+    stableswap: bool = True,
 ) -> str:
+    """Estimate LP out, in whichever dialect this zap speaks.
+
+    Three axes, all of them observed on deployed zaps:
+
+      * `dynamic` -- StableSwap-NG's `uint256[]` against everyone else's
+        `uint256[N]`;
+      * `pool` -- a factory zap serves every metapool on its base pool and
+        so takes the pool address; a per-pool zap is deployed for one pool
+        and takes none. `None` means the latter;
+      * `stableswap` -- the stable zaps take the `is_deposit` flag that
+        the pools take, and the crypto ones do not have it at all.
+    """
     if dynamic:
         return _call(
             "calc_token_amount(address,uint256[],bool)",
-            _address(pool),
+            _address(pool or ""),
             _offset(3),
             _bool(deposit),
             _dyn_array(amounts),
         )
     n = len(amounts)
+    flag = [_bool(deposit)] if stableswap else []
+    if pool is None:
+        return _call(
+            f"calc_token_amount(uint256[{n}]{',bool' if stableswap else ''})",
+            _array(amounts),
+            *flag,
+        )
     return _call(
-        f"calc_token_amount(address,uint256[{n}],bool)",
+        f"calc_token_amount(address,uint256[{n}]{',bool' if stableswap else ''})",
         _address(pool),
         _array(amounts),
-        _bool(deposit),
+        *flag,
     )
 
 
 def encode_zap_add_liquidity(
-    pool: str, amounts: list[int], min_mint: int, *, dynamic: bool = False
+    pool: str | None, amounts: list[int], min_mint: int, *, dynamic: bool = False
 ) -> str:
+    """Deposit through a zap. Same shape in every dialect but the array."""
     if dynamic:
         return _call(
             "add_liquidity(address,uint256[],uint256)",
-            _address(pool),
+            _address(pool or ""),
             _offset(3),
             _uint(min_mint),
             _dyn_array(amounts),
         )
     n = len(amounts)
+    if pool is None:
+        return _call(
+            f"add_liquidity(uint256[{n}],uint256)", _array(amounts), _uint(min_mint)
+        )
     return _call(
         f"add_liquidity(address,uint256[{n}],uint256)",
         _address(pool),
@@ -356,17 +385,21 @@ def encode_zap_add_liquidity(
 
 
 def encode_zap_remove_liquidity(
-    pool: str, amount: int, min_amounts: list[int], *, dynamic: bool = False
+    pool: str | None, amount: int, min_amounts: list[int], *, dynamic: bool = False
 ) -> str:
     if dynamic:
         return _call(
             "remove_liquidity(address,uint256,uint256[])",
-            _address(pool),
+            _address(pool or ""),
             _uint(amount),
             _offset(3),
             _dyn_array(min_amounts),
         )
     n = len(min_amounts)
+    if pool is None:
+        return _call(
+            f"remove_liquidity(uint256,uint256[{n}])", _uint(amount), _array(min_amounts)
+        )
     return _call(
         f"remove_liquidity(address,uint256,uint256[{n}])",
         _address(pool),
@@ -375,23 +408,41 @@ def encode_zap_remove_liquidity(
     )
 
 
-def encode_zap_calc_withdraw_one_coin(pool: str, amount: int, i: int) -> str:
+def encode_zap_calc_withdraw_one_coin(
+    pool: str | None, amount: int, i: int, *, stableswap: bool = True
+) -> str:
+    """The coin index takes the same two widths the pools' own do."""
+    kind = "int128" if stableswap else "uint256"
+    index = _index(i, stableswap=stableswap)
+    if pool is None:
+        return _call(
+            f"calc_withdraw_one_coin(uint256,{kind})", _uint(amount), index
+        )
     return _call(
-        "calc_withdraw_one_coin(address,uint256,int128)",
+        f"calc_withdraw_one_coin(address,uint256,{kind})",
         _address(pool),
         _uint(amount),
-        _int(i),
+        index,
     )
 
 
 def encode_zap_remove_liquidity_one_coin(
-    pool: str, amount: int, i: int, min_out: int
+    pool: str | None, amount: int, i: int, min_out: int, *, stableswap: bool = True
 ) -> str:
+    kind = "int128" if stableswap else "uint256"
+    index = _index(i, stableswap=stableswap)
+    if pool is None:
+        return _call(
+            f"remove_liquidity_one_coin(uint256,{kind},uint256)",
+            _uint(amount),
+            index,
+            _uint(min_out),
+        )
     return _call(
-        "remove_liquidity_one_coin(address,uint256,int128,uint256)",
+        f"remove_liquidity_one_coin(address,uint256,{kind},uint256)",
         _address(pool),
         _uint(amount),
-        _int(i),
+        index,
         _uint(min_out),
     )
 

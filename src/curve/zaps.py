@@ -11,29 +11,39 @@ the metapool's own coin followed by the base pool's coins, which is exactly
 first argument, because one zap serves every metapool built on the same
 base.
 
-Two dialects exist, and they are the same split as the pools themselves:
+**Four dialects**, and none of them can be inferred from the others --
+each was probed against deployed contracts:
 
-  * StableSwap-NG's zap takes `uint256[]` (a Vyper `DynArray`);
-  * the older factory zaps take `uint256[N]`, N fixed by the base pool.
+  * StableSwap-NG's zap: pool argument, `uint256[]` (a Vyper `DynArray`),
+    `is_deposit` flag, `int128` indices;
+  * the older stable factory zaps: pool argument, `uint256[N]`, flag,
+    `int128`;
+  * the crypto factory's zaps: pool argument, `uint256[N]`, **no flag**,
+    `uint256` indices;
+  * the older crypto metapools' zaps: **no pool argument at all** -- one
+    zap was deployed per pool -- so the calldata is exactly what the pool
+    itself would take.
 
-Which one a metapool needs follows from its own implementation, so
-`zap_for` keys off `Pool.dynamic_arrays` rather than asking separately.
+Which is why there are three tables below rather than one. They differ in
+what addresses a zap, not just in what it speaks: by base pool for the
+factory zaps, by pool for the ones deployed per pool.
 
 **Where these addresses came from.** Curve's own API publishes a
 `zapAddress` per pool (`api.curve.finance/api/getPools/{chain}/{registry}`),
 which the Prices v2 API this app otherwise uses does not carry. They are
-transcribed here rather than fetched, because a zap is a property of a
-factory and a base pool -- one address per base pool, not per pool -- and
-because a second API call on every pool page to learn a constant is a poor
-trade. `coins` is the length that base pool's zap expects; a metapool whose
-decomposed coin list does not match it is not offered the underlying route
-at all.
+transcribed here rather than fetched, because a second API call on every
+pool page to learn a constant is a poor trade. The sweep covers all 21
+chains and every registry, and each entry was then checked with an
+`eth_call` to that zap on its own chain. `coins` is the length the zap
+expects; a metapool whose decomposed coin list does not match it is not
+offered the underlying route at all.
 
-Two families are deliberately absent. The oldest `main`-registry metapools
-(GUSD/3Crv and friends) have a *per-pool* deposit contract with no pool
-argument, which is a different interface for a dozen pools. And several
-NG metapools have no zap published at all, on Ethereum and on Arbitrum.
-Both simply keep the pool-token route, which works everywhere.
+One family is still absent: the oldest `main`-registry metapools
+(GUSD/3Crv and friends), whose per-pool deposit contracts did not answer
+any spelling probed against them. Several NG metapools have no zap
+published at all either, on Ethereum, Gnosis and Arbitrum. Both keep the
+pool-token route, which works everywhere -- and their underlying coins
+can still be *swapped*, since that needs no zap at all.
 """
 
 from __future__ import annotations
@@ -55,7 +65,12 @@ FACTORY_METAPOOL_TYPES = frozenset(
 
 @dataclass(frozen=True, slots=True)
 class Zap:
-    """One deposit zap, as it applies to metapools on a given base pool."""
+    """One deposit zap, and which of the four dialects it speaks.
+
+    All four were probed against deployed contracts; none of them can be
+    inferred from the others, and a wrong guess is calldata for a function
+    that does not exist.
+    """
 
     address: str
     #: Underlying coins it expects: 1 + the base pool's own count. Part of
@@ -64,6 +79,14 @@ class Zap:
     coins: int
     #: `uint256[]` rather than `uint256[N]`.
     dynamic: bool
+    #: Does it take the pool as its first argument? A factory zap serves
+    #: every metapool on one base pool and must be told which; the older
+    #: crypto metapools each got a zap of their own, which takes none --
+    #: its calldata is exactly what the pool itself would take.
+    pool_arg: bool = True
+    #: Stable zaps carry the `is_deposit` flag on `calc_token_amount` and
+    #: index coins with `int128`; the crypto ones have neither.
+    stableswap: bool = True
 
 
 #: Keyed by `(chain_id, base pool address lowercased, dynamic)`. The last
@@ -153,6 +176,53 @@ ZAPS: dict[tuple[int, str, bool], Zap] = {
 }
 
 
+#: Shared zaps for the crypto factory's metapools, keyed by base pool.
+#: `calc_token_amount(address,uint256[N])` -- a pool argument like the
+#: stable factory zaps, but no `is_deposit` flag and uint256 indices.
+CRYPTO_ZAPS: dict[tuple[int, str], Zap] = {
+    (1, "0xdcef968d416a41cdac0ed8702fac8128a64241a2"): Zap(
+        "0x5De4EF4879F4fe3bBADF2227D2aC5d0E2D76C895", 3, False, stableswap=False
+    ),  # Ethereum, 51 pools
+    (1, "0xbebc44782c7db0a1a60cb6fe97d0b483032ff1c7"): Zap(
+        "0x97aDC08FA1D849D2C48C5dcC1DaB568B169b0267", 4, False, stableswap=False
+    ),  # Ethereum, 24 pools
+}
+
+#: Zaps deployed for one pool each, which is how the older crypto
+#: metapools were shipped: no pool argument at all, so the calldata is
+#: what the pool itself would take -- just addressed elsewhere.
+POOL_ZAPS: dict[tuple[int, str], Zap] = {
+    (1, "0xadcfcf9894335dc340f6cd182afa45999f45fc44"): Zap(
+        "0xc5FA220347375ac4f91f9E4A4AAb362F22801504", 4, False,
+        pool_arg=False, stableswap=False,
+    ),  # Ethereum Curve XAUT-3Crv
+    (1, "0xe84f5b1582ba325fdf9ce6b0c1f087ccfc924e54"): Zap(
+        "0xd446A98F88E1d053d1F64986E3Ed083bb1Ab7E5A", 4, False,
+        pool_arg=False, stableswap=False,
+    ),  # Ethereum Curve EUROC-3Crv
+    (1, "0x9838eccc42659fa8aa7daf2ad134b53984c9427b"): Zap(
+        "0x5D0F47B32fDd343BfA74cE221808e2abE4A53827", 4, False,
+        pool_arg=False, stableswap=False,
+    ),  # Ethereum Curve EURT-3Crv
+    (100, "0x056c6c5e684cec248635ed86033378cc444459b0"): Zap(
+        "0xE3FFF29d4DC930EBb787FeCd49Ee5963DADf60b6", 4, False,
+        pool_arg=False, stableswap=False,
+    ),  # Gnosis Curve EURe-3Crv
+    (137, "0xb446bf7b8d6d4276d0c75ec0e3ee8dd7fe15783a"): Zap(
+        "0x225FB4176f0E20CDb66b4a3DF70CA3063281E855", 4, False,
+        pool_arg=False, stableswap=False,
+    ),  # Polygon Curve EURT-3Crv
+    (137, "0x9b3d675fdbe6a0935e8b7d1941bc6f78253549b7"): Zap(
+        "0x4DF7eF55E99a56851187822d96B4E17D98A47DeD", 4, False,
+        pool_arg=False, stableswap=False,
+    ),  # Polygon Curve EURS-3Crv
+    (42161, "0xa827a652ead76c6b0b3d19dba05452e06e25c27e"): Zap(
+        "0x25e2e8d104BC1A70492e2BE32dA7c1f8367F9d2c", 3, False,
+        pool_arg=False, stableswap=False,
+    ),  # Arbitrum Curve EURS-2Crv
+}
+
+
 def zap_for(pool: Pool) -> Zap | None:
     """The zap that can deposit this metapool's underlying coins, if any.
 
@@ -166,12 +236,15 @@ def zap_for(pool: Pool) -> Zap | None:
     """
     if not pool.base_pool:
         return None
-    if (pool.registry or "").lower() not in FACTORY_METAPOOL_TYPES:
-        return None
-    key = (pool.chain_id, pool.base_pool.lower(), pool.dynamic_arrays)
-    zap = ZAPS.get(key)
+    # Most specific first: a zap deployed for this pool alone.
+    zap = POOL_ZAPS.get((pool.chain_id, pool.address.lower()))
     if zap is None:
-        return None
-    if len(pool.display_coins) != zap.coins:
+        if not pool.is_stableswap:
+            zap = CRYPTO_ZAPS.get((pool.chain_id, pool.base_pool.lower()))
+        elif pool.registry_key in FACTORY_METAPOOL_TYPES:
+            zap = ZAPS.get(
+                (pool.chain_id, pool.base_pool.lower(), pool.dynamic_arrays)
+            )
+    if zap is None or len(pool.display_coins) != zap.coins:
         return None
     return zap

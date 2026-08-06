@@ -195,6 +195,14 @@ class PoolContract:
             )
         return self.zap
 
+    def _zap_pool(self, zap: Zap) -> str | None:
+        """The pool argument, where the zap takes one.
+
+        A per-pool zap does not: it was deployed for this pool alone, and
+        its calldata is what the pool itself would take.
+        """
+        return self.pool.address if zap.pool_arg else None
+
     async def zap_calc_token_amount(
         self, amounts: list[int], *, deposit: bool = True
     ) -> int:
@@ -204,7 +212,11 @@ class PoolContract:
         return await self._read(
             zap.address,
             abi.encode_zap_calc_token_amount(
-                self.pool.address, amounts, deposit=deposit, dynamic=zap.dynamic
+                self._zap_pool(zap),
+                amounts,
+                deposit=deposit,
+                dynamic=zap.dynamic,
+                stableswap=zap.stableswap,
             ),
             "the deposit estimate",
             "The deposit zap",
@@ -216,7 +228,9 @@ class PoolContract:
         zap = self._zap()
         return await self._read(
             zap.address,
-            abi.encode_zap_calc_withdraw_one_coin(self.pool.address, lp_amount, i),
+            abi.encode_zap_calc_withdraw_one_coin(
+                self._zap_pool(zap), lp_amount, i, stableswap=zap.stableswap
+            ),
             "the withdrawal estimate",
             "The deposit zap",
         )
@@ -226,7 +240,7 @@ class PoolContract:
         return await self._send(
             zap.address,
             abi.encode_zap_add_liquidity(
-                self.pool.address, amounts, min_mint, dynamic=zap.dynamic
+                self._zap_pool(zap), amounts, min_mint, dynamic=zap.dynamic
             ),
         )
 
@@ -237,7 +251,7 @@ class PoolContract:
         return await self._send(
             zap.address,
             abi.encode_zap_remove_liquidity_one_coin(
-                self.pool.address, lp_amount, i, min_amount
+                self._zap_pool(zap), lp_amount, i, min_amount, stableswap=zap.stableswap
             ),
         )
 
@@ -248,7 +262,7 @@ class PoolContract:
         return await self._send(
             zap.address,
             abi.encode_zap_remove_liquidity(
-                self.pool.address, lp_amount, min_amounts, dynamic=zap.dynamic
+                self._zap_pool(zap), lp_amount, min_amounts, dynamic=zap.dynamic
             ),
         )
 

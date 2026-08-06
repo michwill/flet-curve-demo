@@ -15,7 +15,7 @@ python tools/build_assets.py         # compile the subset the app needs
 
 .venv/bin/flet run src/main.py        # desktop -> Frame / qeth on 127.0.0.1:1248
 .venv/bin/flet publish                # browser -> ./dist  (run from the repo root)
-python -m http.server 8000 -d dist
+python tools/serve.py                # serve ./dist with caching off
 ```
 
 To offer **WalletConnect** in the browser build, give it a projectId (free,
@@ -32,8 +32,8 @@ either way.
 
 The wallet layer is [`flet-pay-example`](https://github.com/michwill/flet-pay-example)'s
 `wallet/` package. Its README is the reference for how the EIP-1193 seam and the
-browser bridge work; this one covers what was added on top. Two changes were
-made to it here, both about noticing things the app used to miss:
+browser bridge work; this one covers what was added on top. Three changes were
+made to it here:
 
 - **the desktop transport polls.** An HTTP endpoint cannot push, so switching
   account in Frame or qeth used to change nothing on screen. `desktop.py` now
@@ -43,6 +43,18 @@ made to it here, both about noticing things the app used to miss:
 - **`disconnect` counts as a disconnection.** An extension revokes a site with
   an empty `accountsChanged`; WalletConnect closes the session and sends
   `disconnect`. Only the first was handled.
+- **one bridge serves an origin.** A `BroadcastChannel` reaches every tab, so
+  two tabs of this app meant two bridges answering one request -- and the
+  faster one won, which is how a picker ended up listing another tab's
+  wallets and a selection landed somewhere the account request did not.
+  `wallet_bridge.js` now takes a Web Lock and only the holder answers;
+  replies and wallet events are addressed to the client that asked. The
+  browser passes the lock on when that tab closes.
+
+Serve the build with `tools/serve.py` rather than `python -m http.server`:
+the latter sends no cache headers, Chrome caches heuristically, and a reload
+happily keeps running the *previous* `app.tar.gz`. That is worth a script
+because the failure looks exactly like a fix that did not work.
 
 ---
 

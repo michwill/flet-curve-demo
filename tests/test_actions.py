@@ -419,35 +419,36 @@ def tab_with_fee(cls, flat: int, pair: int | None = None):
     return tab, provider
 
 
-async def test_deposit_slippage_gives_back_a_whole_fee() -> None:
-    """`calc_token_amount` does not charge the fee the deposit will pay --
-    measured at ~1 fee across eleven mainnet pools -- so the tolerance is
-    twice the fee rather than a fifth of it. 3pool: 0.015% -> 0.03%."""
+async def test_deposit_slippage_is_half_a_fee_plus_the_drift() -> None:
+    """`a * fee + b`. Half a fee is the imbalance fee a fully single-sided
+    deposit pays, which the old StableSwap estimators leave out entirely;
+    the constant is what the pool drifts by while you sign. 3pool: half of
+    0.015% plus 0.02% is 0.0275%."""
     from ui.actions import DepositTab
 
     tab, _ = tab_with_fee(DepositTab, 1_500_000)
     await tab.refresh()
-    assert tab.slippage.value == "0.03"
+    assert tab.slippage.value == "0.0275"
 
 
 async def test_a_crypto_pool_gets_a_wider_tolerance() -> None:
-    """Because it charges more: 1.547% fee."""
+    """Because half of its fee is a bigger number: 1.55% -> 0.795%."""
     from ui.actions import DepositTab
 
-    tab, _ = tab_with_fee(DepositTab, 154_682_900)
+    tab, _ = tab_with_fee(DepositTab, 155_010_000)
     await tab.refresh()
-    assert tab.slippage.value == "3.09"
+    assert tab.slippage.value == "0.795"
 
 
-async def test_a_tiny_fee_still_gets_a_workable_floor() -> None:
-    """Strategic USD Reserves charges 0.001% and loses 0.0023% on a
-    deposit-then-withdraw round trip -- 2.3 fees. Twice a very small fee is
-    still too small, so there is a floor underneath."""
-    from ui.actions import DepositTab, MIN_ESTIMATE_SLIPPAGE
+async def test_a_tiny_fee_still_gets_the_drift_allowance() -> None:
+    """Strategic USD Reserves charges 0.001%, so half of it is nothing. The
+    constant term is what keeps such a pool workable -- and it is not a
+    floor bolted on, it is the same `a * fee + b` with a small fee."""
+    from ui.actions import DepositTab, QUOTE_DRIFT
 
     tab, _ = tab_with_fee(DepositTab, 100_000)
     await tab.refresh()
-    assert float(tab.slippage.value) == MIN_ESTIMATE_SLIPPAGE
+    assert float(tab.slippage.value) == pytest.approx(0.0005 + QUOTE_DRIFT)
 
 
 async def test_withdrawing_uses_the_flat_fee_too() -> None:
@@ -455,7 +456,7 @@ async def test_withdrawing_uses_the_flat_fee_too() -> None:
 
     tab, provider = tab_with_fee(WithdrawTab, 1_000_000, pair=9_999_999)
     await tab.refresh()
-    assert tab.slippage.value == "0.02"
+    assert tab.slippage.value == "0.025"
     assert "0x" + abi.selector("dynamic_fee(int128,int128)") not in provider.reads
 
 
@@ -539,15 +540,27 @@ async def test_staking_reads_no_fee_at_all() -> None:
     assert "0x" + abi.selector("fee()") not in provider.reads
 
 
-def test_the_arithmetic_is_a_fraction_of_the_fee() -> None:
-    from ui.actions import ESTIMATE_FEE_MULTIPLE, SLIPPAGE_OF_FEE, slippage_for
+def test_the_arithmetic_is_a_times_fee_plus_b() -> None:
+    from ui.actions import ESTIMATE_FEE_SHARE, QUOTE_DRIFT, SLIPPAGE_OF_FEE, slippage_for
 
-    assert SLIPPAGE_OF_FEE == 0.2
-    # 1e10 is 100%, so 10_000_000 is 0.1% and a fifth of it is 0.02%.
+    assert (SLIPPAGE_OF_FEE, ESTIMATE_FEE_SHARE, QUOTE_DRIFT) == (0.2, 0.5, 0.02)
+    # 1e10 is 100%, so 10_000_000 is 0.1%.
     assert slippage_for(10_000_000) == pytest.approx(0.02)
     assert slippage_for(0) == 0
-    assert slippage_for(10_000_000, ESTIMATE_FEE_MULTIPLE) == pytest.approx(0.2)
-    assert slippage_for(10, ESTIMATE_FEE_MULTIPLE, floor=0.005) == 0.005
+    assert slippage_for(10_000_000, ESTIMATE_FEE_SHARE, QUOTE_DRIFT) == pytest.approx(0.07)
+    # The constant is what carries a pool whose fee rounds to nothing.
+    assert slippage_for(0, ESTIMATE_FEE_SHARE, QUOTE_DRIFT) == pytest.approx(QUOTE_DRIFT)
+
+
+def test_a_deposit_allows_more_than_a_swap_at_every_fee() -> None:
+    """One quote is exact and the other is not; that ordering must hold
+    whatever the pool charges."""
+    from ui.actions import ESTIMATE_FEE_SHARE, QUOTE_DRIFT, SLIPPAGE_OF_FEE, slippage_for
+
+    for fee in (0, 100_000, 1_000_000, 5_520_000, 155_010_000):
+        deposit = slippage_for(fee, ESTIMATE_FEE_SHARE, QUOTE_DRIFT)
+        swap = slippage_for(fee, SLIPPAGE_OF_FEE)
+        assert deposit > swap
 
 
 # -- waiting for the chain -------------------------------------------------

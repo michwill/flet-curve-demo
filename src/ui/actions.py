@@ -61,30 +61,42 @@ _NOT_READ = object()
 #: the quote and the block.
 SLIPPAGE_OF_FEE = 0.2
 
-#: The same, for an action quoted by `calc_token_amount` -- which is not
-#: exact. Measured across eleven mainnet pools by quoting a deposit and then
-#: quoting the withdrawal of exactly that LP back out. `calc_withdraw_one_coin`
-#: charges its fee, so a round trip would lose two fees if the deposit
-#: estimate charged its own. It loses about one:
+#: The deposit and withdrawal side, where the quote is not exact, as
+#: `a * fee + b`. Both constants are measured, at one block, by asking the
+#: pools rather than by reasoning about them.
 #:
-#:     3pool 0.63x   crvUSD/USDT 0.82x   crvUSD/USDC 1.43x   stETH-ng 0.54x
-#:     PayPool 1.02x  USDG/USDC 1.20x    weETH/WETH 1.18x    StratRes 2.28x
-#:     TricryptoUSDC 1.15x   tricrypto2 1.11x   YB-WETH 1.00x
+#: `a` -- a balanced deposit pays no imbalance fee, so splitting one into
+#: its single-coin parts and quoting those separately reveals whether the
+#: estimate charges: if it does, the parts come to less than the whole.
+#: Across thirteen mainnet pools the gap is 0.500x the fee almost exactly
+#: (PayPool, USDG, NUSD, RLUSD, weETH, YB-WETH 0.50; crvUSD pools 0.41-0.48;
+#: the crypto pools 0.50 rising with size as price impact joins in), which
+#: is what the arithmetic says a fully single-sided deposit should pay:
+#: Curve's adjusted fee is base*N/(4(N-1)), applied to every coin's
+#: distance from balance, and that sums to base/2.
 #:
-#: -- so the deposit estimate is optimistic by roughly a whole fee, and a
-#: floor built from it has to give that back. Twice the fee covers every
-#: pool measured with room to spare.
-ESTIMATE_FEE_MULTIPLE = 2.0
+#: The exceptions are the ones that matter: **3pool (`main`) and stETH-ng
+#: (old `factory`) show a gap of 0.00000%** -- their `calc_token_amount`
+#: ignores fees entirely, so the mint comes in up to half a fee below the
+#: quote. Half the fee therefore covers the worst implementation, and is
+#: harmless margin on the rest.
+ESTIMATE_FEE_SHARE = 0.5
 
-#: And a floor underneath it, because a multiple of a very small fee is a
-#: very small number: Strategic USD Reserves charges 0.001% and still loses
-#: 0.0023% on the round trip, which is 2.3 fees.
-MIN_ESTIMATE_SLIPPAGE = 0.005
+#: `b` -- what the pool moves by between quoting and landing, independent
+#: of any fee. Same basket quoted at the head and at 1, 2, 5, 25 and 100
+#: blocks back: stable pools drift under 0.002% even over 20 minutes, and
+#: the crypto pools up to 0.048% over 5 minutes (they track a price
+#: oracle). At the one or two blocks a signature actually takes, every pool
+#: measured 0.00000%. Two hundredths of a percent is comfortable there and
+#: still small enough not to be worth sandwiching.
+QUOTE_DRIFT = 0.02
 
 
-def slippage_for(fee_units: int, multiple: float = SLIPPAGE_OF_FEE, floor: float = 0.0) -> float:
-    """A tolerance, in percent, from a fee in Curve's 1e10 units."""
-    return max(fee_units / FEE_DENOMINATOR * 100 * multiple, floor)
+def slippage_for(
+    fee_units: int, multiple: float = SLIPPAGE_OF_FEE, constant: float = 0.0
+) -> float:
+    """`a * fee + b`, in percent, from a fee in Curve's 1e10 units."""
+    return fee_units / FEE_DENOMINATOR * 100 * multiple + constant
 
 
 def format_slippage(percent: float) -> str:
@@ -119,8 +131,8 @@ class ActionTab:
     #: How the tolerance is derived from the pool fee. The default is the
     #: cautious one, for the actions quoted by `calc_token_amount`; a swap
     #: overrides it, because `get_dy` is exact.
-    fee_multiple = ESTIMATE_FEE_MULTIPLE
-    slippage_floor = MIN_ESTIMATE_SLIPPAGE
+    fee_multiple = ESTIMATE_FEE_SHARE
+    slippage_constant = QUOTE_DRIFT
 
     def __init__(
         self,
@@ -204,7 +216,7 @@ class ActionTab:
         self._fee_read_for = key
         if fee <= 0:
             return
-        percent = slippage_for(fee, self.fee_multiple, self.slippage_floor)
+        percent = slippage_for(fee, self.fee_multiple, self.slippage_constant)
         self.slippage.value = format_slippage(percent)
         self.slippage.tooltip = (
             f"from this pool's {fee / FEE_DENOMINATOR * 100:.4g}% fee"
@@ -672,7 +684,7 @@ class SwapTab(ActionTab):
     #: `get_dy` is exact -- it is the same maths the swap itself runs, fee
     #: included -- so there is no estimator error to give back.
     fee_multiple = SLIPPAGE_OF_FEE
-    slippage_floor = 0.0
+    slippage_constant = 0.0
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)

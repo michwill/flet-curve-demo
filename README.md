@@ -114,13 +114,28 @@ tries both spellings, and the one that answers is remembered on the pool,
 because a transaction gets no second attempt. An unknown future factory is
 therefore handled by asking rather than by guessing.
 
-The estimates are not equally trustworthy, either. `get_dy` is the same
-maths the swap runs, fee included. `calc_token_amount` is not: quoting a
-deposit and then quoting the withdrawal of exactly that LP back out loses
-about *one* fee across eleven mainnet pools, where two would be expected if
-both legs charged. So the deposit and withdrawal panels allow twice the fee
-(with a floor for the pools whose fee is 0.001%) and the swap panel allows a
-fifth of it.
+The estimates are not equally trustworthy, either, so the slippage default
+is `a * fee + b` with both constants measured against mainnet at a single
+block:
+
+- **`get_dy` is exact** -- the same maths the swap runs, fee included -- so a
+  swap allows `0.2 * fee` and nothing else.
+- **`calc_token_amount` may not charge the imbalance fee.** Splitting a
+  balanced deposit into its single-coin parts and quoting those separately
+  says whether it does: the parts come to 0.500x the fee less than the
+  whole on every pool that charges, and to *exactly the same* on 3pool
+  (`main`) and stETH-ng (old `factory`), whose estimators ignore fees. A
+  fully single-sided deposit pays half the base fee -- Curve's adjusted fee
+  is `base * N / (4(N-1))`, applied to each coin's distance from balance --
+  so `a = 0.5` covers the worst implementation.
+- **`b = 0.02%` is drift**, not fee: the same basket quoted 1, 2, 5, 25 and
+  100 blocks back moves under 0.002% on stable pools even over 20 minutes,
+  up to 0.048% on the crypto pools over 5 minutes, and 0.00000% at the one
+  or two blocks a signature takes.
+
+Which lands at 0.0275% to deposit into 3pool and 0.003% to swap in it;
+0.0205% and 0.0002% for a pool charging 0.001%; 0.795% and 0.31% for one
+charging 1.55%.
 
 ## Reading Curve
 

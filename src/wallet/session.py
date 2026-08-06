@@ -117,6 +117,10 @@ class Wallet:
         self._disconnect_handlers: list[Callable[[], None]] = []
         provider.on("accountsChanged", self._accounts_changed)
         provider.on("chainChanged", self._chain_changed)
+        # An extension announces a revoked site by sending an empty
+        # `accountsChanged`; WalletConnect closes the session and sends
+        # `disconnect` instead. Both mean the same thing here.
+        provider.on("disconnect", lambda _data: self._fire(self._disconnect_handlers))
 
     # -- lifecycle --------------------------------------------------------
 

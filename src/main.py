@@ -86,6 +86,7 @@ class CurveApp:
         self.chains: dict[str, int] = {}
         self.feed: PoolFeed | None = None
         self._detail: PoolDetailView | None = None
+        self._address_expanded = False
 
         self._build()
         page.run_task(self.load_pools)
@@ -348,9 +349,10 @@ class CurveApp:
         about what it says.
         """
         wallet = self.wallet
+        self._address_expanded = expanded and wallet is not None
         self.account_chip.visible = wallet is not None
         self.account_chip.width = (
-            ADDRESS_FULL_WIDTH if expanded and wallet else ADDRESS_SHORT_WIDTH
+            ADDRESS_FULL_WIDTH if self._address_expanded else ADDRESS_SHORT_WIDTH
         )
         if wallet is None:
             self.account_label.value = ""
@@ -402,12 +404,61 @@ class CurveApp:
             await self._detail.refresh_actions()
 
     async def _wallet_changed(self) -> None:
+        """The wallet switched account or network behind our back.
+
+        Fired by `accountsChanged`/`chainChanged`, so this is the path for
+        someone picking another account in MetaMask while the page is open.
+        The chip keeps whatever state it was in -- collapsing it under the
+        cursor would look like a glitch.
+        """
         if self.wallet is None:
             return
-        self._show_account()
+        self._show_account(expanded=self._address_expanded)
         self.page.update()
+        if await self._follow_wallet_chain():
+            # The whole view was rebuilt for the new network, actions
+            # included.
+            return
         if self._detail is not None:
             await self._detail.refresh_actions()
+
+    async def _follow_wallet_chain(self) -> bool:
+        """Point the app at the network the wallet moved to. Did it move?
+
+        A pool address is per-chain. Left alone, this page would go on
+        offering Ethereum pools to a wallet now on Arbitrum, and the
+        calldata would be signed against an address that is either nothing
+        or somebody else's contract there. Following the wallet is what
+        Curve's own site does, and it is the only version of this that
+        cannot mis-send.
+
+        Only on a *change*: at connect time the network you were browsing
+        is a deliberate choice, and yanking the list out from under it
+        would be rude.
+        """
+        wallet = self.wallet
+        if wallet is None:
+            return False
+        name = next(
+            (n for n, i in self.chains.items() if i == wallet.chain.chain_id), ""
+        )
+        if not name:
+            # v2 covers 12 chains; a wallet can be on any of hundreds.
+            self.error.value = (
+                f"Your wallet is on {wallet.chain.name}, which Curve's API does"
+                f" not cover. Pools shown are on {chain_name(self.chain)}."
+            )
+            self.error.visible = True
+            self.page.update()
+            return False
+        if name == self.chain:
+            return False
+        self.chain = name
+        self.chain_picker.value = name
+        self.chain_picker.leading_icon = chain_icon(name)
+        self.show_list()
+        await self.load_pools()
+        return True
 
     async def _wallet_gone(self) -> None:
         self.wallet = None

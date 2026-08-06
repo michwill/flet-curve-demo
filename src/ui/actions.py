@@ -66,7 +66,8 @@ SLIPPAGE_OF_FEE = 0.2
 #: through titanoboa, bisecting `min_mint` until `add_liquidity` stops
 #: reverting.
 #:
-#: `a = 1` is the tightest slope that covers every pool. What binds it is
+#: `a = 1` is the tightest slope that covers every pool -- the fit lands at
+#: 0.92 and this rounds up. What binds it is
 #: the old StableSwap implementations, whose `calc_token_amount` quotes
 #: fee-free so the mint lands short: cvxCrv/Crv by 0.91x its fee, 3pool by
 #: 0.63x, alETH/frxETH by 0.13x, msETH/WETH by 0.05x -- the spread is how
@@ -77,12 +78,16 @@ SLIPPAGE_OF_FEE = 0.2
 #: which is also what covers an implementation this app has never seen.
 ESTIMATE_FEE_SHARE = 1.0
 
-#: `b` is the part no fee predicts: a quote goes stale between signing and
-#: landing. The fork cannot see that -- it quotes and deposits in one state
-#: -- so it was measured against the chain instead, by quoting at an
-#: earlier block and depositing at the head. Beyond the estimator's own
-#: shortfall that cost at most 0.0173% (TricryptoUSDC, three blocks stale)
-#: and usually under 0.0012%, over gaps from one block to a hundred.
+#: `b` is what the same fit says is zero -- and it is zero *across pools*,
+#: because a cross-section cannot see time. Every pool above was measured
+#: at one moment; what a quote loses by being a few blocks old is a
+#: separate axis, measured by calling `calc_token_amount` against the
+#: archive at the block you would have quoted at and the block you land in.
+#:
+#: That is bursty rather than pool-shaped: in a quiet snapshot the largest
+#: drop over five blocks across all 44 pools was 0.00022%, but a volatile
+#: one cost 0.0173% over three blocks on TricryptoUSDC. So `b` covers the
+#: worst of those rather than the median of nothing.
 QUOTE_DRIFT = 0.02
 
 

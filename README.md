@@ -130,11 +130,14 @@ stopped reverting:
   the old crypto pools -- mints *exactly* the quote at every size tried, so
   there the fee term is margin, which is also what covers an implementation
   this app has never seen.
-- **`b = 0.02%`** is the part no fee predicts: a quote going stale between
-  signing and landing. A fork cannot show that (it quotes and deposits in
-  one state), so it was measured against the chain -- quote at an earlier
-  block, deposit at the head -- and cost at most a further 0.0173%
-  (TricryptoUSDC, three blocks stale), usually under 0.0012%.
+- **`b = 0.02%`** is what the same fit puts at *zero* -- and it is zero
+  across pools, because a cross-section has no time axis. What a quote
+  loses by being a few blocks old is measured separately, by calling
+  `calc_token_amount` against the archive at the block you would have
+  quoted at and the block you land in. It is bursty rather than
+  pool-shaped: the largest drop over five blocks across all 44 pools in a
+  quiet snapshot was 0.00022%, while a volatile one cost 0.0173% over three
+  blocks on TricryptoUSDC. `b` covers the worst of those.
 
 Which lands at 0.035% to deposit into 3pool and 0.003% to swap in it; 0.17%
 and 0.03% for cvxCrv/Crv, whose fee is 0.15%.

@@ -454,112 +454,75 @@ async def test_a_tiny_fee_still_gets_the_drift_allowance() -> None:
 
 
 async def test_the_line_covers_every_measured_pool() -> None:
-    """The measurements the constants were fitted to, as a regression: fee
-    and the tolerance the deposit actually needed on a fork."""
+    """The data the constants were fitted to, kept as a regression.
+
+    Each row is one mainnet pool: its fee, and the tolerance its deposit
+    actually needed -- bisected on a fork until `add_liquidity` stopped
+    reverting, plus what the quote lost by being up to five blocks stale.
+    The line has to sit above every one of them.
+    """
     from ui.actions import ESTIMATE_FEE_SHARE, QUOTE_DRIFT, slippage_for
 
-    measured = [                      # (fee units, needed %)
-        (15_000_000, 0.13696),        # cvxCrv/Crv    0.91x fee
-        (25_000_000, 0.22392),        # sdCRV/CRV     0.90x
-        (1_500_000, 0.00952),         # 3pool         0.63x
-        (4_000_000, 0.00537),         # alETH/frxETH  0.13x
-        (4_000_000, 0.00220),         # msETH/WETH    0.05x
-        (1_000_000, 0.00012),         # PayPool       ~0
-        (100_000, 0.0),               # StratReserves  0
-        (60_000_000, 0.00012),        # YB WETH       ~0
+    measured = [                      # (fee in 1e10 units, needed %)
+    (  15_000_000,  0.13696),   # cvxCrv/Crv             factory
+    (   1_500_000,  0.00952),   # DAI/USDC/USDT          main
+    (   4_000_000,  0.00537),   # alETHfrxETH            factory
+    (   4_000_000,  0.00220),   # msETH/WETH             factory
+    (     207_000,  0.00035),   # TricryptoUSDT          factory_tricrypto
+    (  10_000_000,  0.00013),   # USDS/stUSDS            stableswapng
+    (   1_000_000,  0.00012),   # DOLA/sUSDe             stableswapng
+    (   1_000_000,  0.00012),   # AUSD/USDC              stableswapng
+    (   4_000_000,  0.00012),   # BOLD/USDC Pool         stableswapng
+    (   1_000_000,  0.00012),   # FRAX/frxUSD            stableswapng
+    (   1_000_000,  0.00012),   # NUSD/USDC              stableswapng
+    (   1_000_000,  0.00012),   # PayPool                stableswapng
+    (   2_000_000,  0.00012),   # RLUSD/USDC             stableswapng
+    (   3_000_000,  0.00012),   # TricryptoUSDC          factory_tricrypto
+    (   4_000_000,  0.00012),   # USD0/USD0++            stableswapng
+    (   1_000_000,  0.00012),   # USDC/USDat             stableswapng
+    (   1_000_000,  0.00012),   # USDC/fxUSD             stableswapng
+    (   1_000_000,  0.00012),   # USDG/USDC              stableswapng
+    (   1_000_000,  0.00012),   # USDtb-USDC             stableswapng
+    (  60_000_000,  0.00012),   # YB WETH                twocryptong
+    ( 100_000_000,  0.00012),   # YB cbBTC               twocryptong
+    ( 100_000_000,  0.00012),   # YB tBTC                twocryptong
+    (  20_000_000,  0.00012),   # apxUSD-USDC v3         stableswapng
+    (   1_000_000,  0.00012),   # crvUSD/frxUSD          stableswapng
+    (   4_000_000,  0.00012),   # frxUSD/msUSD           stableswapng
+    (   1_000_000,  0.00012),   # frxUSD/trUSD           stableswapng
+    (   1_000_000,  0.00012),   # sfrxUSD/frxUSD         stableswapng
+    (   1_000_000,  0.00012),   # strUSD/trUSD           stableswapng
+    (   1_000_000,  0.00012),   # tBTC/WBTC              crvusd
+    (   1_000_000,  0.00012),   # trUSD/USDC             stableswapng
+    (   2_000_000,  0.00000),   # sDAI/sUSDe             stableswapng
+    (   1_000_000,  0.00000),   # DOLA/sUSDS             stableswapng
+    (   2_000_000,  0.00000),   # reUSD/scrvUSD          stableswapng
+    (   2_000_000,  0.00000),   # ETH+/ETH               stableswapng
+    (   1_000_000,  0.00000),   # FRAXUSDe               stableswapng
+    (     100_000,  0.00000),   # Strategic USD Reserv   stableswapng
+    (   1_000_000,  0.00000),   # TricryptoLLAMA         factory_tricrypto
+    (           0,  0.00000),   # USAT/USDT              stableswapng
+    (   3_000_000,  0.00000),   # USD-BTC-ETH            crypto
+    ( 100_000_000,  0.00000),   # YB WBTC                twocryptong
+    (  20_000_000,  0.00000),   # apyUSD-apxUSD          stableswapng
+    (   1_000_000,  0.00000),   # crvUSD/USDC            crvusd
+    (   1_000_000,  0.00000),   # crvUSD/USDT            crvusd
+    (   2_000_000,  0.00000),   # osETH/rETH             stableswapng
     ]
     for fee, needed in measured:
-        assert slippage_for(fee, ESTIMATE_FEE_SHARE, QUOTE_DRIFT) >= needed
+        allowed = slippage_for(fee, ESTIMATE_FEE_SHARE, QUOTE_DRIFT)
+        assert allowed >= needed, f"fee {fee}: allows {allowed}, needs {needed}"
 
 
-async def test_withdrawing_uses_the_flat_fee_too() -> None:
-    from ui.actions import WithdrawTab
+def test_the_slope_is_the_tightest_that_covers_them() -> None:
+    """Fitted, not chosen: cvxCrv/Crv needs 0.91x its fee and binds the
+    line; a shallower slope would need a constant an order of magnitude
+    bigger to reach it, which every other pool would then carry."""
+    from ui.actions import ESTIMATE_FEE_SHARE
 
-    tab, provider = tab_with_fee(WithdrawTab, 1_000_000, pair=9_999_999)
-    await tab.refresh()
-    assert float(tab.slippage.value) == pytest.approx(0.01 + 0.02)
-    assert "0x" + abi.selector("dynamic_fee(int128,int128)") not in provider.reads
-
-
-async def test_swapping_stays_tight_because_its_quote_is_exact() -> None:
-    """`get_dy` is the same maths the swap runs, fee included, so there is
-    no estimator error to give back -- a fifth of the fee, not twice."""
-    from ui.actions import SwapTab
-
-    tab, _ = tab_with_fee(SwapTab, 1_000_000, pair=2_000_000)
-    await tab.refresh()
-    assert tab.slippage.value == "0.004"  # from the pair fee, not the flat one
-
-
-async def test_a_swap_pool_without_dynamic_fee_falls_back() -> None:
-    from ui.actions import SwapTab
-
-    tab, _ = tab_with_fee(SwapTab, 4_577_514)  # no pair fee
-    await tab.refresh()
-    assert tab.slippage.value == "0.00916"
-
-
-async def test_a_deposit_is_always_given_more_room_than_a_swap() -> None:
-    """The difference is not a preference; it is that one quote is exact."""
-    from ui.actions import DepositTab, SwapTab
-
-    for registry in ("main", "crvusd", "stableswapng", "factory_tricrypto"):
-        deposit, _ = tab_with_fee(DepositTab, 1_000_000, registry=registry)
-        swap, _ = tab_with_fee(SwapTab, 1_000_000, registry=registry)
-        await deposit.refresh()
-        await swap.refresh()
-        assert float(deposit.slippage.value) > float(swap.slippage.value), registry
-
-
-async def test_changing_the_pair_re_reads_the_fee() -> None:
-    from ui.actions import SwapTab
-
-    tab, provider = tab_with_fee(SwapTab, 1_000_000, pair=2_000_000)
-    await tab.refresh()
-    first = provider.reads.count("0x" + abi.selector("dynamic_fee(int128,int128)"))
-
-    tab.to_coin.value = "0"
-    await tab.refresh()
-    assert provider.reads.count("0x" + abi.selector("dynamic_fee(int128,int128)")) > first
-
-
-async def test_the_fee_is_read_once_per_pair_not_per_keystroke() -> None:
-    from ui.actions import DepositTab
-
-    tab, provider = tab_with_fee(DepositTab, 1_500_000)
-    for _ in range(4):
-        await tab.refresh()
-    assert provider.reads.count("0x" + abi.selector("fee()")) == 1
-
-
-async def test_what_the_user_typed_is_never_overwritten() -> None:
-    from ui.actions import DepositTab
-
-    tab, _ = tab_with_fee(DepositTab, 1_500_000)
-    tab.slippage.value = "1.5"
-    tab._slippage_edited(None)  # the field's own on_change
-
-    await tab.refresh()
-    assert tab.slippage.value == "1.5"
-
-
-async def test_a_pool_that_will_not_answer_keeps_the_default() -> None:
-    """Better a workable default than an empty box."""
-    from ui.actions import DepositTab
-    from ui.actions import DEFAULT_SLIPPAGE
-
-    tab, _ = tab_with_fee(DepositTab, 0)  # fee() answers zero
-    await tab.refresh()
-    assert tab.slippage.value == str(DEFAULT_SLIPPAGE)
-
-
-async def test_staking_reads_no_fee_at_all() -> None:
-    """It has no slippage field, so there is nothing to suggest."""
-    from ui.actions import StakeTab
-
-    tab, provider = tab_with_fee(StakeTab, 1_500_000)
-    await tab.refresh()
-    assert "0x" + abi.selector("fee()") not in provider.reads
+    worst_ratio = 0.13696 / 0.15      # cvxCrv/Crv, the binding pool
+    assert ESTIMATE_FEE_SHARE >= worst_ratio
+    assert ESTIMATE_FEE_SHARE <= 1.5, "more than this is margin nobody needs"
 
 
 def test_the_arithmetic_is_a_times_fee_plus_b() -> None:

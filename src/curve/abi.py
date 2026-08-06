@@ -86,6 +86,23 @@ def _array(values: list[int]) -> str:
     return "".join(_uint(v) for v in values)
 
 
+def _dyn_array(values: list[int]) -> str:
+    """The *tail* of a `uint256[]`: a length word, then the elements.
+
+    Dynamic arguments are split in two. The head, in argument order, holds
+    a byte offset from the start of the argument block; the tail holds the
+    data. So a caller has to place the offset itself -- which is why this
+    returns only the tail and every dynamic encoder below spells out its
+    own head.
+    """
+    return _uint(len(values)) + _array(values)
+
+
+def _offset(words: int) -> str:
+    """A head word pointing at the tail, given the head's length in words."""
+    return _uint(words * 32)
+
+
 def _index(value: int, *, stableswap: bool) -> str:
     """A coin index, in whichever width this pool's ABI declares."""
     return _int(value) if stableswap else _uint(value)
@@ -185,13 +202,32 @@ def encode_exchange(i: int, j: int, dx: int, min_dy: int, *, stableswap: bool) -
 # -- depositing ------------------------------------------------------------
 
 
-def encode_add_liquidity(amounts: list[int], min_mint: int) -> str:
-    """Deposit. The array's length is part of the signature."""
+def encode_add_liquidity(
+    amounts: list[int], min_mint: int, *, dynamic: bool = False
+) -> str:
+    """Deposit.
+
+    Two spellings, and they are different functions rather than different
+    encodings of one: on the classic pools the array is `uint256[N]`, so
+    its length is part of the signature; on StableSwap-NG it is a
+    `DynArray`, so the signature is length-agnostic and the calldata
+    carries an offset and a length. Sending one to a pool that speaks the
+    other reverts.
+    """
+    if dynamic:
+        return _call(
+            "add_liquidity(uint256[],uint256)",
+            _offset(2),
+            _uint(min_mint),
+            _dyn_array(amounts),
+        )
     n = len(amounts)
     return _call(f"add_liquidity(uint256[{n}],uint256)", _array(amounts), _uint(min_mint))
 
 
-def encode_calc_token_amount(amounts: list[int], *, deposit: bool = True) -> str:
+def encode_calc_token_amount(
+    amounts: list[int], *, deposit: bool = True, dynamic: bool = False
+) -> str:
     """Estimate LP tokens out. Note the two-argument caveat below.
 
     StableSwap and the NG crypto pools take `(amounts, is_deposit)`. The
@@ -200,6 +236,13 @@ def encode_calc_token_amount(amounts: list[int], *, deposit: bool = True) -> str
     `encode_calc_token_amount_no_flag` when the call reverts -- the two
     cannot be told apart from API metadata.
     """
+    if dynamic:
+        return _call(
+            "calc_token_amount(uint256[],bool)",
+            _offset(2),
+            _bool(deposit),
+            _dyn_array(amounts),
+        )
     n = len(amounts)
     return _call(
         f"calc_token_amount(uint256[{n}],bool)", _array(amounts), _bool(deposit)
@@ -215,8 +258,17 @@ def encode_calc_token_amount_no_flag(amounts: list[int]) -> str:
 # -- withdrawing -----------------------------------------------------------
 
 
-def encode_remove_liquidity(amount: int, min_amounts: list[int]) -> str:
+def encode_remove_liquidity(
+    amount: int, min_amounts: list[int], *, dynamic: bool = False
+) -> str:
     """Withdraw every coin, in the pool's current proportions."""
+    if dynamic:
+        return _call(
+            "remove_liquidity(uint256,uint256[])",
+            _uint(amount),
+            _offset(2),
+            _dyn_array(min_amounts),
+        )
     n = len(min_amounts)
     return _call(
         f"remove_liquidity(uint256,uint256[{n}])", _uint(amount), _array(min_amounts)

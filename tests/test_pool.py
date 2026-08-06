@@ -134,8 +134,15 @@ async def test_calc_token_amount_falls_back_to_the_older_signature() -> None:
     with_flag = "0x" + abi.selector("calc_token_amount(uint256[2],bool)")
     without = "0x" + abi.selector("calc_token_amount(uint256[2])")
     provider = FakeProvider({with_flag: "0x", without: word(4242)})
+    # A method a pool does not implement answers with nothing, so that is
+    # what everything unlisted does here -- a zero word would be a real
+    # answer and would stop the search.
+    provider.default = "0x"
     assert await contract(provider).calc_token_amount([1, 0]) == 4242
-    assert [d[:10] for _, d in provider.calls] == [with_flag, without]
+    # Both flagged spellings are tried before the flagless one: the pool
+    # could have been an NG pool with an unhelpful registry string.
+    dynamic = "0x" + abi.selector("calc_token_amount(uint256[],bool)")
+    assert [d[:10] for _, d in provider.calls] == [with_flag, dynamic, without]
 
 
 async def test_calc_token_amount_skips_the_call_when_nothing_is_entered() -> None:
@@ -268,3 +275,94 @@ async def test_the_pair_is_encoded_into_the_dynamic_fee_call() -> None:
     body = data[10:]
     assert int(body[:64], 16) == 1
     assert int(body[64:128], 16) == 2
+
+
+# -- array shapes ----------------------------------------------------------
+#
+# StableSwap-NG takes a Vyper `DynArray`, so its amounts are `uint256[]`
+# where every other implementation takes `uint256[N]`. Confirmed against
+# mainnet: PayPool and Strategic USD Reserves answer the dynamic spelling
+# and revert on the fixed one; 3pool, crvUSD/USDT, stETH-ng, TricryptoUSDC,
+# tricrypto2 and YB-WETH do the opposite.
+
+
+def ng_pool() -> Pool:
+    return make_pool(registry="stableswapng")
+
+
+async def test_an_ng_pool_is_quoted_with_a_dynamic_array() -> None:
+    dynamic = "0x" + abi.selector("calc_token_amount(uint256[],bool)")
+    provider = FakeProvider({dynamic: word(98)})
+    provider.default = "0x"
+    assert await contract(provider, ng_pool()).calc_token_amount([1, 0]) == 98
+
+
+async def test_a_classic_pool_is_quoted_with_a_fixed_array() -> None:
+    fixed = "0x" + abi.selector("calc_token_amount(uint256[2],bool)")
+    provider = FakeProvider({fixed: word(77)})
+    provider.default = "0x"
+    assert await contract(provider).calc_token_amount([1, 0]) == 77
+
+
+async def test_an_unknown_registry_is_asked_rather_than_assumed() -> None:
+    """A factory this app has never seen still gets working calldata."""
+    dynamic = "0x" + abi.selector("calc_token_amount(uint256[],bool)")
+    provider = FakeProvider({dynamic: word(5)})
+    provider.default = "0x"
+    pool = make_pool(registry="some-new-factory-2027")
+    assert not pool.dynamic_arrays  # not what the registry implied
+    assert await contract(provider, pool).calc_token_amount([1, 0]) == 5
+    assert pool.dynamic_arrays, "the answer should be remembered"
+
+
+async def test_the_deposit_is_sent_in_the_shape_that_answered() -> None:
+    """A quote can try both spellings; a transaction cannot."""
+    dynamic = "0x" + abi.selector("calc_token_amount(uint256[],bool)")
+    provider = FakeProvider({dynamic: word(5)})
+    provider.default = "0x"
+    pool = make_pool(registry="some-new-factory-2027")
+    bound = contract(provider, pool)
+
+    await bound.calc_token_amount([1, 0])
+    await bound.add_liquidity([1, 0], 0)
+    assert provider.sent[-1]["data"].startswith(
+        "0x" + abi.selector("add_liquidity(uint256[],uint256)")
+    )
+
+
+async def test_a_dynamic_deposit_carries_an_offset_and_a_length() -> None:
+    provider = FakeProvider()
+    await contract(provider, ng_pool()).add_liquidity([7, 9], 3)
+    data = provider.sent[-1]["data"]
+    words = [int(data[10:][i : i + 64], 16) for i in range(0, len(data) - 10, 64)]
+    # head: offset to the array, min_mint. tail: length, elements.
+    assert words == [0x40, 3, 2, 7, 9]
+
+
+async def test_a_dynamic_withdrawal_carries_them_too() -> None:
+    provider = FakeProvider()
+    await contract(provider, ng_pool()).remove_liquidity(5, [1, 2])
+    data = provider.sent[-1]["data"]
+    words = [int(data[10:][i : i + 64], 16) for i in range(0, len(data) - 10, 64)]
+    assert words == [5, 0x40, 2, 1, 2]
+    assert data.startswith("0x" + abi.selector("remove_liquidity(uint256,uint256[])"))
+
+
+async def test_a_classic_deposit_stays_inline() -> None:
+    provider = FakeProvider()
+    await contract(provider).add_liquidity([7, 9], 3)
+    data = provider.sent[-1]["data"]
+    assert data.startswith("0x" + abi.selector("add_liquidity(uint256[2],uint256)"))
+    words = [int(data[10:][i : i + 64], 16) for i in range(0, len(data) - 10, 64)]
+    assert words == [7, 9, 3]
+
+
+async def test_the_index_width_still_follows_the_family() -> None:
+    """Verified on mainnet: every stable pool -- NG included -- answers
+    `int128`, and every crypto pool answers `uint256`."""
+    assert make_pool(registry="stableswapng").is_stableswap
+    assert make_pool(registry="crvusd").is_stableswap
+    assert make_pool(registry="main").is_stableswap
+    assert not make_pool(registry="twocryptong").is_stableswap
+    assert not make_pool(registry="factory_tricrypto").is_stableswap
+    assert not make_pool(registry="crypto").is_stableswap

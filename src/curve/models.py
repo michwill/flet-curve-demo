@@ -35,6 +35,25 @@ STABLE_POOL_TYPES = frozenset(
         "factory-crvusd", "factory-stable-ng", "factory-eywa",
     }
 )
+#: Pool types whose amount arrays are Vyper `DynArray`s -- `uint256[]`
+#: rather than `uint256[N]`. StableSwap-NG rewrote `add_liquidity`,
+#: `remove_liquidity` and `calc_token_amount` that way, so the calldata is
+#: an offset and a length rather than N inline words, and a fixed-array
+#: call to one of these pools reverts.
+#:
+#: Confirmed against mainnet, one pool per implementation: PayPool,
+#: Strategic USD Reserves and weETH/WETH (all stableswap-ng) answer the
+#: dynamic spelling and revert on the fixed one; 3pool, crvUSD/USDT,
+#: stETH-ng, TricryptoUSDC, tricrypto2 and YB-WETH (twocrypto-ng) do the
+#: opposite. The crypto NG pools kept fixed arrays.
+DYNAMIC_ARRAY_TYPES = frozenset(
+    {
+        "stableswapng",
+        # v1 registry id for the same implementation
+        "factory-stable-ng",
+    }
+)
+
 #: Pool types using the CryptoSwap ABI: `uint256` coin indices.
 CRYPTO_POOL_TYPES = frozenset(
     {
@@ -166,6 +185,12 @@ class Pool:
     #: False until `merge_detail` has run: the list endpoint omits the LP
     #: token, the reserves and per-coin prices.
     detailed: bool = False
+    #: Which array shape the pool actually answered, once something has
+    #: asked it. None until then, when the registry decides. A new factory
+    #: this app has never heard of is thereby handled by asking rather than
+    #: by guessing -- and the answer is remembered, because a *write* has
+    #: no second chance to try the other spelling.
+    observed_dynamic: bool | None = None
 
     # -- derived ----------------------------------------------------------
 
@@ -188,6 +213,18 @@ class Pool:
         # new crypto one, and a StableSwap `get_dy` that fails is visible
         # immediately in the UI rather than silently mispricing.
         return True
+
+    @property
+    def dynamic_arrays(self) -> bool:
+        """Does this pool take `uint256[]` where the others take `uint256[N]`?
+
+        From the registry, because it is a property of the implementation
+        rather than of the pool -- unless a call has already proved
+        otherwise, which is how an unknown new factory is handled.
+        """
+        if self.observed_dynamic is not None:
+            return self.observed_dynamic
+        return (self.registry or "").lower() in DYNAMIC_ARRAY_TYPES
 
     @property
     def pool_coins(self) -> list[Coin]:

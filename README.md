@@ -93,6 +93,35 @@ The direction of that dependency is the whole point: `curve/` never imports Flet
 so sorting, formatting, ABI encoding and API parsing are testable with plain
 pytest and no display, no Flutter, and no browser.
 
+## Talking to the pools
+
+Curve is not one ABI. Two axes vary independently, and both were checked
+against mainnet rather than inferred from the registry names:
+
+| implementation | coin index | amount arrays |
+| --- | --- | --- |
+| `main`, `crvusd`, `factory` (old stable) | `int128` | `uint256[N]` |
+| `stableswapng` | `int128` | **`uint256[]`** |
+| `crypto`, `factory_tricrypto`, `twocryptong` | `uint256` | `uint256[N]` |
+
+StableSwap-NG rewrote its amounts as a Vyper `DynArray`, so `add_liquidity`,
+`remove_liquidity` and `calc_token_amount` take an offset and a length where
+every other pool takes N inline words. A fixed-array call to one of those
+pools reverts -- which is what "could not read the deposit estimate" was.
+
+The registry says which to expect and `PoolContract` asks anyway: the quote
+tries both spellings, and the one that answers is remembered on the pool,
+because a transaction gets no second attempt. An unknown future factory is
+therefore handled by asking rather than by guessing.
+
+The estimates are not equally trustworthy, either. `get_dy` is the same
+maths the swap runs, fee included. `calc_token_amount` is not: quoting a
+deposit and then quoting the withdrawal of exactly that LP back out loses
+about *one* fee across eleven mainnet pools, where two would be expected if
+both legs charged. So the deposit and withdrawal panels allow twice the fee
+(with a floor for the pools whose fee is 0.001%) and the swap panel allows a
+fifth of it.
+
 ## Reading Curve
 
 Public APIs, no keys. Pool data comes from the **Prices API v2**; charts from

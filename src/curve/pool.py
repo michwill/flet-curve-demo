@@ -72,25 +72,40 @@ class PoolContract:
     async def calc_token_amount(self, amounts: list[int], *, deposit: bool = True) -> int:
         """Estimate LP tokens minted (or burned) for a set of coin amounts.
 
-        Tries the `(amounts, bool)` spelling first and falls back to the
-        older CryptoSwap `(amounts)` one. The two cannot be distinguished
-        from API metadata, and the failure mode is empty data rather than a
-        revert, so both paths go through `_read`.
+        Three spellings exist and the pool answers exactly one:
+
+          * `uint256[N]` plus a flag -- the classic pools;
+          * `uint256[]` plus a flag -- StableSwap-NG, whose amounts are a
+            Vyper `DynArray`;
+          * `uint256[N]` alone -- the oldest CryptoSwap pools.
+
+        The registry says which to expect, and this asks anyway: an
+        unknown factory would otherwise get calldata that reverts. The
+        shape that answers is remembered on the pool, because
+        `add_liquidity` has to send the same one and a transaction gets no
+        second attempt.
         """
         if not any(amounts):
             return 0
-        try:
-            return await self._read(
-                self.pool.address,
-                abi.encode_calc_token_amount(amounts, deposit=deposit),
-                "the deposit estimate",
-            )
-        except PoolCallFailed:
-            return await self._read(
-                self.pool.address,
-                abi.encode_calc_token_amount_no_flag(amounts),
-                "the deposit estimate",
-            )
+        expected = self.pool.dynamic_arrays
+        for dynamic in (expected, not expected):
+            try:
+                value = await self._read(
+                    self.pool.address,
+                    abi.encode_calc_token_amount(
+                        amounts, deposit=deposit, dynamic=dynamic
+                    ),
+                    "the deposit estimate",
+                )
+            except PoolCallFailed:
+                continue
+            self.pool.observed_dynamic = dynamic
+            return value
+        return await self._read(
+            self.pool.address,
+            abi.encode_calc_token_amount_no_flag(amounts),
+            "the deposit estimate",
+        )
 
     async def calc_withdraw_one_coin(self, lp_amount: int, i: int) -> int:
         if lp_amount <= 0:
@@ -190,13 +205,25 @@ class PoolContract:
         )
 
     async def add_liquidity(self, amounts: list[int], min_mint: int) -> str:
+        """Deposit, in whichever array shape this pool speaks.
+
+        The shape is whatever `calc_token_amount` proved -- the panel
+        always quotes before it sends -- falling back to what the registry
+        implies for a pool nobody has quoted yet.
+        """
         return await self._send(
-            self.pool.address, abi.encode_add_liquidity(amounts, min_mint)
+            self.pool.address,
+            abi.encode_add_liquidity(
+                amounts, min_mint, dynamic=self.pool.dynamic_arrays
+            ),
         )
 
     async def remove_liquidity(self, lp_amount: int, min_amounts: list[int]) -> str:
         return await self._send(
-            self.pool.address, abi.encode_remove_liquidity(lp_amount, min_amounts)
+            self.pool.address,
+            abi.encode_remove_liquidity(
+                lp_amount, min_amounts, dynamic=self.pool.dynamic_arrays
+            ),
         )
 
     async def remove_liquidity_one_coin(

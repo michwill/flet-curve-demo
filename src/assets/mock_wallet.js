@@ -23,6 +23,8 @@
   const TOKEN_BALANCE = 1234560000n; // 1234.56 at 6 decimals
   const TOKEN_DECIMALS = 6n;
   const TOKEN_SYMBOL = "TEST";
+  //: The block every mock transaction lands in.
+  const MINED_BLOCK = 21_000_000;
 
   // EIP-6963 requires an announced icon, so the mock announces one too --
   // otherwise the app's icon path is never exercised in development.
@@ -74,6 +76,11 @@
           // dynamic_fee(int128,int128) is deliberately *not* answered:
           // only StableSwap-NG has it, and the fallback to fee() is the
           // path worth exercising here.
+          if (selector === "dd62ed3e") {
+            // allowance(): zero until an approval has been mined, so the
+            // app's "wait, then re-read" path has something to observe.
+            return "0x" + word((window.__approved ? 2n ** 200n : 0n).toString(16));
+          }
           if (selector === "313ce567") return "0x" + word(TOKEN_DECIMALS.toString(16)); // decimals()
           if (selector === "70a08231") return "0x" + word(TOKEN_BALANCE.toString(16)); // balanceOf()
           if (selector === "95d89b41" || selector === "06fdde03") {
@@ -88,7 +95,26 @@
           }
           return "0x";
         }
+        case "eth_blockNumber":
+          // Creeps forward so the "wait for the endpoint to catch up"
+          // path is exercised rather than short-circuited.
+          this._head = (this._head || MINED_BLOCK - 2) + 1;
+          return "0x" + Math.min(this._head, MINED_BLOCK).toString(16);
+        case "eth_getTransactionReceipt":
+          // Pending for the first couple of polls, then mined.
+          this._polls = (this._polls || 0) + 1;
+          if (this._polls < 3) return null;
+          return {
+            transactionHash: params[0],
+            blockNumber: "0x" + MINED_BLOCK.toString(16),
+            status: "0x1",
+          };
         case "eth_sendTransaction":
+          this._polls = 0;
+          // An approve() to any spender counts, for the same reason.
+          if ((params[0]?.data || "").startsWith("0x095ea7b3")) {
+            window.__approved = true;
+          }
           window.__lastTx = params[0];
           console.log("[mock-wallet] would send:", JSON.stringify(params[0], null, 2));
           return "0x" + "ab".repeat(32);

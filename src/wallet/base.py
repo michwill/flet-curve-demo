@@ -144,6 +144,14 @@ class WalletProvider(ABC):
         """`eth_call` against the latest block. Returns hex-encoded return data."""
         return await self.request("eth_call", [{"to": to, "data": data}, "latest"])
 
+    async def block_number(self) -> int:
+        """The chain head, as this endpoint currently sees it."""
+        return int(await self.request("eth_blockNumber"), 16)
+
+    async def transaction_receipt(self, tx_hash: str) -> dict[str, Any] | None:
+        """The receipt, or None while the transaction is still pending."""
+        return await self.request("eth_getTransactionReceipt", [tx_hash])
+
     async def send_transaction(self, tx: dict[str, Any]) -> str:
         """Ask the wallet to sign+broadcast. Returns the transaction hash.
 

@@ -18,9 +18,31 @@ python tools/build_assets.py         # compile the subset the app needs
 python -m http.server 8000 -d dist
 ```
 
+To offer **WalletConnect** in the browser build, give it a projectId (free,
+from [dashboard.reown.com](https://dashboard.reown.com)):
+
+```sh
+cp src/local_config.example.toml src/local_config.toml   # then fill in project_id
+```
+
+That file is gitignored and read at build time -- `flet publish` bundles it, so
+there is no post-build step to forget. Without it the WalletConnect connector
+simply does not appear; injected wallets (MetaMask, Rabby, Frame, qeth) work
+either way.
+
 The wallet layer is [`flet-pay-example`](https://github.com/michwill/flet-pay-example)'s
-`wallet/` package, copied unchanged. Its README is the reference for how the
-EIP-1193 seam and the browser bridge work; this one covers what was added on top.
+`wallet/` package. Its README is the reference for how the EIP-1193 seam and the
+browser bridge work; this one covers what was added on top. Two changes were
+made to it here, both about noticing things the app used to miss:
+
+- **the desktop transport polls.** An HTTP endpoint cannot push, so switching
+  account in Frame or qeth used to change nothing on screen. `desktop.py` now
+  asks every four seconds and synthesises the same `accountsChanged` /
+  `chainChanged` events a browser wallet sends -- `Wallet` cannot tell which
+  transport it is on.
+- **`disconnect` counts as a disconnection.** An extension revokes a site with
+  an empty `accountsChanged`; WalletConnect closes the session and sends
+  `disconnect`. Only the first was handled.
 
 ---
 

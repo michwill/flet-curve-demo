@@ -17,11 +17,25 @@ from typing import Any, Callable
 
 import pytest
 
-from wallet.base import WalletProvider, WalletUnavailable
+import flet as ft
+
+from wallet.base import RpcError, WalletProvider, WalletUnavailable
+from wallet.chains import get_chain
 from wallet.desktop import DesktopWalletProvider
 from wallet.session import Wallet
 
 CHECKSUMMED = "0x6B175474E89094C44Da98b954EedeAC495271d0F"
+ACCOUNT = "0x1111111111111111111111111111111111111111"
+
+
+class StubPage:
+    """Enough of `ft.Page` for code that only redraws."""
+
+    def update(self) -> None:
+        pass
+
+    def run_task(self, handler, *args):
+        return None
 OTHER = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
 
 
@@ -474,3 +488,142 @@ async def test_a_remembered_wallet_that_is_gone_does_not_take_a_stand_in(
         {"rdns": "io.rabby", "connector": "injected"},
     )
     assert await restore_with(monkeypatch, provider) is None
+
+
+# -- following the network picker ------------------------------------------
+#
+# Every read goes through the wallet's provider, so browsing one network
+# with a wallet on another quotes addresses that hold no code there. The
+# panels say so; picking a chain in the header also asks the wallet to
+# come along, which is the fix rather than the warning.
+
+
+class SwitchingProvider(WalletProvider):
+    """Records switches, and can refuse or plead ignorance."""
+
+    def __init__(self, chain: int = 1, *, knows: set[int] | None = None) -> None:
+        self.chain = chain
+        self.knows = {1} if knows is None else knows
+        self.switched: list[int] = []
+        self.added: list[dict] = []
+        self.refuse = False
+
+    async def request(self, method, params=None):
+        params = params or []
+        if method == "eth_chainId":
+            return hex(self.chain)
+        if method == "wallet_switchEthereumChain":
+            wanted = int(params[0]["chainId"], 16)
+            if self.refuse:
+                raise RpcError(4001, "User rejected the request")
+            if wanted not in self.knows:
+                raise RpcError(4902, f"Unrecognized chain ID {hex(wanted)}")
+            self.switched.append(wanted)
+            self.chain = wanted
+            return None
+        if method == "wallet_addEthereumChain":
+            self.added.append(params[0])
+            self.knows.add(int(params[0]["chainId"], 16))
+            self.chain = int(params[0]["chainId"], 16)
+            return None
+        raise AssertionError(f"unexpected {method}")
+
+
+def curve_app(provider: SwitchingProvider, chain: str = "ethereum", chains=None):
+    """`CurveApp` with its constructor skipped -- only the chain plumbing."""
+    import main as app_module
+
+    app = app_module.CurveApp.__new__(app_module.CurveApp)
+    app.page = StubPage()
+    app.chains = chains or {"ethereum": 1, "xdai": 100, "monad": 143}
+    app.chain = chain
+    app.wallet = Wallet(provider, ACCOUNT, get_chain(provider.chain))
+    app.error = ft.Text("", visible=False)
+    app.api = FakeLiteApi()
+    return app
+
+
+class FakeLiteApi:
+    """Just the one call `align_wallet_chain` makes."""
+
+    def __init__(self, chains=None) -> None:
+        from curve.lite import LiteChain
+
+        self.chains = chains if chains is not None else {
+            "monad": LiteChain(
+                "monad", 143, "Monad", 0.0,
+                rpc_url="https://rpc.monad.xyz",
+                explorer="https://explorer.monad.xyz",
+                native_symbol="MON",
+            )
+        }
+
+    async def lite_chains(self):
+        return self.chains
+
+
+async def test_picking_a_chain_takes_the_wallet_with_it() -> None:
+    provider = SwitchingProvider(chain=1, knows={1, 100})
+    app = curve_app(provider, chain="xdai")
+
+    await app.align_wallet_chain()
+
+    assert provider.switched == [100]
+
+
+async def test_a_wallet_already_there_is_left_alone() -> None:
+    """No prompt for a switch that would change nothing."""
+    provider = SwitchingProvider(chain=100, knows={1, 100})
+    app = curve_app(provider, chain="xdai")
+    app.wallet = Wallet(provider, ACCOUNT, get_chain(100))
+
+    await app.align_wallet_chain()
+
+    assert provider.switched == []
+
+
+async def test_a_refusal_is_reported_and_nothing_else_happens() -> None:
+    """Refusing is a perfectly good answer; the panels' own notice stands."""
+    provider = SwitchingProvider(chain=1, knows={1, 100})
+    provider.refuse = True
+    app = curve_app(provider, chain="xdai")
+
+    await app.align_wallet_chain()
+
+    assert provider.added == []
+    assert app.error.visible is True
+    assert "rejected" in app.error.value.lower()
+
+
+async def test_an_unknown_lite_chain_is_offered_to_the_wallet() -> None:
+    """4902 means the wallet has never heard of it, which for a Curve Lite
+    chain is the normal case -- and their API is the only place publishing
+    what EIP-3085 needs."""
+    provider = SwitchingProvider(chain=1, knows={1})
+    app = curve_app(provider, chain="monad")
+
+    await app.align_wallet_chain()
+
+    assert provider.added and provider.added[0]["chainId"] == hex(143)
+    assert provider.added[0]["rpcUrls"] == ["https://rpc.monad.xyz"]
+    assert provider.added[0]["nativeCurrency"]["symbol"] == "MON"
+
+
+async def test_an_unknown_chain_with_no_metadata_says_so() -> None:
+    """Gnosis is not a Lite chain, so nothing here can describe it to a
+    wallet that does not know it. Saying so beats a silent no-op."""
+    provider = SwitchingProvider(chain=1, knows={1})
+    app = curve_app(provider, chain="xdai")
+    app.api = FakeLiteApi(chains={})
+
+    await app.align_wallet_chain()
+
+    assert provider.added == []
+    assert app.error.visible is True
+    assert "does not know" in app.error.value
+
+
+async def test_no_wallet_is_not_an_error() -> None:
+    app = curve_app(SwitchingProvider(), chain="xdai")
+    app.wallet = None
+    await app.align_wallet_chain()  # must not raise

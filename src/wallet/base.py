@@ -163,3 +163,13 @@ class WalletProvider(ABC):
 
     async def switch_chain(self, chain_id: int) -> None:
         await self.request("wallet_switchEthereumChain", [{"chainId": hex(chain_id)}])
+
+    async def add_chain(self, params: dict[str, Any]) -> None:
+        """Teach the wallet a network it does not know (EIP-3085).
+
+        Only worth calling after `switch_chain` has answered 4902, which
+        is how a wallet says "never heard of it". The parameters are the
+        wallet's to display and the user's to accept or refuse; nothing
+        here can add a network on its own.
+        """
+        await self.request("wallet_addEthereumChain", [params])

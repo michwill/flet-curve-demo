@@ -52,6 +52,13 @@ class LiteChain:
     #: than the key ("X layer" for `x-layer`) and sometimes worse ("tac").
     label: str
     tvl: float
+    #: What a wallet needs to *add* the network, for the ones no wallet
+    #: ships with -- which is most of these. `wallet_addEthereumChain`
+    #: wants exactly this: a name, an RPC, an explorer and the native
+    #: symbol. Nowhere else publishes it for a Curve Lite chain.
+    rpc_url: str = ""
+    explorer: str = ""
+    native_symbol: str = "ETH"
 
 
 def parse_platforms(payload: Any) -> dict[str, LiteChain]:
@@ -75,6 +82,9 @@ def parse_platforms(payload: Any) -> dict[str, LiteChain]:
             chain_id=int(chain_id),
             label=str(meta.get("name") or name),
             tvl=float(meta.get("tvl") or 0.0),
+            rpc_url=str(meta.get("rpc_url") or ""),
+            explorer=str(meta.get("explorer_base_url") or ""),
+            native_symbol=str(meta.get("native_currency_symbol") or "ETH"),
         )
     return chains
 

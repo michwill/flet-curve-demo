@@ -32,12 +32,18 @@ from ui.logos import chain_mark
 from ui.responsive import layout_for
 from ui.typography import BODY, LABEL, SMALL, TITLE
 from wallet import Wallet, WalletChoice, WalletError, autoconnect, is_browser
+from wallet.base import RpcError
 
 DEFAULT_CHAIN = "ethereum"
 #: Shown first in the picker; anything else the API reports is appended.
 #: v2 covers 12 chains against v1's 21 -- see docs/curve-api.md -- so the
 #: real list is read from `/pools/chains/` rather than hardcoded.
 PREFERRED_CHAINS = ("ethereum", "arbitrum", "base", "optimism", "polygon", "fraxtal")
+
+#: What a wallet answers when it has never heard of the network being asked
+#: for (EIP-3085). Anything else is a refusal, or a wallet that cannot
+#: switch at all, and neither is worth a second attempt.
+UNKNOWN_CHAIN = 4902
 
 #: The Curve mark, sized against the wordmark beside it rather than against
 #: the header's height -- the two read as one lockup.
@@ -333,6 +339,68 @@ class CurveApp:
         self.chain_picker.leading_icon = chain_icon(self.chain)
         self.show_list()
         self.page.run_task(self.load_pools)
+        # And take the wallet with us. Reads go through the wallet's
+        # provider, so browsing one network with a wallet on another
+        # quotes addresses that hold no code there: every estimate comes
+        # back empty and the panel can only say the pool did not answer.
+        self.page.run_task(self.align_wallet_chain)
+
+    async def align_wallet_chain(self) -> None:
+        """Ask the wallet to move to the network being browsed.
+
+        Only on a deliberate pick from the header -- never on load, where
+        the wallet's own network is a choice the app follows rather than
+        overrides. The wallet prompts; it may refuse, and refusing is a
+        perfectly good answer that leaves the panels' own notice standing.
+
+        A wallet that has never heard of the network answers 4902. For the
+        Curve Lite chains that is the normal case, and their API is the
+        only place that publishes what EIP-3085 needs to add one, so the
+        offer is made with that.
+        """
+        wallet = self.wallet
+        chain_id = self.chains.get(self.chain)
+        if wallet is None or not chain_id or wallet.chain.chain_id == chain_id:
+            return
+        try:
+            await wallet.provider.switch_chain(chain_id)
+            return
+        except RpcError as exc:
+            if exc.code != UNKNOWN_CHAIN:
+                self._say_chain(f"Your wallet stayed on {wallet.chain.name}: {exc.message}")
+                return
+        except WalletError as exc:
+            self._say_chain(str(exc))
+            return
+
+        lite = (await self.api.lite_chains()).get(self.chain)
+        if lite is None or not lite.rpc_url:
+            self._say_chain(
+                f"Your wallet does not know {chain_name(self.chain)}. Add the "
+                "network there, then reload."
+            )
+            return
+        try:
+            await wallet.provider.add_chain(
+                {
+                    "chainId": hex(chain_id),
+                    "chainName": lite.label,
+                    "rpcUrls": [lite.rpc_url],
+                    "blockExplorerUrls": [lite.explorer] if lite.explorer else [],
+                    "nativeCurrency": {
+                        "name": lite.native_symbol,
+                        "symbol": lite.native_symbol,
+                        "decimals": 18,
+                    },
+                }
+            )
+        except WalletError as exc:
+            self._say_chain(f"Could not add {lite.label} to your wallet: {exc}")
+
+    def _say_chain(self, message: str) -> None:
+        self.error.value = message
+        self.error.visible = True
+        self.page.update()
 
     async def load_pools(self) -> None:
         """Point the list at a fresh feed for the current chain.

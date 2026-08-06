@@ -166,12 +166,23 @@ zap on its own chain, quoting a real deposit. The Gnosis gap that prompted this
 was a sweep bug: Curve's API calls that chain `xdai`, and asking for `gnosis`
 quietly returned nothing.
 
-**If every estimate on a chain fails, look at the wallet before the pool.**
-Reads go through the wallet's provider, so they land on whatever network the
-*wallet* is on — browsing Gnosis with a wallet on Ethereum quotes Gnosis
-addresses against Ethereum, where they hold no code, and every estimate comes
-back "the pool did not answer". That reads as a pool this app cannot handle. The
-action panels now say so instead, with a button that asks the wallet to switch.
+**Reads go through the wallet's provider**, so they land on whatever network the
+*wallet* is on. Browsing Gnosis with a wallet on Ethereum quotes Gnosis
+addresses against Ethereum, where they hold no code: every estimate comes back
+"the pool did not answer", which reads as a pool this app cannot handle.
+
+So picking a network in the header now takes the wallet with it —
+`wallet_switchEthereumChain`, which the wallet prompts for and may refuse. A
+wallet that has never heard of the network answers 4902; for a Curve Lite chain
+that is the normal case, and `get_platforms` is the only place publishing the
+RPC, explorer and native symbol that `wallet_addEthereumChain` needs, so the
+offer is made with that. Only on a deliberate pick, never on load, where the
+wallet's own network is a choice the app follows rather than overrides.
+
+When they still disagree — a refusal, or a wallet moved by hand — each action
+panel says which network to be on and offers the switch, with its estimate
+cleared and its buttons greyed, since nothing can be read or sent across that
+boundary.
 
 A zap that will not answer costs nothing, since the route is gated on a working
 quote — no approve step appears and the pool-token route stays. One family is

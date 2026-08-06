@@ -18,7 +18,14 @@
   "use strict";
 
   const ACCOUNT = "0x1111111111111111111111111111111111111111";
-  const CHAIN_ID = "0x1";
+  // Mutable, because the app now asks the wallet to follow the network
+  // picker and a mock that always answers "Ethereum" would make that
+  // impossible to see working.
+  let CHAIN_ID = "0x1";
+  //: Networks this mock claims to know. Anything else gets 4902, which is
+  //: how a real wallet says "never heard of it" -- and is the path the app
+  //: takes to offer `wallet_addEthereumChain`.
+  const KNOWN_CHAINS = new Set(["0x1", "0x64", "0xa4b1", "0xa", "0x89", "0x2105"]);
   const NATIVE_BALANCE = 2000000000000000000n; // 2 ETH
   const TOKEN_BALANCE = 1234560000n; // 1234.56 at 6 decimals
   const TOKEN_DECIMALS = 6n;
@@ -118,8 +125,23 @@
           window.__lastTx = params[0];
           console.log("[mock-wallet] would send:", JSON.stringify(params[0], null, 2));
           return "0x" + "ab".repeat(32);
-        case "wallet_switchEthereumChain":
+        case "wallet_switchEthereumChain": {
+          const wanted = params[0] && params[0].chainId;
+          if (!KNOWN_CHAINS.has(wanted)) {
+            throw { code: 4902, message: `Unrecognized chain ID ${wanted}` };
+          }
+          CHAIN_ID = wanted;
+          provider.emit("chainChanged", wanted);
           return null;
+        }
+        case "wallet_addEthereumChain": {
+          const added = params[0] && params[0].chainId;
+          console.log("[mock-wallet] would add network:", JSON.stringify(params[0]));
+          KNOWN_CHAINS.add(added);
+          CHAIN_ID = added;
+          provider.emit("chainChanged", added);
+          return null;
+        }
         default:
           throw { code: 4200, message: `Mock wallet does not implement ${method}` };
       }

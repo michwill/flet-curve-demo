@@ -269,28 +269,51 @@ def test_a_metapool_offers_both_routes() -> None:
     assert [f.label for f in tab.routes["underlying"].fields] == ["C0", "C2", "C3"]
 
 
-def test_switching_route_swaps_which_fields_are_live_and_shown() -> None:
+def test_the_underlying_route_is_the_default_where_there_is_one() -> None:
+    """It is the one denominated in coins people actually hold. Holding the
+    base pool's LP token is the specialist case."""
     tab, _ = deposit_tab()
-    assert tab.fields is tab.routes["pool"].fields
-    assert tab.routes["underlying"].control.visible is False
-
-    tab.route.value = "underlying"
-    tab._route_changed(None)
-
+    assert tab.route.value == "underlying"
     assert tab.underlying is True
     assert tab.fields is tab.routes["underlying"].fields
     assert tab.routes["underlying"].control.visible is True
     assert tab.routes["pool"].control.visible is False
+    # And it reads first, because a default buried second is a default
+    # nobody sees.
+    assert [radio.value for radio in tab.route.content.controls] == [
+        "underlying",
+        "pool",
+    ]
+
+
+def test_a_pool_without_a_zap_stays_on_its_own_coins() -> None:
+    plain = metapool()
+    plain.base_pool = ""
+    tab, _ = deposit_tab(plain)
+    assert tab.route.value == "pool"
+    assert tab.underlying is False
+
+
+def test_switching_route_swaps_which_fields_are_live_and_shown() -> None:
+    tab, _ = deposit_tab()
+
+    tab.route.value = "pool"
+    tab._route_changed(None)
+
+    assert tab.underlying is False
+    assert tab.fields is tab.routes["pool"].fields
+    assert tab.routes["pool"].control.visible is True
+    assert tab.routes["underlying"].control.visible is False
 
 
 def test_an_amount_typed_on_one_route_is_not_lost_by_looking_at_the_other() -> None:
     tab, _ = deposit_tab()
-    tab.routes["pool"].fields[0].value = "5"
-    tab.route.value = "underlying"
-    tab._route_changed(None)
+    tab.routes["underlying"].fields[0].value = "5"
     tab.route.value = "pool"
     tab._route_changed(None)
-    assert tab.routes["pool"].fields[0].value == "5"
+    tab.route.value = "underlying"
+    tab._route_changed(None)
+    assert tab.routes["underlying"].fields[0].value == "5"
 
 
 async def test_the_underlying_route_deposits_through_the_zap() -> None:
@@ -312,6 +335,8 @@ async def test_the_underlying_route_deposits_through_the_zap() -> None:
 
 async def test_the_pool_route_still_deposits_into_the_pool() -> None:
     tab, provider = deposit_tab()
+    tab.route.value = "pool"
+    tab._route_changed(None)
     tab.fields[0].value = "1000"
     await tab.submit(tab.get_contract())
     assert provider.sent[-1]["to"] == META
@@ -324,7 +349,6 @@ async def test_the_underlying_route_approves_the_zap_not_the_pool() -> None:
     """The spender is whoever moves the coins, and on this route that is
     the zap. Approving the pool would leave the deposit reverting."""
     tab, _ = deposit_tab()
-    tab.route.value = "underlying"
     tab.fields[1].value = "1000"
 
     pending = await tab.approval_needed(tab.get_contract())
@@ -338,6 +362,8 @@ async def test_the_underlying_route_approves_the_zap_not_the_pool() -> None:
 
 async def test_the_pool_route_approves_the_pool() -> None:
     tab, _ = deposit_tab()
+    tab.route.value = "pool"
+    tab._route_changed(None)
     tab.fields[0].value = "1000"
     pending = await tab.approval_needed(tab.get_contract())
     assert pending is not None and pending[1] == META
@@ -348,7 +374,6 @@ async def test_nothing_is_approved_while_the_quote_is_failing() -> None:
     app has the address of will not quote, it does not get approved --
     which is the whole guard against a stale or wrong registry entry."""
     tab, provider = deposit_tab()
-    tab.route.value = "underlying"
     tab.fields[1].value = "1000"
     from wallet.base import RpcError
 
@@ -370,7 +395,6 @@ async def test_the_zap_slippage_covers_both_pools_fees() -> None:
 
     tab, provider = deposit_tab()
     provider.answers["0xddca3f43"] = word(4_000_000)  # 0.04% on both pools
-    tab.route.value = "underlying"
 
     await tab.suggest_slippage(tab.get_contract())
 
@@ -380,6 +404,7 @@ async def test_the_zap_slippage_covers_both_pools_fees() -> None:
 async def test_the_pool_route_charges_one_fee() -> None:
     tab, provider = deposit_tab()
     provider.answers["0xddca3f43"] = word(4_000_000)
+    tab.route.value = "pool"
     await tab.suggest_slippage(tab.get_contract())
     from ui.actions import QUOTE_DRIFT
 
@@ -392,12 +417,12 @@ async def test_switching_route_re_reads_the_fee() -> None:
     tab, provider = deposit_tab()
     provider.answers["0xddca3f43"] = word(4_000_000)
     await tab.suggest_slippage(tab.get_contract())
-    one_fee = tab.slippage.value
+    two_fees = tab.slippage.value
 
-    tab.route.value = "underlying"
+    tab.route.value = "pool"
     await tab.suggest_slippage(tab.get_contract())
 
-    assert tab.slippage.value != one_fee
+    assert tab.slippage.value != two_fees
 
 
 # -- the withdraw panel ----------------------------------------------------
@@ -414,14 +439,19 @@ def withdraw_tab(pool: Pool | None = None, provider: FakeProvider | None = None)
     return tab, provider
 
 
-def test_the_receive_list_becomes_the_underlying_coins() -> None:
+def test_the_receive_list_is_the_underlying_coins_by_default() -> None:
     tab, _ = withdraw_tab()
-    assert [o.text for o in tab.coin_picker.options] == ["C0", "C1"]
+    assert tab.route.value == "underlying"
+    assert [o.text for o in tab.coin_picker.options] == ["C0", "C2", "C3"]
+    # The single-coin rule applies from the start, not from the first time
+    # the switch is touched.
+    assert tab.mode.value == "one"
+    assert tab.balanced_radio.disabled is True
 
-    tab.route.value = "underlying"
+    tab.route.value = "pool"
     tab._route_changed(None)
 
-    assert [o.text for o in tab.coin_picker.options] == ["C0", "C2", "C3"]
+    assert [o.text for o in tab.coin_picker.options] == ["C0", "C1"]
 
 
 def test_the_zap_route_withdraws_into_one_coin_only() -> None:
@@ -429,8 +459,6 @@ def test_the_zap_route_withdraws_into_one_coin_only() -> None:
     base pool's reserves are not on the metapool, and a zero floor is no
     floor. So the option is greyed rather than silently unprotected."""
     tab, _ = withdraw_tab()
-    tab.route.value = "underlying"
-    tab._route_changed(None)
 
     assert tab.mode.value == "one"
     assert tab.balanced_radio.disabled is True
@@ -445,8 +473,6 @@ async def test_the_zap_route_needs_the_lp_approved_to_the_zap() -> None:
     """Burning at the pool needs no approval -- it burns your own balance
     -- but a zap has to be allowed to take the LP first."""
     tab, _ = withdraw_tab()
-    tab.route.value = "underlying"
-    tab._route_changed(None)
     tab.amount.value = "10"
 
     pending = await tab.approval_needed(tab.get_contract())
@@ -461,14 +487,14 @@ async def test_the_zap_route_needs_the_lp_approved_to_the_zap() -> None:
 
 async def test_the_pool_route_needs_no_approval() -> None:
     tab, _ = withdraw_tab()
+    tab.route.value = "pool"
+    tab._route_changed(None)
     tab.amount.value = "10"
     assert await tab.approval_needed(tab.get_contract()) is None
 
 
 async def test_the_zap_withdrawal_is_sent_to_the_zap() -> None:
     tab, provider = withdraw_tab()
-    tab.route.value = "underlying"
-    tab._route_changed(None)
     tab.coin_picker.value = "2"
     tab.amount.value = "10"
     tab.slippage.value = "1"
@@ -489,6 +515,8 @@ async def test_the_zap_withdrawal_is_sent_to_the_zap() -> None:
 
 async def test_the_pool_route_still_burns_at_the_pool() -> None:
     tab, provider = withdraw_tab()
+    tab.route.value = "pool"
+    tab._route_changed(None)
     tab.mode.value = "one"
     tab.amount.value = "10"
     await tab.submit(tab.get_contract())

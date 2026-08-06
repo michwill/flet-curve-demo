@@ -170,6 +170,8 @@ class ActionTab:
     title = ""
     #: Label for the button that sends the main transaction.
     submit_label = "Confirm"
+    #: Past tense, for the line shown once the transaction is mined.
+    done_verb = "Confirmed"
     #: Does this action have a price to protect? Staking does not -- it
     #: moves LP tokens into a gauge at no rate at all -- so showing a
     #: tolerance there invites someone to tune a number that does nothing.
@@ -355,12 +357,37 @@ class ActionTab:
         chain, and reading it while the transaction is still in the mempool
         shows the state before it. That is why an approval used to land and
         leave the button disabled.
+
+        The block the receipt named still governs those reads; it is simply
+        not worth saying. What the line reports is what was sent, in the
+        numbers that were typed.
         """
         self._say(f"Waiting for {tx[:14]}… to confirm.", pending=True)
-        block = await wait_for_confirmation(
-            contract.provider, tx, interval=CONFIRM_INTERVAL
-        )
-        self._say(f"{done} (block {block:,})", ft.Colors.GREEN_600)
+        await wait_for_confirmation(contract.provider, tx, interval=CONFIRM_INTERVAL)
+        self._say(done, ft.Colors.GREEN_600)
+
+    def amount_label(self, address: str, amount: int) -> str:
+        """`1,000 USDC` -- an amount in the units of whatever token it is.
+
+        Every coin the pool knows about, decomposed list included, so this
+        also names the underlying coins the zap route deals in. Anything
+        else is the LP token, which has no entry of its own.
+        """
+        for coin in self.pool.coins:
+            if coin.address.lower() == address.lower():
+                return (
+                    f"{token_amount(units_to_float(amount, coin.decimals))} "
+                    f"{coin.symbol}"
+                )
+        return f"{token_amount(units_to_float(amount, 18))} LP"
+
+    def summary(self) -> str:
+        """What the pending transaction does, for the confirmation line."""
+        return ""
+
+    def done_message(self) -> str:
+        summary = self.summary()
+        return f"{self.done_verb} {summary}." if summary else f"{self.done_verb}."
 
     async def _approve_clicked(self, _e: ft.ControlEvent) -> None:
         contract = self.get_contract()
@@ -376,7 +403,9 @@ class ActionTab:
                 token, spender, amount = pending
                 self._say("Confirm the approval in your wallet…", pending=True)
                 tx = await contract.approve(token, spender, amount)
-                await self._confirm(contract, tx, "Approved.")
+                await self._confirm(
+                    contract, tx, f"Approved {self.amount_label(token, amount)}."
+                )
         except WalletError as exc:
             self._say(str(exc), ft.Colors.ERROR)
         finally:
@@ -391,8 +420,11 @@ class ActionTab:
         self._busy(True)
         try:
             self._say("Confirm in your wallet…", pending=True)
+            # Read before sending: `clear_inputs` empties the fields the
+            # summary is built from.
+            done = self.done_message()
             tx = await self.submit(contract)
-            await self._confirm(contract, tx, f"{self.title} confirmed.")
+            await self._confirm(contract, tx, done)
             self.clear_inputs()
             await self.on_done()
         except WalletError as exc:
@@ -526,14 +558,19 @@ class _AmountRows:
             field.value = ""
 
 
-def _route_picker(on_change) -> ft.RadioGroup:
-    """Pool tokens or underlying: which coins the amounts are denominated in."""
+def _route_picker(on_change, *, underlying: bool) -> ft.RadioGroup:
+    """Underlying or pool tokens: which coins the amounts are denominated in.
+
+    Underlying first, and selected, wherever it is available: it is the one
+    denominated in coins people actually hold. The base pool's LP token is
+    the specialist case -- you have some only if you went and made some.
+    """
     return ft.RadioGroup(
-        value="pool",
+        value="underlying" if underlying else "pool",
         content=ft.Row(
             [
-                ft.Radio(value="pool", label="Pool tokens"),
                 ft.Radio(value="underlying", label="Underlying"),
+                ft.Radio(value="pool", label="Pool tokens"),
             ]
         ),
         on_change=on_change,
@@ -569,11 +606,14 @@ class DepositTab(ActionTab):
 
     title = "Deposit"
     submit_label = "Deposit"
+    done_verb = "Deposited"
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.zap = zap_for(self.pool)
-        self.route = _route_picker(self._route_changed)
+        self.route = _route_picker(
+            self._route_changed, underlying=self.zap is not None
+        )
         self.route.visible = self.zap is not None
         self.routes = {
             "pool": _AmountRows(
@@ -584,7 +624,7 @@ class DepositTab(ActionTab):
             self.routes["underlying"] = _AmountRows(
                 self.pool.display_coins, self.pool.chain, self._changed, self._max_for
             )
-            self.routes["underlying"].control.visible = False
+        self._apply_route()
         self._expected_lp = 0
         #: Whether the last quote came back. A zap this app has the address
         #: of but the chain disagrees with must not be handed an approval,
@@ -627,9 +667,14 @@ class DepositTab(ActionTab):
     def build(self) -> list[ft.Control]:
         return [self.route, *(rows.control for rows in self.routes.values())]
 
-    def _route_changed(self, _e: ft.ControlEvent) -> None:
+    def _apply_route(self) -> None:
+        """Show the live route's fields and hide the other's."""
+        live = "underlying" if self.underlying else "pool"
         for name, rows in self.routes.items():
-            rows.control.visible = name == ("underlying" if self.underlying else "pool")
+            rows.control.visible = name == live
+
+    def _route_changed(self, _e: ft.ControlEvent) -> None:
+        self._apply_route()
         self.page.run_task(self.refresh)
 
     def _max_for(self, rows: _AmountRows, index: int) -> None:
@@ -654,6 +699,15 @@ class DepositTab(ActionTab):
 
     def _changed(self, _e: ft.ControlEvent) -> None:
         self.page.run_task(self.refresh)
+
+    def summary(self) -> str:
+        rows = self.rows
+        parts = [
+            self.amount_label(coin.address, amount)
+            for coin, amount in zip(rows.coins, rows.amounts())
+            if amount > 0
+        ]
+        return " + ".join(parts)
 
     async def _quote(self, contract: PoolContract, amounts: list[int]) -> int:
         if self.underlying:
@@ -744,6 +798,7 @@ class WithdrawTab(ActionTab):
 
     title = "Withdraw"
     submit_label = "Withdraw"
+    done_verb = "Withdrew"
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
@@ -757,7 +812,9 @@ class WithdrawTab(ActionTab):
             on_max=self._max,
         )
         self.lp_label = ft.Text("", size=LABEL, color=ft.Colors.ON_SURFACE_VARIANT)
-        self.route = _route_picker(self._route_changed)
+        self.route = _route_picker(
+            self._route_changed, underlying=self.zap is not None
+        )
         self.route.visible = self.zap is not None
         # Kept as its own attribute so the zap route can grey it out: a zap
         # withdrawal goes into one coin, and there is nothing to quote a
@@ -781,6 +838,10 @@ class WithdrawTab(ActionTab):
             on_select=self._changed,
         )
         self._quote_ok = True
+        # The zap route is the default where it exists, so the receive list
+        # and the single-coin rule have to hold from the start rather than
+        # from the first time the switch is touched.
+        self._apply_route()
 
     # -- which route is live ----------------------------------------------
 
@@ -800,7 +861,7 @@ class WithdrawTab(ActionTab):
             self.coin_picker,
         ]
 
-    def _route_changed(self, _e: ft.ControlEvent) -> None:
+    def _apply_route(self) -> None:
         """Swap the receive list, and force the single-coin mode on a zap."""
         self.coin_picker.options = _coin_options(self.coins, self.pool.chain)
         self.coin_picker.value = "0"
@@ -812,6 +873,13 @@ class WithdrawTab(ActionTab):
         )
         if self.underlying:
             self.mode.value = "one"
+        self.coin_picker.visible = self.mode.value == "one"
+        coins = self.coins
+        if coins:
+            self.coin_picker.leading_icon = token_mark(coins[0], self.pool.chain, 20)
+
+    def _route_changed(self, _e: ft.ControlEvent) -> None:
+        self._apply_route()
         self._changed(None)
 
     def _max(self, _e: ft.ControlEvent) -> None:
@@ -841,6 +909,18 @@ class WithdrawTab(ActionTab):
             return int(self.coin_picker.value or "0")
         except ValueError:
             return 0
+
+    def summary(self) -> str:
+        amount = self._lp_amount()
+        if amount <= 0:
+            return ""
+        label = self.amount_label(self.pool.lp_token, amount)
+        if self.mode.value == "one":
+            coins = self.coins
+            index = self._coin_index()
+            if index < len(coins):
+                return f"{label} for {coins[index].symbol}"
+        return label
 
     async def fee_units(self, contract: PoolContract) -> int:
         """A zap withdrawal comes back out through both pools."""
@@ -954,6 +1034,7 @@ class SwapTab(ActionTab):
 
     title = "Swap"
     submit_label = "Swap"
+    done_verb = "Swapped"
     #: `get_dy` is exact -- the same maths the swap itself runs, fee
     #: included -- so there is no estimator error to give back.
     fee_multiple = SLIPPAGE_OF_FEE
@@ -1001,6 +1082,14 @@ class SwapTab(ActionTab):
             return int(self.from_coin.value or "0"), int(self.to_coin.value or "1")
         except ValueError:
             return 0, 1
+
+    def summary(self) -> str:
+        i, j = self._indices()
+        coins = self.pool.pool_coins
+        dx = self._dx()
+        if dx <= 0 or i >= len(coins) or j >= len(coins):
+            return ""
+        return f"{self.amount_label(coins[i].address, dx)} for {coins[j].symbol}"
 
     async def fee_units(self, contract: PoolContract) -> int:
         """StableSwap-NG charges per pair, so ask about *this* pair."""
@@ -1133,6 +1222,15 @@ class StakeTab(ActionTab):
             ),
             on_change=self._changed,
         )
+
+    @property
+    def done_verb(self) -> str:
+        """Which way the gauge went. Not a constant, like the others are."""
+        return "Unstaked" if self.direction.value == "unstake" else "Staked"
+
+    def summary(self) -> str:
+        amount = self._amount_units()
+        return self.amount_label(self.pool.lp_token, amount) if amount > 0 else ""
 
     def build(self) -> list[ft.Control]:
         if not self.pool.has_gauge:

@@ -759,6 +759,110 @@ async def _noop() -> None:
     return None
 
 
+# -- what the confirmation says --------------------------------------------
+#
+# The block number the receipt named still governs the reads that follow it
+# -- see `curve.confirm` -- but it is not what someone who just deposited
+# wants read back to them. The amount they typed is.
+
+
+async def test_a_confirmed_deposit_names_the_amount_not_the_block() -> None:
+    provider = MinedProvider(block=21_000_000, pending=0)
+    tab = deposit_tab(provider)
+    tab.fields[0].value = "1000"  # USDT, 6 decimals
+
+    async def submit(contract):
+        return "0x" + "cd" * 32
+
+    tab.submit = submit  # type: ignore[assignment]
+    tab.on_done = _noop
+    await tab._submit_clicked(None)
+
+    assert tab.status.value == "Deposited 1,000.00 USDT."
+    assert "block" not in tab.status.value
+
+
+async def test_a_deposit_of_several_coins_names_them_all() -> None:
+    provider = MinedProvider(pending=0)
+    tab = deposit_tab(provider)
+    tab.fields[0].value = "1000"
+    tab.fields[1].value = "2.5"
+
+    async def submit(contract):
+        return "0x" + "cd" * 32
+
+    tab.submit = submit  # type: ignore[assignment]
+    tab.on_done = _noop
+    await tab._submit_clicked(None)
+
+    assert tab.status.value == "Deposited 1,000.00 USDT + 2.5 crvUSD."
+
+
+async def test_an_approval_names_what_it_approved() -> None:
+    provider = MinedProvider(pending=0)
+    tab = deposit_tab(provider)
+    tab.fields[0].value = "1000"
+
+    await tab._approve_clicked(None)
+
+    assert tab.status.value == "Approved 1,000.00 USDT."
+
+
+async def test_the_summary_is_taken_before_the_fields_are_cleared() -> None:
+    """`clear_inputs` runs on success, so a summary read afterwards would
+    report an empty deposit."""
+    provider = MinedProvider(pending=0)
+    tab = deposit_tab(provider)
+    tab.fields[0].value = "7"
+
+    async def submit(contract):
+        return "0x" + "cd" * 32
+
+    tab.submit = submit  # type: ignore[assignment]
+    tab.on_done = _noop
+    await tab._submit_clicked(None)
+
+    assert tab.fields[0].value == ""
+    assert "7 USDT" in tab.status.value
+
+
+async def test_unstaking_says_unstaked() -> None:
+    from ui.actions import StakeTab
+
+    provider = MinedProvider(pending=0)
+    pool = make_pool()
+    pool.gauge = "0x" + "ee" * 20
+    contract = PoolContract(provider, pool, ACCOUNT)
+    tab = StakeTab(StubPage(), pool, lambda: contract, None)
+    tab.mount()
+    tab.amount.value = "5"
+
+    tab.direction.value = "unstake"
+    assert tab.done_message() == "Unstaked 5 LP."
+    tab.direction.value = "stake"
+    assert tab.done_message() == "Staked 5 LP."
+
+
+async def test_a_swap_names_both_sides() -> None:
+    from ui.actions import SwapTab
+
+    provider = MinedProvider(pending=0)
+    pool = make_pool()
+    contract = PoolContract(provider, pool, ACCOUNT)
+    tab = SwapTab(StubPage(), pool, lambda: contract, None)
+    tab.mount()
+    tab.amount.value = "250"
+
+    assert tab.done_message() == "Swapped 250 USDT for crvUSD."
+
+
+async def test_nothing_typed_leaves_a_bare_confirmation() -> None:
+    """No amount is not a reason to print an empty one."""
+    provider = MinedProvider(pending=0)
+    tab = deposit_tab(provider)
+    assert tab.done_message() == "Deposited."
+
+
 def test_the_shown_tolerance_is_never_tighter_than_the_computed_one() -> None:
     """Three significant figures, rounded up: `%.3g` would turn 0.01925
     into 0.0192, and a floor shown tighter than it was calculated is a

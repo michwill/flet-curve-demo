@@ -104,8 +104,41 @@ def main() -> int:
         write(render(size), ASSETS / "icons" / f"icon-{size}.png")
         write(on_backdrop(size), ASSETS / "icons" / f"icon-maskable-{size}.png")
     write(on_backdrop(192), ASSETS / "icons" / "apple-touch-icon-192.png")
+    write_x11_icon(ASSETS / "window_icon.argb")
     print("These overwrite Flet's defaults on `flet publish` and `flet build`.")
     return 0
+
+
+#: Sizes for the X11 window icon. A window manager picks whichever is
+#: closest to what it is drawing -- a titlebar wants 24, a task switcher
+#: 48 or 64 -- and having a small one rendered rather than downscaled is
+#: the difference between a legible titlebar and a smear.
+X11_SIZES = (16, 24, 32, 48, 64, 128)
+
+
+def write_x11_icon(path: Path) -> None:
+    """The window icon, pre-decoded into what `_NET_WM_ICON` wants.
+
+    That property is a list of `width, height, then width*height pixels`
+    in 0xAARRGGBB, repeated once per size. Writing it here rather than
+    decoding a PNG at runtime keeps the app itself free of any image
+    library: `ui.window_icon` reads this with `struct` and nothing else.
+
+    Little-endian `uint32` on disk. The X11 side wants C `long`s, which
+    are eight bytes on 64-bit, so the reader widens them -- doing that
+    here instead would make the file architecture-specific.
+    """
+    import struct  # noqa: PLC0415
+
+    words: list[int] = []
+    for size in X11_SIZES:
+        image = render(size)
+        words += [size, size]
+        for r, g, b, a in image.getdata():
+            words.append((a << 24) | (r << 16) | (g << 8) | b)
+    path.write_bytes(struct.pack(f"<{len(words)}I", *words))
+    print(f"  {path.relative_to(ROOT)}  {'/'.join(map(str, X11_SIZES))}px  "
+          f"{path.stat().st_size:,} B")
 
 
 if __name__ == "__main__":

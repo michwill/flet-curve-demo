@@ -319,6 +319,30 @@ The maskable and Apple variants carry a white backdrop and sit inside the
 middle 78%, because those get cropped to a circle or a squircle and iOS
 composites transparency onto black.
 
+**Seeing the favicon.** `flet publish` from the repo root, then
+`python tools/serve.py 8033`. If the tab still shows Flet's pink fish, that is
+not the build — browsers keep favicons in a store of their own, keyed by URL
+and entirely separate from the page cache, so `Cache-Control: no-store` does
+nothing for it and neither does a hard reload. `index.html` asks for
+`favicon.png?v=1` for exactly that reason; bump the number when the mark
+changes. `curl -s localhost:8033/favicon.png | cmp - src/assets/favicon.png`
+settles what is actually being served.
+
+**Seeing it on the desktop.** `flet run` gets it too, on X11: the Flutter host
+sets no `_NET_WM_ICON` at all and Flet's own `window.icon` is Windows-only, so
+`ui/window_icon.py` sets the property itself through libX11 at startup, using
+pixels `build_icons.py` pre-decoded into `assets/window_icon.argb` (no image
+library in the app, which is what keeps this off the browser build). It finds
+the host window by `WM_CLASS` and narrows to the one in its own **process
+group** — `flet run` spawns the app and the host as siblings, and a second Flet
+app started from another shell must not be stamped, since every Flet window
+shares that class. Check it with
+`xprop -id $(wmctrl -lx | awk '/flet.Flet/{print $1; exit}') _NET_WM_ICON`, which
+prints the six sizes it now carries.
+Everywhere else — Wayland without XWayland, macOS, a headless run — it does
+nothing at all, and the supported route is `flet build`, which reads
+`assets/icon.png`.
+
 A pool draws its coins as overlapping discs, the way Curve's list does, and for
 a **metapool that means the underlying assets**: v2 returns
 `[metaToken, basePoolLpToken, …underlying]`, so the World Liberty pool reports

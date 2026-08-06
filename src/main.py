@@ -119,6 +119,8 @@ class CurveApp:
         self._address_expanded = False
 
         self._build()
+        if not is_browser():
+            page.run_task(self.dress_window)
         page.run_task(self.load_pools)
         if autoconnect():
             self.connect_button.visible = False
@@ -133,6 +135,29 @@ class CurveApp:
             # that is a decision, and there is nothing remembered to
             # restore from anyway.
             page.run_task(self.restore)
+
+    async def dress_window(self) -> None:
+        """Put the Curve mark on the desktop window, where that is possible.
+
+        `flet run` starts a prebuilt Flutter host that sets no window icon
+        of its own, and Flet's `window.icon` is Windows-only, so on X11
+        this is done by hand -- see `ui.window_icon`. Imported here rather
+        than at module scope because it touches `ctypes`, which the browser
+        build has no business loading.
+
+        Retried briefly: the window is usually up by the time a session
+        starts, but "usually" is not "always", and there is nothing to set
+        the property on until it is.
+        """
+        from ui.window_icon import apply_window_icon  # noqa: PLC0415
+
+        for _attempt in range(6):
+            try:
+                if apply_window_icon():
+                    return
+            except Exception:  # pragma: no cover - never worth a crash
+                return
+            await asyncio.sleep(0.5)
 
     # -- layout -----------------------------------------------------------
 

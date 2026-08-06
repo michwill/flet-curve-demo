@@ -28,15 +28,22 @@
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black">
   <meta name="apple-mobile-web-app-title" content="Curve">
-  <link rel="apple-touch-icon" href="icons/apple-touch-icon-192.png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon-192.png?v=1">
 
   <!-- Both files come from src/assets, which `flet publish` copies over
        the generated web root after Flet's own -- see tools/build_icons.py.
+
+       The `?v=` is not decoration. A browser keeps favicons in a store of
+       its own, keyed by URL and quite separate from the page cache, so
+       serving this site with `Cache-Control: no-store` does nothing for
+       it: a tab that once showed Flet's default goes on showing it
+       through reloads. Changing the URL is what a browser notices. Bump
+       the number whenever the mark changes.
        The theme colours are what a mobile browser paints its own chrome
        with. Both were sampled off the running app bar rather than guessed:
        the app follows the system theme, so a single value would be wrong
        half the time. -->
-  <link rel="icon" type="image/png" href="favicon.png" />
+  <link rel="icon" type="image/png" href="favicon.png?v=1" />
   <meta name="theme-color" content="#E4E1E8" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#35343A" media="(prefers-color-scheme: dark)">
 

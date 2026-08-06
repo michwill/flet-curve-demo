@@ -203,9 +203,15 @@ async def test_a_one_coin_withdrawal_floors_at_the_pool_s_own_quote() -> None:
 
 
 def tabs():
+    """The four panels, on a pool with a gauge.
+
+    With no gauge the Stake panel is a sentence explaining why there is
+    nothing to stake, which is right but has no fields to lay out.
+    """
     from ui.actions import DepositTab, StakeTab, SwapTab, WithdrawTab
 
     pool = make_pool()
+    pool.gauge = "0x" + "cc" * 20
     page = StubPage()
     return [
         cls(page, pool, lambda: None, None)
@@ -270,6 +276,102 @@ def test_slippage_is_small_and_out_of_the_way() -> None:
         if isinstance(r, ft.Row) and tab.slippage in (r.controls or [])
     )
     assert row.alignment == ft.MainAxisAlignment.END
+
+
+def test_slippage_sits_with_the_amounts_not_with_the_button() -> None:
+    """Against the submit button it reads as part of the action rather
+    than as a setting for it."""
+    for tab in tabs():
+        if not tab.uses_slippage:
+            continue
+        controls = tab.mount().controls
+        slippage_at = next(
+            i
+            for i, c in enumerate(controls)
+            if isinstance(c, ft.Row) and tab.slippage in (c.controls or [])
+        )
+        assert slippage_at < controls.index(tab.submit_button) - 1
+        assert slippage_at < controls.index(tab.estimate)
+
+
+# -- filling a field with everything you have ------------------------------
+
+
+def max_button(field: ft.TextField) -> ft.TextButton | None:
+    return field.suffix_icon if isinstance(field.suffix_icon, ft.TextButton) else None
+
+
+def test_every_amount_field_carries_its_own_max() -> None:
+    """It used to be a button underneath, which said nothing about *which*
+    amount it filled -- and on Deposit there is one per coin."""
+    for tab in tabs():
+        amounts = [f for f in fields_of(tab.mount()) if f is not tab.slippage]
+        assert amounts, f"{tab.title}: no amount field"
+        for field in amounts:
+            assert max_button(field), f"{tab.title}: {field.label} has no MAX"
+
+
+def test_no_max_button_is_left_loose_in_the_panel() -> None:
+    def loose_buttons(control) -> list:
+        found = []
+        if isinstance(control, ft.TextButton) and control.content == "MAX":
+            found.append(control)
+        for child in getattr(control, "controls", None) or []:
+            found += loose_buttons(child)
+        return found
+
+    for tab in tabs():
+        assert not loose_buttons(tab.mount()), f"{tab.title}: MAX outside its field"
+
+
+def test_deposit_max_fills_that_coin_with_the_whole_balance() -> None:
+    tab = tabs()[0]
+    tab.mount()
+    tab.balances = [1_500_000, 2 * 10**18]  # 1.5 USDT (6dp), 2 crvUSD (18dp)
+
+    max_button(tab.fields[0]).on_click(None)
+    assert tab.fields[0].value == "1.5"
+    assert tab.fields[1].value in (None, "")
+
+    max_button(tab.fields[1]).on_click(None)
+    assert tab.fields[1].value == "2"
+
+
+def test_max_keeps_every_decimal_the_token_has() -> None:
+    """The balance line is rounded for reading; the field becomes calldata,
+    and a rounded number would leave dust behind or exceed the balance."""
+    tab = tabs()[0]
+    tab.mount()
+    tab.balances = [1_234_567, 0]  # 1.234567 USDT, more places than shown
+    max_button(tab.fields[0]).on_click(None)
+    assert tab.fields[0].value == "1.234567"
+
+
+def test_swap_max_follows_the_coin_being_sold() -> None:
+    _deposit, _withdraw, swap, _stake = tabs()
+    swap.mount()
+    swap.balance = 3 * 10**6  # 3 USDT, the first coin
+    max_button(swap.amount).on_click(None)
+    assert swap.amount.value == "3"
+
+    swap.from_coin.value = "1"  # crvUSD, 18 decimals
+    swap.balance = 4 * 10**18
+    max_button(swap.amount).on_click(None)
+    assert swap.amount.value == "4"
+
+
+def test_stake_max_follows_the_direction() -> None:
+    """Staking offers the wallet balance; unstaking offers what is staked."""
+    stake = tabs()[3]
+    stake.mount()
+    stake.lp_balance, stake.staked = 5 * 10**18, 7 * 10**18
+
+    max_button(stake.amount).on_click(None)
+    assert stake.amount.value == "5"
+
+    stake.direction.value = "unstake"
+    max_button(stake.amount).on_click(None)
+    assert stake.amount.value == "7"
 
 
 def test_staking_offers_no_slippage() -> None:

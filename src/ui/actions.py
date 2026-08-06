@@ -127,8 +127,10 @@ class ActionTab:
     def mount(self) -> ft.Column:
         self.control.controls = [
             *self.build(),
-            self.estimate,
+            # Next to the amounts it protects. Down by the button it read
+            # as part of the action rather than as a setting for it.
             *([_aside(self.slippage)] if self.uses_slippage else []),
+            self.estimate,
             self.approve_button,
             self.submit_button,
             self.status,
@@ -213,7 +215,25 @@ class ActionTab:
         self.submit_button.disabled = pending is not None
 
 
-def _amount_field(label: str, on_change, mark: ft.Control | None = None) -> ft.TextField:
+def _max_button(on_click) -> ft.TextButton:
+    """The "MAX" affordance that lives inside an amount field.
+
+    Small and quiet: it is a shortcut for typing, not an action, and it
+    sits inside the box it fills rather than under it.
+    """
+    return ft.TextButton(
+        "MAX",
+        on_click=on_click,
+        style=ft.ButtonStyle(
+            padding=ft.Padding.symmetric(horizontal=8),
+            text_style=ft.TextStyle(size=LABEL, weight=ft.FontWeight.BOLD),
+        ),
+    )
+
+
+def _amount_field(
+    label: str, on_change, mark: ft.Control | None = None, on_max=None
+) -> ft.TextField:
     """An amount input, with the token's mark in front of it.
 
     `prefix_icon`, not `prefix`: Material only reveals a `prefix` once the
@@ -247,6 +267,10 @@ def _amount_field(label: str, on_change, mark: ft.Control | None = None) -> ft.T
         on_change=on_change,
         prefix_icon=mark,
         prefix_icon_size_constraints=constraints,
+        suffix_icon=_max_button(on_max) if on_max is not None else None,
+        suffix_icon_size_constraints=(
+            ft.BoxConstraints(min_width=58, min_height=28) if on_max else None
+        ),
     )
 
 
@@ -281,15 +305,35 @@ class DepositTab(ActionTab):
 
     def build(self) -> list[ft.Control]:
         rows: list[ft.Control] = []
-        for coin in self.pool.pool_coins:
+        for index, coin in enumerate(self.pool.pool_coins):
             field = _amount_field(
-                coin.symbol, self._changed, token_mark(coin, self.pool.chain, 20)
+                coin.symbol,
+                self._changed,
+                token_mark(coin, self.pool.chain, 20),
+                on_max=self._max_for(index),
             )
             label = ft.Text("", size=LABEL, color=ft.Colors.ON_SURFACE_VARIANT)
             self.fields.append(field)
             self.balance_labels.append(label)
             rows.append(_stacked(field, label))
         return rows
+
+    def _max_for(self, index: int):
+        """Fill one coin's field with the whole wallet balance.
+
+        Full precision, not the shortened form the balance line shows:
+        this is the number that becomes calldata, and a rounded one would
+        either leave dust or exceed what is there.
+        """
+
+        def fill(_e: ft.ControlEvent) -> None:
+            coin = self.pool.pool_coins[index]
+            self.fields[index].value = format_units(
+                self.balances[index], coin.decimals, precision=coin.decimals
+            )
+            self.page.run_task(self.refresh)
+
+        return fill
 
     def _amounts(self) -> list[int]:
         out = []
@@ -367,7 +411,10 @@ class WithdrawTab(ActionTab):
         self.lp_balance = 0
         # An LP token has no logo of its own; Curve draws the pool's coins.
         self.amount = _amount_field(
-            "LP tokens", self._changed, pool_stack(self.pool, 18, limit=4)
+            "LP tokens",
+            self._changed,
+            pool_stack(self.pool, 18, limit=4),
+            on_max=self._max,
         )
         self.lp_label = ft.Text("", size=LABEL, color=ft.Colors.ON_SURFACE_VARIANT)
         self.mode = ft.RadioGroup(
@@ -397,7 +444,6 @@ class WithdrawTab(ActionTab):
             _stacked(self.amount, self.lp_label),
             self.mode,
             self.coin_picker,
-            _aside(ft.TextButton("Max", on_click=self._max)),
         ]
 
     def _max(self, _e: ft.ControlEvent) -> None:
@@ -520,7 +566,9 @@ class SwapTab(ActionTab):
         )
         # The amount is denominated in whatever "From" currently is, so its
         # mark follows the dropdown rather than being fixed at build time.
-        self.amount = _amount_field("Amount", self._changed, self._mark(0))
+        self.amount = _amount_field(
+            "Amount", self._changed, self._mark(0), on_max=self._max
+        )
         self.balance_label = ft.Text("", size=LABEL, color=ft.Colors.ON_SURFACE_VARIANT)
 
     def build(self) -> list[ft.Control]:
@@ -542,6 +590,15 @@ class SwapTab(ActionTab):
             return parse_units(text, self.pool.pool_coins[i].decimals) if text else 0
         except (ValueError, IndexError):
             return 0
+
+    def _max(self, _e: ft.ControlEvent) -> None:
+        """Sell the whole balance of whichever coin is selected."""
+        i, _ = self._indices()
+        coin = self.pool.pool_coins[i]
+        self.amount.value = format_units(
+            self.balance, coin.decimals, precision=coin.decimals
+        )
+        self.page.run_task(self.refresh)
 
     def _mark(self, index: int, size: float = 20) -> ft.Control | None:
         """The mark for coin `index`, or None when there is no such coin."""
@@ -629,7 +686,10 @@ class StakeTab(ActionTab):
         self.lp_balance = 0
         self.staked = 0
         self.amount = _amount_field(
-            "LP tokens", self._changed, pool_stack(self.pool, 18, limit=4)
+            "LP tokens",
+            self._changed,
+            pool_stack(self.pool, 18, limit=4),
+            on_max=self._max,
         )
         self.balances_label = ft.Text("", size=LABEL, color=ft.Colors.ON_SURFACE_VARIANT)
         self.direction = ft.RadioGroup(
@@ -655,7 +715,6 @@ class StakeTab(ActionTab):
         return [
             self.direction,
             _stacked(self.amount, self.balances_label),
-            _aside(ft.TextButton("Max", on_click=self._max)),
         ]
 
     def _max(self, _e: ft.ControlEvent) -> None:

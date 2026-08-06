@@ -26,6 +26,7 @@ from curve.sort import DEFAULT_SORT, SORTS
 from . import safe_update
 from .logos import pool_stack
 from .responsive import Layout, layout_for
+from .typography import BODY, LABEL, ROW_TITLE, SMALL
 
 #: Column widths, shared by the header and every row so they line up.
 W_BASE = 110
@@ -40,12 +41,12 @@ COLUMN_WIDTH = {
     "tvl": W_TVL,
 }
 COLUMN_CONTENT = {
-    "base": lambda p: ft.Text(percent(p.base_apr), size=13, text_align=ft.TextAlign.RIGHT),
+    "base": lambda p: ft.Text(percent(p.base_apr), size=BODY, text_align=ft.TextAlign.RIGHT),
     "incentives": lambda p: ft.Column(
         reward_lines(p), spacing=0, horizontal_alignment=ft.CrossAxisAlignment.END
     ),
-    "volume": lambda p: ft.Text(compact_usd(p.volume_24h), size=13),
-    "tvl": lambda p: ft.Text(compact_usd(p.tvl), size=13),
+    "volume": lambda p: ft.Text(compact_usd(p.volume_24h), size=BODY),
+    "tvl": lambda p: ft.Text(compact_usd(p.tvl), size=BODY),
 }
 
 #: Start loading the next page this many pixels before the end. Roughly two
@@ -66,13 +67,13 @@ def reward_lines(pool: Pool) -> list[ft.Control]:
     lines: list[ft.Control] = []
     if pool.crv_apr[1] > 0:
         lines.append(
-            ft.Text(f"{apr_range(*pool.crv_apr)} CRV", size=12, text_align=ft.TextAlign.RIGHT)
+            ft.Text(f"{apr_range(*pool.crv_apr)} CRV", size=SMALL, text_align=ft.TextAlign.RIGHT)
         )
     for incentive in pool.incentives:
         lines.append(
             ft.Text(
                 f"{percent(incentive.apr)} {incentive.symbol}",
-                size=12,
+                size=SMALL,
                 color=ft.Colors.ON_SURFACE_VARIANT,
                 text_align=ft.TextAlign.RIGHT,
             )
@@ -81,29 +82,29 @@ def reward_lines(pool: Pool) -> list[ft.Control]:
         lines.append(
             ft.Text(
                 f"{percent(pool.merkle_apr)} merkle",
-                size=12,
+                size=SMALL,
                 color=ft.Colors.ON_SURFACE_VARIANT,
                 text_align=ft.TextAlign.RIGHT,
             )
         )
     if not lines:
         lines.append(
-            ft.Text("–", size=13, color=ft.Colors.OUTLINE, text_align=ft.TextAlign.RIGHT)
+            ft.Text("–", size=BODY, color=ft.Colors.OUTLINE, text_align=ft.TextAlign.RIGHT)
         )
     return lines
 
 
-def _name_cell(pool: Pool, logo_size: float = 24) -> ft.Control:
+def _name_cell(pool: Pool, logo_size: float = 27) -> ft.Control:
     """Overlapping coin logos, then the pool's name and its assets."""
     return ft.Row(
         [
             pool_stack(pool, size=logo_size),
             ft.Column(
                 [
-                    ft.Text(pool.display_name, size=14, weight=ft.FontWeight.W_500),
+                    ft.Text(pool.display_name, size=ROW_TITLE, weight=ft.FontWeight.W_500),
                     ft.Text(
                         " ".join(pool.coin_symbols),
-                        size=11,
+                        size=SMALL,
                         color=ft.Colors.ON_SURFACE_VARIANT,
                     ),
                 ],
@@ -121,8 +122,8 @@ def _metric(label: str, value: str) -> ft.Control:
     """A labelled figure, for the card layout where there are no headers."""
     return ft.Row(
         [
-            ft.Text(label, size=10, color=ft.Colors.ON_SURFACE_VARIANT),
-            ft.Text(value, size=12),
+            ft.Text(label, size=LABEL, color=ft.Colors.ON_SURFACE_VARIANT),
+            ft.Text(value, size=SMALL),
         ],
         spacing=4,
         tight=True,
@@ -180,10 +181,10 @@ class PoolRow(ft.Container):
                         _name_cell(pool),
                         ft.Column(
                             [
-                                ft.Text(compact_usd(pool.volume_24h), size=13),
+                                ft.Text(compact_usd(pool.volume_24h), size=BODY),
                                 ft.Text(
                                     f"{compact_usd(pool.tvl)} TVL",
-                                    size=10,
+                                    size=LABEL,
                                     color=ft.Colors.ON_SURFACE_VARIANT,
                                 ),
                             ],
@@ -238,7 +239,7 @@ class PoolListView(ft.Column):
             border_radius=8,
         )
         self.count_label = ft.Text(
-            "", size=12, color=ft.Colors.ON_SURFACE_VARIANT, key="pool-count"
+            "", size=SMALL, color=ft.Colors.ON_SURFACE_VARIANT, key="pool-count"
         )
         # Cards have no column headers to click, so narrow layouts sort
         # through this instead. Hidden while the table is showing.
@@ -262,7 +263,7 @@ class PoolListView(ft.Column):
         )
         self.footer = ft.Container(
             ft.Row(
-                [ft.ProgressRing(width=16, height=16), ft.Text("Loading…", size=12)],
+                [ft.ProgressRing(width=16, height=16), ft.Text("Loading…", size=SMALL)],
                 alignment=ft.MainAxisAlignment.CENTER,
                 spacing=10,
             ),
@@ -306,7 +307,7 @@ class PoolListView(ft.Column):
         widths = COLUMN_WIDTH
         cells: list[ft.Control] = [
             ft.Container(
-                ft.Text("Pool", size=12, color=ft.Colors.ON_SURFACE_VARIANT), expand=True
+                ft.Text("Pool", size=SMALL, color=ft.Colors.ON_SURFACE_VARIANT), expand=True
             )
         ]
         # Ordered to match the row layout, not the SORTS tuple.
@@ -341,13 +342,13 @@ class PoolListView(ft.Column):
             active = key == self._sort
             label = ft.Text(
                 option.label,
-                size=12,
+                size=SMALL,
                 weight=ft.FontWeight.BOLD if active else ft.FontWeight.NORMAL,
                 color=ft.Colors.PRIMARY if active else ft.Colors.ON_SURFACE_VARIANT,
             )
             cell.content = (
                 ft.Row(
-                    [label, ft.Icon(ft.Icons.ARROW_DOWNWARD, size=13, color=ft.Colors.PRIMARY)],
+                    [label, ft.Icon(ft.Icons.ARROW_DOWNWARD, size=BODY, color=ft.Colors.PRIMARY)],
                     spacing=2,
                     tight=True,
                     alignment=ft.MainAxisAlignment.END,

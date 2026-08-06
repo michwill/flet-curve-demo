@@ -38,6 +38,7 @@ from curve.api import Candle
 from curve.format import token_amount
 
 from . import safe_update
+from .typography import SMALL, TINY
 from .viewport import MIN_VISIBLE, ZOOM_STEP, Plot, Viewport
 
 #: Roughly how many labels to put on each axis.
@@ -207,7 +208,7 @@ def fit(candles: list[Candle]) -> Viewport:
 
 
 def _axis_label(text: str) -> ft.Control:
-    return ft.Text(text, size=10, color=ft.Colors.ON_SURFACE_VARIANT)
+    return ft.Text(text, size=TINY, color=ft.Colors.ON_SURFACE_VARIANT)
 
 
 def price_axis(view: Viewport) -> fc.ChartAxis:
@@ -352,7 +353,7 @@ def crosshair_shapes(
             4,
             py - 7,
             format_price(price, decimals),
-            style=ft.TextStyle(size=10, color=text_color, weight=ft.FontWeight.BOLD),
+            style=ft.TextStyle(size=TINY, color=text_color, weight=ft.FontWeight.BOLD),
         )
     )
 
@@ -368,7 +369,7 @@ def crosshair_shapes(
                 px - 40,
                 plot.bottom + 3,
                 format_datetime(candle.time),
-                style=ft.TextStyle(size=10, color=text_color),
+                style=ft.TextStyle(size=TINY, color=text_color),
             )
         )
         # OHLC for the candle under the cursor, in the top-left corner --
@@ -381,7 +382,7 @@ def crosshair_shapes(
                 f"H {format_price(candle.high, decimals)}   "
                 f"L {format_price(candle.low, decimals)}   "
                 f"C {format_price(candle.close, decimals)}",
-                style=ft.TextStyle(size=10, color=text_color),
+                style=ft.TextStyle(size=TINY, color=text_color),
             )
         )
     return shapes
@@ -445,7 +446,7 @@ class CandleChart(ft.Container):
         self._last_capacity = self.candle_capacity()
         self._empty = ft.Text(
             "No price history for this pair.",
-            size=12,
+            size=SMALL,
             color=ft.Colors.ON_SURFACE_VARIANT,
         )
         self._gestures = ft.GestureDetector(
@@ -475,7 +476,10 @@ class CandleChart(ft.Container):
             height=height,
             border_radius=8,
             bgcolor=ft.Colors.SURFACE_CONTAINER_LOW,
-            padding=8,
+            # Wider on the right: the last time label is centred on the last
+            # candle, which sits at the very edge, so half of it hangs past
+            # the plot and would be clipped.
+            padding=ft.Padding.only(left=8, top=8, bottom=8, right=24),
             clip_behavior=ft.ClipBehavior.HARD_EDGE,
         )
 

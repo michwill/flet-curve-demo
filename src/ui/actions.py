@@ -33,6 +33,7 @@ from curve.pool import PoolContract
 from wallet.base import WalletError
 
 from .logos import pool_stack, token_mark
+from .typography import BODY, LABEL, SMALL
 from wallet.erc20 import format_units, parse_units
 
 #: Default tolerance. Curve shows 0.03% on pegged stable pools, but this app
@@ -65,8 +66,8 @@ class ActionTab:
             width=110,
             dense=True,
         )
-        self.status = ft.Text("", size=12, selectable=True)
-        self.estimate = ft.Text("", size=12, color=ft.Colors.ON_SURFACE_VARIANT)
+        self.status = ft.Text("", size=SMALL, selectable=True)
+        self.estimate = ft.Text("", size=SMALL, color=ft.Colors.ON_SURFACE_VARIANT)
 
         self.approve_button = ft.Button(
             "1. Approve", on_click=self._approve_clicked, visible=False, disabled=True
@@ -226,7 +227,7 @@ def _coin_options(coins, chain: str) -> list[ft.DropdownOption]:
             key=str(index),
             text=coin.symbol,
             content=ft.Row(
-                [token_mark(coin, chain, 18), ft.Text(coin.symbol, size=13)],
+                [token_mark(coin, chain, 18), ft.Text(coin.symbol, size=BODY)],
                 spacing=8,
                 tight=True,
             ),
@@ -254,7 +255,7 @@ class DepositTab(ActionTab):
             field = _amount_field(
                 coin.symbol, self._changed, token_mark(coin, self.pool.chain, 20)
             )
-            label = ft.Text("", size=11, color=ft.Colors.ON_SURFACE_VARIANT)
+            label = ft.Text("", size=LABEL, color=ft.Colors.ON_SURFACE_VARIANT)
             self.fields.append(field)
             self.balance_labels.append(label)
             rows.append(ft.Column([field, label], spacing=2))
@@ -338,7 +339,7 @@ class WithdrawTab(ActionTab):
         self.amount = _amount_field(
             "LP tokens", self._changed, pool_stack(self.pool, 18, limit=4)
         )
-        self.lp_label = ft.Text("", size=11, color=ft.Colors.ON_SURFACE_VARIANT)
+        self.lp_label = ft.Text("", size=LABEL, color=ft.Colors.ON_SURFACE_VARIANT)
         self.mode = ft.RadioGroup(
             value="balanced",
             content=ft.Row(
@@ -490,7 +491,7 @@ class SwapTab(ActionTab):
         # The amount is denominated in whatever "From" currently is, so its
         # mark follows the dropdown rather than being fixed at build time.
         self.amount = _amount_field("Amount", self._changed, self._mark(0))
-        self.balance_label = ft.Text("", size=11, color=ft.Colors.ON_SURFACE_VARIANT)
+        self.balance_label = ft.Text("", size=LABEL, color=ft.Colors.ON_SURFACE_VARIANT)
 
     def build(self) -> list[ft.Control]:
         return [
@@ -599,7 +600,7 @@ class StakeTab(ActionTab):
         self.amount = _amount_field(
             "LP tokens", self._changed, pool_stack(self.pool, 18, limit=4)
         )
-        self.balances_label = ft.Text("", size=11, color=ft.Colors.ON_SURFACE_VARIANT)
+        self.balances_label = ft.Text("", size=LABEL, color=ft.Colors.ON_SURFACE_VARIANT)
         self.direction = ft.RadioGroup(
             value="stake",
             content=ft.Row(
@@ -616,7 +617,7 @@ class StakeTab(ActionTab):
             return [
                 ft.Text(
                     "This pool has no gauge, so there is nothing to stake.",
-                    size=12,
+                    size=SMALL,
                     color=ft.Colors.ON_SURFACE_VARIANT,
                 )
             ]

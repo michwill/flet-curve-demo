@@ -27,6 +27,7 @@ from curve.pool import PoolContract
 
 from .actions import DepositTab, StakeTab, SwapTab, WithdrawTab
 from .logos import pool_stack, token_mark
+from .typography import BODY, LABEL, METRIC, SMALL, TITLE
 from .responsive import Layout, layout_for
 from . import safe_update
 from .candles import CandleChart
@@ -58,8 +59,8 @@ class PoolDetailView(ft.Column):
         self.get_contract = get_contract
 
         self.chart = CandleChart(height=340, on_capacity_change=self._chart_resized)
-        self.chart_caption = ft.Text("", size=12, color=ft.Colors.ON_SURFACE_VARIANT)
-        self.chart_error = ft.Text("", size=11, color=ft.Colors.ERROR)
+        self.chart_caption = ft.Text("", size=SMALL, color=ft.Colors.ON_SURFACE_VARIANT)
+        self.chart_error = ft.Text("", size=LABEL, color=ft.Colors.ERROR)
         self._candle_size = DEFAULT_CANDLE_SIZE
 
         self.series = ft.Dropdown(
@@ -73,7 +74,7 @@ class PoolDetailView(ft.Column):
         # reserves, no per-coin prices and no LP token, so there is nothing
         # to draw here until the detail request lands.
         self._composition_slot = ft.Container(
-            ft.Text("Loading pool details…", size=12, color=ft.Colors.ON_SURFACE_VARIANT)
+            ft.Text("Loading pool details…", size=SMALL, color=ft.Colors.ON_SURFACE_VARIANT)
         )
         self._yields_slot = ft.Container(self._yields())
 
@@ -172,13 +173,13 @@ class PoolDetailView(ft.Column):
         return ft.Row(
             [
                 ft.IconButton(ft.Icons.ARROW_BACK, on_click=lambda _e: on_back()),
-                pool_stack(self.pool, size=34),
+                pool_stack(self.pool, size=38),
                 ft.Column(
                     [
-                        ft.Text(self.pool.display_name, size=22, weight=ft.FontWeight.BOLD),
+                        ft.Text(self.pool.display_name, size=TITLE, weight=ft.FontWeight.BOLD),
                         ft.Text(
                             " / ".join(self.pool.coin_symbols),
-                            size=12,
+                            size=SMALL,
                             color=ft.Colors.ON_SURFACE_VARIANT,
                         ),
                     ],
@@ -195,8 +196,8 @@ class PoolDetailView(ft.Column):
     def _stat(self, label: str, value: str) -> ft.Control:
         return ft.Column(
             [
-                ft.Text(label, size=10, color=ft.Colors.ON_SURFACE_VARIANT),
-                ft.Text(value, size=18, weight=ft.FontWeight.W_500),
+                ft.Text(label, size=LABEL, color=ft.Colors.ON_SURFACE_VARIANT),
+                ft.Text(value, size=METRIC, weight=ft.FontWeight.W_500),
             ],
             spacing=0,
             horizontal_alignment=ft.CrossAxisAlignment.END,
@@ -227,10 +228,10 @@ class PoolDetailView(ft.Column):
         header = ft.Container(
             ft.Row(
                 [
-                    cell(ft.Text("Asset", size=11, color=ft.Colors.ON_SURFACE_VARIANT)),
-                    cell(ft.Text("Price", size=11, color=ft.Colors.ON_SURFACE_VARIANT), 110, True),
-                    cell(ft.Text("Share", size=11, color=ft.Colors.ON_SURFACE_VARIANT), 80, True),
-                    cell(ft.Text("Balance", size=11, color=ft.Colors.ON_SURFACE_VARIANT), 150, True),
+                    cell(ft.Text("Asset", size=LABEL, color=ft.Colors.ON_SURFACE_VARIANT)),
+                    cell(ft.Text("Price", size=LABEL, color=ft.Colors.ON_SURFACE_VARIANT), 110, True),
+                    cell(ft.Text("Share", size=LABEL, color=ft.Colors.ON_SURFACE_VARIANT), 80, True),
+                    cell(ft.Text("Balance", size=LABEL, color=ft.Colors.ON_SURFACE_VARIANT), 150, True),
                 ]
             ),
             padding=ft.Padding.only(bottom=4),
@@ -248,13 +249,13 @@ class PoolDetailView(ft.Column):
                             cell(
                                 ft.Row(
                                     [
-                                        token_mark(coin, self.pool.chain, 22),
+                                        token_mark(coin, self.pool.chain, 26),
                                         ft.Column(
                                             [
-                                                ft.Text(coin.symbol, size=13),
+                                                ft.Text(coin.symbol, size=BODY),
                                                 ft.Text(
                                                     short_address(coin.address),
-                                                    size=10,
+                                                    size=LABEL,
                                                     color=ft.Colors.ON_SURFACE_VARIANT,
                                                 ),
                                             ],
@@ -265,10 +266,10 @@ class PoolDetailView(ft.Column):
                                     vertical_alignment=ft.CrossAxisAlignment.CENTER,
                                 )
                             ),
-                            cell(ft.Text(price(coin.usd_price), size=13), 110, True),
+                            cell(ft.Text(price(coin.usd_price), size=BODY), 110, True),
                             cell(
                                 ft.Text(
-                                    f"{coin.balance_usd / total * 100:.2f}%", size=13
+                                    f"{coin.balance_usd / total * 100:.2f}%", size=BODY
                                 ),
                                 80,
                                 True,
@@ -276,10 +277,10 @@ class PoolDetailView(ft.Column):
                             cell(
                                 ft.Column(
                                     [
-                                        ft.Text(token_amount(coin.balance), size=13),
+                                        ft.Text(token_amount(coin.balance), size=BODY),
                                         ft.Text(
                                             compact_usd(coin.balance_usd),
-                                            size=10,
+                                            size=LABEL,
                                             color=ft.Colors.ON_SURFACE_VARIANT,
                                         ),
                                     ],
@@ -297,7 +298,7 @@ class PoolDetailView(ft.Column):
             )
 
         return ft.Column(
-            [ft.Text("COMPOSITION", size=11, weight=ft.FontWeight.BOLD), *rows],
+            [ft.Text("COMPOSITION", size=LABEL, weight=ft.FontWeight.BOLD), *rows],
             spacing=2,
         )
 
@@ -319,11 +320,11 @@ class PoolDetailView(ft.Column):
             f"{self.pool.registry}  ·  {'metapool' if self.pool.is_meta else 'plain'}"
             f"  ·  {'gauge ' + short_address(self.pool.gauge) if self.pool.has_gauge else 'no gauge'}"
             + (f"  ·  A = {self.pool.amplification:,.0f}" if self.pool.amplification else ""),
-            size=11,
+            size=LABEL,
             color=ft.Colors.ON_SURFACE_VARIANT,
         )
         return ft.Column(
-            [ft.Text("YIELD", size=11, weight=ft.FontWeight.BOLD), *lines, facts],
+            [ft.Text("YIELD", size=LABEL, weight=ft.FontWeight.BOLD), *lines, facts],
             spacing=4,
         )
 
@@ -331,8 +332,8 @@ class PoolDetailView(ft.Column):
         weight = ft.FontWeight.BOLD if bold else ft.FontWeight.NORMAL
         return ft.Row(
             [
-                ft.Text(label, size=12, weight=weight, expand=True),
-                ft.Text(value, size=12, weight=weight),
+                ft.Text(label, size=SMALL, weight=weight, expand=True),
+                ft.Text(value, size=SMALL, weight=weight),
             ]
         )
 
@@ -361,7 +362,7 @@ class PoolDetailView(ft.Column):
                 expand=True,
                 content=ft.Column(
                     [
-                        ft.TabBar(tabs=[ft.Tab(label=tab.title) for tab in self.tabs]),
+                        ft.TabBar(tabs=[ft.Tab(label=ft.Text(tab.title, size=BODY)) for tab in self.tabs]),
                         ft.TabBarView(
                             expand=True,
                             controls=[
@@ -476,7 +477,7 @@ class PoolDetailView(ft.Column):
             raw = await self.api.pool_detail(self.pool.chain_id, self.pool.address)
         except ApiError as exc:
             self._composition_slot.content = ft.Text(
-                f"Could not load pool details: {exc}", size=12, color=ft.Colors.ERROR
+                f"Could not load pool details: {exc}", size=SMALL, color=ft.Colors.ERROR
             )
             self._page.update()
             return

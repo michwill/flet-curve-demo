@@ -29,6 +29,7 @@ from ui.pool_list import PoolListView
 from ui.assets import chain_name, curve_logo
 from ui.logos import chain_mark
 from ui.responsive import layout_for
+from ui.typography import BODY, SMALL, TITLE
 from wallet import Wallet, WalletChoice, WalletError, autoconnect, is_browser
 
 DEFAULT_CHAIN = "ethereum"
@@ -36,6 +37,13 @@ DEFAULT_CHAIN = "ethereum"
 #: v2 covers 12 chains against v1's 21 -- see docs/curve-api.md -- so the
 #: real list is read from `/pools/chains/` rather than hardcoded.
 PREFERRED_CHAINS = ("ethereum", "arbitrum", "base", "optimism", "polygon", "fraxtal")
+
+#: The Curve mark, sized against the wordmark beside it rather than against
+#: the header's height -- the two read as one lockup.
+BRAND_LOGO = 34
+#: The network mark inside the picker. Smaller than a token mark elsewhere:
+#: a dense dropdown's field is barely taller than its text.
+CHAIN_ICON = 15
 
 
 class CurveApp:
@@ -72,35 +80,37 @@ class CurveApp:
             value=self.chain,
             width=185,
             dense=True,
-            leading_icon=chain_mark(self.chain),
+            # Smaller than a token mark: a dense dropdown's field is barely
+            # taller than its text, so an 18px logo sits on both borders.
+            leading_icon=chain_mark(self.chain, CHAIN_ICON),
             on_select=self._chain_changed,
         )
         self.totals = ft.Text(
-            "", size=12, color=ft.Colors.ON_SURFACE_VARIANT, no_wrap=True
+            "", size=SMALL, color=ft.Colors.ON_SURFACE_VARIANT, no_wrap=True
         )
         logo = curve_logo()
         self.brand = (
             ft.Image(
                 key="brand",
                 src=logo,
-                width=26,
-                height=26,
+                width=BRAND_LOGO,
+                height=BRAND_LOGO,
                 fit=ft.BoxFit.CONTAIN,
                 # If the compiled assets are missing, the wordmark stands in.
-                error_content=ft.Text("CURVE", size=18, weight=ft.FontWeight.BOLD),
+                error_content=ft.Text("CURVE", size=TITLE, weight=ft.FontWeight.BOLD),
             )
             if logo
-            else ft.Text("CURVE", key="brand", size=18, weight=ft.FontWeight.BOLD)
+            else ft.Text("CURVE", key="brand", size=TITLE, weight=ft.FontWeight.BOLD)
         )
         # The wordmark sits beside the mark as if it were part of it. The
         # build kind is still worth knowing, but only when you go looking.
         self.build_label = ft.Text(
             "Curve",
-            size=18,
+            size=TITLE,
             weight=ft.FontWeight.BOLD,
             tooltip=f"{'browser' if is_browser() else 'desktop'} build",
         )
-        self.account_label = ft.Text("", size=12)
+        self.account_label = ft.Text("", size=SMALL)
         self.connect_button = ft.Button(
             "Connect wallet",
             icon=ft.Icons.ACCOUNT_BALANCE_WALLET,
@@ -135,7 +145,7 @@ class CurveApp:
 
         self.list_view = PoolListView(page, on_open=self.open_pool)
         self.progress = ft.ProgressBar(visible=False)
-        self.error = ft.Text("", size=12, color=ft.Colors.ERROR, visible=False)
+        self.error = ft.Text("", size=SMALL, color=ft.Colors.ERROR, visible=False)
         # One slot that holds either the list or a detail page. Simpler than
         # Flet's view stack and behaves the same on both platforms.
         self.body = ft.Container(self.list_view, expand=True, padding=20)
@@ -172,7 +182,7 @@ class CurveApp:
     def _chain_option(self, chain: str) -> ft.DropdownOption:
         """A network's mark beside its proper name, not its API slug."""
         mark = chain_mark(chain)
-        label = ft.Text(chain_name(chain), size=13)
+        label = ft.Text(chain_name(chain), size=BODY)
         return ft.DropdownOption(
             key=chain,
             content=ft.Row([mark, label], spacing=8, tight=True) if mark else label,
@@ -203,7 +213,7 @@ class CurveApp:
         self.chain = self.chain_picker.value or DEFAULT_CHAIN
         # The closed field carries the selected network's mark too, not
         # just the name.
-        self.chain_picker.leading_icon = chain_mark(self.chain)
+        self.chain_picker.leading_icon = chain_mark(self.chain, CHAIN_ICON)
         self.show_list()
         self.page.run_task(self.load_pools)
 
@@ -254,7 +264,7 @@ class CurveApp:
         if self.chain not in known and ordered:
             self.chain = ordered[0]
             self.chain_picker.value = self.chain
-        self.chain_picker.leading_icon = chain_mark(self.chain)
+        self.chain_picker.leading_icon = chain_mark(self.chain, CHAIN_ICON)
 
     # -- navigation -------------------------------------------------------
 

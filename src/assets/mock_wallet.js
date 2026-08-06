@@ -68,6 +68,12 @@
           return "0x" + NATIVE_BALANCE.toString(16);
         case "eth_call": {
           const selector = (params[0]?.data || "").slice(2, 10);
+          // fee() -- 1_500_000 of 1e10, i.e. 0.015%, which is 3pool's.
+          // The app reads it to preset the slippage tolerance.
+          if (selector === "ddca3f43") return "0x" + word("16e360");
+          // dynamic_fee(int128,int128) is deliberately *not* answered:
+          // only StableSwap-NG has it, and the fallback to fee() is the
+          // path worth exercising here.
           if (selector === "313ce567") return "0x" + word(TOKEN_DECIMALS.toString(16)); // decimals()
           if (selector === "70a08231") return "0x" + word(TOKEN_BALANCE.toString(16)); // balanceOf()
           if (selector === "95d89b41" || selector === "06fdde03") {

@@ -20,6 +20,11 @@ KNOWN_SELECTORS = {
     "approve(address,uint256)": "095ea7b3",
     "allowance(address,address)": "dd62ed3e",
     "totalSupply()": "18160ddd",
+    # `fee()` is on every pool; `dynamic_fee` only on StableSwap-NG. Both
+    # checked against mainnet through a node: PayPool answers 1_000_283
+    # where its flat fee is 1_000_000, and 3pool reverts on it.
+    "fee()": "ddca3f43",
+    "dynamic_fee(int128,int128)": "76a9cd3e",
     "get_dy(int128,int128,uint256)": "5e0d443f",
     "exchange(int128,int128,uint256,uint256)": "3df02124",
     "add_liquidity(uint256[3],uint256)": "4515cef3",

@@ -379,3 +379,146 @@ def test_staking_offers_no_slippage() -> None:
     deposit, _withdraw, _swap, stake = tabs()
     assert deposit.slippage in fields_of(deposit.mount())
     assert stake.slippage not in fields_of(stake.mount())
+
+
+# -- slippage from the pool's own fee --------------------------------------
+#
+# A fixed 0.5% is arbitrary: it is loose for a stable pool charging 0.01%
+# and no better than a guess for a crypto pool charging 1.5%. The fee is
+# what the trade is expected to cost, so it is the scale the tolerance
+# belongs on.
+
+
+class FeeProvider(FakeProvider):
+    """Answers `fee()` and, optionally, `dynamic_fee(i, j)`."""
+
+    def __init__(self, flat: int, pair: int | None = None) -> None:
+        super().__init__()
+        self.flat, self.pair = flat, pair
+        self.reads: list[str] = []
+
+    async def request(self, method: str, params=None):
+        if method != "eth_call":
+            return await super().request(method, params)
+        data = (params or [{}])[0].get("data", "")
+        self.reads.append(data[:10])
+        if data.startswith("0x" + abi.selector("fee()")):
+            return word(self.flat)
+        if data.startswith("0x" + abi.selector("dynamic_fee(int128,int128)")):
+            return word(self.pair) if self.pair is not None else "0x"
+        return word(0)
+
+
+def tab_with_fee(cls, flat: int, pair: int | None = None):
+    pool = make_pool()
+    pool.gauge = "0x" + "cc" * 20
+    provider = FeeProvider(flat, pair)
+    contract = PoolContract(provider, pool, ACCOUNT)
+    tab = cls(StubPage(), pool, lambda: contract, None)
+    tab.mount()
+    return tab, provider
+
+
+async def test_deposit_slippage_comes_from_the_pool_fee() -> None:
+    """3pool charges 0.015%, so a fifth of that is 0.003%."""
+    from ui.actions import DepositTab
+
+    tab, _ = tab_with_fee(DepositTab, 1_500_000)
+    await tab.refresh()
+    assert tab.slippage.value == "0.003"
+
+
+async def test_a_crypto_pool_gets_a_wider_tolerance() -> None:
+    """Because it charges more: 1.547% fee -> 0.309%."""
+    from ui.actions import DepositTab
+
+    tab, _ = tab_with_fee(DepositTab, 154_682_900)
+    await tab.refresh()
+    assert tab.slippage.value == "0.309"
+
+
+async def test_withdrawing_uses_the_flat_fee_too() -> None:
+    from ui.actions import WithdrawTab
+
+    tab, provider = tab_with_fee(WithdrawTab, 1_000_000, pair=9_999_999)
+    await tab.refresh()
+    assert tab.slippage.value == "0.002"
+    assert "0x" + abi.selector("dynamic_fee(int128,int128)") not in provider.reads
+
+
+async def test_swapping_uses_the_fee_for_that_pair() -> None:
+    """StableSwap-NG prices each pair; PayPool's pair fee really is higher
+    than its flat one."""
+    from ui.actions import SwapTab
+
+    tab, _ = tab_with_fee(SwapTab, 1_000_000, pair=2_000_000)
+    await tab.refresh()
+    assert tab.slippage.value == "0.004"  # from the pair fee, not the flat one
+
+
+async def test_a_swap_pool_without_dynamic_fee_falls_back() -> None:
+    from ui.actions import SwapTab
+
+    tab, _ = tab_with_fee(SwapTab, 4_577_514)  # no pair fee
+    await tab.refresh()
+    assert tab.slippage.value == "0.00916"
+
+
+async def test_changing_the_pair_re_reads_the_fee() -> None:
+    from ui.actions import SwapTab
+
+    tab, provider = tab_with_fee(SwapTab, 1_000_000, pair=2_000_000)
+    await tab.refresh()
+    first = provider.reads.count("0x" + abi.selector("dynamic_fee(int128,int128)"))
+
+    tab.to_coin.value = "0"
+    await tab.refresh()
+    assert provider.reads.count("0x" + abi.selector("dynamic_fee(int128,int128)")) > first
+
+
+async def test_the_fee_is_read_once_per_pair_not_per_keystroke() -> None:
+    from ui.actions import DepositTab
+
+    tab, provider = tab_with_fee(DepositTab, 1_500_000)
+    for _ in range(4):
+        await tab.refresh()
+    assert provider.reads.count("0x" + abi.selector("fee()")) == 1
+
+
+async def test_what_the_user_typed_is_never_overwritten() -> None:
+    from ui.actions import DepositTab
+
+    tab, _ = tab_with_fee(DepositTab, 1_500_000)
+    tab.slippage.value = "1.5"
+    tab._slippage_edited(None)  # the field's own on_change
+
+    await tab.refresh()
+    assert tab.slippage.value == "1.5"
+
+
+async def test_a_pool_that_will_not_answer_keeps_the_default() -> None:
+    """Better a workable default than an empty box."""
+    from ui.actions import DepositTab
+    from ui.actions import DEFAULT_SLIPPAGE
+
+    tab, _ = tab_with_fee(DepositTab, 0)  # fee() answers zero
+    await tab.refresh()
+    assert tab.slippage.value == str(DEFAULT_SLIPPAGE)
+
+
+async def test_staking_reads_no_fee_at_all() -> None:
+    """It has no slippage field, so there is nothing to suggest."""
+    from ui.actions import StakeTab
+
+    tab, provider = tab_with_fee(StakeTab, 1_500_000)
+    await tab.refresh()
+    assert "0x" + abi.selector("fee()") not in provider.reads
+
+
+def test_the_arithmetic_is_a_fifth_of_the_fee() -> None:
+    from ui.actions import SLIPPAGE_OF_FEE, slippage_for
+
+    assert SLIPPAGE_OF_FEE == 0.2
+    # 1e10 is 100%, so 10_000_000 is 0.1% and a fifth of it is 0.02%.
+    assert slippage_for(10_000_000) == pytest.approx(0.02)
+    assert slippage_for(0) == 0

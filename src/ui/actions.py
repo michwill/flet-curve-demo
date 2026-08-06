@@ -26,7 +26,7 @@ from typing import Awaitable, Callable
 
 import flet as ft
 
-from curve.abi import apply_slippage
+from curve.abi import FEE_DENOMINATOR, apply_slippage
 from curve.format import token_amount, units_to_float
 from curve.models import Pool
 from curve.pool import PoolContract
@@ -36,9 +36,34 @@ from .logos import pool_stack, token_mark
 from .typography import BODY, LABEL, SMALL
 from wallet.erc20 import format_units, parse_units
 
-#: Default tolerance. Curve shows 0.03% on pegged stable pools, but this app
-#: applies one number to every pool type, so it errs toward the volatile end.
+#: Tolerance used until the pool says otherwise, and whenever it will not.
+#: Curve shows 0.03% on pegged stable pools, but one number has to cover
+#: every pool type here, so it errs toward the volatile end.
 DEFAULT_SLIPPAGE = 0.5
+
+#: "no fee read yet" -- distinct from None, which is what the deposit and
+#: withdraw panels use as their key.
+_NOT_READ = object()
+
+#: How much of the pool's own fee to allow as slippage.
+#:
+#: The fee is what a trade is expected to cost, so it is the natural scale
+#: for what an unexpected move is worth tolerating -- a tricrypto pool
+#: charging 0.046% and a stable pool charging 0.01% do not deserve the same
+#: fixed 0.5%. A fifth of the fee is tight, which is the point: the quote is
+#: fetched from the pool immediately before the transaction, so this only
+#: has to cover movement between the quote and the block.
+SLIPPAGE_OF_FEE = 0.2
+
+
+def slippage_for(fee_units: int) -> float:
+    """A tolerance, in percent, from a fee in Curve's 1e10 units."""
+    return fee_units / FEE_DENOMINATOR * 100 * SLIPPAGE_OF_FEE
+
+
+def format_slippage(percent: float) -> str:
+    """Three significant figures, which is as fine as the field is read."""
+    return f"{percent:.3g}"
 
 
 def _stacked(*controls: ft.Control) -> ft.Column:
@@ -88,7 +113,13 @@ class ActionTab:
             dense=True,
             text_size=LABEL,
             label_style=ft.TextStyle(size=LABEL),
+            on_change=self._slippage_edited,
         )
+        #: Once the user has typed in the box, the pool stops overwriting it.
+        self._slippage_is_theirs = False
+        #: What the last suggestion was for, so a fee is read once per pair
+        #: rather than on every keystroke.
+        self._fee_read_for: object = _NOT_READ
         self.status = ft.Text("", size=SMALL, selectable=True)
         self.estimate = ft.Text("", size=SMALL, color=ft.Colors.ON_SURFACE_VARIANT)
 
@@ -115,6 +146,38 @@ class ActionTab:
     async def refresh(self) -> None:
         """Re-read balances and re-quote. Must tolerate no wallet."""
 
+    async def fee_units(self, contract: PoolContract) -> int:
+        """The fee this action pays, in Curve's 1e10 units."""
+        return await contract.fee()
+
+    def fee_key(self) -> object:
+        """What the fee depends on, so it is re-read when that changes."""
+        return None
+
+    async def suggest_slippage(self, contract: PoolContract | None) -> None:
+        """Set the tolerance from the pool's own fee, once, quietly.
+
+        Never against what the user typed: the moment they touch the box it
+        is theirs. And never on a failed read -- a pool that will not answer
+        `fee()` leaves the default standing rather than an empty field.
+        """
+        if contract is None or not self.uses_slippage or self._slippage_is_theirs:
+            return
+        key = self.fee_key()
+        if key == self._fee_read_for:
+            return
+        try:
+            fee = await self.fee_units(contract)
+        except WalletError:
+            return
+        self._fee_read_for = key
+        if fee <= 0:
+            return
+        self.slippage.value = format_slippage(slippage_for(fee))
+        self.slippage.tooltip = (
+            f"{SLIPPAGE_OF_FEE:.0%} of this pool's {slippage_for(fee) / SLIPPAGE_OF_FEE:.3g}% fee"
+        )
+
     async def submit(self, contract: PoolContract) -> str:
         raise NotImplementedError
 
@@ -136,6 +199,9 @@ class ActionTab:
             self.status,
         ]
         return self.control
+
+    def _slippage_edited(self, _e: ft.ControlEvent) -> None:
+        self._slippage_is_theirs = True
 
     def slippage_pct(self) -> float:
         try:
@@ -350,6 +416,7 @@ class DepositTab(ActionTab):
 
     async def refresh(self) -> None:
         contract = self.get_contract()
+        await self.suggest_slippage(contract)
         if contract is not None:
             for index, coin in enumerate(self.pool.pool_coins):
                 try:
@@ -473,6 +540,7 @@ class WithdrawTab(ActionTab):
 
     async def refresh(self) -> None:
         contract = self.get_contract()
+        await self.suggest_slippage(contract)
         amount = self._lp_amount()
         if contract is not None:
             try:
@@ -583,6 +651,14 @@ class SwapTab(ActionTab):
         except ValueError:
             return 0, 1
 
+    async def fee_units(self, contract: PoolContract) -> int:
+        """StableSwap-NG charges per pair, so ask about *this* pair."""
+        i, j = self._indices()
+        return await contract.pair_fee(i, j)
+
+    def fee_key(self) -> object:
+        return self._indices()
+
     def _dx(self) -> int:
         i, _ = self._indices()
         text = (self.amount.value or "").strip()
@@ -618,6 +694,7 @@ class SwapTab(ActionTab):
     async def refresh(self) -> None:
         contract = self.get_contract()
         i, j = self._indices()
+        await self.suggest_slippage(contract)
         dx = self._dx()
 
         if contract is not None:

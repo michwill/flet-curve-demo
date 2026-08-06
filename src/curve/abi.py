@@ -120,6 +120,34 @@ def encode_total_supply() -> str:
     return _call("totalSupply()")
 
 
+# -- fees ------------------------------------------------------------------
+#
+# Curve states fees as a fraction of 1e10, so 1_500_000 is 0.015%.
+
+#: The denominator Curve's `fee()` is expressed in. 1e10 == 100%.
+FEE_DENOMINATOR = 10**10
+
+
+def encode_fee() -> str:
+    """The pool's swap fee. Every pool type has this one."""
+    return _call("fee()")
+
+
+def encode_dynamic_fee(i: int, j: int) -> str:
+    """The fee for one particular pair, on the pools that price pairs.
+
+    StableSwap-NG only, and its indices are `int128`, so there is no
+    CryptoSwap spelling to dispatch between -- a pool without the method
+    answers with a revert (older Vyper) or empty data (newer), and both
+    reach the caller as a failed read.
+
+    Verified on mainnet: PayPool (stableswap-ng) answers 1_000_283 where
+    its flat `fee()` is 1_000_000; 3pool, stETH-ng and the crypto pools do
+    not implement it at all.
+    """
+    return _call("dynamic_fee(int128,int128)", _int(i), _int(j))
+
+
 # -- swapping --------------------------------------------------------------
 
 

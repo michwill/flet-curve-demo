@@ -210,3 +210,61 @@ async def test_approve_is_for_an_exact_amount_not_unlimited() -> None:
     assert tx["data"] == abi.encode_approve(POOL_ADDRESS, 12345)
     assert abi.decode_uint("0x" + tx["data"][74:]) == 12345
     assert abi.decode_uint("0x" + tx["data"][74:]) != abi.MAX_UINT256
+
+
+# -- fees ------------------------------------------------------------------
+#
+# Curve states fees as a fraction of 1e10. Every pool has `fee()`;
+# StableSwap-NG also prices each pair through `dynamic_fee(i, j)`, and the
+# pools without it answer with a revert (older Vyper) or empty data (newer).
+# Both were confirmed against mainnet, and both have to fall back.
+
+
+async def test_the_flat_fee_is_read_from_the_pool() -> None:
+    provider = FakeProvider({"0x" + abi.selector("fee()"): word(1_500_000)})
+    assert await contract(provider).fee() == 1_500_000
+
+
+async def test_a_pair_fee_is_used_when_the_pool_has_one() -> None:
+    """StableSwap-NG: `dynamic_fee` answers, so the flat fee is not asked."""
+    provider = FakeProvider(
+        {
+            "0x" + abi.selector("dynamic_fee(int128,int128)"): word(1_000_283),
+            "0x" + abi.selector("fee()"): word(1_000_000),
+        }
+    )
+    pool = contract(provider)
+    assert await pool.pair_fee(0, 1) == 1_000_283
+    assert not any(abi.selector("fee()") in data for _to, data in provider.calls)
+
+
+async def test_empty_data_from_dynamic_fee_falls_back_to_the_flat_one() -> None:
+    """What a crypto pool does: the method is absent, so nothing comes back."""
+    provider = FakeProvider({"0x" + abi.selector("fee()"): word(4_577_514)})
+    provider.default = "0x"
+    assert await contract(provider).pair_fee(0, 1) == 4_577_514
+
+
+async def test_a_reverting_dynamic_fee_falls_back_too() -> None:
+    """What 3pool does: older Vyper reverts rather than returning nothing."""
+
+    class Reverting(FakeProvider):
+        async def request(self, method, params=None):
+            data = (params or [{}])[0].get("data", "")
+            if data.startswith("0x" + abi.selector("dynamic_fee(int128,int128)")):
+                raise RpcError(3, "execution reverted")
+            return await super().request(method, params)
+
+    provider = Reverting({"0x" + abi.selector("fee()"): word(1_500_000)})
+    assert await contract(provider).pair_fee(0, 1) == 1_500_000
+
+
+async def test_the_pair_is_encoded_into_the_dynamic_fee_call() -> None:
+    provider = FakeProvider(
+        {"0x" + abi.selector("dynamic_fee(int128,int128)"): word(1_000_283)}
+    )
+    await contract(provider).pair_fee(1, 2)
+    _to, data = provider.calls[-1]
+    body = data[10:]
+    assert int(body[:64], 16) == 1
+    assert int(body[64:128], 16) == 2

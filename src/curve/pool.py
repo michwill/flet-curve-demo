@@ -103,6 +103,26 @@ class PoolContract:
             "the withdrawal estimate",
         )
 
+    async def fee(self) -> int:
+        """The pool's swap fee, in Curve's 1e10 units."""
+        return await self._read(self.pool.address, abi.encode_fee(), "the pool fee")
+
+    async def pair_fee(self, i: int, j: int) -> int:
+        """The fee that applies to swapping `i` for `j`.
+
+        StableSwap-NG prices each pair separately and exposes
+        `dynamic_fee`; every other pool has one flat `fee()`. Not having
+        the method looks like a revert on older Vyper and like empty data
+        on newer, and both arrive here as `PoolCallFailed` -- so the
+        fallback covers both without asking what the pool is.
+        """
+        try:
+            return await self._read(
+                self.pool.address, abi.encode_dynamic_fee(i, j), "the pair fee"
+            )
+        except PoolCallFailed:
+            return await self.fee()
+
     async def balance_of(self, token: str, owner: str | None = None) -> int:
         """ERC-20 balance. Zero is a legitimate answer here, unlike a quote."""
         from wallet.erc20 import encode_balance_of  # noqa: PLC0415

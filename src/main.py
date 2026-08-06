@@ -123,11 +123,15 @@ class CurveApp:
         if autoconnect():
             self.connect_button.visible = False
             page.run_task(self.connect, None)
-        else:
-            # In a browser, reconnect to the wallet used last time -- but
-            # only if it is still authorised, which `Wallet.restore` checks
-            # without prompting. A page that opens a wallet dialog by
-            # itself is worse than one that shows a Connect button.
+        elif is_browser():
+            # Reconnect to the wallet used last time -- but only if it is
+            # still authorised, which `Wallet.restore` checks without
+            # prompting. A page that opens a wallet dialog by itself is
+            # worse than one that shows a Connect button.
+            #
+            # Not when `autoconnect` said no because the user disconnected:
+            # that is a decision, and there is nothing remembered to
+            # restore from anyway.
             page.run_task(self.restore)
 
     # -- layout -----------------------------------------------------------
@@ -584,6 +588,7 @@ class CurveApp:
                         size=SMALL,
                         color=ft.Colors.ON_SURFACE_VARIANT,
                     ),
+                    *self._transport_note(),
                     note,
                 ],
                 tight=True,
@@ -591,6 +596,28 @@ class CurveApp:
             ),
             actions=actions,
         )
+
+    def _transport_note(self) -> list[ft.Control]:
+        """Explain a browser window that cannot reach browser wallets.
+
+        `flet run --web` runs Python on this machine and puts a Flutter
+        client in a browser, so the page looks like the published app while
+        the wallet layer is the desktop one: the local Frame/qeth endpoint,
+        and nothing else. Extensions and WalletConnect live in the page and
+        are unreachable from here, which is bewildering unless it is said
+        out loud.
+        """
+        if is_browser() or not self.page.web:
+            return []
+        return [
+            ft.Text(
+                "Python is running on this machine, so only the local "
+                "wallet is reachable. Publish the app (flet publish) for "
+                "browser wallets and WalletConnect.",
+                size=LABEL,
+                color=ft.Colors.ON_SURFACE_VARIANT,
+            )
+        ]
 
     async def _change_wallet(self) -> None:
         """Drop the current connection, then connect again from scratch.

@@ -43,6 +43,10 @@ made to it here:
 - **`disconnect` counts as a disconnection.** An extension revokes a site with
   an empty `accountsChanged`; WalletConnect closes the session and sends
   `disconnect`. Only the first was handled.
+- **disconnecting is remembered.** A desktop build connects at startup by
+  design -- a local wallet raises no popup -- which meant relaunching undid
+  a deliberate disconnect. `wallet/consent.py` leaves a marker; connecting
+  removes it.
 - **the connection survives the tab closing.** The bridge remembers which
   wallet was used (by `rdns`, since an EIP-6963 uuid is regenerated per page
   load) and `Wallet.restore()` picks it up on the next load -- asking

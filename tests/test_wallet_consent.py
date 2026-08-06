@@ -1,0 +1,237 @@
+"""Connecting is asked for; disconnecting is remembered.
+
+Two rules, both of which have been broken at some point:
+
+  * a session that was live should come back when the app reopens, so
+    closing a tab is not the same as disconnecting;
+  * a *deliberate* disconnect must survive the process. Otherwise the
+    desktop build -- which connects at startup by design, because a local
+    wallet raises no popup -- reconnects the moment it is relaunched, and
+    the user who just disconnected has no way to stay disconnected.
+
+The marker lives in a file, so every test here points `XDG_STATE_HOME` at
+a tmp directory: the real one belongs to whoever is running the tests.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+import pytest
+
+from wallet import consent
+from wallet.base import WalletProvider
+from wallet.session import Wallet, autoconnect
+
+ACCOUNT = "0x6B175474E89094C44Da98b954EedeAC495271d0F"
+
+
+@pytest.fixture(autouse=True)
+def isolated_state(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    yield tmp_path
+
+
+class FakeProvider(WalletProvider):
+    """One wallet, always available, never prompting."""
+
+    def __init__(self, wallets: list[dict[str, Any]] | None = None) -> None:
+        self.wallets = wallets if wallets is not None else []
+        self.selected = ""
+        self.closed = False
+
+    def on(self, event, handler) -> None:
+        pass
+
+    async def select_wallet(self, uuid: str, *, silent: bool = False):
+        self.selected = uuid
+        return {}
+
+    async def request(self, method: str, params=None):
+        if method in ("eth_requestAccounts", "eth_accounts"):
+            return [ACCOUNT]
+        if method == "eth_chainId":
+            return "0x1"
+        raise AssertionError(f"unexpected {method}")
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+def use(monkeypatch, provider: FakeProvider) -> None:
+    from wallet import session
+
+    async def fake_connect_provider():
+        return provider
+
+    monkeypatch.setattr(session, "connect_provider", fake_connect_provider)
+
+
+def as_desktop(monkeypatch) -> None:
+    """`autoconnect` is about the transports with no page storage."""
+    from wallet import session
+
+    monkeypatch.setattr(session, "is_browser", lambda: False)
+
+
+# -- the marker itself -----------------------------------------------------
+
+
+def test_a_fresh_machine_may_connect_by_itself() -> None:
+    assert consent.autoconnect_allowed()
+
+
+def test_disconnecting_withdraws_that() -> None:
+    consent.record_disconnect()
+    assert not consent.autoconnect_allowed()
+
+
+def test_connecting_restores_it() -> None:
+    consent.record_disconnect()
+    consent.record_connect()
+    assert consent.autoconnect_allowed()
+
+
+def test_the_decision_outlives_the_process(isolated_state) -> None:
+    """Nothing is cached in memory: a relaunch reads the same marker."""
+    consent.record_disconnect()
+    assert (isolated_state / "flet-curve" / "disconnected").exists()
+    assert not consent.autoconnect_allowed()
+
+
+def test_disconnecting_twice_is_not_an_error() -> None:
+    consent.record_disconnect()
+    consent.record_disconnect()
+    assert not consent.autoconnect_allowed()
+
+
+def test_connecting_without_a_marker_is_not_an_error() -> None:
+    consent.record_connect()
+    assert consent.autoconnect_allowed()
+
+
+# -- what the app asks -----------------------------------------------------
+
+
+def test_the_desktop_connects_at_startup(monkeypatch) -> None:
+    as_desktop(monkeypatch)
+    assert autoconnect()
+
+
+def test_but_not_after_the_user_disconnected(monkeypatch) -> None:
+    """The regression this file exists for: relaunching reconnected."""
+    as_desktop(monkeypatch)
+    consent.record_disconnect()
+    assert not autoconnect()
+
+
+def test_a_browser_never_connects_at_startup(monkeypatch) -> None:
+    """`eth_requestAccounts` on page load is a popup nobody asked for."""
+    from wallet import session
+
+    monkeypatch.setattr(session, "is_browser", lambda: True)
+    assert not autoconnect()
+
+
+async def test_disconnecting_a_live_wallet_records_it(monkeypatch) -> None:
+    provider = FakeProvider()
+    use(monkeypatch, provider)
+    wallet = await Wallet.connect()
+    await wallet.disconnect()
+    assert not consent.autoconnect_allowed()
+    assert provider.closed
+
+
+async def test_connecting_again_clears_it(monkeypatch) -> None:
+    """An explicit connect *is* the answer to the question."""
+    provider = FakeProvider()
+    use(monkeypatch, provider)
+    consent.record_disconnect()
+    await Wallet.connect()
+    assert consent.autoconnect_allowed()
+
+
+async def test_restoring_a_session_counts_as_connecting(monkeypatch) -> None:
+    provider = FakeProvider(
+        [{"uuid": "u", "name": "Rabby", "rdns": "io.rabby", "connector": "injected"}]
+    )
+    provider.remembered = {"rdns": "io.rabby", "connector": "injected"}
+    use(monkeypatch, provider)
+    consent.record_disconnect()
+    assert await Wallet.restore() is not None
+    assert consent.autoconnect_allowed()
+
+
+# -- being asked which wallet ----------------------------------------------
+
+
+async def test_connecting_asks_when_there_is_a_choice(monkeypatch) -> None:
+    """Reconnecting after a disconnect must not silently reuse the last
+    wallet -- the whole point of disconnecting was to stop using it."""
+    provider = FakeProvider(
+        [
+            {"uuid": "a", "name": "qeth", "rdns": "org.qeth", "connector": "injected"},
+            {"uuid": "b", "name": "WalletConnect", "rdns": "", "connector": "walletconnect"},
+        ]
+    )
+    use(monkeypatch, provider)
+    asked: list[list[str]] = []
+
+    async def choose(options):
+        asked.append([o.name for o in options])
+        return options[1].uuid
+
+    wallet = await Wallet.connect(choose=choose)
+    assert asked == [["qeth", "WalletConnect"]]
+    assert provider.selected == "b"
+    assert wallet.icon  # the bundled WalletConnect mark
+
+
+async def test_change_wallet_asks_even_with_one(monkeypatch) -> None:
+    """Otherwise the command reconnects to the same wallet and looks dead."""
+    provider = FakeProvider(
+        [{"uuid": "only", "name": "qeth", "rdns": "org.qeth", "connector": "injected"}]
+    )
+    use(monkeypatch, provider)
+    asked = []
+
+    async def choose(options):
+        asked.append([o.name for o in options])
+        return options[0].uuid
+
+    await Wallet.connect(choose=choose, always_choose=True)
+    assert asked == [["qeth"]]
+
+
+async def test_a_first_connection_does_not_ask_about_a_single_wallet(
+    monkeypatch,
+) -> None:
+    """There is nothing to ask: clicking Connect already answered it."""
+    provider = FakeProvider(
+        [{"uuid": "only", "name": "qeth", "rdns": "org.qeth", "connector": "injected"}]
+    )
+    use(monkeypatch, provider)
+
+    async def choose(options):
+        raise AssertionError("should not have been asked")
+
+    assert await Wallet.connect(choose=choose) is not None
+
+
+async def test_cancelling_the_picker_connects_nothing(monkeypatch) -> None:
+    from wallet.session import ConnectionCancelled
+
+    provider = FakeProvider(
+        [
+            {"uuid": "a", "name": "qeth", "rdns": "org.qeth", "connector": "injected"},
+            {"uuid": "b", "name": "WalletConnect", "rdns": "", "connector": "walletconnect"},
+        ]
+    )
+    use(monkeypatch, provider)
+
+    async def choose(options):
+        return None
+
+    with pytest.raises(ConnectionCancelled):
+        await Wallet.connect(choose=choose)
+    assert provider.closed

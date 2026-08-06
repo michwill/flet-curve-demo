@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from typing import Any, Awaitable, Callable
 
-from . import chains, erc20, icons
+from . import chains, consent, erc20, icons
 from .base import RpcError, WalletError, WalletProvider, WalletUnavailable
 from .browser import is_browser
 from .chains import Chain, Token
@@ -100,10 +100,13 @@ def autoconnect() -> bool:
     so a "Connect wallet" button is pure ceremony. Either it is there and we
     use it, or it is not and the app should say so immediately.
 
+    Unless the user disconnected. That is a decision, and reconnecting on
+    the next launch would override it silently -- see `wallet.consent`.
+
     No in a browser: `eth_requestAccounts` raises a wallet popup, and doing
     that unprompted on page load is both hostile and likely to be blocked.
     """
-    return not is_browser()
+    return not is_browser() and consent.autoconnect_allowed()
 
 
 class Wallet:
@@ -183,6 +186,8 @@ class Wallet:
         chosen = next(
             (o for o in options if o.uuid == uuid), options[0] if options else None
         )
+        # Connecting answers the question a previous disconnect asked.
+        consent.record_connect()
         chain = chains.get_chain(await provider.chain_id())
         return cls(
             provider,
@@ -194,7 +199,10 @@ class Wallet:
     async def disconnect(self) -> None:
         # Deliberate: stop remembering this wallet, so the next page load
         # starts disconnected rather than quietly reconnecting to the
-        # wallet the user just walked away from.
+        # wallet the user just walked away from. The marker covers the
+        # transports with no page storage -- a desktop build otherwise
+        # connects again the moment it is relaunched.
+        consent.record_disconnect()
         forget = getattr(self.provider, "forget", None)
         if forget is not None:
             await forget()
@@ -251,6 +259,7 @@ class Wallet:
             await provider.close()
             return None
 
+        consent.record_connect()
         chain = chains.get_chain(await provider.chain_id())
         return cls(
             provider,

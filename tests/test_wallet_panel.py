@@ -25,6 +25,10 @@ ADDRESS = "0x6B175474E89094C44Da98b954EedeAC495271d0F"
 
 
 class StubPage:
+    #: `flet run --web` sets this while Python stays on the host, which is
+    #: the case the panel explains.
+    web = False
+
     def __init__(self) -> None:
         self.tasks: list[object] = []
         self.popped = 0
@@ -148,3 +152,33 @@ def test_wallet_art_is_not_decoded_at_a_pixel_size() -> None:
     """It is usually SVG, which has none, and asking for one fails."""
     mark = main.wallet_mark("data:image/svg+xml;base64,PHN2Zy8+", "WalletConnect")
     assert mark.cache_width is None
+
+
+# -- which transport is in play --------------------------------------------
+
+
+def test_a_desktop_window_says_nothing_about_transports(monkeypatch) -> None:
+    monkeypatch.setattr(main, "is_browser", lambda: False)
+    app = make_app()
+    app.page.web = False
+    dialog = app._wallet_dialog(make_wallet())
+    assert not any("Python is running" in t for t in texts(dialog.content))
+
+
+def test_a_published_browser_build_says_nothing_either(monkeypatch) -> None:
+    monkeypatch.setattr(main, "is_browser", lambda: True)
+    app = make_app()
+    app.page.web = True
+    dialog = app._wallet_dialog(make_wallet())
+    assert not any("Python is running" in t for t in texts(dialog.content))
+
+
+def test_flet_run_web_explains_why_there_are_no_browser_wallets(monkeypatch) -> None:
+    """Python on the host, client in a browser: the page looks published
+    but the wallet layer is the local one, and nothing else is reachable."""
+    monkeypatch.setattr(main, "is_browser", lambda: False)
+    app = make_app()
+    app.page.web = True
+    dialog = app._wallet_dialog(make_wallet())
+    note = [t for t in texts(dialog.content) if "Python is running" in t]
+    assert note and "flet publish" in note[0]

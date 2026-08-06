@@ -29,7 +29,7 @@ from ui.pool_list import PoolListView
 from ui.assets import chain_name, curve_logo
 from ui.logos import chain_mark
 from ui.responsive import layout_for
-from ui.typography import BODY, SMALL, TITLE
+from ui.typography import BODY, LABEL, SMALL, TITLE
 from wallet import Wallet, WalletChoice, WalletError, autoconnect, is_browser
 
 DEFAULT_CHAIN = "ethereum"
@@ -41,6 +41,23 @@ PREFERRED_CHAINS = ("ethereum", "arbitrum", "base", "optimism", "polygon", "frax
 #: The Curve mark, sized against the wordmark beside it rather than against
 #: the header's height -- the two read as one lockup.
 BRAND_LOGO = 34
+#: How wide the address sits when it shows `0x1234…abcd` and when it shows
+#: all 42 characters. Fixed so the hover can animate. The full width is
+#: measured rather than guessed -- a checksummed address is ~316px in the
+#: browser's Roboto at this size -- and then given a wide margin, because
+#: Flutter's own metrics run a little wider than the browser's and a
+#: clipped address is worse than a gap.
+ADDRESS_SHORT_WIDTH = 128
+ADDRESS_FULL_WIDTH = 380
+#: Below this the header has no room to give, so hovering does nothing --
+#: a chip that grew here would push the chain picker off the row.
+ADDRESS_EXPAND_MIN_PAGE = 1100
+
+#: The connect button's resting label. It is swapped rather than blanked
+#: while connecting: a `Button` with an `icon` and no `content` refuses to
+#: render at all.
+CONNECT_LABEL = "Connect wallet"
+
 #: The network mark inside the picker. Smaller than a token mark elsewhere:
 #: a dense dropdown's field is barely taller than its text.
 CHAIN_ICON = 14
@@ -122,9 +139,29 @@ class CurveApp:
             weight=ft.FontWeight.BOLD,
             tooltip=f"{'browser' if is_browser() else 'desktop'} build",
         )
-        self.account_label = ft.Text("", size=SMALL)
+        self.account_label = ft.Text("", size=SMALL, no_wrap=True)
+        # The address is a control, not a caption: hovering it gives you all
+        # 42 characters, clicking it opens the wallet's own panel. Fixed
+        # widths rather than an intrinsic one so the growth can animate --
+        # a Row cannot animate a child that sizes itself.
+        self.account_chip = ft.Container(
+            self.account_label,
+            visible=False,
+            width=ADDRESS_SHORT_WIDTH,
+            padding=ft.Padding.symmetric(horizontal=10, vertical=6),
+            border_radius=8,
+            alignment=ft.Alignment.CENTER_LEFT,
+            clip_behavior=ft.ClipBehavior.HARD_EDGE,
+            ink=True,
+            on_click=self._wallet_clicked,
+            on_hover=self._account_hovered,
+            animate=ft.Animation(
+                duration=ft.Duration(milliseconds=140),
+                curve=ft.AnimationCurve.EASE_OUT,
+            ),
+        )
         self.connect_button = ft.Button(
-            "Connect wallet",
+            CONNECT_LABEL,
             icon=ft.Icons.ACCOUNT_BALANCE_WALLET,
             on_click=self.connect,
         )
@@ -141,7 +178,7 @@ class CurveApp:
                     self.brand,
                     self.build_label,
                     ft.Container(self.totals, expand=True),
-                    self.account_label,
+                    self.account_chip,
                     # On the right, where the connected wallet used to
                     # repeat the network name back at you.
                     self.chain_picker,
@@ -303,14 +340,52 @@ class CurveApp:
 
     # -- wallet -----------------------------------------------------------
 
+    def _show_account(self, *, expanded: bool = False) -> None:
+        """Draw the connected address, short or in full.
+
+        The only place the chip's text and width are set, so the hover, a
+        wallet-side account change and a fresh connection cannot disagree
+        about what it says.
+        """
+        wallet = self.wallet
+        self.account_chip.visible = wallet is not None
+        self.account_chip.width = (
+            ADDRESS_FULL_WIDTH if expanded and wallet else ADDRESS_SHORT_WIDTH
+        )
+        if wallet is None:
+            self.account_label.value = ""
+            self.account_chip.tooltip = None
+            return
+        self.account_label.value = wallet.address if expanded else wallet.short_address
+        self.account_chip.tooltip = f"{wallet.name}  ·  {wallet.chain.name}"
+
+    def _account_hovered(self, e: ft.Event[ft.Container]) -> None:
+        """Grow to the full address under the cursor, shrink on the way out.
+
+        Not on a narrow page: the header there has nothing to give, and a
+        chip that grew would push the chain picker out of the row.
+        """
+        room = not self.page.width or self.page.width >= ADDRESS_EXPAND_MIN_PAGE
+        self._show_account(expanded=bool(e.data) and room)
+        self.page.update()
+
+    def _wallet_clicked(self, _e: ft.Event[ft.Container]) -> None:
+        if self.wallet is not None:
+            self.page.show_dialog(self._wallet_dialog(self.wallet))
+
     async def connect(self, _e: ft.ControlEvent | None) -> None:
         self.connect_button.disabled = True
-        self.account_label.value = "Connecting…"
+        self.connect_button.content = "Connecting…"
+        self.error.visible = False
         self.page.update()
         try:
             self.wallet = await Wallet.connect(choose=self._choose_wallet)
         except WalletError as exc:
-            self.account_label.value = str(exc)
+            # In the header a failure would be clipped by the chip's fixed
+            # width; the error line under it has the whole page.
+            self.error.value = str(exc)
+            self.error.visible = True
+            self.connect_button.content = CONNECT_LABEL
             self.connect_button.disabled = False
             self.connect_button.visible = True
             self.page.update()
@@ -318,9 +393,10 @@ class CurveApp:
 
         self.wallet.on_change(lambda: self.page.run_task(self._wallet_changed))
         self.wallet.on_disconnect(lambda: self.page.run_task(self._wallet_gone))
-        self.account_label.value = self.wallet.short_address
-        self.account_label.tooltip = self.wallet.chain.name
+        self.connect_button.content = CONNECT_LABEL
+        self.connect_button.disabled = False
         self.connect_button.visible = False
+        self._show_account()
         self.page.update()
         if self._detail is not None:
             await self._detail.refresh_actions()
@@ -328,18 +404,90 @@ class CurveApp:
     async def _wallet_changed(self) -> None:
         if self.wallet is None:
             return
-        self.account_label.value = self.wallet.short_address
-        self.account_label.tooltip = self.wallet.chain.name
+        self._show_account()
         self.page.update()
         if self._detail is not None:
             await self._detail.refresh_actions()
 
     async def _wallet_gone(self) -> None:
         self.wallet = None
-        self.account_label.value = ""
+        self._show_account()
         self.connect_button.visible = True
         self.connect_button.disabled = False
         self.page.update()
+
+    # -- the wallet panel -------------------------------------------------
+
+    def _wallet_dialog(self, wallet: Wallet) -> ft.AlertDialog:
+        """The full address, and the two things you can do to a connection.
+
+        Changing wallet is a disconnect and a fresh connect rather than
+        anything cleverer: EIP-1193 has no "switch account" call, and the
+        picker only reappears once the current provider has let go.
+        """
+        note = ft.Text("", size=SMALL, color=ft.Colors.ON_SURFACE_VARIANT)
+
+        async def copy(_e: ft.ControlEvent) -> None:
+            await self.page.clipboard.set(wallet.address)
+            note.value = "Address copied."
+            self.page.update()
+
+        def change(_e: ft.ControlEvent) -> None:
+            self.page.pop_dialog()
+            self.page.run_task(self._change_wallet)
+
+        def disconnect(_e: ft.ControlEvent) -> None:
+            self.page.pop_dialog()
+            self.page.run_task(self._disconnect_wallet)
+
+        return ft.AlertDialog(
+            title=ft.Text(wallet.name or "Wallet"),
+            content=ft.Column(
+                [
+                    ft.Text("ADDRESS", size=LABEL, color=ft.Colors.ON_SURFACE_VARIANT),
+                    # Selectable so the address can be taken without the
+                    # clipboard, which a browser may refuse.
+                    ft.Text(wallet.address, size=BODY, selectable=True),
+                    ft.Text(
+                        f"On {wallet.chain.name}",
+                        size=SMALL,
+                        color=ft.Colors.ON_SURFACE_VARIANT,
+                    ),
+                    note,
+                ],
+                tight=True,
+                spacing=6,
+            ),
+            actions=[
+                ft.TextButton("Copy", on_click=copy),
+                ft.TextButton("Change wallet", on_click=change),
+                ft.TextButton("Disconnect", on_click=disconnect),
+                ft.TextButton("Close", on_click=lambda _e: self.page.pop_dialog()),
+            ],
+        )
+
+    async def _change_wallet(self) -> None:
+        """Drop the current connection, then connect again from scratch.
+
+        `Wallet.connect` only offers the picker when the page announced
+        more than one wallet -- with a single extension installed this is
+        simply a reconnection, which is still the only way to reach another
+        account in that wallet.
+        """
+        await self._disconnect_wallet()
+        await self.connect(None)
+
+    async def _disconnect_wallet(self) -> None:
+        if self.wallet is not None:
+            try:
+                await self.wallet.disconnect()
+            except WalletError:
+                # Already gone wallet-side; the app's own state is what
+                # matters from here.
+                pass
+        await self._wallet_gone()
+        if self._detail is not None:
+            await self._detail.refresh_actions()
 
     async def _choose_wallet(self, options: list[WalletChoice]) -> str | None:
         """Ask which wallet to use when the browser announced several."""

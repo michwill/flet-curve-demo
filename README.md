@@ -121,20 +121,24 @@ stopped reverting:
 
 - **`get_dy` is exact** -- the maths the swap itself runs, fee included --
   so a swap allows `0.2 * fee` and nothing more.
-- **`a = 0.95`, `b = 0.005%`.** The two are a pair: with the constant held
-  at 0.005%, the smallest slope covering all 44 pools is 0.880, and 0.95 is
-  that plus headroom. What binds it is the old StableSwap implementations,
+- **The whole rule is `fee + 0.005%`**: a deposit may lose its pool's fee,
+  plus a little for the quote going stale. The slope is not a fitted
+  constant but a ceiling -- the imbalance fee on a fully single-sided
+  deposit approaches the base fee as a two-coin pool skews, so no pool of
+  that shape can need more. (Solving the 44 pools for the smallest slope at
+  a 0.005% constant gives 0.880; one is that rounded to the bound it is
+  converging on.) What binds it is the old StableSwap implementations,
   which quote fee-free: cvxCrv/Crv mints 0.91x its fee below the quote,
   sdCRV/CRV 0.90x, 3pool 0.63x, alETH/frxETH 0.13x, msETH/WETH 0.05x -- the
   spread is how imbalanced each pool already is. Everything modern --
   crvusd, stableswap-ng, tricrypto-ng, twocrypto-ng, the old crypto pools --
   mints *exactly* the quote, so there the fee term is margin, which is also
   what covers an implementation this app has never seen.
-- **Keeping the slope is what keeps the constant small.** Flattening `a`
-  towards zero would push `b` to 0.137%, the whole of cvxCrv/Crv's
+- **Keeping the fee term is what keeps the constant small.** Flattening it
+  towards zero would push the constant to 0.137%, the whole of cvxCrv/Crv's
   shortfall, and every pegged pool would then be given it. As it stands a
-  pool charging 0.001% is allowed 0.00595% and one charging 0.6% is allowed
-  0.575%.
+  pool charging 0.001% is allowed 0.006% and one charging 0.6% is allowed
+  0.605%.
 - **`b` is the time axis**, and it is zero *across pools* -- a cross-section
   measured at one moment cannot see it. What a quote loses by going stale
   is measured separately, against the archive: the worst five-block drop
@@ -145,8 +149,8 @@ stopped reverting:
   (TricryptoUSDC allows 0.0335%) while the pools whose fees are too small
   to help are the pegged ones that do not lurch.
 
-Which lands at 0.0193% to deposit into 3pool and 0.003% to swap in it;
-0.148% and 0.03% for cvxCrv/Crv, whose fee is 0.15%. The shown figure is
+Which lands at 0.02% to deposit into 3pool and 0.003% to swap in it; 0.155%
+and 0.03% for cvxCrv/Crv, whose fee is 0.15%. The shown figure is
 rounded *up* to three significant digits -- a floor displayed tighter than
 it was calculated is a floor that reverts.
 

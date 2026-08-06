@@ -67,10 +67,16 @@ SLIPPAGE_OF_FEE = 0.2
 #: through titanoboa, bisecting `min_mint` until `add_liquidity` stops
 #: reverting.
 #:
-#: `a = 0.95`. With `b` held at 0.005% the smallest slope that covers all
-#: 44 pools is 0.880 -- binding, as always, on cvxCrv/Crv -- and 0.95
-#: leaves that pool 0.005% of headroom rather than 0.00004%. What binds it
-#: is
+#: `a = 1`: the whole fee. With `b` held at 0.005% the smallest slope that
+#: covers all 44 pools is 0.880 -- binding, as always, on cvxCrv/Crv -- and
+#: rounding it to one is not just headroom, it is the ceiling the number is
+#: converging to. The imbalance fee on a fully single-sided deposit
+#: approaches the base fee as a two-coin pool skews (Curve's adjusted fee
+#: is `base * N / (4(N-1))`, applied to each coin's distance from balance),
+#: so no pool of this shape can need more. The measured worst was 0.91.
+#:
+#: Which makes the whole rule sayable in one line: *a deposit may lose its
+#: pool's fee, plus a little for the quote going stale.* What binds it is
 #: the old StableSwap implementations, whose `calc_token_amount` quotes
 #: fee-free so the mint lands short: cvxCrv/Crv by 0.91x its fee, 3pool by
 #: 0.63x, alETH/frxETH by 0.13x, msETH/WETH by 0.05x -- the spread is how
@@ -79,7 +85,7 @@ SLIPPAGE_OF_FEE = 0.2
 #: twocrypto-ng, the old crypto pools) mints *exactly* the quote at every
 #: size from 0.01% to 1% of the pool, so for those this is pure margin --
 #: which is also what covers an implementation this app has never seen.
-ESTIMATE_FEE_SHARE = 0.95
+ESTIMATE_FEE_SHARE = 1.0
 
 #: `b` is what the same fit says is zero -- and it is zero *across pools*,
 #: because a cross-section cannot see time. Every pool above was measured

@@ -419,15 +419,14 @@ def tab_with_fee(cls, flat: int, pair: int | None = None, registry: str = "crvus
     return tab, provider
 
 
-async def test_deposit_slippage_is_most_of_a_fee_plus_a_little() -> None:
-    """3pool: 0.015% fee -> 0.01925%. Fitted to deposits run on a fork
-    across 44 pools; cvxCrv/Crv binds the slope by minting 0.91x its fee
-    below the quote."""
+async def test_deposit_slippage_is_the_fee_plus_a_little() -> None:
+    """The whole rule: a deposit may lose its pool's fee, plus 0.005% for
+    the quote going stale. 3pool charges 0.015%, so 0.02%."""
     from ui.actions import DepositTab
 
     tab, _ = tab_with_fee(DepositTab, 1_500_000, registry="main")
     await tab.refresh()
-    assert float(tab.slippage.value) == pytest.approx(0.0193)   # 0.01925, rounded up
+    assert float(tab.slippage.value) == pytest.approx(0.02)
 
 
 async def test_the_same_line_holds_whatever_the_implementation() -> None:
@@ -450,7 +449,7 @@ async def test_a_tiny_fee_still_gets_the_drift_allowance() -> None:
 
     tab, _ = tab_with_fee(DepositTab, 100_000, registry="stableswapng")
     await tab.refresh()
-    assert float(tab.slippage.value) == pytest.approx(0.00095 + QUOTE_DRIFT)
+    assert float(tab.slippage.value) == pytest.approx(0.001 + QUOTE_DRIFT)
 
 
 async def test_withdrawing_uses_the_flat_fee_too() -> None:
@@ -458,7 +457,7 @@ async def test_withdrawing_uses_the_flat_fee_too() -> None:
 
     tab, provider = tab_with_fee(WithdrawTab, 1_000_000, pair=9_999_999)
     await tab.refresh()
-    assert float(tab.slippage.value) == pytest.approx(0.0095 + 0.005)
+    assert float(tab.slippage.value) == pytest.approx(0.01 + 0.005)
     assert "0x" + abi.selector("dynamic_fee(int128,int128)") not in provider.reads
 
 
@@ -604,18 +603,17 @@ async def test_the_line_covers_every_measured_pool() -> None:
         assert allowed >= needed, f"fee {fee}: allows {allowed}, needs {needed}"
 
 
-def test_the_slope_carries_what_the_constant_does_not() -> None:
-    """The two are a pair: with b at 0.005% the smallest slope that covers
-    all 44 pools is 0.880, so 0.95 is that plus headroom. Dropping the
-    slope towards zero would push b to 0.137% -- the whole of cvxCrv/Crv's
-    shortfall -- and every pegged pool would then carry it."""
+def test_the_slope_is_one_whole_fee() -> None:
+    """Not a fitted constant but a ceiling: the imbalance fee on a fully
+    single-sided deposit approaches the base fee as a two-coin pool skews,
+    so no pool of that shape can need more. The measured worst, cvxCrv/Crv,
+    was 0.91x -- under it, as it must be."""
     from ui.actions import ESTIMATE_FEE_SHARE, QUOTE_DRIFT, slippage_for
 
+    assert ESTIMATE_FEE_SHARE == 1.0
     binding_fee, binding_need = 15_000_000, 0.13696      # cvxCrv/Crv
+    assert binding_need / (binding_fee / 10**10 * 100) < ESTIMATE_FEE_SHARE
     assert slippage_for(binding_fee, ESTIMATE_FEE_SHARE, QUOTE_DRIFT) >= binding_need
-    minimum = (binding_need - QUOTE_DRIFT) / (binding_fee / 10**10 * 100)
-    assert ESTIMATE_FEE_SHARE >= minimum
-    assert ESTIMATE_FEE_SHARE <= 1.0, "more than a whole fee is margin nobody needs"
 
 
 def test_a_low_constant_is_what_the_slope_buys() -> None:
@@ -632,11 +630,11 @@ def test_a_low_constant_is_what_the_slope_buys() -> None:
 def test_the_arithmetic_is_a_times_fee_plus_b() -> None:
     from ui.actions import ESTIMATE_FEE_SHARE, QUOTE_DRIFT, SLIPPAGE_OF_FEE, slippage_for
 
-    assert (SLIPPAGE_OF_FEE, ESTIMATE_FEE_SHARE, QUOTE_DRIFT) == (0.2, 0.95, 0.005)
+    assert (SLIPPAGE_OF_FEE, ESTIMATE_FEE_SHARE, QUOTE_DRIFT) == (0.2, 1.0, 0.005)
     # 1e10 is 100%, so 10_000_000 is 0.1%.
     assert slippage_for(10_000_000) == pytest.approx(0.02)
     assert slippage_for(0) == 0
-    assert slippage_for(10_000_000, ESTIMATE_FEE_SHARE, QUOTE_DRIFT) == pytest.approx(0.1 * 0.95 + 0.005)
+    assert slippage_for(10_000_000, ESTIMATE_FEE_SHARE, QUOTE_DRIFT) == pytest.approx(0.105)
     # The constant is what carries a pool whose fee rounds to nothing.
     assert slippage_for(0, ESTIMATE_FEE_SHARE, QUOTE_DRIFT) == pytest.approx(QUOTE_DRIFT)
 

@@ -768,3 +768,66 @@ def test_the_shown_tolerance_is_never_tighter_than_the_computed_one() -> None:
     for fee in range(0, 200_000_000, 137_017):
         exact = slippage_for(fee, ESTIMATE_FEE_SHARE, QUOTE_DRIFT)
         assert float(format_slippage(exact)) >= exact, fee
+
+
+# -- what the buttons say --------------------------------------------------
+#
+# `ft.Button` carries its label in `content`; it has no `text` property, so
+# assigning one silently sets an attribute nobody reads. Both places that
+# rename a button did exactly that -- Unstake stayed labelled "Stake", and
+# the "2." that pairs with "1. Approve" never appeared.
+
+
+async def test_unstaking_says_unstake() -> None:
+    from ui.actions import StakeTab
+
+    tab, _ = tab_with_fee(StakeTab, 1_000_000)
+    tab.pool.gauge = "0x" + "cc" * 20
+    await tab.refresh()
+    assert tab.submit_button.content == "Stake"
+
+    tab.direction.value = "unstake"
+    await tab.refresh()
+    assert tab.submit_button.content == "Unstake"
+
+    tab.direction.value = "stake"
+    await tab.refresh()
+    assert tab.submit_button.content == "Stake"
+
+
+async def test_the_submit_button_is_numbered_while_an_approval_is_pending() -> None:
+    """"1. Approve" then "2. Deposit" -- the second half never showed."""
+    from ui.actions import DepositTab
+
+    provider = FeeProvider(1_000_000)
+    pool = make_pool()
+    contract = PoolContract(provider, pool, ACCOUNT)
+    tab = DepositTab(StubPage(), pool, lambda: contract, None)
+    tab.mount()
+    tab.fields[0].value = "1"
+
+    await tab._sync_approval(contract)      # allowance is zero in the fake
+    assert tab.approve_button.content == "1. Approve USDT"
+    assert tab.submit_button.content == "2. Deposit"
+
+
+async def test_and_loses_the_number_once_it_is_approved() -> None:
+    from ui.actions import DepositTab
+
+    class Approved(FeeProvider):
+        async def request(self, method, params=None):
+            data = (params or [{}])[0].get("data", "") if method == "eth_call" else ""
+            if data.startswith("0x" + abi.selector("allowance(address,address)")):
+                return word(10**30)
+            return await super().request(method, params)
+
+    provider = Approved(1_000_000)
+    pool = make_pool()
+    contract = PoolContract(provider, pool, ACCOUNT)
+    tab = DepositTab(StubPage(), pool, lambda: contract, None)
+    tab.mount()
+    tab.fields[0].value = "1"
+
+    await tab._sync_approval(contract)
+    assert tab.submit_button.content == "Deposit"
+    assert not tab.approve_button.visible

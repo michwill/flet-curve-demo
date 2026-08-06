@@ -193,6 +193,11 @@ class ActionTab:
         self.status = ft.Text("", size=SMALL, selectable=True)
         self.estimate = ft.Text("", size=SMALL, color=ft.Colors.ON_SURFACE_VARIANT)
 
+        # Labels go through `content`, not `text`: `ft.Button` has no `text`
+        # property, so assigning one sets an attribute nobody reads and the
+        # button keeps whatever it was built with. That is how Unstake stayed
+        # labelled "Stake", and why the numbered "2. Deposit" step never
+        # appeared next to "1. Approve".
         self.approve_button = ft.Button(
             "1. Approve", on_click=self._approve_clicked, visible=False, disabled=True
         )
@@ -367,7 +372,7 @@ class ActionTab:
             pending = None
         self.approve_button.visible = pending is not None
         self.approve_button.disabled = pending is None
-        self.submit_button.text = (
+        self.submit_button.content = (
             f"2. {self.submit_label}" if pending is not None else self.submit_label
         )
         # Curve gates the action behind the approval; so does this, because
@@ -553,7 +558,7 @@ class DepositTab(ActionTab):
                 continue
             allowance = await contract.allowance(coin.address, self.pool.address)
             if allowance < amount:
-                self.approve_button.text = f"1. Approve {coin.symbol}"
+                self.approve_button.content = f"1. Approve {coin.symbol}"
                 return (coin.address, self.pool.address, amount)
         return None
 
@@ -666,7 +671,7 @@ class WithdrawTab(ActionTab):
         # Burning LP needs no approval: the pool burns the caller's own
         # balance rather than transferring it, so there is no spender.
         self.approve_button.visible = False
-        self.submit_button.text = self.submit_label
+        self.submit_button.content = self.submit_label
         self.submit_button.disabled = contract is None or amount <= 0
         self.page.update()
 
@@ -844,7 +849,7 @@ class SwapTab(ActionTab):
         coin = self.pool.pool_coins[i]
         allowance = await contract.allowance(coin.address, self.pool.address)
         if allowance < dx:
-            self.approve_button.text = f"1. Approve {coin.symbol}"
+            self.approve_button.content = f"1. Approve {coin.symbol}"
             return (coin.address, self.pool.address, dx)
         return None
 
@@ -940,8 +945,8 @@ class StakeTab(ActionTab):
                 self.balances_label.value = ""
 
         staking = self.direction.value == "stake"
-        self.submit_button.text = "Stake" if staking else "Unstake"
-        self.submit_label = self.submit_button.text
+        self.submit_label = "Stake" if staking else "Unstake"
+        self.submit_button.content = self.submit_label
         amount = self._amount_units()
 
         if staking:
@@ -962,7 +967,7 @@ class StakeTab(ActionTab):
             return None
         allowance = await contract.allowance(self.pool.lp_token, self.pool.gauge)
         if allowance < amount:
-            self.approve_button.text = "1. Approve LP"
+            self.approve_button.content = "1. Approve LP"
             return (self.pool.lp_token, self.pool.gauge, amount)
         return None
 

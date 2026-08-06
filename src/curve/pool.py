@@ -118,6 +118,16 @@ class PoolContract:
     async def lp_balance(self, owner: str | None = None) -> int:
         return await self.balance_of(self.pool.lp_token, owner)
 
+    async def lp_total_supply(self) -> int:
+        """LP tokens outstanding, for pricing a balanced withdrawal."""
+        try:
+            result = await self.provider.call(
+                self.pool.lp_token, abi.encode_total_supply()
+            )
+        except RpcError as exc:
+            raise PoolCallFailed(f"Could not read LP supply: {exc.message}") from exc
+        return abi.decode_uint(result)
+
     async def staked_balance(self, owner: str | None = None) -> int:
         """LP tokens held in the gauge. A gauge is itself an ERC-20."""
         if not self.pool.has_gauge:

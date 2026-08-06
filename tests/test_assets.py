@@ -207,6 +207,18 @@ def test_contract_coins_stay_separate_from_displayed_ones() -> None:
     assert pool.coin_symbols == ["msUSD", "FRAX", "USDC"]
 
 
+def test_the_swap_and_withdraw_pickers_carry_marks() -> None:
+    """A dropdown of bare symbols is harder to scan than one with logos."""
+    from ui.actions import _coin_options
+
+    options = _coin_options([coin("USDC", USDC), coin("WOOF")], "ethereum")
+    assert [o.key for o in options] == ["0", "1"]
+    assert [o.text for o in options] == ["USDC", "WOOF"]
+    for option in options:
+        assert isinstance(option.content, ft.Row)
+        assert len(option.content.controls) == 2  # mark, then symbol
+
+
 def test_balances_line_up_with_the_contract_coins() -> None:
     pool = metapool()
     pool.merge_detail({"n_coins": 2, "balances": [10.0, 20.0], "balances_usd": [10.0, 20.0]})

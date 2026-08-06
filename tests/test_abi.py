@@ -19,6 +19,7 @@ KNOWN_SELECTORS = {
     "transfer(address,uint256)": "a9059cbb",
     "approve(address,uint256)": "095ea7b3",
     "allowance(address,address)": "dd62ed3e",
+    "totalSupply()": "18160ddd",
     "get_dy(int128,int128,uint256)": "5e0d443f",
     "exchange(int128,int128,uint256,uint256)": "3df02124",
     "add_liquidity(uint256[3],uint256)": "4515cef3",

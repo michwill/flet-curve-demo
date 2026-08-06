@@ -72,6 +72,7 @@ class CurveApp:
             value=self.chain,
             width=185,
             dense=True,
+            leading_icon=chain_mark(self.chain),
             on_select=self._chain_changed,
         )
         self.totals = ft.Text(
@@ -91,10 +92,13 @@ class CurveApp:
             if logo
             else ft.Text("CURVE", key="brand", size=18, weight=ft.FontWeight.BOLD)
         )
+        # The wordmark sits beside the mark as if it were part of it. The
+        # build kind is still worth knowing, but only when you go looking.
         self.build_label = ft.Text(
-            f"{'browser' if is_browser() else 'desktop'} build",
-            size=10,
-            color=ft.Colors.ON_SURFACE_VARIANT,
+            "Curve",
+            size=18,
+            weight=ft.FontWeight.BOLD,
+            tooltip=f"{'browser' if is_browser() else 'desktop'} build",
         )
         self.account_label = ft.Text("", size=12)
         self.connect_button = ft.Button(
@@ -114,9 +118,11 @@ class CurveApp:
                 [
                     self.brand,
                     self.build_label,
-                    self.chain_picker,
                     ft.Container(self.totals, expand=True),
                     self.account_label,
+                    # On the right, where the connected wallet used to
+                    # repeat the network name back at you.
+                    self.chain_picker,
                     self.connect_button,
                     self.theme_button,
                 ],
@@ -195,6 +201,9 @@ class CurveApp:
 
     def _chain_changed(self, _e: ft.ControlEvent) -> None:
         self.chain = self.chain_picker.value or DEFAULT_CHAIN
+        # The closed field carries the selected network's mark too, not
+        # just the name.
+        self.chain_picker.leading_icon = chain_mark(self.chain)
         self.show_list()
         self.page.run_task(self.load_pools)
 
@@ -245,6 +254,7 @@ class CurveApp:
         if self.chain not in known and ordered:
             self.chain = ordered[0]
             self.chain_picker.value = self.chain
+        self.chain_picker.leading_icon = chain_mark(self.chain)
 
     # -- navigation -------------------------------------------------------
 
@@ -286,7 +296,8 @@ class CurveApp:
 
         self.wallet.on_change(lambda: self.page.run_task(self._wallet_changed))
         self.wallet.on_disconnect(lambda: self.page.run_task(self._wallet_gone))
-        self.account_label.value = f"{self.wallet.short_address} · {self.wallet.chain.name}"
+        self.account_label.value = self.wallet.short_address
+        self.account_label.tooltip = self.wallet.chain.name
         self.connect_button.visible = False
         self.page.update()
         if self._detail is not None:
@@ -295,7 +306,8 @@ class CurveApp:
     async def _wallet_changed(self) -> None:
         if self.wallet is None:
             return
-        self.account_label.value = f"{self.wallet.short_address} · {self.wallet.chain.name}"
+        self.account_label.value = self.wallet.short_address
+        self.account_label.tooltip = self.wallet.chain.name
         self.page.update()
         if self._detail is not None:
             await self._detail.refresh_actions()

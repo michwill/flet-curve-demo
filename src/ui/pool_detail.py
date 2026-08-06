@@ -26,7 +26,7 @@ from curve.models import Pool
 from curve.pool import PoolContract
 
 from .actions import DepositTab, StakeTab, SwapTab, WithdrawTab
-from .logos import pool_stack
+from .logos import pool_stack, token_mark
 from .responsive import Layout, layout_for
 from . import safe_update
 from .candles import CandleChart
@@ -246,16 +246,23 @@ class PoolDetailView(ft.Column):
                     ft.Row(
                         [
                             cell(
-                                ft.Column(
+                                ft.Row(
                                     [
-                                        ft.Text(coin.symbol, size=13),
-                                        ft.Text(
-                                            short_address(coin.address),
-                                            size=10,
-                                            color=ft.Colors.ON_SURFACE_VARIANT,
+                                        token_mark(coin, self.pool.chain, 22),
+                                        ft.Column(
+                                            [
+                                                ft.Text(coin.symbol, size=13),
+                                                ft.Text(
+                                                    short_address(coin.address),
+                                                    size=10,
+                                                    color=ft.Colors.ON_SURFACE_VARIANT,
+                                                ),
+                                            ],
+                                            spacing=0,
                                         ),
                                     ],
-                                    spacing=0,
+                                    spacing=8,
+                                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
                                 )
                             ),
                             cell(ft.Text(price(coin.usd_price), size=13), 110, True),

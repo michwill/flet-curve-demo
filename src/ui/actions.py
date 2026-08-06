@@ -31,6 +31,8 @@ from curve.format import token_amount, units_to_float
 from curve.models import Pool
 from curve.pool import PoolContract
 from wallet.base import WalletError
+
+from .logos import pool_stack, token_mark
 from wallet.erc20 import format_units, parse_units
 
 #: Default tolerance. Curve shows 0.03% on pegged stable pools, but this app
@@ -180,8 +182,57 @@ class ActionTab:
         self.submit_button.disabled = pending is not None
 
 
-def _amount_field(label: str, on_change) -> ft.TextField:
-    return ft.TextField(label=label, hint_text="0.0", dense=True, on_change=on_change)
+def _amount_field(label: str, on_change, mark: ft.Control | None = None) -> ft.TextField:
+    """An amount input, with the token's mark in front of it.
+
+    `prefix_icon`, not `prefix`: Material only reveals a `prefix` once the
+    field is focused or has text, so a logo put there is invisible exactly
+    when it is most useful -- before you have typed anything.
+
+    The slot is sized from the mark itself, because an LP field's mark is a
+    stack of every coin in the pool and would otherwise be clipped to the
+    width of one.
+    """
+    constraints = None
+    if mark is not None:
+        width = (getattr(mark, "width", None) or 20) + 16
+        # Material gives the icon slot no inset of its own, so a wide mark
+        # ends up flush against the field's border. The padding is part of
+        # the mark rather than the constraint because the constraint only
+        # reserves space -- it does not move anything.
+        height = (getattr(mark, "height", None) or 20) + 12
+        mark = ft.Container(
+            mark,
+            width=width,
+            height=height,
+            padding=ft.Padding.only(left=10),
+            alignment=ft.Alignment.CENTER_LEFT,
+        )
+        constraints = ft.BoxConstraints(min_width=width, min_height=height)
+    return ft.TextField(
+        label=label,
+        hint_text="0.0",
+        dense=True,
+        on_change=on_change,
+        prefix_icon=mark,
+        prefix_icon_size_constraints=constraints,
+    )
+
+
+def _coin_options(coins, chain: str) -> list[ft.DropdownOption]:
+    """Dropdown entries carrying each coin's mark beside its symbol."""
+    return [
+        ft.DropdownOption(
+            key=str(index),
+            text=coin.symbol,
+            content=ft.Row(
+                [token_mark(coin, chain, 18), ft.Text(coin.symbol, size=13)],
+                spacing=8,
+                tight=True,
+            ),
+        )
+        for index, coin in enumerate(coins)
+    ]
 
 
 class DepositTab(ActionTab):
@@ -200,7 +251,9 @@ class DepositTab(ActionTab):
     def build(self) -> list[ft.Control]:
         rows: list[ft.Control] = []
         for coin in self.pool.pool_coins:
-            field = _amount_field(coin.symbol, self._changed)
+            field = _amount_field(
+                coin.symbol, self._changed, token_mark(coin, self.pool.chain, 20)
+            )
             label = ft.Text("", size=11, color=ft.Colors.ON_SURFACE_VARIANT)
             self.fields.append(field)
             self.balance_labels.append(label)
@@ -281,7 +334,10 @@ class WithdrawTab(ActionTab):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.lp_balance = 0
-        self.amount = _amount_field("LP tokens", self._changed)
+        # An LP token has no logo of its own; Curve draws the pool's coins.
+        self.amount = _amount_field(
+            "LP tokens", self._changed, pool_stack(self.pool, 18, limit=4)
+        )
         self.lp_label = ft.Text("", size=11, color=ft.Colors.ON_SURFACE_VARIANT)
         self.mode = ft.RadioGroup(
             value="balanced",
@@ -295,13 +351,13 @@ class WithdrawTab(ActionTab):
         )
         self.coin_picker = ft.Dropdown(
             label="Receive",
-            options=[
-                ft.DropdownOption(key=str(i), text=c.symbol)
-                for i, c in enumerate(self.pool.pool_coins)
-            ],
+            options=_coin_options(self.pool.pool_coins, self.pool.chain),
             value="0",
             dense=True,
             visible=False,
+            leading_icon=token_mark(self.pool.pool_coins[0], self.pool.chain, 20)
+            if self.pool.pool_coins
+            else None,
             on_select=self._changed,
         )
 
@@ -319,6 +375,10 @@ class WithdrawTab(ActionTab):
 
     def _changed(self, _e: ft.ControlEvent) -> None:
         self.coin_picker.visible = self.mode.value == "one"
+        coins = self.pool.pool_coins
+        index = self._coin_index()
+        if 0 <= index < len(coins):
+            self.coin_picker.leading_icon = token_mark(coins[index], self.pool.chain, 20)
         self.page.run_task(self.refresh)
 
     def _lp_amount(self) -> int:
@@ -374,17 +434,26 @@ class WithdrawTab(ActionTab):
             return await contract.remove_liquidity_one_coin(
                 amount, index, self.with_slippage(expected)
             )
-        # Balanced withdrawal: the floor is each coin's share of the pool,
-        # taken from the reserves the API already gave us, minus slippage.
-        # A zero floor would be simpler and is what many UIs send, but it
-        # offers no protection at all against a sandwich.
-        total_supply = sum(c.balance for c in self.pool.pool_coins)
-        min_amounts = []
-        for coin in self.pool.pool_coins:
-            share = 0
-            if self.lp_balance and total_supply:
-                share = coin.pool_balance * amount // max(total_supply, 1)
-            min_amounts.append(self.with_slippage(share) if share else 0)
+        # Balanced withdrawal: the floor is this LP amount's share of each
+        # reserve, minus slippage. A zero floor would be simpler and is what
+        # many UIs send, but it offers no protection at all against a
+        # sandwich.
+        #
+        # The reserves come from the API (already scaled to human numbers)
+        # and the divisor from the LP token on chain, because the pool's own
+        # `balances` getter is `int128` on old pools and `uint256` on new
+        # ones -- the same ABI split as the coin indices. Stale reserves only
+        # matter to the extent they exceed the slippage tolerance.
+        min_amounts = [0] * self.pool.n_coins
+        try:
+            supply = await contract.lp_total_supply()
+        except WalletError:
+            supply = 0
+        if supply > 0:
+            for index, coin in enumerate(self.pool.pool_coins):
+                reserve = int(coin.balance * 10**coin.decimals)
+                share = reserve * amount // supply
+                min_amounts[index] = self.with_slippage(share) if share else 0
         return await contract.remove_liquidity(amount, min_amounts)
 
 
@@ -398,27 +467,29 @@ class SwapTab(ActionTab):
         super().__init__(*args, **kwargs)
         self.balance = 0
         self._expected_out = 0
-        options = [
-            ft.DropdownOption(key=str(i), text=c.symbol)
-            for i, c in enumerate(self.pool.pool_coins)
-        ]
+        coins = self.pool.pool_coins
         self.from_coin = ft.Dropdown(
             label="From",
-            options=list(options),
+            options=_coin_options(coins, self.pool.chain),
             value="0",
             dense=True,
             expand=True,
+            leading_icon=self._mark(0),
             on_select=self._changed,
         )
+        to_index = 1 if self.pool.n_coins > 1 else 0
         self.to_coin = ft.Dropdown(
             label="To",
-            options=list(options),
-            value="1" if self.pool.n_coins > 1 else "0",
+            options=_coin_options(coins, self.pool.chain),
+            value=str(to_index),
             dense=True,
             expand=True,
+            leading_icon=self._mark(to_index),
             on_select=self._changed,
         )
-        self.amount = _amount_field("Amount", self._changed)
+        # The amount is denominated in whatever "From" currently is, so its
+        # mark follows the dropdown rather than being fixed at build time.
+        self.amount = _amount_field("Amount", self._changed, self._mark(0))
         self.balance_label = ft.Text("", size=11, color=ft.Colors.ON_SURFACE_VARIANT)
 
     def build(self) -> list[ft.Control]:
@@ -441,7 +512,19 @@ class SwapTab(ActionTab):
         except (ValueError, IndexError):
             return 0
 
+    def _mark(self, index: int, size: float = 20) -> ft.Control | None:
+        """The mark for coin `index`, or None when there is no such coin."""
+        coins = self.pool.pool_coins
+        if not 0 <= index < len(coins):
+            return None
+        return token_mark(coins[index], self.pool.chain, size)
+
     def _changed(self, _e: ft.ControlEvent) -> None:
+        i, j = self._indices()
+        # A control cannot be mounted twice, so each side gets its own mark.
+        self.from_coin.leading_icon = self._mark(i)
+        self.to_coin.leading_icon = self._mark(j)
+        self.amount.prefix_icon = self._mark(i)
         self.page.run_task(self.refresh)
 
     async def refresh(self) -> None:
@@ -513,7 +596,9 @@ class StakeTab(ActionTab):
         super().__init__(*args, **kwargs)
         self.lp_balance = 0
         self.staked = 0
-        self.amount = _amount_field("LP tokens", self._changed)
+        self.amount = _amount_field(
+            "LP tokens", self._changed, pool_stack(self.pool, 18, limit=4)
+        )
         self.balances_label = ft.Text("", size=11, color=ft.Colors.ON_SURFACE_VARIANT)
         self.direction = ft.RadioGroup(
             value="stake",

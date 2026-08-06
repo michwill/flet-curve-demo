@@ -109,6 +109,17 @@ def encode_allowance(owner: str, spender: str) -> str:
     return _call("allowance(address,address)", _address(owner), _address(spender))
 
 
+def encode_total_supply() -> str:
+    """LP tokens outstanding -- the denominator of a pool share.
+
+    Read from the LP token rather than the pool, even though on newer pools
+    they are the same contract: `totalSupply()` is ERC-20 and unambiguous,
+    while the pool's own `balances` getter is declared `int128` on the old
+    registry pools and `uint256` on the new ones.
+    """
+    return _call("totalSupply()")
+
+
 # -- swapping --------------------------------------------------------------
 
 

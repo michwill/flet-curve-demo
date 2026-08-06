@@ -320,13 +320,29 @@ middle 78%, because those get cropped to a circle or a squircle and iOS
 composites transparency onto black.
 
 **Seeing the favicon.** `flet publish` from the repo root, then
-`python tools/serve.py 8033`. If the tab still shows Flet's pink fish, that is
-not the build — browsers keep favicons in a store of their own, keyed by URL
-and entirely separate from the page cache, so `Cache-Control: no-store` does
-nothing for it and neither does a hard reload. `index.html` asks for
-`favicon.png?v=1` for exactly that reason; bump the number when the mark
-changes. `curl -s localhost:8033/favicon.png | cmp - src/assets/favicon.png`
-settles what is actually being served.
+`python tools/serve.py 8033`.
+
+It did not show up at first, and the reason is worth keeping. The file was
+built, copied and served correctly — `/favicon.png` returned it on demand —
+but the tab stayed blank because **the link tag was not in `<head>`**. The
+comment at the top of `index.html` explains which markers `patch_index.py`
+rewrites, and it spelled out an HTML comment terminator while warning against
+writing one. The browser ended the comment there, found bare prose inside
+`<head>`, and did what the parser is specified to do: implicitly closed the
+head and opened the body. The base tag, the title, the manifest link and both
+icon links landed in `<body>`, where a favicon link is ignored — so Chrome fell
+back to `/favicon.ico`, got a 404, and drew nothing.
+
+Nothing looks wrong from the outside: the file reads correctly, the icon is
+served correctly, and `document.querySelector('link[rel=icon]')` finds it.
+`document.head.children` is what gives it away, and
+`tests/test_index_html.py` now parses the file the way a browser does and fails
+on any bare text inside the head.
+
+The URL carries a `?v=1` as well, since browsers keep favicons in a store keyed
+by URL that no cache header reaches; bump it when the mark changes. There is a
+real `favicon.ico` too, for the path every browser probes before reading the
+link.
 
 **Seeing it on the desktop.** `flet run` gets it too, on X11: the Flutter host
 sets no `_NET_WM_ICON` at all and Flet's own `window.icon` is Windows-only, so

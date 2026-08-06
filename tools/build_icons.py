@@ -99,6 +99,7 @@ def main() -> int:
 
     print("Rendering the Curve mark:")
     write(render(32), ASSETS / "favicon.png")
+    write_ico(ASSETS / "favicon.ico")
     write(render(1024), ASSETS / "icon.png")
     for size in (192, 512):
         write(render(size), ASSETS / "icons" / f"icon-{size}.png")
@@ -107,6 +108,18 @@ def main() -> int:
     write_x11_icon(ASSETS / "window_icon.argb")
     print("These overwrite Flet's defaults on `flet publish` and `flet build`.")
     return 0
+
+
+def write_ico(path: Path) -> None:
+    """A real `favicon.ico`, for the path browsers probe on their own.
+
+    The link tag is what a modern browser uses, but every one of them
+    still asks for `/favicon.ico` first, and answering that with a 404 is
+    the sort of thing that looks like a broken build in a network log.
+    """
+    icon = render(48)
+    icon.save(path, "ICO", sizes=[(16, 16), (32, 32), (48, 48)])
+    print(f"  {path.relative_to(ROOT)}  16/32/48px  {path.stat().st_size:,} B")
 
 
 #: Sizes for the X11 window icon. A window manager picks whichever is
@@ -134,7 +147,9 @@ def write_x11_icon(path: Path) -> None:
     for size in X11_SIZES:
         image = render(size)
         words += [size, size]
-        for r, g, b, a in image.getdata():
+        raw = image.tobytes()  # RGBA, row-major, no padding
+        for offset in range(0, len(raw), 4):
+            r, g, b, a = raw[offset : offset + 4]
             words.append((a << 24) | (r << 16) | (g << 8) | b)
     path.write_bytes(struct.pack(f"<{len(words)}I", *words))
     print(f"  {path.relative_to(ROOT)}  {'/'.join(map(str, X11_SIZES))}px  "

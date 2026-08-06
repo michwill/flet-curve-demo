@@ -16,7 +16,16 @@
 
     Do not write either marker literally in a comment: the patcher does a
     plain string replace over the whole file, so a mention in prose gets
-    substituted too, and an injected "-->" would then end the comment early.
+    substituted too, and an injected comment terminator would end this
+    comment early.
+
+    Nor write a comment terminator here in any other way, which is not a
+    hypothetical: this comment used to spell one out while warning against
+    it. The browser ended the comment there, found bare text inside HEAD,
+    and implicitly closed HEAD -- which put the base tag, the title and
+    the icon links in BODY, where a favicon link is ignored. The tab fell
+    back to /favicon.ico and got a 404. Everything looked right in the
+    file and in the DOM; only `document.head.children` gave it away.
     Everything else here is ordinary HTML.
   -->
   <base href="/">

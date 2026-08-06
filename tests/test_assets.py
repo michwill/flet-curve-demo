@@ -313,6 +313,14 @@ def test_a_cropped_icon_is_opaque_and_inside_its_safe_zone(name: str) -> None:
             assert image.getpixel(point)[:3] == (255, 255, 255)
 
 
+def test_there_is_an_ico_for_the_path_browsers_probe() -> None:
+    """Every browser asks for `/favicon.ico` before reading the link tag,
+    and `flet publish` ships no such file."""
+    path = ICONS / "favicon.ico"
+    assert path.is_file(), "missing -- run tools/build_icons.py"
+    assert path.read_bytes()[:4] == b"\x00\x00\x01\x00", "not an ICO"
+
+
 def test_the_favicon_is_not_flets_default() -> None:
     """The whole point: `flet publish` ships its own favicon.png, and ours
     only wins by being copied over it."""

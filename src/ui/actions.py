@@ -61,28 +61,28 @@ _NOT_READ = object()
 #: the quote and the block.
 SLIPPAGE_OF_FEE = 0.2
 
-#: The deposit and withdrawal side, as `a * fee + b`. Both constants come
-#: from running the deposit on a fork of mainnet and seeing what reverts.
+#: The deposit and withdrawal side, as `a * fee + b`, fitted to what real
+#: deposits need: 88 measurements over 44 mainnet pools, run on a fork
+#: through titanoboa, bisecting `min_mint` until `add_liquidity` stops
+#: reverting.
 #:
-#: `a` -- the modern implementations charge the imbalance fee inside
-#: `calc_token_amount`, so they mint exactly the quote and need nothing:
-#: crvUSD/USDT, crvUSD/USDC, PayPool, USDG/USDC, Strategic USD Reserves,
-#: TricryptoUSDC and tricrypto2 all came in at 0.00000% short, at sizes
-#: from 0.001% to 10% of the pool. The old StableSwap pools do not charge
-#: it in the estimate, and there the mint lands below the quote by
-#: 0.91x the fee (cvxCrv/Crv), 0.90x (sdCRV/CRV), 0.63x (3pool), 0.13x
-#: (alETH/frxETH) and 0.05x (msETH/WETH) -- the spread is how imbalanced
-#: each pool already is, and the ceiling for a two-coin pool is one whole
-#: fee. So: a whole fee for the implementations that need it, nothing for
-#: the ones that do not, decided per pool by `estimate_is_exact`.
+#: `a = 1` is the tightest slope that covers every pool. What binds it is
+#: the old StableSwap implementations, whose `calc_token_amount` quotes
+#: fee-free so the mint lands short: cvxCrv/Crv by 0.91x its fee, 3pool by
+#: 0.63x, alETH/frxETH by 0.13x, msETH/WETH by 0.05x -- the spread is how
+#: imbalanced each pool already is, and one whole fee is the ceiling for a
+#: two-coin pool. Everything modern (crvusd, stableswap-ng, tricrypto-ng,
+#: twocrypto-ng, the old crypto pools) mints *exactly* the quote at every
+#: size from 0.01% to 1% of the pool, so for those this is pure margin --
+#: which is also what covers an implementation this app has never seen.
 ESTIMATE_FEE_SHARE = 1.0
 
-#: `b` -- what a quote costs by being a few blocks old, which no fee
-#: predicts. Measured the same way: quote at an earlier block, deposit at
-#: the head, bisect the tolerance that survives. Beyond the estimator's own
-#: shortfall it took at most 0.0173% (TricryptoUSDC, quote three blocks
-#: stale) and usually under 0.0012%, across gaps from one block to a
-#: hundred. Two hundredths of a percent covers the worst of that.
+#: `b` is the part no fee predicts: a quote goes stale between signing and
+#: landing. The fork cannot see that -- it quotes and deposits in one state
+#: -- so it was measured against the chain instead, by quoting at an
+#: earlier block and depositing at the head. Beyond the estimator's own
+#: shortfall that cost at most 0.0173% (TricryptoUSDC, three blocks stale)
+#: and usually under 0.0012%, over gaps from one block to a hundred.
 QUOTE_DRIFT = 0.02
 
 
@@ -122,14 +122,10 @@ class ActionTab:
     #: moves LP tokens into a gauge at no rate at all -- so showing a
     #: tolerance there invites someone to tune a number that does nothing.
     uses_slippage = True
-    #: What the tolerance adds on top of the drift allowance. Zero when the
-    #: pool's own quote is exact; a swap overrides the whole rule, because
-    #: `get_dy` is exact everywhere.
+    #: `a` and `b` for this action. Deposits and withdrawals are quoted by
+    #: `calc_token_amount`, which some implementations compute fee-free.
+    fee_multiple = ESTIMATE_FEE_SHARE
     slippage_constant = QUOTE_DRIFT
-
-    @property
-    def fee_multiple(self) -> float:
-        return 0.0 if self.pool.estimate_is_exact else ESTIMATE_FEE_SHARE
 
     def __init__(
         self,
@@ -678,14 +674,10 @@ class SwapTab(ActionTab):
 
     title = "Swap"
     submit_label = "Swap"
-    #: `get_dy` is exact -- it is the same maths the swap itself runs, fee
-    #: included -- on every implementation, so there is no estimator error
-    #: to give back and no need to ask which pool this is.
+    #: `get_dy` is exact -- the same maths the swap itself runs, fee
+    #: included -- so there is no estimator error to give back.
+    fee_multiple = SLIPPAGE_OF_FEE
     slippage_constant = 0.0
-
-    @property
-    def fee_multiple(self) -> float:
-        return SLIPPAGE_OF_FEE
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)

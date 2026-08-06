@@ -115,29 +115,35 @@ because a transaction gets no second attempt. An unknown future factory is
 therefore handled by asking rather than by guessing.
 
 The estimates are not equally trustworthy, either, so the slippage default
-is `a * fee + b` -- and both constants were measured by running deposits on
-a fork of mainnet (titanoboa) and seeing which ones revert, rather than by
-reasoning about the contracts.
+is `a * fee + b` -- fitted to 88 deposits run on a **fork of mainnet**
+(titanoboa) across 44 pools, bisecting `min_mint` until `add_liquidity`
+stopped reverting:
 
-- **`get_dy` is exact** -- the maths the swap itself runs, fee included -- so
-  a swap allows `0.2 * fee` and nothing more.
-- **`calc_token_amount` is exact on the modern pools.** crvUSD/USDT,
-  crvUSD/USDC, PayPool, USDG/USDC, Strategic USD Reserves, TricryptoUSDC and
-  tricrypto2 all mint *exactly* the quote, at sizes from 0.001% to 10% of
-  the pool, so `min_mint` = the quote goes through untouched.
-- **The old StableSwap pools quote fee-free**, and the mint lands short by
-  0.91x the fee (cvxCrv/Crv), 0.90x (sdCRV/CRV), 0.63x (3pool), 0.13x
-  (alETH/frxETH), 0.05x (msETH/WETH) -- the spread is how imbalanced each
-  pool already is, and one whole fee is the ceiling for a two-coin pool.
-  So `a` is one fee for those (and for any implementation this app does not
-  recognise), zero for the rest.
-- **`b = 0.02%` is staleness**, which no fee predicts: quoting at an earlier
-  block and depositing at the head costs at most a further 0.0173%
-  (TricryptoUSDC, three blocks stale) and usually under 0.0012%, over gaps
-  from one block to a hundred.
+- **`get_dy` is exact** -- the maths the swap itself runs, fee included --
+  so a swap allows `0.2 * fee` and nothing more.
+- **`a = 1`** is the tightest slope that covers every pool. What binds it is
+  the old StableSwap implementations, which quote fee-free: cvxCrv/Crv
+  mints 0.91x its fee below the quote, sdCRV/CRV 0.90x, 3pool 0.63x,
+  alETH/frxETH 0.13x, msETH/WETH 0.05x. The spread is how imbalanced each
+  pool already is; one whole fee is the ceiling for a two-coin pool.
+  Everything modern -- crvusd, stableswap-ng, tricrypto-ng, twocrypto-ng,
+  the old crypto pools -- mints *exactly* the quote at every size tried, so
+  there the fee term is margin, which is also what covers an implementation
+  this app has never seen.
+- **`b = 0.02%`** is the part no fee predicts: a quote going stale between
+  signing and landing. A fork cannot show that (it quotes and deposits in
+  one state), so it was measured against the chain -- quote at an earlier
+  block, deposit at the head -- and cost at most a further 0.0173%
+  (TricryptoUSDC, three blocks stale), usually under 0.0012%.
 
-Which lands at 0.035% to deposit into 3pool and 0.003% to swap in it, and
-0.02% / 0.0093% for TricryptoUSDC, whose quote needs no correction at all.
+Which lands at 0.035% to deposit into 3pool and 0.003% to swap in it; 0.17%
+and 0.03% for cvxCrv/Crv, whose fee is 0.15%.
+
+A caveat about measuring this yourself: `boa.deal` on a share-based token
+moves its exchange rate, and the pool prices deposits through that rate. A
+quote taken *before* funding therefore measures the harness, not the pool.
+It made four pools look like they under-minted by up to 30x their fee;
+quoting after funding, they are exact.
 
 ## Reading Curve
 

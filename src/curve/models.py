@@ -54,31 +54,6 @@ DYNAMIC_ARRAY_TYPES = frozenset(
     }
 )
 
-#: Implementations whose `calc_token_amount` charges the imbalance fee the
-#: deposit will really pay, so the quote is exact.
-#:
-#: Measured by depositing on a fork of mainnet and comparing the mint with
-#: the quote: crvUSD/USDT and crvUSD/USDC (crvusd), PayPool, USDG/USDC and
-#: Strategic USD Reserves (stableswap-ng), TricryptoUSDC (tricrypto-ng) and
-#: tricrypto2 (crypto) all mint *exactly* the quoted amount, at every size
-#: from 0.001% to 10% of the pool.
-#:
-#: The old StableSwap pools do not, and the shortfall is what a min_mint
-#: has to give back: cvxCrv/Crv 0.91x its fee, sdCRV/CRV 0.90x, 3pool
-#: 0.63x, alETH/frxETH 0.13x, msETH/WETH 0.05x -- the spread is how
-#: imbalanced each pool already is. An implementation this app has not
-#: heard of is assumed to be in this group, because being wrong the other
-#: way means a transaction that reverts.
-EXACT_ESTIMATE_TYPES = frozenset(
-    {
-        "stableswapng", "factory-stable-ng",
-        "crvusd", "factory-crvusd",
-        "crypto", "factory_crypto", "factory-crypto",
-        "factory_tricrypto", "factory-tricrypto",
-        "twocryptong", "factory-twocrypto",
-    }
-)
-
 #: Pool types using the CryptoSwap ABI: `uint256` coin indices.
 CRYPTO_POOL_TYPES = frozenset(
     {
@@ -250,11 +225,6 @@ class Pool:
         if self.observed_dynamic is not None:
             return self.observed_dynamic
         return (self.registry or "").lower() in DYNAMIC_ARRAY_TYPES
-
-    @property
-    def estimate_is_exact(self) -> bool:
-        """Does `calc_token_amount` charge what the deposit will be charged?"""
-        return (self.registry or "").lower() in EXACT_ESTIMATE_TYPES
 
     @property
     def pool_coins(self) -> list[Coin]:

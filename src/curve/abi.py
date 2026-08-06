@@ -199,6 +199,43 @@ def encode_exchange(i: int, j: int, dx: int, min_dy: int, *, stableswap: bool) -
     )
 
 
+def encode_get_dy_underlying(i: int, j: int, dx: int, *, stableswap: bool) -> str:
+    """Quote a swap between two *underlying* coins of a metapool.
+
+    A metapool holds its own coin and the base pool's LP token, but it can
+    swap anything in the base pool for its own coin in one call: it does
+    the base-pool leg itself. No zap, no approval to anything but the pool
+    -- which is why this route exists on every chain, including the ones
+    with no zap deployed at all.
+
+    Indices are into the *underlying* list -- the metapool's coin, then the
+    base pool's -- rather than the two the contract holds.
+    """
+    return _call(
+        "get_dy_underlying(int128,int128,uint256)"
+        if stableswap
+        else "get_dy_underlying(uint256,uint256,uint256)",
+        _index(i, stableswap=stableswap),
+        _index(j, stableswap=stableswap),
+        _uint(dx),
+    )
+
+
+def encode_exchange_underlying(
+    i: int, j: int, dx: int, min_dy: int, *, stableswap: bool
+) -> str:
+    """The swap `get_dy_underlying` quotes."""
+    return _call(
+        "exchange_underlying(int128,int128,uint256,uint256)"
+        if stableswap
+        else "exchange_underlying(uint256,uint256,uint256,uint256)",
+        _index(i, stableswap=stableswap),
+        _index(j, stableswap=stableswap),
+        _uint(dx),
+        _uint(min_dy),
+    )
+
+
 # -- depositing ------------------------------------------------------------
 
 

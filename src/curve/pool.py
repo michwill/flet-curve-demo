@@ -81,6 +81,21 @@ class PoolContract:
             "the exchange rate",
         )
 
+    async def get_dy_underlying(self, i: int, j: int, dx: int) -> int:
+        """Quote a swap between two of a metapool's underlying coins.
+
+        The metapool does the base-pool leg itself, so this needs no zap
+        and no approval to anything but the pool -- which is why the
+        underlying *swap* works on chains where no zap was ever deployed.
+        """
+        if dx <= 0:
+            return 0
+        return await self._read(
+            self.pool.address,
+            abi.encode_get_dy_underlying(i, j, dx, stableswap=self.pool.is_stableswap),
+            "the exchange rate",
+        )
+
     async def calc_token_amount(self, amounts: list[int], *, deposit: bool = True) -> int:
         """Estimate LP tokens minted (or burned) for a set of coin amounts.
 
@@ -301,6 +316,14 @@ class PoolContract:
         return await self._send(
             self.pool.address,
             abi.encode_exchange(i, j, dx, min_dy, stableswap=self.pool.is_stableswap),
+        )
+
+    async def exchange_underlying(self, i: int, j: int, dx: int, min_dy: int) -> str:
+        return await self._send(
+            self.pool.address,
+            abi.encode_exchange_underlying(
+                i, j, dx, min_dy, stableswap=self.pool.is_stableswap
+            ),
         )
 
     async def add_liquidity(self, amounts: list[int], min_mint: int) -> str:

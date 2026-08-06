@@ -6,11 +6,16 @@ two-coin metapool reports four. `add_liquidity` takes a `uint256[N]` whose
 N is part of the function signature, so building it from the decomposed
 list is calldata for a function the pool does not have.
 
-The one exception is the zap route, which exists precisely to take the
-decomposed list -- see `curve.zaps`. A metapool with a zap offers both, and
-the panel keeps a set of fields for each: which one is live decides the
-coins, the spender that gets approved, the contract the transaction goes
-to, and the fee the slippage suggestion comes from.
+The exceptions are the two underlying routes, which exist precisely to
+take the decomposed list. Depositing and withdrawing them needs a zap --
+see `curve.zaps` -- and each panel keeps a set of fields per route: which
+one is live decides the coins, the spender that gets approved, the
+contract the transaction goes to, and the fee the slippage comes from.
+
+**Swapping them needs nothing.** A metapool does the base-pool leg itself
+through `exchange_underlying`, so that route approves the pool like any
+other swap and works on every chain, including the ones where no zap was
+ever deployed.
 
 Each tab is the same shape -- read some balances, quote the result on
 chain, then submit -- so the shared parts (the approve step, the status
@@ -1044,7 +1049,15 @@ class SwapTab(ActionTab):
         super().__init__(*args, **kwargs)
         self.balance = 0
         self._expected_out = 0
-        coins = self.pool.pool_coins
+        # A metapool can swap its underlying coins itself -- it does the
+        # base-pool leg internally -- so unlike depositing, this route
+        # needs no zap and approves nothing but the pool. That is why it
+        # is offered on chains where no zap was ever deployed.
+        self.route = _route_picker(
+            self._route_changed, underlying=self.pool.has_underlying
+        )
+        self.route.visible = self.pool.has_underlying
+        coins = self.coins
         self.from_coin = ft.Dropdown(
             label="From",
             options=_coin_options(coins, self.pool.chain),
@@ -1071,8 +1084,26 @@ class SwapTab(ActionTab):
         )
         self.balance_label = ft.Text("", size=LABEL, color=ft.Colors.ON_SURFACE_VARIANT)
 
+    @property
+    def underlying(self) -> bool:
+        return self.pool.has_underlying and self.route.value == "underlying"
+
+    @property
+    def coins(self) -> list:
+        return self.pool.display_coins if self.underlying else self.pool.pool_coins
+
+    def _route_changed(self, _e: ft.ControlEvent) -> None:
+        """Swap both coin lists, and start from the top of the new one."""
+        options = _coin_options(self.coins, self.pool.chain)
+        self.from_coin.options = options
+        self.to_coin.options = _coin_options(self.coins, self.pool.chain)
+        self.from_coin.value = "0"
+        self.to_coin.value = "1" if len(self.coins) > 1 else "0"
+        self._changed(None)
+
     def build(self) -> list[ft.Control]:
         return [
+            self.route,
             ft.Row([self.from_coin, self.to_coin], spacing=8),
             _stacked(self.amount, self.balance_label),
         ]
@@ -1085,19 +1116,30 @@ class SwapTab(ActionTab):
 
     def summary(self) -> str:
         i, j = self._indices()
-        coins = self.pool.pool_coins
+        coins = self.coins
         dx = self._dx()
         if dx <= 0 or i >= len(coins) or j >= len(coins):
             return ""
         return f"{self.amount_label(coins[i].address, dx)} for {coins[j].symbol}"
 
     async def fee_units(self, contract: PoolContract) -> int:
-        """StableSwap-NG charges per pair, so ask about *this* pair."""
+        """StableSwap-NG charges per pair, so ask about *this* pair.
+
+        Not on the underlying route: those indices are into a list the
+        pool does not price pairs for, and the trade crosses both pools
+        anyway, so it is charged both fees.
+        """
         i, j = self._indices()
-        return await contract.pair_fee(i, j)
+        if not self.underlying:
+            return await contract.pair_fee(i, j)
+        fee = await contract.fee()
+        try:
+            return fee + await contract.base_fee()
+        except WalletError:
+            return fee
 
     def fee_key(self) -> object:
-        return self._indices()
+        return (self.route.value, *self._indices())
 
     def clear_inputs(self) -> None:
         self.amount.value = ""
@@ -1106,14 +1148,14 @@ class SwapTab(ActionTab):
         i, _ = self._indices()
         text = (self.amount.value or "").strip()
         try:
-            return parse_units(text, self.pool.pool_coins[i].decimals) if text else 0
+            return parse_units(text, self.coins[i].decimals) if text else 0
         except (ValueError, IndexError):
             return 0
 
     def _max(self, _e: ft.ControlEvent) -> None:
         """Sell the whole balance of whichever coin is selected."""
         i, _ = self._indices()
-        coin = self.pool.pool_coins[i]
+        coin = self.coins[i]
         self.amount.value = format_units(
             self.balance, coin.decimals, precision=coin.decimals
         )
@@ -1121,7 +1163,7 @@ class SwapTab(ActionTab):
 
     def _mark(self, index: int, size: float = 20) -> ft.Control | None:
         """The mark for coin `index`, or None when there is no such coin."""
-        coins = self.pool.pool_coins
+        coins = self.coins
         if not 0 <= index < len(coins):
             return None
         return token_mark(coins[index], self.pool.chain, size)
@@ -1142,10 +1184,10 @@ class SwapTab(ActionTab):
 
         if contract is not None:
             try:
-                self.balance = await contract.balance_of(self.pool.pool_coins[i].address)
+                self.balance = await contract.balance_of(self.coins[i].address)
                 self.balance_label.value = (
-                    f"Balance: {format_units(self.balance, self.pool.pool_coins[i].decimals)}"
-                    f" {self.pool.pool_coins[i].symbol}"
+                    f"Balance: {format_units(self.balance, self.coins[i].decimals)}"
+                    f" {self.coins[i].symbol}"
                 )
             except WalletError:
                 self.balance_label.value = ""
@@ -1156,8 +1198,12 @@ class SwapTab(ActionTab):
             self.estimate.value = "Pick two different coins."
         elif contract is not None and dx > 0:
             try:
-                self._expected_out = await contract.get_dy(i, j, dx)
-                out_coin = self.pool.pool_coins[j]
+                self._expected_out = await (
+                    contract.get_dy_underlying(i, j, dx)
+                    if self.underlying
+                    else contract.get_dy(i, j, dx)
+                )
+                out_coin = self.coins[j]
                 self.estimate.value = (
                     f"~ {token_amount(units_to_float(self._expected_out, out_coin.decimals))}"
                     f" {out_coin.symbol}"
@@ -1176,7 +1222,7 @@ class SwapTab(ActionTab):
         dx = self._dx()
         if dx <= 0:
             return None
-        coin = self.pool.pool_coins[i]
+        coin = self.coins[i]
         allowance = await contract.allowance(coin.address, self.pool.address)
         if allowance < dx:
             self.approve_button.content = f"1. Approve {coin.symbol}"
@@ -1190,6 +1236,11 @@ class SwapTab(ActionTab):
             raise WalletError("Pick two different coins.")
         if dx <= 0:
             raise WalletError("Enter an amount to swap.")
+        if self.underlying:
+            expected = await contract.get_dy_underlying(i, j, dx)
+            return await contract.exchange_underlying(
+                i, j, dx, self.with_slippage(expected)
+            )
         expected = await contract.get_dy(i, j, dx)
         return await contract.exchange(i, j, dx, self.with_slippage(expected))
 

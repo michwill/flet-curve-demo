@@ -529,3 +529,157 @@ def test_a_pool_without_a_zap_hides_the_withdraw_route_picker() -> None:
     tab, _ = withdraw_tab(plain)
     assert tab.route.visible is False
     assert tab.underlying is False
+
+
+# -- swapping the underlying, without any zap ------------------------------
+#
+# A metapool does the base-pool leg itself, so `exchange_underlying` needs
+# no zap and approves nothing but the pool. That matters well beyond
+# convenience: it is the only underlying route that works on the chains
+# where no zap was ever deployed -- Gnosis's NG metapools have none.
+
+
+def test_underlying_swap_selectors_match_the_deployed_pools() -> None:
+    """Read off mainnet, and both flavours exist for the same reason the
+    plain `get_dy` has two: StableSwap indexes with int128."""
+    assert abi.selector("get_dy_underlying(int128,int128,uint256)") == "07211ef7"
+    assert abi.selector("exchange_underlying(int128,int128,uint256,uint256)") == "a6417ed6"
+    assert abi.selector("get_dy_underlying(uint256,uint256,uint256)") == "85f11d1e"
+    assert (
+        abi.selector("exchange_underlying(uint256,uint256,uint256,uint256)")
+        == "65b2489b"
+    )
+
+
+def test_the_underlying_quote_is_indexed_into_the_underlying_list() -> None:
+    data = abi.encode_get_dy_underlying(2, 0, 10**6, stableswap=True)
+    assert data[:10] == "0x" + abi.selector("get_dy_underlying(int128,int128,uint256)")
+    assert words_of(data) == [2, 0, 10**6]
+
+
+async def test_an_underlying_swap_goes_to_the_pool_itself() -> None:
+    """No zap in sight: the difference from a plain swap is the selector
+    and which coin list the indices count in."""
+    pool = metapool()
+    provider = FakeProvider({"0x07211ef7": word(999 * 10**18)})
+    contract = PoolContract(provider, pool, ACCOUNT)
+
+    assert await contract.get_dy_underlying(1, 0, 10**6) == 999 * 10**18
+    await contract.exchange_underlying(1, 0, 10**6, 5)
+
+    assert provider.sent[-1]["to"] == META
+    assert provider.sent[-1]["data"][:10] == "0x" + abi.selector(
+        "exchange_underlying(int128,int128,uint256,uint256)"
+    )
+
+
+def test_only_a_decomposed_stableswap_metapool_has_underlying() -> None:
+    """Three conditions, and the third is the one that cost a probe: the
+    crypto metapools (EURe/3Crv on Gnosis and the like) have no
+    `get_dy_underlying` at all -- confirmed against the chain -- and route
+    their underlying trades through a zap of their own instead."""
+    assert metapool().has_underlying is True
+
+    plain = metapool()
+    plain.base_pool = ""
+    assert plain.has_underlying is False
+
+    crypto = metapool(registry="crypto")
+    assert crypto.has_underlying is False
+
+    undecomposed = metapool(coins=2)  # a Lite chain sends the two real coins
+    assert undecomposed.has_underlying is False
+
+
+def swap_tab(pool: Pool | None = None, provider: FakeProvider | None = None):
+    from ui.actions import SwapTab
+
+    pool = pool or metapool()
+    provider = provider or FakeProvider({"0x07211ef7": word(999 * 10**18)})
+    contract = PoolContract(provider, pool, ACCOUNT)
+    tab = SwapTab(StubPage(), pool, lambda: contract, None)
+    tab.mount()
+    return tab, provider
+
+
+def test_the_swap_panel_offers_the_underlying_coins_first() -> None:
+    tab, _ = swap_tab()
+    assert tab.route.visible is True
+    assert tab.underlying is True
+    assert [o.text for o in tab.from_coin.options] == ["C0", "C2", "C3"]
+
+    tab.route.value = "pool"
+    tab._route_changed(None)
+
+    assert [o.text for o in tab.from_coin.options] == ["C0", "C1"]
+
+
+def test_a_plain_pool_has_no_swap_route_picker() -> None:
+    plain = metapool()
+    plain.base_pool = ""
+    tab, _ = swap_tab(plain)
+    assert tab.route.visible is False
+    assert tab.underlying is False
+
+
+async def test_the_underlying_route_swaps_through_the_pool() -> None:
+    tab, provider = swap_tab()
+    tab.slippage.value = "1"
+    tab.from_coin.value, tab.to_coin.value = "1", "0"  # a base coin for the meta coin
+    tab.amount.value = "1000"  # C2, six decimals
+
+    await tab.submit(tab.get_contract())
+
+    sent = provider.sent[-1]
+    assert sent["to"] == META
+    i, j, dx, floor = words_of(sent["data"])
+    assert (i, j) == (1, 0)
+    assert dx == 1000 * 10**6
+    assert floor == abi.apply_slippage(999 * 10**18, 1.0)
+
+
+async def test_the_pool_route_still_swaps_the_contract_coins() -> None:
+    tab, provider = swap_tab(provider=FakeProvider({"0x5e0d443f": word(5 * 10**18)}))
+    tab.route.value = "pool"
+    tab._route_changed(None)
+    tab.amount.value = "1000"
+
+    await tab.submit(tab.get_contract())
+
+    assert provider.sent[-1]["data"][:10] == "0x" + abi.selector(
+        "exchange(int128,int128,uint256,uint256)"
+    )
+
+
+async def test_the_underlying_swap_is_approved_to_the_pool_not_a_zap() -> None:
+    tab, _ = swap_tab()
+    tab.amount.value = "1000"
+    pending = await tab.approval_needed(tab.get_contract())
+    assert pending is not None and pending[1] == META
+
+
+async def test_the_underlying_swap_pays_both_pools_fees() -> None:
+    """`dynamic_fee` prices pairs of the *contract's* coins, so it says
+    nothing about an underlying pair -- and the trade crosses both pools."""
+    from ui.actions import SLIPPAGE_OF_FEE
+
+    tab, provider = swap_tab()
+    provider.answers["0xddca3f43"] = word(4_000_000)  # 0.04% on both pools
+
+    await tab.suggest_slippage(tab.get_contract())
+
+    assert float(tab.slippage.value) == pytest.approx(0.08 * SLIPPAGE_OF_FEE)
+
+
+async def test_the_pool_route_asks_about_the_pair() -> None:
+    tab, provider = swap_tab()
+    provider.answers["0x76a9cd3e"] = word(9_999_999)  # dynamic_fee for this pair
+    tab.route.value = "pool"
+
+    await tab.suggest_slippage(tab.get_contract())
+
+    from ui.actions import SLIPPAGE_OF_FEE, slippage_for
+
+    assert float(tab.slippage.value) == pytest.approx(
+        slippage_for(9_999_999, SLIPPAGE_OF_FEE), rel=1e-3
+    )

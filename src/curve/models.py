@@ -307,6 +307,22 @@ class Pool:
         return list(self.coins)
 
     @property
+    def has_underlying(self) -> bool:
+        """Can this pool be swapped in its *underlying* coins?
+
+        Only a metapool has any, and only when the API decomposed the coin
+        list -- which is what tells us what the underlying even are. It is
+        also limited to StableSwap: the crypto metapools (EURe/3Crv and
+        the like) have no `get_dy_underlying` at all, verified on chain,
+        and route their underlying trades through a zap of their own.
+        """
+        return (
+            bool(self.base_pool)
+            and self.is_stableswap
+            and len(self.display_coins) > len(self.pool_coins)
+        )
+
+    @property
     def has_gauge(self) -> bool:
         return bool(self.gauge)
 

@@ -23,16 +23,24 @@
 
   <meta charset="UTF-8">
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
-  <meta name="description" content="Send tokens from a Flet app in Python.">
+  <meta name="description" content="An alternative Curve Finance UI built with Flet.">
 
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black">
-  <meta name="apple-mobile-web-app-title" content="Flet Pay">
+  <meta name="apple-mobile-web-app-title" content="Curve">
   <link rel="apple-touch-icon" href="icons/apple-touch-icon-192.png">
 
+  <!-- Both files come from src/assets, which `flet publish` copies over
+       the generated web root after Flet's own -- see tools/build_icons.py.
+       The theme colours are what a mobile browser paints its own chrome
+       with. Both were sampled off the running app bar rather than guessed:
+       the app follows the system theme, so a single value would be wrong
+       half the time. -->
   <link rel="icon" type="image/png" href="favicon.png" />
+  <meta name="theme-color" content="#E4E1E8" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#35343A" media="(prefers-color-scheme: dark)">
 
-  <title>Flet Pay</title>
+  <title>Curve</title>
   <link rel="manifest" href="manifest.json">
 
   <script>

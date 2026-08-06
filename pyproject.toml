@@ -16,3 +16,10 @@ company = "Example"
 
 [tool.flet.app]
 path = "src"
+
+[tool.flet.web]
+# What a browser paints around an installed PWA. The theme colour is the
+# app bar's own surface in the light theme, sampled from the running app;
+# the manifest holds one value, so index.html carries the dark one too.
+pwa_theme_color = "#E4E1E8"
+pwa_background_color = "#FFFFFF"

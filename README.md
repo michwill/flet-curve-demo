@@ -12,6 +12,7 @@ withdraw, swap and stake — all in-pool, no router.
 git submodule update --init          # curve-assets: logos and token images
 uv venv && uv pip install -r requirements.txt
 python tools/build_assets.py         # compile the subset the app needs
+python tools/build_icons.py          # only when the mark changes: app icon + favicon
 
 .venv/bin/flet run src/main.py        # desktop -> Frame / qeth on 127.0.0.1:1248
 .venv/bin/flet publish                # browser -> ./dist  (run from the repo root)
@@ -306,6 +307,17 @@ at `vendor/curve-assets`. Upstream is 67 MB across 38 networks, so
 logo (388 KB for all 40), the wordless Curve mark, and token images for the
 chains the picker offers. That is ~19 MB in `src/assets/curve/`, generated and
 gitignored.
+
+The app's own icon is the same mark, rendered out of that SVG by
+`tools/build_icons.py` (librsvg + Pillow) into `src/assets/favicon.png`,
+`icon.png` and `icons/*.png`. Those **are** committed, unlike everything else
+derived from the submodule: a site needs a favicon whether or not whoever
+cloned it ran `git submodule update --init`, and `flet build` cannot read an
+SVG. The names are Flet's own — `flet publish` copies `src/assets` over its web
+root, so a file only replaces the stock Flet icon by landing at the same path.
+The maskable and Apple variants carry a white backdrop and sit inside the
+middle 78%, because those get cropped to a circle or a squircle and iOS
+composites transparency onto black.
 
 A pool draws its coins as overlapping discs, the way Curve's list does, and for
 a **metapool that means the underlying assets**: v2 returns

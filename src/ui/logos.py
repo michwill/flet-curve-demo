@@ -19,6 +19,17 @@ from curve.models import Coin, Pool
 
 from .assets import chain_logo, token_logo
 
+#: Upstream art is 200-256px and every mark here is drawn at a fraction of
+#: that. Flutter samples a scaled image with a single bilinear tap, which
+#: at a 10x reduction reads one source pixel in a hundred -- the crunchy,
+#: nearest-neighbour look. Decoding at the display size instead resamples
+#: properly, so what the GPU scales is already close to the right size.
+#:
+#: Three times the logical size covers a 3x display without decoding the
+#: full-resolution art for every one of a few hundred logos.
+DECODE_SCALE = 3
+
+
 #: How much of each logo the next one covers. Enough to read as a group,
 #: little enough that four coins are still four distinguishable discs.
 OVERLAP = 0.34
@@ -66,6 +77,10 @@ def token_mark(coin: Coin, chain: str, size: float = 24) -> ft.Container:
             width=size,
             height=size,
             fit=ft.BoxFit.COVER,
+            # Width only: with both set the codec would stretch a logo
+            # that is not square rather than fit it.
+            cache_width=int(size * DECODE_SCALE),
+            filter_quality=ft.FilterQuality.MEDIUM,
             # A logo that 404s falls back rather than leaving a hole. The
             # compiled subset can lag the API, and plenty of long-tail
             # tokens have no image upstream at all.
@@ -154,4 +169,11 @@ def chain_mark(chain: str, size: float = 18) -> ft.Control | None:
     source = chain_logo(chain)
     if not source:
         return None
-    return ft.Image(src=source, width=size, height=size, fit=ft.BoxFit.CONTAIN)
+    return ft.Image(
+        src=source,
+        width=size,
+        height=size,
+        fit=ft.BoxFit.CONTAIN,
+        cache_width=int(size * DECODE_SCALE),
+        filter_quality=ft.FilterQuality.MEDIUM,
+    )

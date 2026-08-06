@@ -126,6 +126,7 @@ class CurveApp:
                 width=BRAND_LOGO,
                 height=BRAND_LOGO,
                 fit=ft.BoxFit.CONTAIN,
+                filter_quality=ft.FilterQuality.MEDIUM,
                 # If the compiled assets are missing, the wordmark stands in.
                 error_content=ft.Text("CURVE", size=TITLE, weight=ft.FontWeight.BOLD),
             )
@@ -556,7 +557,14 @@ class CurveApp:
                 [
                     ft.ListTile(
                         leading=(
-                            ft.Image(src=option.icon, width=28, height=28)
+                            ft.Image(
+                                src=option.icon,
+                                width=28,
+                                height=28,
+                                # Wallet-supplied art is usually 96-256px.
+                                cache_width=28 * 3,
+                                filter_quality=ft.FilterQuality.MEDIUM,
+                            )
                             if option.icon
                             else ft.CircleAvatar(content=ft.Text(option.initial))
                         ),

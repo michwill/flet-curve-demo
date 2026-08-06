@@ -13,7 +13,14 @@ import pytest
 
 from curve.models import Coin, Pool
 from ui.assets import ASSET_ROOT, chain_logo, chain_name, curve_logo, token_logo
-from ui.logos import OVERLAP, coin_stack, fallback_color, pool_stack, token_mark
+from ui.logos import (
+    DECODE_SCALE,
+    OVERLAP,
+    coin_stack,
+    fallback_color,
+    pool_stack,
+    token_mark,
+)
 
 USDC = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
 
@@ -223,3 +230,19 @@ def test_balances_line_up_with_the_contract_coins() -> None:
     pool = metapool()
     pool.merge_detail({"n_coins": 2, "balances": [10.0, 20.0], "balances_usd": [10.0, 20.0]})
     assert [c.balance for c in pool.pool_coins] == [10.0, 20.0]
+
+
+def test_marks_decode_at_the_size_they_are_drawn() -> None:
+    """Otherwise the GPU scales 256px art down to 26 with one bilinear tap.
+
+    That reads roughly one source pixel in a hundred, which is what makes
+    the logos look nearest-neighboured. `cache_width` moves the reduction
+    into the decoder, where it is a proper resample.
+    """
+    mark = token_mark(coin("USDC", USDC), "ethereum", 26)
+    image = mark.content
+    assert isinstance(image, ft.Image)
+    assert image.cache_width == int(26 * DECODE_SCALE)
+    # Height is deliberately left alone: setting both would stretch a logo
+    # that is not square instead of fitting it.
+    assert image.cache_height is None

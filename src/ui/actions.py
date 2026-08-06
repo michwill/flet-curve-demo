@@ -27,6 +27,7 @@ from typing import Awaitable, Callable
 import flet as ft
 
 from curve.abi import FEE_DENOMINATOR, apply_slippage
+from curve.confirm import POLL_INTERVAL, wait_for_confirmation
 from curve.format import token_amount, units_to_float
 from curve.models import Pool
 from curve.pool import PoolContract
@@ -35,6 +36,10 @@ from wallet.base import WalletError
 from .logos import pool_stack, token_mark
 from .typography import BODY, LABEL, SMALL
 from wallet.erc20 import format_units, parse_units
+
+#: How often to ask whether a transaction has been mined. A module-level
+#: knob rather than a hidden default so a test can run the loop flat out.
+CONFIRM_INTERVAL = POLL_INTERVAL
 
 #: Tolerance used until the pool says otherwise, and whenever it will not.
 #: Curve shows 0.03% on pegged stable pools, but one number has to cover
@@ -45,20 +50,41 @@ DEFAULT_SLIPPAGE = 0.5
 #: withdraw panels use as their key.
 _NOT_READ = object()
 
-#: How much of the pool's own fee to allow as slippage.
+#: How much of the pool's own fee to allow as slippage, for an action whose
+#: quote is exact.
 #:
 #: The fee is what a trade is expected to cost, so it is the natural scale
 #: for what an unexpected move is worth tolerating -- a tricrypto pool
 #: charging 0.046% and a stable pool charging 0.01% do not deserve the same
-#: fixed 0.5%. A fifth of the fee is tight, which is the point: the quote is
-#: fetched from the pool immediately before the transaction, so this only
-#: has to cover movement between the quote and the block.
+#: fixed 0.5%. A fifth is tight, which is the point: `get_dy` is fetched
+#: immediately before the transaction, so this only covers movement between
+#: the quote and the block.
 SLIPPAGE_OF_FEE = 0.2
 
+#: The same, for an action quoted by `calc_token_amount` -- which is not
+#: exact. Measured across eleven mainnet pools by quoting a deposit and then
+#: quoting the withdrawal of exactly that LP back out. `calc_withdraw_one_coin`
+#: charges its fee, so a round trip would lose two fees if the deposit
+#: estimate charged its own. It loses about one:
+#:
+#:     3pool 0.63x   crvUSD/USDT 0.82x   crvUSD/USDC 1.43x   stETH-ng 0.54x
+#:     PayPool 1.02x  USDG/USDC 1.20x    weETH/WETH 1.18x    StratRes 2.28x
+#:     TricryptoUSDC 1.15x   tricrypto2 1.11x   YB-WETH 1.00x
+#:
+#: -- so the deposit estimate is optimistic by roughly a whole fee, and a
+#: floor built from it has to give that back. Twice the fee covers every
+#: pool measured with room to spare.
+ESTIMATE_FEE_MULTIPLE = 2.0
 
-def slippage_for(fee_units: int) -> float:
+#: And a floor underneath it, because a multiple of a very small fee is a
+#: very small number: Strategic USD Reserves charges 0.001% and still loses
+#: 0.0023% on the round trip, which is 2.3 fees.
+MIN_ESTIMATE_SLIPPAGE = 0.005
+
+
+def slippage_for(fee_units: int, multiple: float = SLIPPAGE_OF_FEE, floor: float = 0.0) -> float:
     """A tolerance, in percent, from a fee in Curve's 1e10 units."""
-    return fee_units / FEE_DENOMINATOR * 100 * SLIPPAGE_OF_FEE
+    return max(fee_units / FEE_DENOMINATOR * 100 * multiple, floor)
 
 
 def format_slippage(percent: float) -> str:
@@ -90,6 +116,11 @@ class ActionTab:
     #: moves LP tokens into a gauge at no rate at all -- so showing a
     #: tolerance there invites someone to tune a number that does nothing.
     uses_slippage = True
+    #: How the tolerance is derived from the pool fee. The default is the
+    #: cautious one, for the actions quoted by `calc_token_amount`; a swap
+    #: overrides it, because `get_dy` is exact.
+    fee_multiple = ESTIMATE_FEE_MULTIPLE
+    slippage_floor = MIN_ESTIMATE_SLIPPAGE
 
     def __init__(
         self,
@@ -173,13 +204,21 @@ class ActionTab:
         self._fee_read_for = key
         if fee <= 0:
             return
-        self.slippage.value = format_slippage(slippage_for(fee))
+        percent = slippage_for(fee, self.fee_multiple, self.slippage_floor)
+        self.slippage.value = format_slippage(percent)
         self.slippage.tooltip = (
-            f"{SLIPPAGE_OF_FEE:.0%} of this pool's {slippage_for(fee) / SLIPPAGE_OF_FEE:.3g}% fee"
+            f"from this pool's {fee / FEE_DENOMINATOR * 100:.4g}% fee"
         )
 
     async def submit(self, contract: PoolContract) -> str:
         raise NotImplementedError
+
+    def clear_inputs(self) -> None:
+        """Empty the amount fields after a confirmed transaction.
+
+        The number that was there has been spent; leaving it in place
+        invites sending it twice.
+        """
 
     async def approval_needed(self, contract: PoolContract) -> tuple[str, str, int] | None:
         """Return `(token, spender, amount)` still needing an allowance."""
@@ -223,6 +262,21 @@ class ActionTab:
         self.approve_button.disabled = busy
         self.page.update()
 
+    async def _confirm(self, contract: PoolContract, tx: str, done: str) -> None:
+        """Wait for the transaction, then let the panel read the result.
+
+        Everything the panel shows next -- the allowance that ungreys the
+        submit button, the balances, the position -- is read back from the
+        chain, and reading it while the transaction is still in the mempool
+        shows the state before it. That is why an approval used to land and
+        leave the button disabled.
+        """
+        self._say(f"Waiting for {tx[:14]}… to confirm.")
+        block = await wait_for_confirmation(
+            contract.provider, tx, interval=CONFIRM_INTERVAL
+        )
+        self._say(f"{done} (block {block:,})", ft.Colors.GREEN_600)
+
     async def _approve_clicked(self, _e: ft.ControlEvent) -> None:
         contract = self.get_contract()
         if contract is None:
@@ -237,7 +291,7 @@ class ActionTab:
                 token, spender, amount = pending
                 self._say("Confirm the approval in your wallet…")
                 tx = await contract.approve(token, spender, amount)
-                self._say(f"Approved. {tx[:14]}…", ft.Colors.GREEN_600)
+                await self._confirm(contract, tx, "Approved.")
         except WalletError as exc:
             self._say(str(exc), ft.Colors.ERROR)
         finally:
@@ -253,7 +307,8 @@ class ActionTab:
         try:
             self._say("Confirm in your wallet…")
             tx = await self.submit(contract)
-            self._say(f"Submitted: {tx}", ft.Colors.GREEN_600)
+            await self._confirm(contract, tx, f"{self.title} confirmed.")
+            self.clear_inputs()
             await self.on_done()
         except WalletError as exc:
             self._say(str(exc), ft.Colors.ERROR)
@@ -401,6 +456,10 @@ class DepositTab(ActionTab):
 
         return fill
 
+    def clear_inputs(self) -> None:
+        for field in self.fields:
+            field.value = ""
+
     def _amounts(self) -> list[int]:
         out = []
         for field, coin in zip(self.fields, self.pool.pool_coins):
@@ -525,6 +584,9 @@ class WithdrawTab(ActionTab):
             self.coin_picker.leading_icon = token_mark(coins[index], self.pool.chain, 20)
         self.page.run_task(self.refresh)
 
+    def clear_inputs(self) -> None:
+        self.amount.value = ""
+
     def _lp_amount(self) -> int:
         text = (self.amount.value or "").strip()
         try:
@@ -607,6 +669,10 @@ class SwapTab(ActionTab):
 
     title = "Swap"
     submit_label = "Swap"
+    #: `get_dy` is exact -- it is the same maths the swap itself runs, fee
+    #: included -- so there is no estimator error to give back.
+    fee_multiple = SLIPPAGE_OF_FEE
+    slippage_floor = 0.0
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
@@ -658,6 +724,9 @@ class SwapTab(ActionTab):
 
     def fee_key(self) -> object:
         return self._indices()
+
+    def clear_inputs(self) -> None:
+        self.amount.value = ""
 
     def _dx(self) -> int:
         i, _ = self._indices()
@@ -801,6 +870,9 @@ class StakeTab(ActionTab):
 
     def _changed(self, _e: ft.ControlEvent) -> None:
         self.page.run_task(self.refresh)
+
+    def clear_inputs(self) -> None:
+        self.amount.value = ""
 
     def _amount_units(self) -> int:
         text = (self.amount.value or "").strip()

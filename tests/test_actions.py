@@ -419,22 +419,35 @@ def tab_with_fee(cls, flat: int, pair: int | None = None):
     return tab, provider
 
 
-async def test_deposit_slippage_comes_from_the_pool_fee() -> None:
-    """3pool charges 0.015%, so a fifth of that is 0.003%."""
+async def test_deposit_slippage_gives_back_a_whole_fee() -> None:
+    """`calc_token_amount` does not charge the fee the deposit will pay --
+    measured at ~1 fee across eleven mainnet pools -- so the tolerance is
+    twice the fee rather than a fifth of it. 3pool: 0.015% -> 0.03%."""
     from ui.actions import DepositTab
 
     tab, _ = tab_with_fee(DepositTab, 1_500_000)
     await tab.refresh()
-    assert tab.slippage.value == "0.003"
+    assert tab.slippage.value == "0.03"
 
 
 async def test_a_crypto_pool_gets_a_wider_tolerance() -> None:
-    """Because it charges more: 1.547% fee -> 0.309%."""
+    """Because it charges more: 1.547% fee."""
     from ui.actions import DepositTab
 
     tab, _ = tab_with_fee(DepositTab, 154_682_900)
     await tab.refresh()
-    assert tab.slippage.value == "0.309"
+    assert tab.slippage.value == "3.09"
+
+
+async def test_a_tiny_fee_still_gets_a_workable_floor() -> None:
+    """Strategic USD Reserves charges 0.001% and loses 0.0023% on a
+    deposit-then-withdraw round trip -- 2.3 fees. Twice a very small fee is
+    still too small, so there is a floor underneath."""
+    from ui.actions import DepositTab, MIN_ESTIMATE_SLIPPAGE
+
+    tab, _ = tab_with_fee(DepositTab, 100_000)
+    await tab.refresh()
+    assert float(tab.slippage.value) == MIN_ESTIMATE_SLIPPAGE
 
 
 async def test_withdrawing_uses_the_flat_fee_too() -> None:
@@ -442,13 +455,13 @@ async def test_withdrawing_uses_the_flat_fee_too() -> None:
 
     tab, provider = tab_with_fee(WithdrawTab, 1_000_000, pair=9_999_999)
     await tab.refresh()
-    assert tab.slippage.value == "0.002"
+    assert tab.slippage.value == "0.02"
     assert "0x" + abi.selector("dynamic_fee(int128,int128)") not in provider.reads
 
 
-async def test_swapping_uses_the_fee_for_that_pair() -> None:
-    """StableSwap-NG prices each pair; PayPool's pair fee really is higher
-    than its flat one."""
+async def test_swapping_stays_tight_because_its_quote_is_exact() -> None:
+    """`get_dy` is the same maths the swap runs, fee included, so there is
+    no estimator error to give back -- a fifth of the fee, not twice."""
     from ui.actions import SwapTab
 
     tab, _ = tab_with_fee(SwapTab, 1_000_000, pair=2_000_000)
@@ -462,6 +475,17 @@ async def test_a_swap_pool_without_dynamic_fee_falls_back() -> None:
     tab, _ = tab_with_fee(SwapTab, 4_577_514)  # no pair fee
     await tab.refresh()
     assert tab.slippage.value == "0.00916"
+
+
+async def test_a_deposit_is_always_given_more_room_than_a_swap() -> None:
+    """The difference is not a preference; it is that one quote is exact."""
+    from ui.actions import DepositTab, SwapTab
+
+    deposit, _ = tab_with_fee(DepositTab, 1_000_000)
+    swap, _ = tab_with_fee(SwapTab, 1_000_000)
+    await deposit.refresh()
+    await swap.refresh()
+    assert float(deposit.slippage.value) > float(swap.slippage.value)
 
 
 async def test_changing_the_pair_re_reads_the_fee() -> None:
@@ -515,10 +539,121 @@ async def test_staking_reads_no_fee_at_all() -> None:
     assert "0x" + abi.selector("fee()") not in provider.reads
 
 
-def test_the_arithmetic_is_a_fifth_of_the_fee() -> None:
-    from ui.actions import SLIPPAGE_OF_FEE, slippage_for
+def test_the_arithmetic_is_a_fraction_of_the_fee() -> None:
+    from ui.actions import ESTIMATE_FEE_MULTIPLE, SLIPPAGE_OF_FEE, slippage_for
 
     assert SLIPPAGE_OF_FEE == 0.2
     # 1e10 is 100%, so 10_000_000 is 0.1% and a fifth of it is 0.02%.
     assert slippage_for(10_000_000) == pytest.approx(0.02)
     assert slippage_for(0) == 0
+    assert slippage_for(10_000_000, ESTIMATE_FEE_MULTIPLE) == pytest.approx(0.2)
+    assert slippage_for(10, ESTIMATE_FEE_MULTIPLE, floor=0.005) == 0.005
+
+
+# -- waiting for the chain -------------------------------------------------
+#
+# The panels used to re-read straight after broadcasting, which reads the
+# state *before* the transaction: an approval landed and left the submit
+# button disabled. Now they wait for the receipt, and for the endpoint to
+# have caught up to the block it names.
+
+
+@pytest.fixture(autouse=True)
+def _no_polling_delay(monkeypatch):
+    """Run the confirmation loops at full speed."""
+    import ui.actions
+
+    monkeypatch.setattr(ui.actions, "CONFIRM_INTERVAL", 0)
+
+
+class MinedProvider(FakeProvider):
+    """Sends, then mines at `block` after `pending` empty polls."""
+
+    def __init__(self, block: int = 500, pending: int = 1, status: str = "0x1") -> None:
+        super().__init__()
+        self.block, self.pending, self.status = block, pending, status
+        self.heads = [block - 2, block - 1, block]
+        self.receipts_asked = 0
+        self.allowance_after = 0
+
+    async def request(self, method: str, params=None):
+        if method == "eth_getTransactionReceipt":
+            self.receipts_asked += 1
+            if self.receipts_asked <= self.pending:
+                return None
+            return {"blockNumber": hex(self.block), "status": self.status}
+        if method == "eth_blockNumber":
+            return hex(self.heads.pop(0) if self.heads else self.block)
+        if method == "eth_call":
+            data = (params or [{}])[0].get("data", "")
+            if data.startswith("0x" + abi.selector("allowance(address,address)")):
+                # Only true once the transaction has been mined, which is
+                # the whole point: reading earlier shows the old allowance.
+                mined = self.receipts_asked > self.pending
+                return word(10**30 if mined else 0)
+            if data.startswith("0x" + abi.selector("fee()")):
+                return word(1_000_000)
+            return "0x"
+        return await super().request(method, params)
+
+
+def deposit_tab(provider):
+    pool = make_pool()
+    contract = PoolContract(provider, pool, ACCOUNT)
+    from ui.actions import DepositTab
+
+    tab = DepositTab(StubPage(), pool, lambda: contract, None)
+    tab.mount()
+    return tab
+
+
+async def test_an_approval_waits_to_be_mined_before_reading_back() -> None:
+    provider = MinedProvider(pending=2)
+    tab = deposit_tab(provider)
+    tab.fields[0].value = "1"
+
+    await tab._approve_clicked(None)
+
+    assert provider.receipts_asked > 2, "did not wait for the receipt"
+    assert "confirm" in tab.status.value.lower() or "Approved" in tab.status.value
+
+
+async def test_the_block_the_transaction_landed_in_is_waited_for() -> None:
+    """A load-balanced endpoint can answer from a node a block or two
+    behind, which reads as the transaction having been rolled back."""
+    provider = MinedProvider(block=500, pending=0)
+    tab = deposit_tab(provider)
+    tab.fields[0].value = "1"
+
+    await tab._approve_clicked(None)
+    assert provider.heads == [], "the head was not polled until it caught up"
+
+
+async def test_a_mined_revert_is_reported_not_celebrated() -> None:
+    provider = MinedProvider(status="0x0")
+    tab = deposit_tab(provider)
+    tab.fields[0].value = "1"
+
+    await tab._approve_clicked(None)
+    assert "reverted" in tab.status.value.lower()
+
+
+async def test_a_confirmed_deposit_clears_the_amounts() -> None:
+    """The number that was there has been spent; leaving it invites
+    sending it twice."""
+    provider = MinedProvider(pending=0)
+    tab = deposit_tab(provider)
+    tab.fields[0].value = "1"
+    tab.balances = [10**18, 0]
+
+    async def submit(contract):
+        return "0x" + "cd" * 32
+
+    tab.submit = submit  # type: ignore[assignment]
+    tab.on_done = _noop
+    await tab._submit_clicked(None)
+    assert tab.fields[0].value == ""
+
+
+async def _noop() -> None:
+    return None

@@ -92,6 +92,11 @@ class BrowserWalletProvider(WalletProvider):
         self._on_message_proxy = create_proxy(self._on_message)
         self._channel.onmessage = self._on_message_proxy
 
+        # Who this provider is, on a channel every tab on the origin
+        # shares. One bridge serves the whole origin (see wallet_bridge.js),
+        # and stamps every reply and every wallet event with the client it
+        # belongs to, so a second tab's app never consumes ours.
+        self._client = f"{js.Math.floor(js.Math.random() * 1e12):.0f}"
         self._pending: dict[str, asyncio.Future] = {}
         self._handlers: dict[str, list[Callable[[Any], None]]] = {}
         self._counter = 0
@@ -116,6 +121,11 @@ class BrowserWalletProvider(WalletProvider):
         except AttributeError:
             message = event.data
         if not isinstance(message, dict) or message.get("v") != PROTOCOL_VERSION:
+            return
+
+        # Addressed to another tab's app: not ours to act on.
+        client = message.get("client")
+        if client is not None and client != self._client:
             return
 
         direction = message.get("dir")
@@ -157,6 +167,7 @@ class BrowserWalletProvider(WalletProvider):
                     "v": PROTOCOL_VERSION,
                     "dir": "req",
                     "id": request_id,
+                    "client": self._client,
                     "method": method,
                     "params": params if params is not None else [],
                 }
@@ -215,6 +226,7 @@ class BrowserWalletProvider(WalletProvider):
                     "v": PROTOCOL_VERSION,
                     "dir": "req",
                     "id": request_id,
+                    "client": self._client,
                     "method": "bridge_hello",
                     "params": [],
                 }

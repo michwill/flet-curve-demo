@@ -38,6 +38,41 @@
   const CHANNEL_NAME = "flet-wallet";
   const VERSION = 1;
 
+  // A BroadcastChannel is shared by every page on the origin, so a second
+  // tab running this app hears -- and would answer -- the first tab's
+  // requests. Two bridges answering one client is not cosmetic: whichever
+  // replies first wins, so the wallet list can come from one tab while
+  // `selectWallet` lands on the other, and the account request then goes
+  // to a wallet nobody picked. That is exactly what a second tab looked
+  // like: a picker missing the wallets this page announced.
+  //
+  // The fix is that only one bridge per origin is ever active. Web Locks
+  // settle it without any coordination: whoever takes the lock serves
+  // every client on the origin, and the browser hands it to another tab
+  // the moment that one goes away. Requests are addressed by `client` so
+  // each app only ever sees its own replies and its own wallet events.
+  //
+  // Pairing them per tab instead is not possible here: a Pyodide worker
+  // cannot tell which page spawned it, and a BroadcastChannel message
+  // carries no sender.
+  let active = true;
+  if (navigator.locks?.request) {
+    active = false;
+    navigator.locks
+      .request("flet-wallet-bridge", () => {
+        active = true;
+        log("serving this origin");
+        // Held until the page goes away, which releases it for the next
+        // tab. Nothing resolves this promise on purpose.
+        return new Promise(() => {});
+      })
+      .catch(() => {
+        // No lock support, or it was denied: better a bridge that answers
+        // than a page that cannot reach a wallet at all.
+        active = true;
+      });
+  }
+
   // Mutable: Python fills this in via bridge_configure at startup.
   const config = window.FLET_PAY || (window.FLET_PAY = {});
   const channel = new BroadcastChannel(CHANNEL_NAME);
@@ -286,7 +321,9 @@
   // ====================================================================
 
   function emit(event, data) {
-    channel.postMessage({ v: VERSION, dir: "evt", event, data });
+    // Addressed to whoever selected this wallet, not broadcast: another
+    // tab's app must not act on an account change it did not ask for.
+    channel.postMessage({ v: VERSION, dir: "evt", event, data, client: owner });
   }
 
   function attach(provider) {
@@ -310,7 +347,10 @@
     }
   }
 
-  async function selectWallet(uuid) {
+  //: The client whose selection is live, so events can be addressed.
+  let owner = null;
+
+  async function selectWallet(uuid, client) {
     const entry = catalogue.get(uuid);
     if (!entry) throw { code: 4001, message: `Unknown wallet: ${uuid}` };
 
@@ -319,6 +359,7 @@
     // normal EIP-1193 error.
     selected = await entry.resolve();
     selectedInfo = entry.info;
+    owner = client ?? owner;
     attach(selected);
     log("selected:", entry.info.name);
     return {
@@ -333,7 +374,7 @@
   // Request handling
   // ====================================================================
 
-  async function handle(method, params) {
+  async function handle(method, params, client) {
     // Bridge-only methods: answered here, never forwarded to a wallet.
     if (method === "bridge_configure") {
       // Settings arrive from Python (wallet/settings.py) rather than a JS
@@ -351,7 +392,7 @@
       return { ok: true, wallets: await discover(), selected: selectedInfo?.uuid ?? null };
     }
     if (method === "bridge_selectWallet") {
-      return await selectWallet(params[0]);
+      return await selectWallet(params[0], client);
     }
     if (method === "bridge_listWallets") {
       return await discover();
@@ -362,7 +403,7 @@
       if (wallets.length === 0) {
         throw { code: 4900, message: "No wallet available in this browser" };
       }
-      await selectWallet(wallets[0].uuid);
+      await selectWallet(wallets[0].uuid, client);
     }
 
     // The entire connector integration, once resolved: one EIP-1193 call.
@@ -373,10 +414,16 @@
     const message = event.data;
     if (!message || message.v !== VERSION || message.dir !== "req") return;
 
+    // Dormant: another tab's bridge holds the lock and is answering.
+    if (!active) return;
+
+    const client = message.client ?? null;
+    if (message.method === "bridge_release") return;
+
     const { id, method, params } = message;
     try {
-      const result = await handle(method, params || []);
-      channel.postMessage({ v: VERSION, dir: "res", id, result: result ?? null });
+      const result = await handle(method, params || [], client);
+      channel.postMessage({ v: VERSION, dir: "res", id, result: result ?? null, client });
     } catch (error) {
       // Normalise the shapes wallets throw: EIP-1193 ProviderRpcError, a
       // plain {code,message} object, and a bare Error.
@@ -384,6 +431,7 @@
         v: VERSION,
         dir: "res",
         id,
+        client,
         error: {
           code: Number.isInteger(error?.code) ? error.code : -32603,
           message: String(error?.message || error || "Wallet request failed"),

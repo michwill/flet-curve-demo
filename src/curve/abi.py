@@ -255,6 +255,110 @@ def encode_calc_token_amount_no_flag(amounts: list[int]) -> str:
     return _call(f"calc_token_amount(uint256[{n}])", _array(amounts))
 
 
+# -- metapools, through a zap ----------------------------------------------
+#
+# A metapool holds two coins: its own, and the base pool's LP token. So
+# depositing USDC into a USD1/crv2pool metapool means minting crv2pool
+# first, which is two transactions and a token nobody wanted to hold.
+#
+# The zap does both in one call. It takes the *underlying* list -- the
+# metapool's own coin followed by the base pool's coins -- and every
+# function carries the pool address as its first argument, because one zap
+# serves every metapool from its factory.
+#
+# The `uint256[]`/`uint256[N]` split is the same one the pools have, and
+# for the same reason: the StableSwap-NG zap was written against NG pools.
+# Both dialects are verified against deployed Ethereum zaps --
+# 0xE07a16358aA878CBDa2D49A88E5106871E0db307 (dynamic) and
+# 0xA79828DF1850E8a3A3064576f380D90aECDD3359 (fixed, 3pool metapools) --
+# by running a deposit and a withdrawal through each on a mainnet fork.
+#
+# Only the arrays differ. `calc_withdraw_one_coin` and
+# `remove_liquidity_one_coin` are identical in both, `int128` included:
+# every metapool with a zap is a StableSwap pool.
+
+
+def encode_zap_calc_token_amount(
+    pool: str, amounts: list[int], *, deposit: bool = True, dynamic: bool = False
+) -> str:
+    if dynamic:
+        return _call(
+            "calc_token_amount(address,uint256[],bool)",
+            _address(pool),
+            _offset(3),
+            _bool(deposit),
+            _dyn_array(amounts),
+        )
+    n = len(amounts)
+    return _call(
+        f"calc_token_amount(address,uint256[{n}],bool)",
+        _address(pool),
+        _array(amounts),
+        _bool(deposit),
+    )
+
+
+def encode_zap_add_liquidity(
+    pool: str, amounts: list[int], min_mint: int, *, dynamic: bool = False
+) -> str:
+    if dynamic:
+        return _call(
+            "add_liquidity(address,uint256[],uint256)",
+            _address(pool),
+            _offset(3),
+            _uint(min_mint),
+            _dyn_array(amounts),
+        )
+    n = len(amounts)
+    return _call(
+        f"add_liquidity(address,uint256[{n}],uint256)",
+        _address(pool),
+        _array(amounts),
+        _uint(min_mint),
+    )
+
+
+def encode_zap_remove_liquidity(
+    pool: str, amount: int, min_amounts: list[int], *, dynamic: bool = False
+) -> str:
+    if dynamic:
+        return _call(
+            "remove_liquidity(address,uint256,uint256[])",
+            _address(pool),
+            _uint(amount),
+            _offset(3),
+            _dyn_array(min_amounts),
+        )
+    n = len(min_amounts)
+    return _call(
+        f"remove_liquidity(address,uint256,uint256[{n}])",
+        _address(pool),
+        _uint(amount),
+        _array(min_amounts),
+    )
+
+
+def encode_zap_calc_withdraw_one_coin(pool: str, amount: int, i: int) -> str:
+    return _call(
+        "calc_withdraw_one_coin(address,uint256,int128)",
+        _address(pool),
+        _uint(amount),
+        _int(i),
+    )
+
+
+def encode_zap_remove_liquidity_one_coin(
+    pool: str, amount: int, i: int, min_out: int
+) -> str:
+    return _call(
+        "remove_liquidity_one_coin(address,uint256,int128,uint256)",
+        _address(pool),
+        _uint(amount),
+        _int(i),
+        _uint(min_out),
+    )
+
+
 # -- withdrawing -----------------------------------------------------------
 
 

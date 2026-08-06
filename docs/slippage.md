@@ -93,6 +93,46 @@ cvxCrv/Crv binds every one of them. Flatten `a` to zero and `b` has to
 become 0.137% — that pool's entire shortfall — which every pegged pool would
 then be handed. Keeping the fee term is what lets the constant stay small.
 
+## Metapools, through a zap
+
+Depositing an underlying coin into a metapool is two deposits: into the
+base pool, then into the metapool with the LP it just minted. It pays both
+pools' fees, so that is what the tolerance is:
+
+    deposit / withdraw, underlying:   meta fee + base fee + 0.005%
+
+Measured the same way — 99 deposits over the ten largest Ethereum
+metapools with a zap, every underlying coin, sized at 0.1%, 1% and 10% of
+that coin's reserve, comparing what the zap minted against what it had
+just quoted a moment earlier:
+
+| pool | meta + base | allowed | worst shortfall | of allowance |
+| --- | --- | --- | --- | --- |
+| alUSD/3Crv | 0.055% | 0.060% | 0.06035% | **1.01** |
+| msUSD/FRAXBP | 0.050% | 0.055% | 0.04691% | 0.85 |
+| MIM/3Crv | 0.055% | 0.060% | 0.04870% | 0.81 |
+| FRAX/3Crv | 0.055% | 0.060% | 0.04554% | 0.76 |
+| STBT/3Crv | 0.055% | 0.060% | 0.04413% | 0.74 |
+| LUSD/3Crv | 0.055% | 0.060% | 0.03039% | 0.51 |
+| PWRD/3Crv | 0.055% | 0.060% | 0.02866% | 0.48 |
+| wibBTC/sBTC | 0.080% | 0.085% | 0.02958% | 0.35 |
+| World Liberty USD1 | 0.011% | 0.016% | 0.00000% | 0.00 |
+| MUSD/USDC/USDT | 0.011% | 0.016% | 0.00000% | 0.00 |
+
+The two NG pools quote exactly, like the NG pools' own `calc_token_amount`
+— zero shortfall at every coin and every size. The old factory zaps
+inherit their pools' fee-free estimate, and pay it twice, once in each
+pool: they cluster at three quarters of the two fees together.
+
+The one row over the line is alUSD/3Crv at 10% of 3pool's USDT reserve —
+a deposit some forty times the metapool's own size, where what is being
+measured is price impact rather than an estimator's error. It is the same
+caveat as everywhere else here: no constant covers a deposit large enough
+to move the pool it is entering.
+
+Withdrawals through the zap came back exact in every case measured, in
+both dialects, so the same figure is generous on that side.
+
 ## Measuring this yourself
 
 Two traps, both of which produced confident wrong answers here first:

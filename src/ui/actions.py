@@ -1,10 +1,16 @@
 """The four things you can do to a pool: deposit, withdraw, swap, stake.
 
-Note every coin list here is `pool.pool_coins`, not `pool.coins`. On a
-metapool those differ: v2 decomposes the base pool into `coins`, so a
+Note the coin list a panel uses is `pool.pool_coins`, not `pool.coins`. On
+a metapool those differ: v2 decomposes the base pool into `coins`, so a
 two-coin metapool reports four. `add_liquidity` takes a `uint256[N]` whose
 N is part of the function signature, so building it from the decomposed
 list is calldata for a function the pool does not have.
+
+The one exception is the zap route, which exists precisely to take the
+decomposed list -- see `curve.zaps`. A metapool with a zap offers both, and
+the panel keeps a set of fields for each: which one is live decides the
+coins, the spender that gets approved, the contract the transaction goes
+to, and the fee the slippage suggestion comes from.
 
 Each tab is the same shape -- read some balances, quote the result on
 chain, then submit -- so the shared parts (the approve step, the status
@@ -32,6 +38,7 @@ from curve.confirm import POLL_INTERVAL, wait_for_confirmation
 from curve.format import token_amount, units_to_float
 from curve.models import Pool
 from curve.pool import PoolContract
+from curve.zaps import zap_for
 from wallet.base import WalletError
 
 from .logos import pool_stack, token_mark
@@ -473,6 +480,66 @@ def _amount_field(
     )
 
 
+class _AmountRows:
+    """The amount fields for one deposit route, as a block that can hide.
+
+    A metapool has two of these -- one per coin the contract holds, one per
+    underlying coin the zap accepts -- and they are built together and
+    swapped by visibility rather than rebuilt on every toggle, so a number
+    typed into one is still there after a look at the other.
+    """
+
+    def __init__(self, coins, chain: str, on_change, on_max) -> None:
+        self.coins = list(coins)
+        self.fields: list[ft.TextField] = []
+        self.labels: list[ft.Text] = []
+        self.balances: list[int] = [0] * len(self.coins)
+        rows: list[ft.Control] = []
+        for index, coin in enumerate(self.coins):
+
+            def fill(_e: ft.ControlEvent, index: int = index) -> None:
+                on_max(self, index)
+
+            field = _amount_field(
+                coin.symbol, on_change, token_mark(coin, chain, 20), on_max=fill
+            )
+            label = ft.Text("", size=LABEL, color=ft.Colors.ON_SURFACE_VARIANT)
+            self.fields.append(field)
+            self.labels.append(label)
+            rows.append(_stacked(field, label))
+        self.control = ft.Column(
+            rows, spacing=12, horizontal_alignment=ft.CrossAxisAlignment.STRETCH
+        )
+
+    def amounts(self) -> list[int]:
+        out = []
+        for field, coin in zip(self.fields, self.coins):
+            text = (field.value or "").strip()
+            try:
+                out.append(parse_units(text, coin.decimals) if text else 0)
+            except ValueError:
+                out.append(0)
+        return out
+
+    def clear(self) -> None:
+        for field in self.fields:
+            field.value = ""
+
+
+def _route_picker(on_change) -> ft.RadioGroup:
+    """Pool tokens or underlying: which coins the amounts are denominated in."""
+    return ft.RadioGroup(
+        value="pool",
+        content=ft.Row(
+            [
+                ft.Radio(value="pool", label="Pool tokens"),
+                ft.Radio(value="underlying", label="Underlying"),
+            ]
+        ),
+        on_change=on_change,
+    )
+
+
 def _coin_options(coins, chain: str) -> list[ft.DropdownOption]:
     """Dropdown entries carrying each coin's mark beside its symbol."""
     return [
@@ -490,96 +557,154 @@ def _coin_options(coins, chain: str) -> list[ft.DropdownOption]:
 
 
 class DepositTab(ActionTab):
-    """Add liquidity: an amount per coin, quoted as LP tokens out."""
+    """Add liquidity: an amount per coin, quoted as LP tokens out.
+
+    On a metapool there are two sets of coins to offer. The contract holds
+    two -- its own, and the base pool's LP token -- but almost nobody holds
+    that LP token; what they have is USDC. So when a zap exists for this
+    pool, a second route appears whose fields are the *underlying* coins,
+    and everything downstream (the quote, the approvals, the deposit, and
+    the fee the slippage comes from) follows the chosen route.
+    """
 
     title = "Deposit"
     submit_label = "Deposit"
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-        self.fields: list[ft.TextField] = []
-        self.balances: list[int] = [0] * self.pool.n_coins
-        self.balance_labels: list[ft.Text] = []
+        self.zap = zap_for(self.pool)
+        self.route = _route_picker(self._route_changed)
+        self.route.visible = self.zap is not None
+        self.routes = {
+            "pool": _AmountRows(
+                self.pool.pool_coins, self.pool.chain, self._changed, self._max_for
+            )
+        }
+        if self.zap is not None:
+            self.routes["underlying"] = _AmountRows(
+                self.pool.display_coins, self.pool.chain, self._changed, self._max_for
+            )
+            self.routes["underlying"].control.visible = False
         self._expected_lp = 0
+        #: Whether the last quote came back. A zap this app has the address
+        #: of but the chain disagrees with must not be handed an approval,
+        #: so the approve step waits for a quote that worked.
+        self._quote_ok = True
+
+    # -- which route is live ----------------------------------------------
+
+    @property
+    def underlying(self) -> bool:
+        return self.zap is not None and self.route.value == "underlying"
+
+    @property
+    def rows(self) -> _AmountRows:
+        return self.routes["underlying" if self.underlying else "pool"]
+
+    @property
+    def spender(self) -> str:
+        """Who moves the coins: the pool itself, or the zap."""
+        return self.zap.address if self.underlying and self.zap else self.pool.address
+
+    # The panel's own fields, as the rest of the class and the tests know
+    # them -- always those of the live route.
+    @property
+    def fields(self) -> list[ft.TextField]:
+        return self.rows.fields
+
+    @property
+    def balance_labels(self) -> list[ft.Text]:
+        return self.rows.labels
+
+    @property
+    def balances(self) -> list[int]:
+        return self.rows.balances
+
+    @balances.setter
+    def balances(self, values: list[int]) -> None:
+        self.rows.balances = list(values)
 
     def build(self) -> list[ft.Control]:
-        rows: list[ft.Control] = []
-        for index, coin in enumerate(self.pool.pool_coins):
-            field = _amount_field(
-                coin.symbol,
-                self._changed,
-                token_mark(coin, self.pool.chain, 20),
-                on_max=self._max_for(index),
-            )
-            label = ft.Text("", size=LABEL, color=ft.Colors.ON_SURFACE_VARIANT)
-            self.fields.append(field)
-            self.balance_labels.append(label)
-            rows.append(_stacked(field, label))
-        return rows
+        return [self.route, *(rows.control for rows in self.routes.values())]
 
-    def _max_for(self, index: int):
+    def _route_changed(self, _e: ft.ControlEvent) -> None:
+        for name, rows in self.routes.items():
+            rows.control.visible = name == ("underlying" if self.underlying else "pool")
+        self.page.run_task(self.refresh)
+
+    def _max_for(self, rows: _AmountRows, index: int) -> None:
         """Fill one coin's field with the whole wallet balance.
 
         Full precision, not the shortened form the balance line shows:
         this is the number that becomes calldata, and a rounded one would
         either leave dust or exceed what is there.
         """
-
-        def fill(_e: ft.ControlEvent) -> None:
-            coin = self.pool.pool_coins[index]
-            self.fields[index].value = format_units(
-                self.balances[index], coin.decimals, precision=coin.decimals
-            )
-            self.page.run_task(self.refresh)
-
-        return fill
+        coin = rows.coins[index]
+        rows.fields[index].value = format_units(
+            rows.balances[index], coin.decimals, precision=coin.decimals
+        )
+        self.page.run_task(self.refresh)
 
     def clear_inputs(self) -> None:
-        for field in self.fields:
-            field.value = ""
+        for rows in self.routes.values():
+            rows.clear()
 
     def _amounts(self) -> list[int]:
-        out = []
-        for field, coin in zip(self.fields, self.pool.pool_coins):
-            text = (field.value or "").strip()
-            try:
-                out.append(parse_units(text, coin.decimals) if text else 0)
-            except ValueError:
-                out.append(0)
-        return out
+        return self.rows.amounts()
 
     def _changed(self, _e: ft.ControlEvent) -> None:
         self.page.run_task(self.refresh)
 
+    async def _quote(self, contract: PoolContract, amounts: list[int]) -> int:
+        if self.underlying:
+            return await contract.zap_calc_token_amount(amounts, deposit=True)
+        return await contract.calc_token_amount(amounts, deposit=True)
+
+    async def fee_units(self, contract: PoolContract) -> int:
+        """A zap deposit passes through both pools, so it pays both fees."""
+        fee = await contract.fee()
+        if self.underlying:
+            try:
+                fee += await contract.base_fee()
+            except WalletError:
+                pass
+        return fee
+
+    def fee_key(self) -> object:
+        return self.route.value
+
     async def refresh(self) -> None:
         contract = self.get_contract()
         await self.suggest_slippage(contract)
+        rows = self.rows
         if contract is not None:
-            for index, coin in enumerate(self.pool.pool_coins):
+            for index, coin in enumerate(rows.coins):
                 try:
-                    self.balances[index] = await contract.balance_of(coin.address)
+                    rows.balances[index] = await contract.balance_of(coin.address)
                 except WalletError:
-                    self.balances[index] = 0
-                self.balance_labels[index].value = (
-                    f"Balance: {format_units(self.balances[index], coin.decimals)}"
+                    rows.balances[index] = 0
+                rows.labels[index].value = (
+                    f"Balance: {format_units(rows.balances[index], coin.decimals)}"
                 )
 
-        amounts = self._amounts()
+        amounts = rows.amounts()
         self._expected_lp = 0
+        self._quote_ok = True
         if contract is not None and any(amounts):
             try:
-                self._expected_lp = await contract.calc_token_amount(amounts, deposit=True)
+                self._expected_lp = await self._quote(contract, amounts)
                 self.estimate.value = (
                     f"~ {token_amount(units_to_float(self._expected_lp, 18))} LP"
                     f"  (min {token_amount(units_to_float(self.with_slippage(self._expected_lp), 18))})"
                 )
             except WalletError as exc:
                 self.estimate.value = str(exc)
+                self._quote_ok = False
         else:
             self.estimate.value = ""
 
         await self._sync_approval(contract)
-        if contract is not None and not any(amounts):
+        if contract is not None and (not any(amounts) or not self._quote_ok):
             self.submit_button.disabled = True
         self.page.update()
 
@@ -587,21 +712,31 @@ class DepositTab(ActionTab):
         # One coin at a time: each ERC-20 needs its own approval, and the UI
         # walks them in order rather than batching, so the button always
         # names a single concrete step.
-        for coin, amount in zip(self.pool.pool_coins, self._amounts()):
+        #
+        # Nothing is approved on the strength of a quote that failed: the
+        # spender may be a zap, and an allowance is the one thing here that
+        # outlives the mistake that caused it.
+        if not self._quote_ok:
+            return None
+        rows = self.rows
+        for coin, amount in zip(rows.coins, rows.amounts()):
             if amount <= 0:
                 continue
-            allowance = await contract.allowance(coin.address, self.pool.address)
+            allowance = await contract.allowance(coin.address, self.spender)
             if allowance < amount:
                 self.approve_button.content = f"1. Approve {coin.symbol}"
-                return (coin.address, self.pool.address, amount)
+                return (coin.address, self.spender, amount)
         return None
 
     async def submit(self, contract: PoolContract) -> str:
         amounts = self._amounts()
         if not any(amounts):
             raise WalletError("Enter an amount to deposit.")
-        expected = await contract.calc_token_amount(amounts, deposit=True)
-        return await contract.add_liquidity(amounts, self.with_slippage(expected))
+        expected = await self._quote(contract, amounts)
+        floor = self.with_slippage(expected)
+        if self.underlying:
+            return await contract.zap_add_liquidity(amounts, floor)
+        return await contract.add_liquidity(amounts, floor)
 
 
 class WithdrawTab(ActionTab):
@@ -613,6 +748,7 @@ class WithdrawTab(ActionTab):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.lp_balance = 0
+        self.zap = zap_for(self.pool)
         # An LP token has no logo of its own; Curve draws the pool's coins.
         self.amount = _amount_field(
             "LP tokens",
@@ -621,14 +757,16 @@ class WithdrawTab(ActionTab):
             on_max=self._max,
         )
         self.lp_label = ft.Text("", size=LABEL, color=ft.Colors.ON_SURFACE_VARIANT)
+        self.route = _route_picker(self._route_changed)
+        self.route.visible = self.zap is not None
+        # Kept as its own attribute so the zap route can grey it out: a zap
+        # withdrawal goes into one coin, and there is nothing to quote a
+        # balanced one against -- the base pool's reserves are not on the
+        # metapool, and a floor of zero is no floor at all.
+        self.balanced_radio = ft.Radio(value="balanced", label="All coins")
         self.mode = ft.RadioGroup(
             value="balanced",
-            content=ft.Row(
-                [
-                    ft.Radio(value="balanced", label="All coins"),
-                    ft.Radio(value="one", label="One coin"),
-                ]
-            ),
+            content=ft.Row([self.balanced_radio, ft.Radio(value="one", label="One coin")]),
             on_change=self._changed,
         )
         self.coin_picker = ft.Dropdown(
@@ -642,13 +780,39 @@ class WithdrawTab(ActionTab):
             else None,
             on_select=self._changed,
         )
+        self._quote_ok = True
+
+    # -- which route is live ----------------------------------------------
+
+    @property
+    def underlying(self) -> bool:
+        return self.zap is not None and self.route.value == "underlying"
+
+    @property
+    def coins(self) -> list:
+        return self.pool.display_coins if self.underlying else self.pool.pool_coins
 
     def build(self) -> list[ft.Control]:
         return [
             _stacked(self.amount, self.lp_label),
+            self.route,
             self.mode,
             self.coin_picker,
         ]
+
+    def _route_changed(self, _e: ft.ControlEvent) -> None:
+        """Swap the receive list, and force the single-coin mode on a zap."""
+        self.coin_picker.options = _coin_options(self.coins, self.pool.chain)
+        self.coin_picker.value = "0"
+        self.balanced_radio.disabled = self.underlying
+        self.balanced_radio.tooltip = (
+            "A zap withdrawal goes into one coin at a time."
+            if self.underlying
+            else None
+        )
+        if self.underlying:
+            self.mode.value = "one"
+        self._changed(None)
 
     def _max(self, _e: ft.ControlEvent) -> None:
         self.amount.value = format_units(self.lp_balance, 18, precision=18)
@@ -656,7 +820,7 @@ class WithdrawTab(ActionTab):
 
     def _changed(self, _e: ft.ControlEvent) -> None:
         self.coin_picker.visible = self.mode.value == "one"
-        coins = self.pool.pool_coins
+        coins = self.coins
         index = self._coin_index()
         if 0 <= index < len(coins):
             self.coin_picker.leading_icon = token_mark(coins[index], self.pool.chain, 20)
@@ -678,6 +842,38 @@ class WithdrawTab(ActionTab):
         except ValueError:
             return 0
 
+    async def fee_units(self, contract: PoolContract) -> int:
+        """A zap withdrawal comes back out through both pools."""
+        fee = await contract.fee()
+        if self.underlying:
+            try:
+                fee += await contract.base_fee()
+            except WalletError:
+                pass
+        return fee
+
+    def fee_key(self) -> object:
+        return self.route.value
+
+    async def approval_needed(self, contract: PoolContract) -> tuple[str, str, int] | None:
+        """LP tokens the zap has to be allowed to take.
+
+        Only on the zap route. Burning LP at the pool needs no approval --
+        the pool burns the caller's own balance rather than transferring it
+        -- but a zap is a third party, so it has to be allowed to move the
+        LP before it can burn it on your behalf.
+        """
+        if not self.underlying or self.zap is None or not self._quote_ok:
+            return None
+        amount = self._lp_amount()
+        if amount <= 0:
+            return None
+        allowance = await contract.allowance(self.pool.lp_token, self.zap.address)
+        if allowance >= amount:
+            return None
+        self.approve_button.content = "1. Approve LP"
+        return (self.pool.lp_token, self.zap.address, amount)
+
     async def refresh(self) -> None:
         contract = self.get_contract()
         await self.suggest_slippage(contract)
@@ -690,29 +886,40 @@ class WithdrawTab(ActionTab):
                 self.lp_label.value = ""
 
         self.estimate.value = ""
+        self._quote_ok = True
         if contract is not None and amount > 0 and self.mode.value == "one":
             index = self._coin_index()
-            coin = self.pool.pool_coins[index]
+            coins = self.coins
+            coin = coins[index] if index < len(coins) else coins[0]
             try:
-                out = await contract.calc_withdraw_one_coin(amount, index)
+                out = await (
+                    contract.zap_calc_withdraw_one_coin(amount, index)
+                    if self.underlying
+                    else contract.calc_withdraw_one_coin(amount, index)
+                )
                 self.estimate.value = (
                     f"~ {token_amount(units_to_float(out, coin.decimals))} {coin.symbol}"
                     f"  (min {token_amount(units_to_float(self.with_slippage(out), coin.decimals))})"
                 )
             except WalletError as exc:
                 self.estimate.value = str(exc)
+                self._quote_ok = False
 
-        # Burning LP needs no approval: the pool burns the caller's own
-        # balance rather than transferring it, so there is no spender.
-        self.approve_button.visible = False
-        self.submit_button.content = self.submit_label
-        self.submit_button.disabled = contract is None or amount <= 0
+        await self._sync_approval(contract)
+        if contract is None or amount <= 0 or not self._quote_ok:
+            self.submit_button.disabled = True
         self.page.update()
 
     async def submit(self, contract: PoolContract) -> str:
         amount = self._lp_amount()
         if amount <= 0:
             raise WalletError("Enter an amount to withdraw.")
+        if self.underlying:
+            index = self._coin_index()
+            expected = await contract.zap_calc_withdraw_one_coin(amount, index)
+            return await contract.zap_remove_liquidity_one_coin(
+                amount, index, self.with_slippage(expected)
+            )
         if self.mode.value == "one":
             index = self._coin_index()
             expected = await contract.calc_withdraw_one_coin(amount, index)

@@ -29,6 +29,7 @@ from wallet.base import RpcError, WalletError, WalletProvider  # noqa: E402
 
 from . import abi  # noqa: E402
 from .models import Pool  # noqa: E402
+from .zaps import Zap, zap_for  # noqa: E402
 
 
 class PoolCallFailed(WalletError):
@@ -42,11 +43,22 @@ class PoolContract:
         self.provider = provider
         self.pool = pool
         self.account = account
+        #: The deposit zap for this pool's underlying coins, if there is
+        #: one. None for every pool that is not a factory metapool, which
+        #: is nearly all of them.
+        self.zap: Zap | None = zap_for(pool)
 
     # -- reads ------------------------------------------------------------
 
-    async def _read(self, to: str, data: str, what: str) -> int:
-        """`eth_call` returning one uint256, with the empty-data guard."""
+    async def _read(
+        self, to: str, data: str, what: str, subject: str = "The pool"
+    ) -> int:
+        """`eth_call` returning one uint256, with the empty-data guard.
+
+        `subject` names whatever was asked, because a read on the
+        underlying route goes to the zap and "the pool did not answer"
+        would point at the wrong contract.
+        """
         try:
             result = await self.provider.call(to, data)
         except RpcError as exc:
@@ -55,7 +67,7 @@ class PoolContract:
             # See the module docstring: this is what a wrong signature looks
             # like, and it must never be mistaken for a legitimate zero.
             raise PoolCallFailed(
-                f"The pool did not answer {what} — it may not support this action."
+                f"{subject} did not answer {what} — it may not support this action."
             )
         return abi.decode_uint(result)
 
@@ -137,6 +149,93 @@ class PoolContract:
             )
         except PoolCallFailed:
             return await self.fee()
+
+    async def base_fee(self) -> int:
+        """The base pool's fee, for a deposit that passes through it.
+
+        A zap deposit of an underlying coin is two deposits -- into the
+        base pool, then into the metapool -- and pays both fees. Measured
+        on a fork across the Ethereum metapools, the shortfall against the
+        zap's own quote lands under their sum in every realistic case:
+        0.045% against 0.055% on the 3pool metapools, and exactly zero on
+        the NG ones, whose quote is fee-inclusive.
+        """
+        if not self.pool.base_pool:
+            return 0
+        return await self._read(
+            self.pool.base_pool, abi.encode_fee(), "the base pool fee", "The base pool"
+        )
+
+    # -- the underlying route ---------------------------------------------
+    #
+    # Same five operations, addressed to the zap and carrying the pool as
+    # their first argument. The amounts are the *underlying* coins --
+    # `Pool.display_coins` -- rather than the two the contract holds.
+
+    def _zap(self) -> Zap:
+        if self.zap is None:
+            raise PoolCallFailed(
+                "This pool has no deposit zap, so its underlying coins "
+                "cannot be deposited directly."
+            )
+        return self.zap
+
+    async def zap_calc_token_amount(
+        self, amounts: list[int], *, deposit: bool = True
+    ) -> int:
+        if not any(amounts):
+            return 0
+        zap = self._zap()
+        return await self._read(
+            zap.address,
+            abi.encode_zap_calc_token_amount(
+                self.pool.address, amounts, deposit=deposit, dynamic=zap.dynamic
+            ),
+            "the deposit estimate",
+            "The deposit zap",
+        )
+
+    async def zap_calc_withdraw_one_coin(self, lp_amount: int, i: int) -> int:
+        if lp_amount <= 0:
+            return 0
+        zap = self._zap()
+        return await self._read(
+            zap.address,
+            abi.encode_zap_calc_withdraw_one_coin(self.pool.address, lp_amount, i),
+            "the withdrawal estimate",
+            "The deposit zap",
+        )
+
+    async def zap_add_liquidity(self, amounts: list[int], min_mint: int) -> str:
+        zap = self._zap()
+        return await self._send(
+            zap.address,
+            abi.encode_zap_add_liquidity(
+                self.pool.address, amounts, min_mint, dynamic=zap.dynamic
+            ),
+        )
+
+    async def zap_remove_liquidity_one_coin(
+        self, lp_amount: int, i: int, min_amount: int
+    ) -> str:
+        zap = self._zap()
+        return await self._send(
+            zap.address,
+            abi.encode_zap_remove_liquidity_one_coin(
+                self.pool.address, lp_amount, i, min_amount
+            ),
+        )
+
+    async def zap_remove_liquidity(
+        self, lp_amount: int, min_amounts: list[int]
+    ) -> str:
+        zap = self._zap()
+        return await self._send(
+            zap.address,
+            abi.encode_zap_remove_liquidity(
+                self.pool.address, lp_amount, min_amounts, dynamic=zap.dynamic
+            ),
+        )
 
     async def balance_of(self, token: str, owner: str | None = None) -> int:
         """ERC-20 balance. Zero is a legitimate answer here, unlike a quote."""

@@ -72,11 +72,11 @@ class StubPage:
         pass
 
 
-def make_pool() -> Pool:
+def make_pool(registry: str = "crvusd") -> Pool:
     pool = Pool.from_v2(
         {
             "address": POOL_ADDRESS,
-            "pool_type": "crvusd",
+            "pool_type": registry,
             "lp_token_address": LP_TOKEN,
             "gauges": [],
             "coins": [
@@ -409,8 +409,8 @@ class FeeProvider(FakeProvider):
         return word(0)
 
 
-def tab_with_fee(cls, flat: int, pair: int | None = None):
-    pool = make_pool()
+def tab_with_fee(cls, flat: int, pair: int | None = None, registry: str = "crvusd"):
+    pool = make_pool(registry=registry)
     pool.gauge = "0x" + "cc" * 20
     provider = FeeProvider(flat, pair)
     contract = PoolContract(provider, pool, ACCOUNT)
@@ -419,36 +419,47 @@ def tab_with_fee(cls, flat: int, pair: int | None = None):
     return tab, provider
 
 
-async def test_deposit_slippage_is_half_a_fee_plus_the_drift() -> None:
-    """`a * fee + b`. Half a fee is the imbalance fee a fully single-sided
-    deposit pays, which the old StableSwap estimators leave out entirely;
-    the constant is what the pool drifts by while you sign. 3pool: half of
-    0.015% plus 0.02% is 0.0275%."""
+async def test_a_pool_whose_quote_is_exact_only_allows_for_drift() -> None:
+    """Deposited on a fork: crvUSD, stableswap-ng, tricrypto-ng and the old
+    crypto pools all mint exactly what `calc_token_amount` quoted, at every
+    size tried. There is no estimator error to give back -- only the
+    constant that covers a quote a few blocks old."""
+    from ui.actions import DepositTab, QUOTE_DRIFT
+
+    tab, _ = tab_with_fee(DepositTab, 1_000_000, registry="stableswapng")
+    await tab.refresh()
+    assert float(tab.slippage.value) == pytest.approx(QUOTE_DRIFT)
+
+
+async def test_an_old_stableswap_pool_gets_a_whole_fee_back() -> None:
+    """3pool mints 0.63x its fee below the quote, cvxCrv/Crv 0.91x; the
+    ceiling for a two-coin pool is one whole fee, so that is what is
+    allowed. 0.015% fee -> 0.035%."""
     from ui.actions import DepositTab
 
-    tab, _ = tab_with_fee(DepositTab, 1_500_000)
+    tab, _ = tab_with_fee(DepositTab, 1_500_000, registry="main")
     await tab.refresh()
-    assert tab.slippage.value == "0.0275"
+    assert tab.slippage.value == "0.035"
 
 
-async def test_a_crypto_pool_gets_a_wider_tolerance() -> None:
-    """Because half of its fee is a bigger number: 1.55% -> 0.795%."""
-    from ui.actions import DepositTab
+async def test_an_unknown_implementation_is_assumed_to_need_it() -> None:
+    """Being wrong the other way is a transaction that reverts."""
+    from ui.actions import DepositTab, QUOTE_DRIFT
 
-    tab, _ = tab_with_fee(DepositTab, 155_010_000)
+    tab, _ = tab_with_fee(DepositTab, 1_000_000, registry="some-new-factory-2027")
     await tab.refresh()
-    assert tab.slippage.value == "0.795"
+    assert float(tab.slippage.value) == pytest.approx(0.01 + QUOTE_DRIFT)
 
 
 async def test_a_tiny_fee_still_gets_the_drift_allowance() -> None:
-    """Strategic USD Reserves charges 0.001%, so half of it is nothing. The
-    constant term is what keeps such a pool workable -- and it is not a
-    floor bolted on, it is the same `a * fee + b` with a small fee."""
+    """Strategic USD Reserves charges 0.001%, and its quote is exact, so
+    the constant is the whole allowance -- it is not a floor bolted on, it
+    is `a * fee + b` with a small fee."""
     from ui.actions import DepositTab, QUOTE_DRIFT
 
-    tab, _ = tab_with_fee(DepositTab, 100_000)
+    tab, _ = tab_with_fee(DepositTab, 100_000, registry="stableswapng")
     await tab.refresh()
-    assert float(tab.slippage.value) == pytest.approx(0.0005 + QUOTE_DRIFT)
+    assert float(tab.slippage.value) == pytest.approx(QUOTE_DRIFT)
 
 
 async def test_withdrawing_uses_the_flat_fee_too() -> None:
@@ -456,7 +467,7 @@ async def test_withdrawing_uses_the_flat_fee_too() -> None:
 
     tab, provider = tab_with_fee(WithdrawTab, 1_000_000, pair=9_999_999)
     await tab.refresh()
-    assert tab.slippage.value == "0.025"
+    assert float(tab.slippage.value) == pytest.approx(0.02)
     assert "0x" + abi.selector("dynamic_fee(int128,int128)") not in provider.reads
 
 
@@ -482,11 +493,12 @@ async def test_a_deposit_is_always_given_more_room_than_a_swap() -> None:
     """The difference is not a preference; it is that one quote is exact."""
     from ui.actions import DepositTab, SwapTab
 
-    deposit, _ = tab_with_fee(DepositTab, 1_000_000)
-    swap, _ = tab_with_fee(SwapTab, 1_000_000)
-    await deposit.refresh()
-    await swap.refresh()
-    assert float(deposit.slippage.value) > float(swap.slippage.value)
+    for registry in ("main", "crvusd", "stableswapng", "factory_tricrypto"):
+        deposit, _ = tab_with_fee(DepositTab, 1_000_000, registry=registry)
+        swap, _ = tab_with_fee(SwapTab, 1_000_000, registry=registry)
+        await deposit.refresh()
+        await swap.refresh()
+        assert float(deposit.slippage.value) > float(swap.slippage.value), registry
 
 
 async def test_changing_the_pair_re_reads_the_fee() -> None:
@@ -543,11 +555,11 @@ async def test_staking_reads_no_fee_at_all() -> None:
 def test_the_arithmetic_is_a_times_fee_plus_b() -> None:
     from ui.actions import ESTIMATE_FEE_SHARE, QUOTE_DRIFT, SLIPPAGE_OF_FEE, slippage_for
 
-    assert (SLIPPAGE_OF_FEE, ESTIMATE_FEE_SHARE, QUOTE_DRIFT) == (0.2, 0.5, 0.02)
+    assert (SLIPPAGE_OF_FEE, ESTIMATE_FEE_SHARE, QUOTE_DRIFT) == (0.2, 1.0, 0.02)
     # 1e10 is 100%, so 10_000_000 is 0.1%.
     assert slippage_for(10_000_000) == pytest.approx(0.02)
     assert slippage_for(0) == 0
-    assert slippage_for(10_000_000, ESTIMATE_FEE_SHARE, QUOTE_DRIFT) == pytest.approx(0.07)
+    assert slippage_for(10_000_000, ESTIMATE_FEE_SHARE, QUOTE_DRIFT) == pytest.approx(0.12)
     # The constant is what carries a pool whose fee rounds to nothing.
     assert slippage_for(0, ESTIMATE_FEE_SHARE, QUOTE_DRIFT) == pytest.approx(QUOTE_DRIFT)
 

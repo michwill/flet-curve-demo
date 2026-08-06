@@ -115,27 +115,29 @@ because a transaction gets no second attempt. An unknown future factory is
 therefore handled by asking rather than by guessing.
 
 The estimates are not equally trustworthy, either, so the slippage default
-is `a * fee + b` with both constants measured against mainnet at a single
-block:
+is `a * fee + b` -- and both constants were measured by running deposits on
+a fork of mainnet (titanoboa) and seeing which ones revert, rather than by
+reasoning about the contracts.
 
-- **`get_dy` is exact** -- the same maths the swap runs, fee included -- so a
-  swap allows `0.2 * fee` and nothing else.
-- **`calc_token_amount` may not charge the imbalance fee.** Splitting a
-  balanced deposit into its single-coin parts and quoting those separately
-  says whether it does: the parts come to 0.500x the fee less than the
-  whole on every pool that charges, and to *exactly the same* on 3pool
-  (`main`) and stETH-ng (old `factory`), whose estimators ignore fees. A
-  fully single-sided deposit pays half the base fee -- Curve's adjusted fee
-  is `base * N / (4(N-1))`, applied to each coin's distance from balance --
-  so `a = 0.5` covers the worst implementation.
-- **`b = 0.02%` is drift**, not fee: the same basket quoted 1, 2, 5, 25 and
-  100 blocks back moves under 0.002% on stable pools even over 20 minutes,
-  up to 0.048% on the crypto pools over 5 minutes, and 0.00000% at the one
-  or two blocks a signature takes.
+- **`get_dy` is exact** -- the maths the swap itself runs, fee included -- so
+  a swap allows `0.2 * fee` and nothing more.
+- **`calc_token_amount` is exact on the modern pools.** crvUSD/USDT,
+  crvUSD/USDC, PayPool, USDG/USDC, Strategic USD Reserves, TricryptoUSDC and
+  tricrypto2 all mint *exactly* the quote, at sizes from 0.001% to 10% of
+  the pool, so `min_mint` = the quote goes through untouched.
+- **The old StableSwap pools quote fee-free**, and the mint lands short by
+  0.91x the fee (cvxCrv/Crv), 0.90x (sdCRV/CRV), 0.63x (3pool), 0.13x
+  (alETH/frxETH), 0.05x (msETH/WETH) -- the spread is how imbalanced each
+  pool already is, and one whole fee is the ceiling for a two-coin pool.
+  So `a` is one fee for those (and for any implementation this app does not
+  recognise), zero for the rest.
+- **`b = 0.02%` is staleness**, which no fee predicts: quoting at an earlier
+  block and depositing at the head costs at most a further 0.0173%
+  (TricryptoUSDC, three blocks stale) and usually under 0.0012%, over gaps
+  from one block to a hundred.
 
-Which lands at 0.0275% to deposit into 3pool and 0.003% to swap in it;
-0.0205% and 0.0002% for a pool charging 0.001%; 0.795% and 0.31% for one
-charging 1.55%.
+Which lands at 0.035% to deposit into 3pool and 0.003% to swap in it, and
+0.02% / 0.0093% for TricryptoUSDC, whose quote needs no correction at all.
 
 ## Reading Curve
 

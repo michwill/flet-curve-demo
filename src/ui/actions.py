@@ -46,6 +46,7 @@ from curve.pool import PoolContract
 from curve.zaps import zap_for
 from wallet.base import WalletError
 
+from .assets import chain_name
 from .logos import pool_stack, token_mark
 from .typography import BODY, LABEL, SMALL
 from wallet.erc20 import format_units, parse_units
@@ -231,6 +232,24 @@ class ActionTab:
         )
         self.estimate = ft.Text("", size=SMALL, color=ft.Colors.ON_SURFACE_VARIANT)
 
+        # Every read here goes through the *wallet's* provider, so it lands
+        # on whatever network the wallet is on -- not the one being
+        # browsed. Picking Gnosis in the header while the wallet sits on
+        # Ethereum therefore quotes Gnosis addresses against Ethereum,
+        # where they hold no code, and every estimate comes back "the pool
+        # did not answer". That looked like a pool this app could not
+        # handle. It is worth saying plainly instead, with the one button
+        # that fixes it.
+        self.network_note = ft.Text("", size=SMALL, expand=True)
+        self.switch_button = ft.TextButton("Switch", on_click=self._switch_network)
+        self.network_panel = ft.Container(
+            ft.Row([self.network_note, self.switch_button], spacing=8, tight=True),
+            padding=ft.Padding.symmetric(horizontal=10, vertical=8),
+            border_radius=8,
+            bgcolor=ft.Colors.with_opacity(0.12, ft.Colors.TERTIARY),
+            visible=False,
+        )
+
         # Labels go through `content`, not `text`: `ft.Button` has no `text`
         # property, so assigning one sets an attribute nobody reads and the
         # button keeps whatever it was built with. That is how Unstake stayed
@@ -310,6 +329,7 @@ class ActionTab:
 
     def mount(self) -> ft.Column:
         self.control.controls = [
+            self.network_panel,
             *self.build(),
             # Next to the amounts it protects. Down by the button it read
             # as part of the action rather than as a setting for it.
@@ -320,6 +340,50 @@ class ActionTab:
             self.status_panel,
         ]
         return self.control
+
+    async def network_ok(self, contract: PoolContract | None) -> bool:
+        """Is the wallet on the network these pools are on?
+
+        False also hides the panel's estimate and greys its buttons, since
+        nothing can be read or sent across a network boundary. A chain the
+        app does not know the id of (0, which is what a pool built from a
+        partial payload has) is not something to complain about.
+        """
+        if contract is None or not self.pool.chain_id:
+            self.network_panel.visible = False
+            return True
+        try:
+            current = await contract.provider.chain_id()
+        except WalletError:
+            self.network_panel.visible = False
+            return True
+        matched = current == self.pool.chain_id
+        self.network_panel.visible = not matched
+        if not matched:
+            wanted = chain_name(self.pool.chain) or f"chain {self.pool.chain_id}"
+            self.network_note.value = (
+                f"Your wallet is on another network. Switch it to {wanted} to "
+                "read balances or act on this pool."
+            )
+            self.switch_button.content = f"Switch to {wanted}"
+            self.estimate.value = ""
+            self.approve_button.visible = False
+            self.submit_button.disabled = True
+        return matched
+
+    async def _switch_network(self, _e: ft.ControlEvent) -> None:
+        """Ask the wallet to move. It may refuse, or not know the chain."""
+        contract = self.get_contract()
+        if contract is None:
+            return
+        try:
+            await contract.provider.switch_chain(self.pool.chain_id)
+        except WalletError as exc:
+            self._say(str(exc), ft.Colors.ERROR)
+            return
+        # The wallet emits `chainChanged`, which the app follows; refresh
+        # anyway in case it was already there and simply said nothing.
+        await self.refresh()
 
     def _slippage_edited(self, _e: ft.ControlEvent) -> None:
         self._slippage_is_theirs = True
@@ -752,6 +816,9 @@ class DepositTab(ActionTab):
 
     async def refresh(self) -> None:
         contract = self.get_contract()
+        if not await self.network_ok(contract):
+            self.page.update()
+            return
         await self.suggest_slippage(contract)
         rows = self.rows
         if contract is not None:
@@ -979,6 +1046,9 @@ class WithdrawTab(ActionTab):
 
     async def refresh(self) -> None:
         contract = self.get_contract()
+        if not await self.network_ok(contract):
+            self.page.update()
+            return
         await self.suggest_slippage(contract)
         amount = self._lp_amount()
         if contract is not None:
@@ -1086,7 +1156,7 @@ class SwapTab(ActionTab):
             dense=True,
             expand=True,
             leading_icon=self._mark(0),
-            on_select=self._changed,
+            on_select=self._from_selected,
         )
         to_index = 1 if self.pool.n_coins > 1 else 0
         self.to_coin = ft.Dropdown(
@@ -1096,7 +1166,16 @@ class SwapTab(ActionTab):
             dense=True,
             expand=True,
             leading_icon=self._mark(to_index),
-            on_select=self._changed,
+            on_select=self._to_selected,
+        )
+        # Two arrows rather than a word: this is the one control here that
+        # is understood faster as a picture, and Material bundles the icon
+        # font in both builds -- a "⇄" in the label font renders as tofu on
+        # web, which is why the sort arrows are icons too.
+        self.flip_button = ft.IconButton(
+            ft.Icons.SWAP_HORIZ,
+            tooltip="Swap the two coins over",
+            on_click=self._flip,
         )
         # The amount is denominated in whatever "From" currently is, so its
         # mark follows the dropdown rather than being fixed at build time.
@@ -1126,13 +1205,17 @@ class SwapTab(ActionTab):
         self.from_coin.options = options
         self.to_coin.options = _coin_options(self.coins, self.pool.chain)
         self.from_coin.value = "0"
-        self.to_coin.value = "1" if len(self.coins) > 1 else "0"
+        self.to_coin.value = self._other_index(0)
         self._changed(None)
 
     def build(self) -> list[ft.Control]:
         return [
             self.route,
-            ft.Row([self.from_coin, self.to_coin], spacing=8),
+            ft.Row(
+                [self.from_coin, self.flip_button, self.to_coin],
+                spacing=4,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
             _stacked(self.amount, self.balance_label),
         ]
 
@@ -1196,6 +1279,44 @@ class SwapTab(ActionTab):
             return None
         return token_mark(coins[index], self.pool.chain, size)
 
+    def _other_index(self, taken: int) -> str:
+        """Any coin but `taken`, for the side that has to give way."""
+        for index in range(len(self.coins)):
+            if index != taken:
+                return str(index)
+        return str(taken)
+
+    def _from_selected(self, e: ft.ControlEvent) -> None:
+        """Picking the coin the other side already holds moves that side.
+
+        Rather than leaving the pair equal and printing "pick two different
+        coins", which is a complaint about something the app can simply
+        fix. The side that gives way is the one not just touched.
+        """
+        i, j = self._indices()
+        if i == j:
+            self.to_coin.value = self._other_index(i)
+        self._changed(e)
+
+    def _to_selected(self, e: ft.ControlEvent) -> None:
+        i, j = self._indices()
+        if i == j:
+            self.from_coin.value = self._other_index(j)
+        self._changed(e)
+
+    def _flip(self, e: ft.ControlEvent) -> None:
+        """Sell what you were buying. The amount stays as typed.
+
+        It is denominated in whichever coin is on the left, so leaving the
+        number alone means the field still says what it says -- and the
+        quote below it is re-read either way.
+        """
+        self.from_coin.value, self.to_coin.value = (
+            self.to_coin.value,
+            self.from_coin.value,
+        )
+        self._changed(e)
+
     def _changed(self, _e: ft.ControlEvent) -> None:
         i, j = self._indices()
         # A control cannot be mounted twice, so each side gets its own mark.
@@ -1206,6 +1327,9 @@ class SwapTab(ActionTab):
 
     async def refresh(self) -> None:
         contract = self.get_contract()
+        if not await self.network_ok(contract):
+            self.page.update()
+            return
         i, j = self._indices()
         await self.suggest_slippage(contract)
         dx = self._dx()
@@ -1349,6 +1473,9 @@ class StakeTab(ActionTab):
         if not self.pool.has_gauge:
             self.submit_button.visible = False
             self.approve_button.visible = False
+            self.page.update()
+            return
+        if not await self.network_ok(contract):
             self.page.update()
             return
 

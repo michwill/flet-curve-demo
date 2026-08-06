@@ -49,9 +49,15 @@ class FakeProvider(WalletProvider):
         self.sent: list[dict] = []
         self.default = word(0)
         self.raise_on_call: Exception | None = None
+        #: What network the wallet says it is on. The panels ask, because
+        #: a read aimed at another chain answers "no code here" and that
+        #: reads as a pool this app cannot handle.
+        self.chain = 1
 
     async def request(self, method: str, params=None):
         params = params or []
+        if method == "eth_chainId":
+            return hex(self.chain)
         if method == "eth_call":
             if self.raise_on_call is not None:
                 raise self.raise_on_call
@@ -1002,3 +1008,183 @@ def test_each_kind_of_status_gets_its_own_tint() -> None:
     assert tab.status_spinner.visible
     tab._say("done", ft.Colors.GREEN_600)
     assert not tab.status_spinner.visible
+
+
+# -- the swap pickers ------------------------------------------------------
+#
+# Two coins, and the panel should never sit in a state it can complain
+# about but not fix.
+
+
+def swap_tab(provider=None):
+    from ui.actions import SwapTab
+
+    pool = make_pool()
+    contract = PoolContract(provider or FakeProvider(), pool, ACCOUNT)
+    tab = SwapTab(StubPage(), pool, lambda: contract, None)
+    tab.mount()
+    return tab
+
+
+def test_choosing_the_coin_the_other_side_holds_moves_that_side() -> None:
+    """Rather than leaving the pair equal and printing "pick two different
+    coins", which complains about something the app can just fix."""
+    tab = swap_tab()
+    assert (tab.from_coin.value, tab.to_coin.value) == ("0", "1")
+
+    tab.from_coin.value = "1"  # the coin "To" already holds
+    tab._from_selected(None)
+
+    assert tab.to_coin.value != "1"
+    assert tab._indices()[0] != tab._indices()[1]
+
+
+def test_the_other_side_gives_way_whichever_was_touched() -> None:
+    tab = swap_tab()
+    tab.to_coin.value = "0"  # the coin "From" already holds
+    tab._to_selected(None)
+    assert tab.from_coin.value != "0"
+
+
+def test_flipping_swaps_the_two_over() -> None:
+    tab = swap_tab()
+    tab.amount.value = "100"
+
+    tab._flip(None)
+
+    assert (tab.from_coin.value, tab.to_coin.value) == ("1", "0")
+    # The amount is denominated in whichever coin is on the left, so the
+    # number stays and the quote is re-read.
+    assert tab.amount.value == "100"
+
+
+def test_flipping_twice_is_where_it_started() -> None:
+    tab = swap_tab()
+    tab._flip(None)
+    tab._flip(None)
+    assert (tab.from_coin.value, tab.to_coin.value) == ("0", "1")
+
+
+def test_a_one_coin_pool_cannot_be_made_to_pick_a_second() -> None:
+    """Nothing here should raise on a degenerate pool, even though the
+    list will not offer one."""
+    from ui.actions import SwapTab
+
+    pool = make_pool()
+    pool.coins = pool.coins[:1]
+    pool.onchain_coins = 1
+    tab = SwapTab(StubPage(), pool, lambda: None, None)
+    tab.mount()
+    tab._from_selected(None)
+    assert tab.from_coin.value == "0"
+
+
+# -- the wrong network -----------------------------------------------------
+#
+# Every read goes through the wallet's provider, so it lands on the network
+# the *wallet* is on. Browsing Gnosis with a wallet on Ethereum quotes
+# Gnosis addresses against Ethereum, where they hold no code, and every
+# estimate comes back "the pool did not answer" -- which reads as a pool
+# this app cannot handle rather than as a wallet in the wrong place.
+
+
+async def test_a_wallet_on_another_network_is_said_plainly() -> None:
+    provider = FakeProvider()
+    provider.chain = 1
+    pool = make_pool()
+    pool.chain_id = 100  # Gnosis
+    pool.chain = "xdai"
+    contract = PoolContract(provider, pool, ACCOUNT)
+    from ui.actions import DepositTab
+
+    tab = DepositTab(StubPage(), pool, lambda: contract, None)
+    tab.mount()
+
+    await tab.refresh()
+
+    assert tab.network_panel.visible is True
+    assert "Gnosis" in tab.network_note.value
+    assert tab.submit_button.disabled is True
+    assert tab.approve_button.visible is False
+
+
+async def test_the_right_network_says_nothing() -> None:
+    provider = FakeProvider()
+    provider.chain = 1
+    pool = make_pool()
+    pool.chain_id = 1
+    contract = PoolContract(provider, pool, ACCOUNT)
+    from ui.actions import DepositTab
+
+    tab = DepositTab(StubPage(), pool, lambda: contract, None)
+    tab.mount()
+
+    await tab.refresh()
+
+    assert tab.network_panel.visible is False
+
+
+async def test_a_pool_with_no_known_chain_is_not_complained_about() -> None:
+    """A pool built from a partial payload has `chain_id` 0, which is not
+    a mismatch -- it is an absence."""
+    provider = FakeProvider()
+    pool = make_pool()
+    pool.chain_id = 0
+    contract = PoolContract(provider, pool, ACCOUNT)
+    from ui.actions import DepositTab
+
+    tab = DepositTab(StubPage(), pool, lambda: contract, None)
+    tab.mount()
+    assert await tab.network_ok(contract) is True
+    assert tab.network_panel.visible is False
+
+
+async def test_the_switch_button_asks_the_wallet_to_move() -> None:
+    class Switching(FakeProvider):
+        def __init__(self):
+            super().__init__()
+            self.switched: list = []
+
+        async def request(self, method, params=None):
+            if method == "wallet_switchEthereumChain":
+                self.switched.append(params[0]["chainId"])
+                self.chain = int(params[0]["chainId"], 16)
+                return None
+            return await super().request(method, params)
+
+    provider = Switching()
+    pool = make_pool()
+    pool.chain_id = 100
+    pool.chain = "xdai"
+    contract = PoolContract(provider, pool, ACCOUNT)
+    from ui.actions import DepositTab
+
+    tab = DepositTab(StubPage(), pool, lambda: contract, None)
+    tab.mount()
+    await tab.refresh()
+    assert tab.network_panel.visible is True
+
+    await tab._switch_network(None)
+
+    assert provider.switched == [hex(100)]
+    assert tab.network_panel.visible is False
+
+
+async def test_a_refused_switch_is_reported_not_swallowed() -> None:
+    class Refusing(FakeProvider):
+        async def request(self, method, params=None):
+            if method == "wallet_switchEthereumChain":
+                raise RpcError(4001, "User rejected the request")
+            return await super().request(method, params)
+
+    pool = make_pool()
+    pool.chain_id = 100
+    contract = PoolContract(Refusing(), pool, ACCOUNT)
+    from ui.actions import DepositTab
+
+    tab = DepositTab(StubPage(), pool, lambda: contract, None)
+    tab.mount()
+
+    await tab._switch_network(None)
+
+    assert "rejected" in tab.status.value.lower()

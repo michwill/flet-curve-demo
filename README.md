@@ -166,6 +166,13 @@ zap on its own chain, quoting a real deposit. The Gnosis gap that prompted this
 was a sweep bug: Curve's API calls that chain `xdai`, and asking for `gnosis`
 quietly returned nothing.
 
+**If every estimate on a chain fails, look at the wallet before the pool.**
+Reads go through the wallet's provider, so they land on whatever network the
+*wallet* is on — browsing Gnosis with a wallet on Ethereum quotes Gnosis
+addresses against Ethereum, where they hold no code, and every estimate comes
+back "the pool did not answer". That reads as a pool this app cannot handle. The
+action panels now say so instead, with a button that asks the wallet to switch.
+
 A zap that will not answer costs nothing, since the route is gated on a working
 quote — no approve step appears and the pool-token route stays. One family is
 still unsupported for deposits: the `main`-registry metapools (GUSD/3Crv and

@@ -114,51 +114,16 @@ tries both spellings, and the one that answers is remembered on the pool,
 because a transaction gets no second attempt. An unknown future factory is
 therefore handled by asking rather than by guessing.
 
-The estimates are not equally trustworthy, either, so the slippage default
-is `a * fee + b` -- fitted to 88 deposits run on a **fork of mainnet**
-(titanoboa) across 44 pools, bisecting `min_mint` until `add_liquidity`
-stopped reverting:
-
-- **`get_dy` is exact** -- the maths the swap itself runs, fee included --
-  so a swap allows `0.2 * fee` and nothing more.
-- **The whole rule is `fee + 0.005%`**: a deposit may lose its pool's fee,
-  plus a little for the quote going stale. The slope is not a fitted
-  constant but a ceiling -- the imbalance fee on a fully single-sided
-  deposit approaches the base fee as a two-coin pool skews, so no pool of
-  that shape can need more. (Solving the 44 pools for the smallest slope at
-  a 0.005% constant gives 0.880; one is that rounded to the bound it is
-  converging on.) What binds it is the old StableSwap implementations,
-  which quote fee-free: cvxCrv/Crv mints 0.91x its fee below the quote,
-  sdCRV/CRV 0.90x, 3pool 0.63x, alETH/frxETH 0.13x, msETH/WETH 0.05x -- the
-  spread is how imbalanced each pool already is. Everything modern --
-  crvusd, stableswap-ng, tricrypto-ng, twocrypto-ng, the old crypto pools --
-  mints *exactly* the quote, so there the fee term is margin, which is also
-  what covers an implementation this app has never seen.
-- **Keeping the fee term is what keeps the constant small.** Flattening it
-  towards zero would push the constant to 0.137%, the whole of cvxCrv/Crv's
-  shortfall, and every pegged pool would then be given it. As it stands a
-  pool charging 0.001% is allowed 0.006% and one charging 0.6% is allowed
-  0.605%.
-- **`b` is the time axis**, and it is zero *across pools* -- a cross-section
-  measured at one moment cannot see it. What a quote loses by going stale
-  is measured separately, against the archive: the worst five-block drop
-  across all 44 pools in a quiet snapshot was 0.00022%, while a volatile
-  moment cost 0.0173% over three blocks on TricryptoUSDC. The quiet case
-  fits inside 0.005%; the bursty one is absorbed by `a * fee`, because the
-  pools that lurch are the ones charging enough for that term to matter
-  (TricryptoUSDC allows 0.0335%) while the pools whose fees are too small
-  to help are the pegged ones that do not lurch.
-
-Which lands at 0.02% to deposit into 3pool and 0.003% to swap in it; 0.155%
-and 0.03% for cvxCrv/Crv, whose fee is 0.15%. The shown figure is
-rounded *up* to three significant digits -- a floor displayed tighter than
-it was calculated is a floor that reverts.
-
-A caveat about measuring this yourself: `boa.deal` on a share-based token
-moves its exchange rate, and the pool prices deposits through that rate. A
-quote taken *before* funding therefore measures the harness, not the pool.
-It made four pools look like they under-minted by up to 30x their fee;
-quoting after funding, they are exact.
+The estimates are not equally trustworthy, either, so the slippage the app
+fills in is `fee + 0.005%` to deposit or withdraw and `0.2 * fee` to swap.
+`get_dy` is exact -- the arithmetic the swap itself runs -- while
+`calc_token_amount` is computed fee-free on the old StableSwap pools, so a
+`min_mint` built from it reverts. Both constants were measured: deposits run
+on a titanoboa fork across 44 pools, bisecting `min_mint` until the
+transaction stopped reverting, and quote staleness against the archive.
+[`docs/slippage.md`](docs/slippage.md) has the tables, the two measurement
+traps that produced wrong answers first, and why the fee term is what lets
+the constant stay at 0.005%.
 
 ## Reading Curve
 

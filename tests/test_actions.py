@@ -20,7 +20,10 @@ import pytest
 from curve import abi
 from curve.models import Pool
 from curve.pool import PoolContract
+import flet as ft
+
 from ui.actions import WithdrawTab
+from ui.typography import BODY
 from wallet.base import RpcError, WalletProvider
 
 ACCOUNT = "0x1111111111111111111111111111111111111111"
@@ -189,3 +192,88 @@ async def test_a_one_coin_withdrawal_floors_at_the_pool_s_own_quote() -> None:
     amount, index, minimum = words_of(sent)
     assert (amount, index) == (100 * 10**18, 0)
     assert minimum == pytest.approx(99 * 10**6 * 0.99, rel=1e-9)
+
+
+# -- how the panel is laid out ---------------------------------------------
+#
+# The amounts are the subject of these panels, so they get the panel's full
+# width. They used to stop short of the right edge -- Material gives a text
+# field its own idea of a sensible width unless the column stretches it --
+# which read as if they were dodging the slippage box beside them.
+
+
+def tabs():
+    from ui.actions import DepositTab, StakeTab, SwapTab, WithdrawTab
+
+    pool = make_pool()
+    page = StubPage()
+    return [
+        cls(page, pool, lambda: None, None)
+        for cls in (DepositTab, WithdrawTab, SwapTab, StakeTab)
+    ]
+
+
+def widths_are_stretched(column) -> bool:
+    import flet as ft
+
+    return column.horizontal_alignment == ft.CrossAxisAlignment.STRETCH
+
+
+def fields_of(control) -> list:
+    """Every text field in a control tree."""
+    import flet as ft
+
+    found = []
+    if isinstance(control, ft.TextField):
+        found.append(control)
+    for child in getattr(control, "controls", None) or []:
+        found += fields_of(child)
+    inner = getattr(control, "content", None)
+    if isinstance(inner, ft.Control):
+        found += fields_of(inner)
+    return found
+
+
+@pytest.mark.parametrize("index", range(4))
+def test_every_panel_stretches_its_fields(index: int) -> None:
+    tab = tabs()[index]
+    assert widths_are_stretched(tab.mount())
+
+
+def test_a_field_and_its_balance_line_stretch_together() -> None:
+    """The inner column has to stretch too, or the field inside it keeps
+    its intrinsic width however wide the panel is."""
+    tab = tabs()[0]
+    tab.mount()
+    pairs = [c for c in tab.control.controls if isinstance(c, ft.Column)]
+    assert pairs and all(widths_are_stretched(pair) for pair in pairs)
+
+
+def test_no_amount_field_sets_its_own_width() -> None:
+    """A fixed width would defeat the stretch. Slippage is the exception --
+    it is deliberately small."""
+    for tab in tabs():
+        for field in fields_of(tab.mount()):
+            if field is tab.slippage:
+                continue
+            assert field.width is None, f"{tab.title}: {field.label} pins its width"
+
+
+def test_slippage_is_small_and_out_of_the_way() -> None:
+    tab = tabs()[0]
+    tab.mount()
+    assert tab.slippage.width and tab.slippage.width <= 100
+    assert tab.slippage.text_size and tab.slippage.text_size < BODY
+    row = next(
+        r
+        for r in tab.control.controls
+        if isinstance(r, ft.Row) and tab.slippage in (r.controls or [])
+    )
+    assert row.alignment == ft.MainAxisAlignment.END
+
+
+def test_staking_offers_no_slippage() -> None:
+    """There is no rate to protect: LP tokens go into the gauge one for one."""
+    deposit, _withdraw, _swap, stake = tabs()
+    assert deposit.slippage in fields_of(deposit.mount())
+    assert stake.slippage not in fields_of(stake.mount())

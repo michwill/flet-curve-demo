@@ -41,12 +41,30 @@ from wallet.erc20 import format_units, parse_units
 DEFAULT_SLIPPAGE = 0.5
 
 
+def _stacked(*controls: ft.Control) -> ft.Column:
+    """A field with its caption underneath, both as wide as the panel."""
+    return ft.Column(
+        list(controls),
+        spacing=2,
+        horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+    )
+
+
+def _aside(control: ft.Control) -> ft.Row:
+    """A control that should keep its own size, pushed to the right."""
+    return ft.Row([control], alignment=ft.MainAxisAlignment.END, tight=True)
+
+
 class ActionTab:
     """Base for the four panels. Subclasses build fields and submit."""
 
     title = ""
     #: Label for the button that sends the main transaction.
     submit_label = "Confirm"
+    #: Does this action have a price to protect? Staking does not -- it
+    #: moves LP tokens into a gauge at no rate at all -- so showing a
+    #: tolerance there invites someone to tune a number that does nothing.
+    uses_slippage = True
 
     def __init__(
         self,
@@ -60,11 +78,16 @@ class ActionTab:
         self.get_contract = get_contract
         self.on_done = on_done
 
+        # Secondary, and sized to say so: a number you set once and then
+        # ignore should not have the same weight as the amount you are
+        # about to send.
         self.slippage = ft.TextField(
             label="Slippage %",
             value=str(DEFAULT_SLIPPAGE),
-            width=110,
+            width=92,
             dense=True,
+            text_size=LABEL,
+            label_style=ft.TextStyle(size=LABEL),
         )
         self.status = ft.Text("", size=SMALL, selectable=True)
         self.estimate = ft.Text("", size=SMALL, color=ft.Colors.ON_SURFACE_VARIANT)
@@ -75,7 +98,14 @@ class ActionTab:
         self.submit_button = ft.Button(
             self.submit_label, on_click=self._submit_clicked, disabled=True
         )
-        self.control = ft.Column(spacing=12)
+        # STRETCH, so every field fills the panel. Without it a Column
+        # gives each child its intrinsic width, and Material's idea of how
+        # wide a text field wants to be left the amounts ending short of
+        # the right edge -- by about the width of the slippage box, which
+        # made it look like they were dodging it.
+        self.control = ft.Column(
+            spacing=12, horizontal_alignment=ft.CrossAxisAlignment.STRETCH
+        )
 
     # -- to implement -----------------------------------------------------
 
@@ -98,7 +128,7 @@ class ActionTab:
         self.control.controls = [
             *self.build(),
             self.estimate,
-            ft.Row([self.slippage], alignment=ft.MainAxisAlignment.END),
+            *([_aside(self.slippage)] if self.uses_slippage else []),
             self.approve_button,
             self.submit_button,
             self.status,
@@ -258,7 +288,7 @@ class DepositTab(ActionTab):
             label = ft.Text("", size=LABEL, color=ft.Colors.ON_SURFACE_VARIANT)
             self.fields.append(field)
             self.balance_labels.append(label)
-            rows.append(ft.Column([field, label], spacing=2))
+            rows.append(_stacked(field, label))
         return rows
 
     def _amounts(self) -> list[int]:
@@ -364,10 +394,10 @@ class WithdrawTab(ActionTab):
 
     def build(self) -> list[ft.Control]:
         return [
-            ft.Column([self.amount, self.lp_label], spacing=2),
+            _stacked(self.amount, self.lp_label),
             self.mode,
             self.coin_picker,
-            ft.TextButton("Max", on_click=self._max),
+            _aside(ft.TextButton("Max", on_click=self._max)),
         ]
 
     def _max(self, _e: ft.ControlEvent) -> None:
@@ -496,7 +526,7 @@ class SwapTab(ActionTab):
     def build(self) -> list[ft.Control]:
         return [
             ft.Row([self.from_coin, self.to_coin], spacing=8),
-            ft.Column([self.amount, self.balance_label], spacing=2),
+            _stacked(self.amount, self.balance_label),
         ]
 
     def _indices(self) -> tuple[int, int]:
@@ -592,6 +622,7 @@ class StakeTab(ActionTab):
 
     title = "Stake"
     submit_label = "Stake"
+    uses_slippage = False
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
@@ -623,8 +654,8 @@ class StakeTab(ActionTab):
             ]
         return [
             self.direction,
-            ft.Column([self.amount, self.balances_label], spacing=2),
-            ft.TextButton("Max", on_click=self._max),
+            _stacked(self.amount, self.balances_label),
+            _aside(ft.TextButton("Max", on_click=self._max)),
         ]
 
     def _max(self, _e: ft.ControlEvent) -> None:

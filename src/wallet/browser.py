@@ -273,6 +273,12 @@ async def discover() -> BrowserWalletProvider:
     provider = BrowserWalletProvider()
     # Push local settings before asking what is available: whether the
     # WalletConnect connector can offer itself depends on the projectId.
+    #
+    # Printed, because "why is WalletConnect not in the list" has exactly
+    # one answer -- the build has no projectId -- and it is otherwise
+    # invisible: a missing `local_config.toml` is not an error, it is just
+    # a connector that never appears.
+    print(f"[wallet] {settings.describe()}")
     await provider.configure(settings.bridge_config())
     hello = await provider.handshake()
     provider.wallets = hello.get("wallets") or []

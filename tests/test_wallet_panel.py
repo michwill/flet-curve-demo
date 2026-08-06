@@ -182,3 +182,100 @@ def test_flet_run_web_explains_why_there_are_no_browser_wallets(monkeypatch) -> 
     dialog = app._wallet_dialog(make_wallet())
     note = [t for t in texts(dialog.content) if "Python is running" in t]
     assert note and "flet publish" in note[0]
+
+
+# -- changing wallet, and changing your mind --------------------------------
+
+
+class Recorder:
+    """Stands in for a live `Wallet` so the app can be driven without one."""
+
+    def __init__(self, address: str = ADDRESS) -> None:
+        self.address = address
+        self.short_address = f"{address[:6]}…{address[-4:]}"
+        self.name = "qeth"
+        self.icon = None
+        self.chain = chains.get_chain(1)
+        self.closed = False
+        self.disconnected = False
+
+    def on_change(self, handler) -> None:
+        pass
+
+    def on_disconnect(self, handler) -> None:
+        pass
+
+    async def close(self) -> None:
+        self.closed = True
+
+    async def disconnect(self) -> None:
+        self.disconnected = True
+        self.closed = True
+
+
+def app_with(wallet) -> main.CurveApp:
+    """An app already connected, with just enough header to redraw."""
+    app = main.CurveApp.__new__(main.CurveApp)
+    app.page = StubPage()
+    app.wallet = wallet
+    app._detail = None
+    app._address_expanded = False
+    app.account_label = ft.Text("")
+    app.account_chip = ft.Container(app.account_label)
+    app.connect_button = ft.Button("Connect wallet")
+    app.error = ft.Text("", visible=False)
+    return app
+
+
+async def test_cancelling_a_change_keeps_the_wallet_you_had(monkeypatch) -> None:
+    """The bug: "change wallet" dropped the session before offering the
+    picker, so backing out of the picker left you disconnected."""
+    from wallet.session import ConnectionCancelled
+
+    previous = Recorder()
+    app = app_with(previous)
+
+    async def refuse(**kwargs):
+        raise ConnectionCancelled()
+
+    monkeypatch.setattr(main.Wallet, "connect", refuse)
+    await app._change_wallet()
+
+    assert app.wallet is previous, "the old session was dropped"
+    assert not previous.closed and not previous.disconnected
+    assert not app.connect_button.visible, "still connected, so no Connect button"
+    assert app.error.visible, "but say why nothing changed"
+
+
+async def test_a_successful_change_releases_the_old_one(monkeypatch) -> None:
+    """Released, not disconnected: nothing about intent has changed, so the
+    remembered wallet and the consent marker must survive the swap."""
+    previous, chosen = Recorder(), Recorder("0x" + "22" * 20)
+
+    async def accept(**kwargs):
+        return chosen
+
+    monkeypatch.setattr(main.Wallet, "connect", accept)
+    app = app_with(previous)
+    await app._change_wallet()
+
+    assert app.wallet is chosen
+    assert previous.closed and not previous.disconnected
+
+
+async def test_a_failed_first_connection_still_offers_the_button(
+    monkeypatch,
+) -> None:
+    """Nothing to fall back to, so the Connect button has to come back."""
+    from wallet.base import WalletUnavailable
+
+    async def fail(**kwargs):
+        raise WalletUnavailable("no wallet here")
+
+    monkeypatch.setattr(main.Wallet, "connect", fail)
+    app = app_with(None)
+    await app.connect(None)
+
+    assert app.wallet is None
+    assert app.connect_button.visible
+    assert "no wallet here" in app.error.value

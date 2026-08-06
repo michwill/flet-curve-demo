@@ -196,17 +196,29 @@ class Wallet:
             icon=chosen.icon if chosen else None,
         )
 
+    async def close(self) -> None:
+        """Let go of the transport, without calling it a disconnection.
+
+        For swapping one live session for another: the old channel (or
+        poller) has to be released, but nothing about the user's intent has
+        changed, so neither the remembered wallet nor the consent marker is
+        touched.
+        """
+        await self.provider.close()
+
     async def disconnect(self) -> None:
-        # Deliberate: stop remembering this wallet, so the next page load
-        # starts disconnected rather than quietly reconnecting to the
-        # wallet the user just walked away from. The marker covers the
-        # transports with no page storage -- a desktop build otherwise
-        # connects again the moment it is relaunched.
+        """End the session because the user said so.
+
+        Deliberate, so it is remembered: the page stops remembering this
+        wallet and the marker covers the transports with no page storage --
+        a desktop build otherwise connects again the moment it is
+        relaunched.
+        """
         consent.record_disconnect()
         forget = getattr(self.provider, "forget", None)
         if forget is not None:
             await forget()
-        await self.provider.close()
+        await self.close()
 
     @classmethod
     async def restore(cls) -> "Wallet | None":

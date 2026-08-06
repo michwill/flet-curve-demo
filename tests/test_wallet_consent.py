@@ -235,3 +235,41 @@ async def test_cancelling_the_picker_connects_nothing(monkeypatch) -> None:
     with pytest.raises(ConnectionCancelled):
         await Wallet.connect(choose=choose)
     assert provider.closed
+
+
+# -- swapping is not disconnecting -----------------------------------------
+
+
+async def test_closing_a_session_says_nothing_about_intent(monkeypatch) -> None:
+    """Used when one live session replaces another.
+
+    The transport has to be released either way, but the user did not ask
+    to be disconnected -- so nothing is remembered and nothing is forgotten.
+    """
+    provider = FakeProvider()
+    forgotten = []
+    provider.forget = lambda: forgotten.append(True)  # type: ignore[assignment]
+    use(monkeypatch, provider)
+    wallet = await Wallet.connect()
+
+    await wallet.close()
+    assert provider.closed
+    assert consent.autoconnect_allowed(), "closing must not look like disconnecting"
+    assert not forgotten, "closing must not forget the remembered wallet"
+
+
+async def test_disconnecting_does_both(monkeypatch) -> None:
+    provider = FakeProvider()
+    forgotten = []
+
+    async def forget() -> None:
+        forgotten.append(True)
+
+    provider.forget = forget  # type: ignore[assignment]
+    use(monkeypatch, provider)
+    wallet = await Wallet.connect()
+
+    await wallet.disconnect()
+    assert provider.closed
+    assert not consent.autoconnect_allowed()
+    assert forgotten == [True]

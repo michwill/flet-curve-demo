@@ -423,6 +423,7 @@ class CurveApp:
         self.connect_button.content = "Connecting…"
         self.error.visible = False
         self.page.update()
+        previous = self.wallet
         try:
             self.wallet = await Wallet.connect(
                 choose=self._choose_wallet, always_choose=always_choose
@@ -434,9 +435,22 @@ class CurveApp:
             self.error.visible = True
             self.connect_button.content = CONNECT_LABEL
             self.connect_button.disabled = False
-            self.connect_button.visible = True
+            # Cancelling a "change wallet" leaves the session that was
+            # already there: nothing was torn down to offer the picker, and
+            # the picker changes what the bridge points at only once
+            # something is picked.
+            self.connect_button.visible = previous is None
+            self._show_account(expanded=self._address_expanded)
             self.page.update()
             return
+
+        if previous is not None and previous is not self.wallet:
+            # Swapped, not disconnected: release the old transport without
+            # recording an intent the user never expressed.
+            try:
+                await previous.close()
+            except WalletError:
+                pass
 
         self.wallet.on_change(lambda: self.page.run_task(self._wallet_changed))
         self.wallet.on_disconnect(lambda: self.page.run_task(self._wallet_gone))
@@ -620,13 +634,16 @@ class CurveApp:
         ]
 
     async def _change_wallet(self) -> None:
-        """Drop the current connection, then connect again from scratch.
+        """Connect a different wallet, keeping this one until that works.
 
         The picker is forced open even when only one wallet answered:
         without that this command silently reconnects to the wallet you
         were already using and looks like it did nothing at all.
+
+        The old session is *not* dropped first. It used to be, which meant
+        cancelling the picker left you disconnected -- having asked only to
+        look at the alternatives.
         """
-        await self._disconnect_wallet()
         await self.connect(None, always_choose=True)
 
     async def _disconnect_wallet(self) -> None:

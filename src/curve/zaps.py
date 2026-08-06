@@ -87,6 +87,13 @@ class Zap:
     #: Stable zaps carry the `is_deposit` flag on `calc_token_amount` and
     #: index coins with `int128`; the crypto ones have neither.
     stableswap: bool = True
+    #: Does it swap, as well as deposit and withdraw? Only the per-pool
+    #: crypto zaps do -- all seven carry `exchange_underlying` and
+    #: `get_dy_underlying`, checked in their deployed bytecode, and no
+    #: factory zap of either kind has either function. It matters because
+    #: a crypto metapool has no underlying swap of its own, so without
+    #: this the route would not exist for those pools at all.
+    swaps: bool = False
 
 
 #: Keyed by `(chain_id, base pool address lowercased, dynamic)`. The last
@@ -194,31 +201,31 @@ CRYPTO_ZAPS: dict[tuple[int, str], Zap] = {
 POOL_ZAPS: dict[tuple[int, str], Zap] = {
     (1, "0xadcfcf9894335dc340f6cd182afa45999f45fc44"): Zap(
         "0xc5FA220347375ac4f91f9E4A4AAb362F22801504", 4, False,
-        pool_arg=False, stableswap=False,
+        pool_arg=False, stableswap=False, swaps=True,
     ),  # Ethereum Curve XAUT-3Crv
     (1, "0xe84f5b1582ba325fdf9ce6b0c1f087ccfc924e54"): Zap(
         "0xd446A98F88E1d053d1F64986E3Ed083bb1Ab7E5A", 4, False,
-        pool_arg=False, stableswap=False,
+        pool_arg=False, stableswap=False, swaps=True,
     ),  # Ethereum Curve EUROC-3Crv
     (1, "0x9838eccc42659fa8aa7daf2ad134b53984c9427b"): Zap(
         "0x5D0F47B32fDd343BfA74cE221808e2abE4A53827", 4, False,
-        pool_arg=False, stableswap=False,
+        pool_arg=False, stableswap=False, swaps=True,
     ),  # Ethereum Curve EURT-3Crv
     (100, "0x056c6c5e684cec248635ed86033378cc444459b0"): Zap(
         "0xE3FFF29d4DC930EBb787FeCd49Ee5963DADf60b6", 4, False,
-        pool_arg=False, stableswap=False,
+        pool_arg=False, stableswap=False, swaps=True,
     ),  # Gnosis Curve EURe-3Crv
     (137, "0xb446bf7b8d6d4276d0c75ec0e3ee8dd7fe15783a"): Zap(
         "0x225FB4176f0E20CDb66b4a3DF70CA3063281E855", 4, False,
-        pool_arg=False, stableswap=False,
+        pool_arg=False, stableswap=False, swaps=True,
     ),  # Polygon Curve EURT-3Crv
     (137, "0x9b3d675fdbe6a0935e8b7d1941bc6f78253549b7"): Zap(
         "0x4DF7eF55E99a56851187822d96B4E17D98A47DeD", 4, False,
-        pool_arg=False, stableswap=False,
+        pool_arg=False, stableswap=False, swaps=True,
     ),  # Polygon Curve EURS-3Crv
     (42161, "0xa827a652ead76c6b0b3d19dba05452e06e25c27e"): Zap(
         "0x25e2e8d104BC1A70492e2BE32dA7c1f8367F9d2c", 3, False,
-        pool_arg=False, stableswap=False,
+        pool_arg=False, stableswap=False, swaps=True,
     ),  # Arbitrum Curve EURS-2Crv
 }
 

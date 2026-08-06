@@ -56,6 +56,38 @@ def fallback_color(symbol: str) -> str:
     return _FALLBACK_COLORS[sum(symbol.encode()) % len(_FALLBACK_COLORS)]
 
 
+def initials_mark(symbol: str, size: float) -> ft.Container:
+    """What stands in for a logo there is no image for.
+
+    Quiet on purpose. This used to be two white letters on a saturated
+    disc, which next to real token logos read as a brand rather than as an
+    absence -- most obvious in the swap pickers, where one of the two coins
+    would shout and the other would not. So the hue now only tints: a wash
+    of it behind the letters and a hairline around them, with the text in
+    the theme's own colour so it stays legible in both themes.
+
+    The hue is still derived from the symbol, because several of these can
+    sit side by side in one pool's stack and they have to be told apart.
+    """
+    accent = fallback_color(symbol)
+    return ft.Container(
+        ft.Text(
+            (symbol or "?")[:3].upper(),
+            size=size * 0.32,
+            weight=ft.FontWeight.W_600,
+            color=ft.Colors.ON_SURFACE_VARIANT,
+            text_align=ft.TextAlign.CENTER,
+            no_wrap=True,
+        ),
+        width=size,
+        height=size,
+        bgcolor=ft.Colors.with_opacity(0.18, accent),
+        border=ft.Border.all(1, ft.Colors.with_opacity(0.45, accent)),
+        border_radius=size / 2,
+        alignment=ft.Alignment.CENTER,
+    )
+
+
 def token_mark(coin: Coin, chain: str, size: float = 24) -> ft.Container:
     """One coin's logo, or its initials when there is no image.
 
@@ -63,14 +95,7 @@ def token_mark(coin: Coin, chain: str, size: float = 24) -> ft.Container:
     straight into a `Stack` with `left`/`top` and needs no extra wrapper.
     """
     source = token_logo(chain, coin.address)
-    initials = (coin.symbol or "?")[:2].upper()
-    letters = ft.Text(
-        initials,
-        size=size * 0.36,
-        weight=ft.FontWeight.BOLD,
-        color=ft.Colors.WHITE,
-        text_align=ft.TextAlign.CENTER,
-    )
+    letters = initials_mark(coin.symbol, size)
     if source:
         content = ft.Image(
             src=source,
@@ -84,24 +109,15 @@ def token_mark(coin: Coin, chain: str, size: float = 24) -> ft.Container:
             # A logo that 404s falls back rather than leaving a hole. The
             # compiled subset can lag the API, and plenty of long-tail
             # tokens have no image upstream at all.
-            error_content=ft.Container(
-                letters,
-                bgcolor=fallback_color(coin.symbol),
-                width=size,
-                height=size,
-                alignment=ft.Alignment.CENTER,
-            ),
+            error_content=letters,
         )
-        background = None
     else:
         content = letters
-        background = fallback_color(coin.symbol)
 
     return ft.Container(
         content,
         width=size,
         height=size,
-        bgcolor=background,
         border_radius=size / 2,
         alignment=ft.Alignment.CENTER,
         clip_behavior=ft.ClipBehavior.ANTI_ALIAS,

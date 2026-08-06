@@ -563,6 +563,24 @@ class _AmountRows:
             field.value = ""
 
 
+def underlying_swap_spender(pool: Pool) -> str | None:
+    """Who moves the coins for an underlying swap, or None if nobody can.
+
+    A StableSwap metapool swaps its underlying itself, so the pool is the
+    spender as it is for any other swap. A crypto metapool has no
+    `exchange_underlying` at all and its per-pool zap carries one instead
+    -- so there the zap is what gets approved. The factory zaps of either
+    kind have no swap functions, so a crypto metapool served only by one
+    of those has no underlying swap route at all.
+    """
+    if not pool.has_underlying:
+        return None
+    if pool.is_stableswap:
+        return pool.address
+    zap = zap_for(pool)
+    return zap.address if zap is not None and zap.swaps else None
+
+
 def _route_picker(on_change, *, underlying: bool) -> ft.RadioGroup:
     """Underlying or pool tokens: which coins the amounts are denominated in.
 
@@ -1053,10 +1071,13 @@ class SwapTab(ActionTab):
         # base-pool leg internally -- so unlike depositing, this route
         # needs no zap and approves nothing but the pool. That is why it
         # is offered on chains where no zap was ever deployed.
+        #: The pool for a StableSwap metapool, its zap for a crypto one,
+        #: None where the route does not exist.
+        self.underlying_spender = underlying_swap_spender(self.pool)
         self.route = _route_picker(
-            self._route_changed, underlying=self.pool.has_underlying
+            self._route_changed, underlying=self.underlying_spender is not None
         )
-        self.route.visible = self.pool.has_underlying
+        self.route.visible = self.underlying_spender is not None
         coins = self.coins
         self.from_coin = ft.Dropdown(
             label="From",
@@ -1086,11 +1107,18 @@ class SwapTab(ActionTab):
 
     @property
     def underlying(self) -> bool:
-        return self.pool.has_underlying and self.route.value == "underlying"
+        return self.underlying_spender is not None and self.route.value == "underlying"
 
     @property
     def coins(self) -> list:
         return self.pool.display_coins if self.underlying else self.pool.pool_coins
+
+    @property
+    def spender(self) -> str:
+        """Whoever moves the coin being sold on the live route."""
+        if self.underlying and self.underlying_spender:
+            return self.underlying_spender
+        return self.pool.address
 
     def _route_changed(self, _e: ft.ControlEvent) -> None:
         """Swap both coin lists, and start from the top of the new one."""
@@ -1223,10 +1251,11 @@ class SwapTab(ActionTab):
         if dx <= 0:
             return None
         coin = self.coins[i]
-        allowance = await contract.allowance(coin.address, self.pool.address)
+        spender = self.spender
+        allowance = await contract.allowance(coin.address, spender)
         if allowance < dx:
             self.approve_button.content = f"1. Approve {coin.symbol}"
-            return (coin.address, self.pool.address, dx)
+            return (coin.address, spender, dx)
         return None
 
     async def submit(self, contract: PoolContract) -> str:

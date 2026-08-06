@@ -573,21 +573,17 @@ async def test_an_underlying_swap_goes_to_the_pool_itself() -> None:
     )
 
 
-def test_only_a_decomposed_stableswap_metapool_has_underlying() -> None:
-    """Three conditions, and the third is the one that cost a probe: the
-    crypto metapools (EURe/3Crv on Gnosis and the like) have no
-    `get_dy_underlying` at all -- confirmed against the chain -- and route
-    their underlying trades through a zap of their own instead."""
+def test_only_a_decomposed_metapool_has_underlying() -> None:
+    """A metapool, and one the API decomposed -- which is what says what
+    the underlying even are. Curve Lite sends the two real coins and no
+    base pool, so there is nothing to decompose."""
     assert metapool().has_underlying is True
 
     plain = metapool()
     plain.base_pool = ""
     assert plain.has_underlying is False
 
-    crypto = metapool(registry="crypto")
-    assert crypto.has_underlying is False
-
-    undecomposed = metapool(coins=2)  # a Lite chain sends the two real coins
+    undecomposed = metapool(coins=2)
     assert undecomposed.has_underlying is False
 
 
@@ -791,12 +787,65 @@ async def test_a_crypto_withdrawal_indexes_with_uint256() -> None:
     )
 
 
-def test_a_crypto_metapool_still_has_no_underlying_swap() -> None:
-    """Its zap does deposits and withdrawals; the *pool* has no
-    `get_dy_underlying` at all, which is why the swap route is refused."""
+def test_a_crypto_metapool_swaps_through_its_zap() -> None:
+    """The *pool* has no `get_dy_underlying` -- but its per-pool zap does,
+    along with `exchange_underlying`, in all seven of them. So the route
+    exists there too; what changes is who performs it, and therefore who
+    gets approved."""
+    from ui.actions import underlying_swap_spender
+
     pool = gnosis_crypto_metapool()
-    assert zap_for(pool) is not None
-    assert pool.has_underlying is False
+    zap = zap_for(pool)
+    assert zap is not None and zap.swaps is True
+    assert pool.has_underlying is True
+    assert underlying_swap_spender(pool) == EURE_ZAP
+
+    provider = FakeProvider({"0x85f11d1e": word(86 * 10**18)})
+    contract = PoolContract(provider, pool, ACCOUNT)
+    assert contract.underlying_swap_target() == (EURE_ZAP, False)
+
+
+async def test_a_crypto_underlying_swap_is_sent_to_the_zap() -> None:
+    pool = gnosis_crypto_metapool()
+    provider = FakeProvider({"0x85f11d1e": word(86 * 10**18)})
+    contract = PoolContract(provider, pool, ACCOUNT)
+
+    assert await contract.get_dy_underlying(1, 0, 100 * 10**18) == 86 * 10**18
+    await contract.exchange_underlying(1, 0, 100 * 10**18, 5)
+
+    assert provider.sent[-1]["to"] == EURE_ZAP
+    assert provider.sent[-1]["data"][:10] == "0x" + abi.selector(
+        "exchange_underlying(uint256,uint256,uint256,uint256)"
+    )
+
+
+async def test_the_crypto_swap_approves_the_zap_not_the_pool() -> None:
+    """The one place the two routes differ beyond the address: on a
+    StableSwap metapool the pool moves the coins, here the zap does."""
+    from ui.actions import SwapTab
+
+    pool = gnosis_crypto_metapool()
+    provider = FakeProvider({"0x85f11d1e": word(86 * 10**18)})
+    contract = PoolContract(provider, pool, ACCOUNT)
+    tab = SwapTab(StubPage(), pool, lambda: contract, None)
+    tab.mount()
+    tab.amount.value = "100"
+
+    assert tab.underlying is True
+    pending = await tab.approval_needed(contract)
+    assert pending is not None and pending[1] == EURE_ZAP
+
+
+async def test_a_metapool_with_no_swapping_zap_is_refused() -> None:
+    """The factory zaps -- stable and crypto alike -- have no swap
+    functions at all, checked in their bytecode. A crypto metapool served
+    only by one of those cannot swap its underlying, and says so rather
+    than sending calldata nothing implements."""
+    pool = gnosis_crypto_metapool()
+    contract = PoolContract(FakeProvider(), pool, ACCOUNT)
+    contract.zap = None
+    with pytest.raises(PoolCallFailed, match="no zap that does"):
+        contract.underlying_swap_target()
 
 
 def test_the_stable_registry_reaches_gnosis_now() -> None:

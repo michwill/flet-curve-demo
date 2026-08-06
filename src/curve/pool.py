@@ -81,19 +81,37 @@ class PoolContract:
             "the exchange rate",
         )
 
-    async def get_dy_underlying(self, i: int, j: int, dx: int) -> int:
-        """Quote a swap between two of a metapool's underlying coins.
+    def underlying_swap_target(self) -> tuple[str, bool]:
+        """Who performs an underlying swap, and in which index width.
 
-        The metapool does the base-pool leg itself, so this needs no zap
-        and no approval to anything but the pool -- which is why the
-        underlying *swap* works on chains where no zap was ever deployed.
+        A StableSwap metapool does it itself: `exchange_underlying` is on
+        the pool, which does the base-pool leg internally, so nothing but
+        the pool is ever approved. A *crypto* metapool has no such
+        function at all -- confirmed against the chain -- and its per-pool
+        zap carries one instead, with `uint256` indices. That zap is then
+        the spender, which is the one place the two routes differ beyond
+        the address.
         """
+        if self.pool.is_stableswap:
+            return self.pool.address, True
+        zap = self.zap
+        if zap is None or not zap.swaps:
+            raise PoolCallFailed(
+                "This pool cannot swap its underlying coins: it has no "
+                "`exchange_underlying`, and no zap that does."
+            )
+        return zap.address, False
+
+    async def get_dy_underlying(self, i: int, j: int, dx: int) -> int:
+        """Quote a swap between two of a metapool's underlying coins."""
         if dx <= 0:
             return 0
+        to, stableswap = self.underlying_swap_target()
         return await self._read(
-            self.pool.address,
-            abi.encode_get_dy_underlying(i, j, dx, stableswap=self.pool.is_stableswap),
+            to,
+            abi.encode_get_dy_underlying(i, j, dx, stableswap=stableswap),
             "the exchange rate",
+            "The pool" if stableswap else "The zap",
         )
 
     async def calc_token_amount(self, amounts: list[int], *, deposit: bool = True) -> int:
@@ -333,11 +351,9 @@ class PoolContract:
         )
 
     async def exchange_underlying(self, i: int, j: int, dx: int, min_dy: int) -> str:
+        to, stableswap = self.underlying_swap_target()
         return await self._send(
-            self.pool.address,
-            abi.encode_exchange_underlying(
-                i, j, dx, min_dy, stableswap=self.pool.is_stableswap
-            ),
+            to, abi.encode_exchange_underlying(i, j, dx, min_dy, stableswap=stableswap)
         )
 
     async def add_liquidity(self, amounts: list[int], min_mint: int) -> str:

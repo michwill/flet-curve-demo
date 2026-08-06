@@ -308,19 +308,18 @@ class Pool:
 
     @property
     def has_underlying(self) -> bool:
-        """Can this pool be swapped in its *underlying* coins?
+        """Does this pool have *underlying* coins distinct from its own?
 
-        Only a metapool has any, and only when the API decomposed the coin
-        list -- which is what tells us what the underlying even are. It is
-        also limited to StableSwap: the crypto metapools (EURe/3Crv and
-        the like) have no `get_dy_underlying` at all, verified on chain,
-        and route their underlying trades through a zap of their own.
+        Only a metapool does, and only where the API decomposed the coin
+        list -- which is what says what the underlying even are. Curve
+        Lite sends a metapool's two real coins and no base pool address,
+        so there is nothing to decompose and this is false there.
+
+        Whether they can be *swapped* is a separate question, answered by
+        `PoolContract.underlying_swap_target`: a StableSwap metapool does
+        it itself, a crypto one needs its zap.
         """
-        return (
-            bool(self.base_pool)
-            and self.is_stableswap
-            and len(self.display_coins) > len(self.pool_coins)
-        )
+        return bool(self.base_pool) and len(self.display_coins) > len(self.pool_coins)
 
     @property
     def has_gauge(self) -> bool:

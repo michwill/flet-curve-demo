@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Compile the subset of curve-assets this app needs into `src/assets`.
 
-The upstream repo is 67 MB across 38 networks. Copying it wholesale would
-put all of that into every `flet publish` output, so this takes only what
-the app can actually show: the chain logos (388 KB for all 40, small enough
-to take entirely), the Curve mark, and the token images for the chains the
-chain picker offers.
+The upstream repo is 67 MB. Copying it wholesale would put the tests,
+the SVG sources and the git history into every `flet publish` output, so
+this takes only what the app can draw: the chain logos (388 KB for all 40),
+the Curve mark, and the token images for **every chain upstream has** --
+which is every chain the picker can offer, including the Curve Lite ones.
 
 Run it after cloning, and again whenever the submodule is updated:
 
@@ -28,15 +28,38 @@ ROOT = Path(__file__).resolve().parent.parent
 SOURCE = ROOT / "vendor" / "curve-assets"
 TARGET = ROOT / "src" / "assets" / "curve"
 
-#: Chains whose token images are worth carrying. Keep in step with
-#: `PREFERRED_CHAINS` in main.py -- a chain the picker offers but has no
-#: images for still works, it just draws lettered circles.
-DEFAULT_CHAINS = ("ethereum", "arbitrum", "base", "optimism", "polygon", "fraxtal")
-
 #: Upstream puts Ethereum in `images/assets` and everything else in
-#: `images/assets-<chain>`.
+#: `images/assets-<chain>`, where `<chain>` is the name Curve's API uses --
+#: which is why Gnosis appears as `assets-xdai`.
 def token_dir(chain: str) -> str:
     return "assets" if chain == "ethereum" else f"assets-{chain}"
+
+
+def available_chains(source: Path) -> list[str]:
+    """Every chain the submodule has token images for.
+
+    Taken from the directory listing rather than a list kept here, because
+    a list kept here goes stale silently: the app draws lettered initials
+    for a token with no image, so a chain missing entirely looks exactly
+    like a chain whose tokens upstream has not got round to. That is how
+    Gnosis ended up with no logos at all -- it was never in the list, and
+    nothing said so.
+
+    The whole tree is ~32 MB across 38 chains, against ~21 MB for Ethereum
+    and five others, so taking all of them costs about half again. On web
+    these are separate files served from the site root, fetched only when
+    a pool that uses one is on screen -- the page load does not carry them.
+    """
+    images = source / "images"
+    if not images.is_dir():
+        return []
+    chains = ["ethereum"] if (images / "assets").is_dir() else []
+    chains += sorted(
+        item.name[len("assets-") :]
+        for item in images.iterdir()
+        if item.is_dir() and item.name.startswith("assets-")
+    )
+    return chains
 
 
 def copy_tree(source: Path, target: Path) -> tuple[int, int]:
@@ -58,8 +81,8 @@ def main() -> int:
     parser.add_argument(
         "--chains",
         nargs="*",
-        default=list(DEFAULT_CHAINS),
-        help="chains to copy token images for",
+        default=None,
+        help="chains to copy token images for (default: every one upstream has)",
     )
     options = parser.parse_args()
 
@@ -68,6 +91,11 @@ def main() -> int:
             f"{SOURCE} is missing. Run: git submodule update --init",
             file=sys.stderr,
         )
+        return 1
+
+    chains = options.chains or available_chains(SOURCE)
+    if not chains:
+        print(f"No token images under {SOURCE / 'images'}", file=sys.stderr)
         return 1
 
     if TARGET.exists():
@@ -89,7 +117,7 @@ def main() -> int:
     total += size
     print(f"  chains/            {files} files, {size / 1024:.0f} KB")
 
-    for chain in options.chains:
+    for chain in chains:
         files, size = copy_tree(
             SOURCE / "images" / token_dir(chain), TARGET / "tokens" / chain
         )
@@ -99,7 +127,10 @@ def main() -> int:
         else:
             print(f"  tokens/{chain:<12} nothing upstream — will draw initials")
 
-    print(f"\n{TARGET.relative_to(ROOT)}: {total / 1024 / 1024:.1f} MB")
+    print(
+        f"\n{TARGET.relative_to(ROOT)}: {total / 1024 / 1024:.1f} MB "
+        f"across {len(chains)} chains"
+    )
     return 0
 
 

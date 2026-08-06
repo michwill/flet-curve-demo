@@ -132,12 +132,17 @@ A metapool holds two coins: its own, and the base pool's LP token. Almost
 nobody holds that LP token — what they have is USDC — so Deposit, Withdraw and
 Swap each offer a **Pool tokens / Underlying** switch, defaulting to underlying.
 
-Swapping is the easy half. `exchange_underlying` is on the pool itself, which
-does the base-pool leg internally, so it approves the pool like any other swap
-and works on every chain — including the ones where no zap was ever deployed.
-It is offered on StableSwap metapools only: the crypto ones (EURe/3Crv on
-Gnosis, USD-BTC-ETH on Polygon) have no `get_dy_underlying` at all, confirmed
-against the chain.
+Swapping is the easy half — on a StableSwap metapool. `exchange_underlying` is
+on the pool itself, which does the base-pool leg internally, so it approves the
+pool like any other swap and works on every chain, including the ones where no
+zap was ever deployed.
+
+A *crypto* metapool has no such function at all. Its **per-pool zap** does:
+all seven carry `exchange_underlying` and `get_dy_underlying`, checked in their
+deployed bytecode, so the route exists there too and the zap is what gets
+approved. The factory zaps of either kind have no swap functions, so a crypto
+metapool served only by one of those has no underlying swap — and says so
+rather than sending calldata nothing implements.
 
 Depositing and withdrawing need a zap, and `curve/zaps.py` is mostly a table of
 them, because there turned out to be **four dialects** and none is inferable
@@ -382,10 +387,23 @@ from the project root instead — `flet publish`, no path.
 Chain marks, token images and the Curve logo come from
 [curve-assets](https://github.com/curvefi/curve-assets), carried as a submodule
 at `vendor/curve-assets`. Upstream is 67 MB across 38 networks, so
-`tools/build_assets.py` compiles in only what this app can show — every chain
-logo (388 KB for all 40), the wordless Curve mark, and token images for the
-chains the picker offers. That is ~19 MB in `src/assets/curve/`, generated and
+`tools/build_assets.py` compiles in only what this app can draw — every chain
+logo (388 KB for all 40), the wordless Curve mark, and the token images for
+**every chain upstream has**, read from the directory listing rather than a
+list kept in the tool. That is ~29 MB in `src/assets/curve/`, generated and
 gitignored.
+
+The listing matters: a list kept in the tool goes stale silently, because a
+token with no image draws its initials and a chain missing *entirely* looks
+exactly the same. That is how Gnosis ended up with nothing but lettered
+circles — it was never in the list, and nothing said so. Note upstream calls
+that chain `xdai`, as Curve's API does.
+
+A token with no image upstream still draws initials, but quietly: the hue
+derived from its symbol tints the disc and its border, and the letters take
+the theme's own colour. White letters on a saturated disc read as a brand
+rather than as a missing logo, which was loudest in the swap pickers where one
+coin would shout and the other would not.
 
 The app's own icon is the same mark, rendered out of that SVG by
 `tools/build_icons.py` (librsvg + Pillow) into `src/assets/favicon.png`,

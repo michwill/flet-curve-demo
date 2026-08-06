@@ -102,8 +102,30 @@ def test_a_token_with_an_image_renders_one() -> None:
 
 def test_a_token_without_an_image_renders_its_initials() -> None:
     mark = token_mark(coin("WOOF"), "ethereum", 24)
-    assert isinstance(mark.content, ft.Text)
-    assert mark.content.value == "WO"
+    assert isinstance(mark.content, ft.Container)
+    assert mark.content.content.value == "WOO"
+
+
+def test_the_initials_mark_only_tints_with_its_hue() -> None:
+    """It used to be white letters on a saturated disc, which read as a
+    brand rather than as a missing logo -- loudest in the swap pickers,
+    where one coin would shout and the other would not. The hue now tints
+    the background and the border only; the letters take the theme's."""
+    from ui.logos import initials_mark
+
+    mark = initials_mark("WOOF", 24)
+    assert mark.content.color == ft.Colors.ON_SURFACE_VARIANT
+    assert "0.18" in str(mark.bgcolor) or "," in str(mark.bgcolor)
+    assert mark.bgcolor != fallback_color("WOOF")
+
+
+def test_a_missing_image_falls_back_to_the_same_mark() -> None:
+    """A logo that 404s and a logo that was never compiled should look
+    identical -- the subset can lag the API either way."""
+    from ui.logos import initials_mark
+
+    with_image = token_mark(coin("USDC", USDC), "ethereum", 24)
+    assert isinstance(with_image.content.error_content, type(initials_mark("USDC", 24)))
 
 
 def test_the_fallback_colour_is_stable_per_symbol() -> None:

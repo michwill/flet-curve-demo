@@ -105,6 +105,14 @@ The list payload omits these entirely, so a pool page needs a second call:
 
 Note `balances` are already scaled to human units, unlike v1's raw integers.
 
+### Metapool underlying swaps
+
+`exchange_underlying` / `get_dy_underlying` are on **StableSwap metapools**
+(`int128` indices). Crypto metapools do not have them at all — their per-pool
+zap does, with `uint256` indices, and it is then the spender. No factory zap of
+either kind has any swap function; checked in the deployed bytecode of all
+seven per-pool zaps and of the stable and crypto factory zaps.
+
 ### Pool type → ABI variant
 
 `pool_type` / `registry_type` is the discriminator for which exchange ABI a pool

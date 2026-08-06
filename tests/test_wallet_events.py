@@ -325,3 +325,152 @@ async def test_closing_stops_the_poller() -> None:
     assert provider._watch is not None
     await provider.close()
     assert provider._watch is None
+
+
+# -- picking up the previous session ---------------------------------------
+
+
+class RestoringProvider(DiscoveringProvider):
+    """Announces wallets and remembers one, as the browser bridge does."""
+
+    def __init__(self, wallets, remembered, accounts=None) -> None:
+        super().__init__(wallets)
+        self.remembered = remembered
+        self.accounts_answer = [CHECKSUMMED] if accounts is None else accounts
+        self.asked: list[str] = []
+        self.silently: list[str] = []
+        self.forgotten = False
+
+    async def select_wallet(self, uuid: str, *, silent: bool = False):
+        self.selected = uuid
+        if silent:
+            self.silently.append(uuid)
+        return {}
+
+    async def forget(self) -> None:
+        self.forgotten = True
+
+    async def request(self, method: str, params=None):
+        self.asked.append(method)
+        if method == "eth_accounts":
+            return self.accounts_answer
+        if method == "eth_chainId":
+            return "0x1"
+        if method == "eth_requestAccounts":
+            raise AssertionError("restoring must never prompt")
+        raise AssertionError(f"unexpected {method}")
+
+
+async def restore_with(monkeypatch, provider):
+    from wallet import session
+
+    async def fake_connect_provider():
+        return provider
+
+    monkeypatch.setattr(session, "connect_provider", fake_connect_provider)
+    return await Wallet.restore()
+
+
+async def test_the_previous_wallet_comes_back(monkeypatch) -> None:
+    provider = RestoringProvider(
+        [{"uuid": "fresh-uuid", "name": "Rabby", "rdns": "io.rabby", "icon": PIXEL}],
+        {"rdns": "io.rabby", "connector": "injected"},
+    )
+    wallet = await restore_with(monkeypatch, provider)
+    assert wallet is not None
+    assert wallet.address == CHECKSUMMED
+    assert wallet.icon == PIXEL
+    # Matched by rdns: the uuid is regenerated on every page load.
+    assert provider.silently == ["fresh-uuid"]
+
+
+async def test_restoring_never_prompts(monkeypatch) -> None:
+    """`eth_accounts` reports what is already authorised; the other one asks."""
+    provider = RestoringProvider(
+        [{"uuid": "u", "name": "Rabby", "rdns": "io.rabby"}],
+        {"rdns": "io.rabby", "connector": "injected"},
+    )
+    await restore_with(monkeypatch, provider)
+    assert "eth_accounts" in provider.asked
+    assert "eth_requestAccounts" not in provider.asked
+
+
+async def test_a_locked_or_revoked_wallet_is_simply_not_connected(monkeypatch) -> None:
+    provider = RestoringProvider(
+        [{"uuid": "u", "name": "Rabby", "rdns": "io.rabby"}],
+        {"rdns": "io.rabby", "connector": "injected"},
+        accounts=[],
+    )
+    assert await restore_with(monkeypatch, provider) is None
+    assert provider.closed
+
+
+async def test_an_uninstalled_wallet_is_not_waited_for(monkeypatch) -> None:
+    provider = RestoringProvider(
+        [{"uuid": "u", "name": "Rabby", "rdns": "io.rabby"}],
+        {"rdns": "com.gone", "connector": "injected"},
+    )
+    assert await restore_with(monkeypatch, provider) is None
+
+
+async def test_walletconnect_is_matched_by_its_connector(monkeypatch) -> None:
+    """Its entry is synthesised by the bridge, not announced by a wallet."""
+    provider = RestoringProvider(
+        [
+            {"uuid": "walletconnect", "name": "WalletConnect", "rdns": "", "connector": "walletconnect"},
+        ],
+        {"rdns": "", "connector": "walletconnect"},
+    )
+    wallet = await restore_with(monkeypatch, provider)
+    assert wallet is not None
+    assert wallet.icon and wallet.icon.startswith("data:image/svg+xml;base64,")
+
+
+async def test_nothing_remembered_means_nothing_happens(monkeypatch) -> None:
+    provider = RestoringProvider(
+        [{"uuid": "u", "name": "Rabby", "rdns": "io.rabby"}], None
+    )
+    assert await restore_with(monkeypatch, provider) is None
+    assert provider.asked == []
+
+
+async def test_disconnecting_stops_the_app_remembering(monkeypatch) -> None:
+    """Otherwise the next page load would reconnect what you just left."""
+    provider = RestoringProvider(
+        [{"uuid": "u", "name": "Rabby", "rdns": "io.rabby"}],
+        {"rdns": "io.rabby", "connector": "injected"},
+    )
+    wallet = await restore_with(monkeypatch, provider)
+    assert wallet is not None
+    await wallet.disconnect()
+    assert provider.forgotten
+    assert provider.closed
+
+
+async def test_another_wallet_of_the_same_kind_is_not_restored(monkeypatch) -> None:
+    """rdns is an identity; "injected" is a category.
+
+    Falling back to the category when an rdns was stored restores whatever
+    is first in the list -- which is how a remembered mock wallet came back
+    as the qeth extension sitting above it.
+    """
+    provider = RestoringProvider(
+        [
+            {"uuid": "q", "name": "qeth", "rdns": "org.qeth", "connector": "injected"},
+            {"uuid": "r", "name": "Rabby", "rdns": "io.rabby", "connector": "injected"},
+        ],
+        {"rdns": "io.rabby", "connector": "injected"},
+    )
+    wallet = await restore_with(monkeypatch, provider)
+    assert wallet is not None
+    assert provider.silently == ["r"], "restored the wrong wallet of the same kind"
+
+
+async def test_a_remembered_wallet_that_is_gone_does_not_take_a_stand_in(
+    monkeypatch,
+) -> None:
+    provider = RestoringProvider(
+        [{"uuid": "q", "name": "qeth", "rdns": "org.qeth", "connector": "injected"}],
+        {"rdns": "io.rabby", "connector": "injected"},
+    )
+    assert await restore_with(monkeypatch, provider) is None

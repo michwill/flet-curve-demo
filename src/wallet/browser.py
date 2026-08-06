@@ -104,6 +104,10 @@ class BrowserWalletProvider(WalletProvider):
         self.name = "Browser wallet"
         #: Populated by the handshake -- what the connector found.
         self.wallets: list[dict[str, Any]] = []
+        #: The wallet used last time, as `{"rdns", "connector"}`, if the
+        #: page remembers one. Matched by rdns rather than uuid: an
+        #: EIP-6963 uuid is generated afresh on every page load.
+        self.remembered: dict[str, Any] | None = None
 
     # -- plumbing ----------------------------------------------------------
 
@@ -254,9 +258,22 @@ class BrowserWalletProvider(WalletProvider):
         if values:
             await self.request("bridge_configure", [values])
 
-    async def select_wallet(self, uuid: str) -> dict[str, Any]:
-        """Choose which discovered wallet subsequent requests go to."""
-        info = await self.request("bridge_selectWallet", [uuid])
+    async def forget(self) -> None:
+        """Stop remembering the last wallet. Called on an explicit disconnect."""
+        try:
+            await self.request("bridge_forget")
+        except WalletError:
+            # Nothing to forget, or the bridge is already gone.
+            pass
+
+    async def select_wallet(self, uuid: str, *, silent: bool = False) -> dict[str, Any]:
+        """Choose which discovered wallet subsequent requests go to.
+
+        `silent` is the restore path: resolve the connector without showing
+        anything. A WalletConnect entry with no live session fails here
+        rather than opening a QR modal nobody asked for.
+        """
+        info = await self.request("bridge_selectWallet", [uuid, {"silent": silent}])
         if isinstance(info, dict):
             self.name = info.get("name") or self.name
             # Which connector won changes what eth_sendTransaction means
@@ -282,6 +299,7 @@ async def discover() -> BrowserWalletProvider:
     await provider.configure(settings.bridge_config())
     hello = await provider.handshake()
     provider.wallets = hello.get("wallets") or []
+    provider.remembered = hello.get("remembered") or None
     if not provider.wallets:
         await provider.close()
         raise WalletUnavailable(

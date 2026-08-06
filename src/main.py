@@ -123,6 +123,12 @@ class CurveApp:
         if autoconnect():
             self.connect_button.visible = False
             page.run_task(self.connect, None)
+        else:
+            # In a browser, reconnect to the wallet used last time -- but
+            # only if it is still authorised, which `Wallet.restore` checks
+            # without prompting. A page that opens a wallet dialog by
+            # itself is worse than one that shows a Connect button.
+            page.run_task(self.restore)
 
     # -- layout -----------------------------------------------------------
 
@@ -432,6 +438,23 @@ class CurveApp:
         self.wallet.on_disconnect(lambda: self.page.run_task(self._wallet_gone))
         self.connect_button.content = CONNECT_LABEL
         self.connect_button.disabled = False
+        self.connect_button.visible = False
+        self._show_account()
+        self.page.update()
+        if self._detail is not None:
+            await self._detail.refresh_actions()
+
+    async def restore(self) -> None:
+        """Pick up the previous session, silently, or leave things as they are."""
+        try:
+            wallet = await Wallet.restore()
+        except WalletError:
+            return
+        if wallet is None:
+            return
+        self.wallet = wallet
+        self.wallet.on_change(lambda: self.page.run_task(self._wallet_changed))
+        self.wallet.on_disconnect(lambda: self.page.run_task(self._wallet_gone))
         self.connect_button.visible = False
         self._show_account()
         self.page.update()

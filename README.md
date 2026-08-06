@@ -32,7 +32,7 @@ either way.
 
 The wallet layer is [`flet-pay-example`](https://github.com/michwill/flet-pay-example)'s
 `wallet/` package. Its README is the reference for how the EIP-1193 seam and the
-browser bridge work; this one covers what was added on top. Three changes were
+browser bridge work; this one covers what was added on top. Four changes were
 made to it here:
 
 - **the desktop transport polls.** An HTTP endpoint cannot push, so switching
@@ -43,6 +43,11 @@ made to it here:
 - **`disconnect` counts as a disconnection.** An extension revokes a site with
   an empty `accountsChanged`; WalletConnect closes the session and sends
   `disconnect`. Only the first was handled.
+- **the connection survives the tab closing.** The bridge remembers which
+  wallet was used (by `rdns`, since an EIP-6963 uuid is regenerated per page
+  load) and `Wallet.restore()` picks it up on the next load -- asking
+  `eth_accounts`, never `eth_requestAccounts`, so a page that opens by
+  itself never opens a wallet dialog by itself. Disconnecting forgets it.
 - **one bridge serves an origin.** A `BroadcastChannel` reaches every tab, so
   two tabs of this app meant two bridges answering one request -- and the
   faster one won, which is how a picker ended up listing another tab's

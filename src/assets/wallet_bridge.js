@@ -38,6 +38,43 @@
   const CHANNEL_NAME = "flet-wallet";
   const VERSION = 1;
 
+  // Which wallet was last connected, so closing the tab does not mean
+  // starting over. Kept in the page rather than in Python: a Pyodide
+  // worker has no localStorage, and this is the only side that has one.
+  //
+  // The `rdns` is the stable identity -- a wallet's EIP-6963 uuid is
+  // generated per page load -- so what is stored is matched against
+  // whatever is announced next time, and simply misses if the extension
+  // was uninstalled.
+  const REMEMBER_KEY = "flet-wallet:last";
+
+  function remember(info) {
+    try {
+      localStorage.setItem(
+        REMEMBER_KEY,
+        JSON.stringify({ rdns: info.rdns || "", connector: info.connector || "" })
+      );
+    } catch (_) {
+      /* private mode, or storage disabled: connecting still works */
+    }
+  }
+
+  function remembered() {
+    try {
+      return JSON.parse(localStorage.getItem(REMEMBER_KEY) || "null");
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function forget() {
+    try {
+      localStorage.removeItem(REMEMBER_KEY);
+    } catch (_) {
+      /* nothing to clean up */
+    }
+  }
+
   // A BroadcastChannel is shared by every page on the origin, so a second
   // tab running this app hears -- and would answer -- the first tab's
   // requests. Two bridges answering one client is not cosmetic: whichever
@@ -239,7 +276,7 @@
             icon: config.walletConnectIcon || null,
             connector: "walletconnect",
           },
-          resolve: async () => {
+          resolve: async ({ silent } = {}) => {
             if (wcProvider) return wcProvider;
 
             const moduleUrl = wcModuleUrl();
@@ -273,6 +310,13 @@
             // means the modal appears when the user picks WalletConnect,
             // which is the UX people expect.
             if (!wcProvider.session) {
+              // init() restores a session from WalletConnect's own storage
+              // if the phone is still paired. Without one there is nothing
+              // to restore, and a silent call must not open a QR modal
+              // nobody asked for.
+              if (silent) {
+                throw { code: 4900, message: "No WalletConnect session to restore" };
+              }
               await wcProvider.enable();
             }
             log("session established, accounts:", wcProvider.accounts);
@@ -350,17 +394,19 @@
   //: The client whose selection is live, so events can be addressed.
   let owner = null;
 
-  async function selectWallet(uuid, client) {
+  async function selectWallet(uuid, client, options) {
     const entry = catalogue.get(uuid);
     if (!entry) throw { code: 4001, message: `Unknown wallet: ${uuid}` };
 
     // resolve() may open a modal and wait on a phone, so it is async and
     // may reject (user closed the QR). That propagates to Python as a
-    // normal EIP-1193 error.
-    selected = await entry.resolve();
+    // normal EIP-1193 error. `silent` is the restore path: resolve without
+    // showing anything, and fail rather than prompt.
+    selected = await entry.resolve(options || {});
     selectedInfo = entry.info;
     owner = client ?? owner;
     attach(selected);
+    remember(entry.info);
     log("selected:", entry.info.name);
     return {
       uuid,
@@ -389,10 +435,19 @@
       return { ok: true, keys: Object.keys(incoming) };
     }
     if (method === "bridge_hello") {
-      return { ok: true, wallets: await discover(), selected: selectedInfo?.uuid ?? null };
+      return {
+        ok: true,
+        wallets: await discover(),
+        selected: selectedInfo?.uuid ?? null,
+        remembered: remembered(),
+      };
     }
     if (method === "bridge_selectWallet") {
-      return await selectWallet(params[0], client);
+      return await selectWallet(params[0], client, params[1] || {});
+    }
+    if (method === "bridge_forget") {
+      forget();
+      return { ok: true };
     }
     if (method === "bridge_listWallets") {
       return await discover();

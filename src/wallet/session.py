@@ -192,7 +192,74 @@ class Wallet:
         )
 
     async def disconnect(self) -> None:
+        # Deliberate: stop remembering this wallet, so the next page load
+        # starts disconnected rather than quietly reconnecting to the
+        # wallet the user just walked away from.
+        forget = getattr(self.provider, "forget", None)
+        if forget is not None:
+            await forget()
         await self.provider.close()
+
+    @classmethod
+    async def restore(cls) -> "Wallet | None":
+        """Reconnect to the wallet used last time, or return None.
+
+        Closing a tab should not mean starting over, but reconnecting must
+        not put a dialog in front of someone who only opened a page. So
+        this asks `eth_accounts` -- what is *already* authorised -- and
+        never `eth_requestAccounts`, which is the one that prompts. No
+        authorisation, no session, and nothing is shown.
+
+        The wallet is matched by rdns rather than uuid because an EIP-6963
+        uuid is generated per page load, and by connector as a fallback so
+        WalletConnect (whose entry is synthesised, not announced) is found
+        the same way.
+        """
+        provider = await connect_provider()
+        wanted = getattr(provider, "remembered", None)
+        options = getattr(provider, "wallets", [])
+        if not wanted or not options:
+            await provider.close()
+            return None
+
+        def is_the_one(entry: dict[str, Any]) -> bool:
+            # rdns is an identity; connector is only a category. Falling
+            # back to the category when an rdns was stored would restore
+            # "some injected wallet" -- in practice the first one in the
+            # list, which is not the one that was connected.
+            if wanted.get("rdns"):
+                return bool(entry.get("rdns")) and entry["rdns"] == wanted["rdns"]
+            return bool(wanted.get("connector")) and (
+                entry.get("connector") == wanted["connector"]
+            )
+
+        match = next((w for w in options if is_the_one(w)), None)
+        if match is None:
+            # Uninstalled, or a different browser profile.
+            await provider.close()
+            return None
+
+        try:
+            await provider.select_wallet(match["uuid"], silent=True)  # type: ignore[call-arg]
+            accounts = await provider.accounts()
+        except WalletError:
+            await provider.close()
+            return None
+        if not accounts:
+            # Still installed, but the site is no longer authorised (or the
+            # wallet is locked). Not an error: just not connected.
+            await provider.close()
+            return None
+
+        chain = chains.get_chain(await provider.chain_id())
+        return cls(
+            provider,
+            erc20.to_checksum_address(accounts[0]),
+            chain,
+            icon=_safe_icon(
+                match.get("icon") or icons.for_connector(match.get("connector"))
+            ),
+        )
 
     # -- identity ---------------------------------------------------------
 

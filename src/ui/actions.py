@@ -1,5 +1,11 @@
 """The four things you can do to a pool: deposit, withdraw, swap, stake.
 
+Note every coin list here is `pool.pool_coins`, not `pool.coins`. On a
+metapool those differ: v2 decomposes the base pool into `coins`, so a
+two-coin metapool reports four. `add_liquidity` takes a `uint256[N]` whose
+N is part of the function signature, so building it from the decomposed
+list is calldata for a function the pool does not have.
+
 Each tab is the same shape -- read some balances, quote the result on
 chain, then submit -- so the shared parts (the approve step, the status
 line, the "connect a wallet first" state) live in `ActionTab` and each
@@ -193,7 +199,7 @@ class DepositTab(ActionTab):
 
     def build(self) -> list[ft.Control]:
         rows: list[ft.Control] = []
-        for coin in self.pool.coins:
+        for coin in self.pool.pool_coins:
             field = _amount_field(coin.symbol, self._changed)
             label = ft.Text("", size=11, color=ft.Colors.ON_SURFACE_VARIANT)
             self.fields.append(field)
@@ -203,7 +209,7 @@ class DepositTab(ActionTab):
 
     def _amounts(self) -> list[int]:
         out = []
-        for field, coin in zip(self.fields, self.pool.coins):
+        for field, coin in zip(self.fields, self.pool.pool_coins):
             text = (field.value or "").strip()
             try:
                 out.append(parse_units(text, coin.decimals) if text else 0)
@@ -217,7 +223,7 @@ class DepositTab(ActionTab):
     async def refresh(self) -> None:
         contract = self.get_contract()
         if contract is not None:
-            for index, coin in enumerate(self.pool.coins):
+            for index, coin in enumerate(self.pool.pool_coins):
                 try:
                     self.balances[index] = await contract.balance_of(coin.address)
                 except WalletError:
@@ -249,7 +255,7 @@ class DepositTab(ActionTab):
         # One coin at a time: each ERC-20 needs its own approval, and the UI
         # walks them in order rather than batching, so the button always
         # names a single concrete step.
-        for coin, amount in zip(self.pool.coins, self._amounts()):
+        for coin, amount in zip(self.pool.pool_coins, self._amounts()):
             if amount <= 0:
                 continue
             allowance = await contract.allowance(coin.address, self.pool.address)
@@ -291,7 +297,7 @@ class WithdrawTab(ActionTab):
             label="Receive",
             options=[
                 ft.DropdownOption(key=str(i), text=c.symbol)
-                for i, c in enumerate(self.pool.coins)
+                for i, c in enumerate(self.pool.pool_coins)
             ],
             value="0",
             dense=True,
@@ -341,7 +347,7 @@ class WithdrawTab(ActionTab):
         self.estimate.value = ""
         if contract is not None and amount > 0 and self.mode.value == "one":
             index = self._coin_index()
-            coin = self.pool.coins[index]
+            coin = self.pool.pool_coins[index]
             try:
                 out = await contract.calc_withdraw_one_coin(amount, index)
                 self.estimate.value = (
@@ -372,9 +378,9 @@ class WithdrawTab(ActionTab):
         # taken from the reserves the API already gave us, minus slippage.
         # A zero floor would be simpler and is what many UIs send, but it
         # offers no protection at all against a sandwich.
-        total_supply = sum(c.pool_balance for c in self.pool.coins)
+        total_supply = sum(c.balance for c in self.pool.pool_coins)
         min_amounts = []
-        for coin in self.pool.coins:
+        for coin in self.pool.pool_coins:
             share = 0
             if self.lp_balance and total_supply:
                 share = coin.pool_balance * amount // max(total_supply, 1)
@@ -394,7 +400,7 @@ class SwapTab(ActionTab):
         self._expected_out = 0
         options = [
             ft.DropdownOption(key=str(i), text=c.symbol)
-            for i, c in enumerate(self.pool.coins)
+            for i, c in enumerate(self.pool.pool_coins)
         ]
         self.from_coin = ft.Dropdown(
             label="From",
@@ -431,7 +437,7 @@ class SwapTab(ActionTab):
         i, _ = self._indices()
         text = (self.amount.value or "").strip()
         try:
-            return parse_units(text, self.pool.coins[i].decimals) if text else 0
+            return parse_units(text, self.pool.pool_coins[i].decimals) if text else 0
         except (ValueError, IndexError):
             return 0
 
@@ -445,10 +451,10 @@ class SwapTab(ActionTab):
 
         if contract is not None:
             try:
-                self.balance = await contract.balance_of(self.pool.coins[i].address)
+                self.balance = await contract.balance_of(self.pool.pool_coins[i].address)
                 self.balance_label.value = (
-                    f"Balance: {format_units(self.balance, self.pool.coins[i].decimals)}"
-                    f" {self.pool.coins[i].symbol}"
+                    f"Balance: {format_units(self.balance, self.pool.pool_coins[i].decimals)}"
+                    f" {self.pool.pool_coins[i].symbol}"
                 )
             except WalletError:
                 self.balance_label.value = ""
@@ -460,7 +466,7 @@ class SwapTab(ActionTab):
         elif contract is not None and dx > 0:
             try:
                 self._expected_out = await contract.get_dy(i, j, dx)
-                out_coin = self.pool.coins[j]
+                out_coin = self.pool.pool_coins[j]
                 self.estimate.value = (
                     f"~ {token_amount(units_to_float(self._expected_out, out_coin.decimals))}"
                     f" {out_coin.symbol}"
@@ -479,7 +485,7 @@ class SwapTab(ActionTab):
         dx = self._dx()
         if dx <= 0:
             return None
-        coin = self.pool.coins[i]
+        coin = self.pool.pool_coins[i]
         allowance = await contract.allowance(coin.address, self.pool.address)
         if allowance < dx:
             self.approve_button.text = f"1. Approve {coin.symbol}"

@@ -26,6 +26,8 @@ from curve.api import PoolFeed
 from curve.format import compact_usd
 from ui.pool_detail import PoolDetailView
 from ui.pool_list import PoolListView
+from ui.assets import chain_name, curve_logo
+from ui.logos import chain_mark
 from ui.responsive import layout_for
 from wallet import Wallet, WalletChoice, WalletError, autoconnect, is_browser
 
@@ -65,15 +67,29 @@ class CurveApp:
         page.window.height = 900
 
         self.chain_picker = ft.Dropdown(
-            options=[ft.DropdownOption(key=c, text=c) for c in PREFERRED_CHAINS],
+            options=[self._chain_option(c) for c in PREFERRED_CHAINS],
             # Replaced by the API's own list once `load_pools` has run.
             value=self.chain,
-            width=150,
+            width=185,
             dense=True,
             on_select=self._chain_changed,
         )
         self.totals = ft.Text(
             "", size=12, color=ft.Colors.ON_SURFACE_VARIANT, no_wrap=True
+        )
+        logo = curve_logo()
+        self.brand = (
+            ft.Image(
+                key="brand",
+                src=logo,
+                width=26,
+                height=26,
+                fit=ft.BoxFit.CONTAIN,
+                # If the compiled assets are missing, the wordmark stands in.
+                error_content=ft.Text("CURVE", size=18, weight=ft.FontWeight.BOLD),
+            )
+            if logo
+            else ft.Text("CURVE", key="brand", size=18, weight=ft.FontWeight.BOLD)
         )
         self.build_label = ft.Text(
             f"{'browser' if is_browser() else 'desktop'} build",
@@ -96,7 +112,7 @@ class CurveApp:
         header = ft.Container(
             ft.Row(
                 [
-                    ft.Text("CURVE", size=18, weight=ft.FontWeight.BOLD),
+                    self.brand,
                     self.build_label,
                     self.chain_picker,
                     ft.Container(self.totals, expand=True),
@@ -146,6 +162,16 @@ class CurveApp:
         self.list_view.set_layout(layout)
         if self._detail is not None:
             self._detail.set_layout(layout)
+
+    def _chain_option(self, chain: str) -> ft.DropdownOption:
+        """A network's mark beside its proper name, not its API slug."""
+        mark = chain_mark(chain)
+        label = ft.Text(chain_name(chain), size=13)
+        return ft.DropdownOption(
+            key=chain,
+            content=ft.Row([mark, label], spacing=8, tight=True) if mark else label,
+            text=chain_name(chain),
+        )
 
     def _sync_theme_button(self, update: bool = False) -> None:
         dark = self.page.theme_mode == ft.ThemeMode.DARK or (
@@ -215,7 +241,7 @@ class CurveApp:
         ordered = [c for c in PREFERRED_CHAINS if c in known] + sorted(
             c for c in known if c not in PREFERRED_CHAINS
         )
-        self.chain_picker.options = [ft.DropdownOption(key=c, text=c) for c in ordered]
+        self.chain_picker.options = [self._chain_option(c) for c in ordered]
         if self.chain not in known and ordered:
             self.chain = ordered[0]
             self.chain_picker.value = self.chain

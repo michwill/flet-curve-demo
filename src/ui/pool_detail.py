@@ -26,6 +26,7 @@ from curve.models import Pool
 from curve.pool import PoolContract
 
 from .actions import DepositTab, StakeTab, SwapTab, WithdrawTab
+from .logos import pool_stack
 from .responsive import Layout, layout_for
 from . import safe_update
 from .candles import CandleChart
@@ -171,6 +172,7 @@ class PoolDetailView(ft.Column):
         return ft.Row(
             [
                 ft.IconButton(ft.Icons.ARROW_BACK, on_click=lambda _e: on_back()),
+                pool_stack(self.pool, size=34),
                 ft.Column(
                     [
                         ft.Text(self.pool.display_name, size=22, weight=ft.FontWeight.BOLD),
@@ -212,7 +214,7 @@ class PoolDetailView(ft.Column):
         `Row` + fixed-width `Container` cells, which flex down cleanly; this
         now does the same.
         """
-        total = sum(c.balance_usd for c in self.pool.coins) or 1.0
+        total = sum(c.balance_usd for c in self.pool.pool_coins) or 1.0
 
         def cell(control: ft.Control, width: int | None = None, end: bool = False) -> ft.Control:
             return ft.Container(
@@ -236,7 +238,9 @@ class PoolDetailView(ft.Column):
         )
 
         rows: list[ft.Control] = [header]
-        for coin in self.pool.coins:
+        # The contract's coins: `balances` lines up with these, and a
+        # metapool's decomposed extras have no balance of their own.
+        for coin in self.pool.pool_coins:
             rows.append(
                 ft.Container(
                     ft.Row(
@@ -384,8 +388,8 @@ class PoolDetailView(ft.Column):
 
     def _series_options(self) -> list[ft.DropdownOption]:
         options = [ft.DropdownOption(key=LP_SERIES, text="LP token (USD)")]
-        for i, main in enumerate(self.pool.coins):
-            for j, reference in enumerate(self.pool.coins):
+        for i, main in enumerate(self.pool.pool_coins):
+            for j, reference in enumerate(self.pool.pool_coins):
                 if i == j:
                     continue
                 options.append(
@@ -431,8 +435,8 @@ class PoolDetailView(ft.Column):
                 candles = await self.api.pair_candles(
                     self.pool.chain,
                     self.pool.address,
-                    self.pool.coins[i].address,
-                    self.pool.coins[j].address,
+                    self.pool.pool_coins[i].address,
+                    self.pool.pool_coins[j].address,
                     size=size,
                     count=count,
                 )
@@ -472,6 +476,13 @@ class PoolDetailView(ft.Column):
         self.pool.merge_detail(raw)
         self._composition_slot.content = self._composition()
         self._yields_slot.content = self._yields()
+        # Both of these were built from the *decomposed* coin list, because
+        # the contract's coin count only arrives with the detail. On a
+        # metapool that is four fields where the pool takes two -- and the
+        # deposit would have been calldata for a function it does not have.
+        self._right.content = self._actions()
+        self.series.options = self._series_options()
+        self.series.value = LP_SERIES
         self._page.update()
 
     async def load(self) -> None:

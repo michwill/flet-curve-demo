@@ -9,7 +9,9 @@ and opens each pool onto a candlestick chart plus a panel that can deposit,
 withdraw, swap and stake — all in-pool, no router.
 
 ```bash
+git submodule update --init          # curve-assets: logos and token images
 uv venv && uv pip install -r requirements.txt
+python tools/build_assets.py         # compile the subset the app needs
 
 .venv/bin/flet run src/main.py        # desktop -> Frame / qeth on 127.0.0.1:1248
 .venv/bin/flet publish                # browser -> ./dist  (run from the repo root)
@@ -219,6 +221,54 @@ relative to the **script's** directory, so `flet publish src/main.py` never saw
 the root `pyproject.toml`, fell back to bare `flet`, and the published app died
 in Pyodide with `ModuleNotFoundError: No module named 'flet_charts'`. Publish
 from the project root instead — `flet publish`, no path.
+
+## Logos
+
+Chain marks, token images and the Curve logo come from
+[curve-assets](https://github.com/curvefi/curve-assets), carried as a submodule
+at `vendor/curve-assets`. Upstream is 67 MB across 38 networks, so
+`tools/build_assets.py` compiles in only what this app can show — every chain
+logo (388 KB for all 40), the wordless Curve mark, and token images for the
+chains the picker offers. That is ~19 MB in `src/assets/curve/`, generated and
+gitignored.
+
+A pool draws its coins as overlapping discs, the way Curve's list does, and for
+a **metapool that means the underlying assets**: v2 returns
+`[metaToken, basePoolLpToken, …underlying]`, so the World Liberty pool reports
+`USD1, crv2pool, USDC, USDT` and shows `USD1 · USDC · USDT`. The LP token in the
+middle is plumbing, not an asset. It is dropped by *position* rather than by
+address — on newer pools the base LP token is the base pool contract and could
+be matched, but on older ones (3Crv, crvFRAX) it is a separate contract and
+cannot; a Curve metapool always has exactly two real coins, so index 1 is the
+reliable part.
+
+**That distinction turned out to be a live bug, not a cosmetic one.** `coins` is
+the decomposed list; the *contract* has `n_coins` of them. `add_liquidity` takes
+a `uint256[N]` whose N is part of the function signature, so a metapool deposit
+built from the decomposed list was calldata for a function the pool does not
+have — and the deposit form showed four fields for a two-coin pool. Everything
+that reaches the chain now uses `pool.pool_coins` (`coins[:n_coins]`), and
+everything the user reads uses `pool.display_coins`. `balances` from the API
+line up with the former.
+
+Two mechanical notes worth keeping:
+
+- **On web, an asset needs a real URL.** Flet treats an `Image.src` that does
+  not look like a URL as a path into the Flutter *asset bundle*; `flet publish`
+  copies `src/assets/**` to the site root instead, which is not in that
+  manifest. A relative path finds nothing and a leading slash is not enough
+  either, so the browser build builds an absolute URL from the worker's own
+  `location` — there is no `window` in a Web Worker, but there is a `location`.
+  Desktop keeps the relative path, which `assets_dir` resolves.
+- **Do not wrap a positioned `Stack` child in another `Container`.** The first
+  version nested the mark inside a positioning container; the images fetched
+  with `200`s and the row reserved the right width, but nothing painted and
+  `error_content` never fired either. Setting `left`/`top` directly on the mark
+  fixed it.
+
+Every logo degrades to a lettered disc, coloured from the symbol so a token
+looks the same everywhere. That is not just insurance against a skipped build
+step — plenty of long-tail tokens have no image upstream.
 
 ## Responsive layout
 

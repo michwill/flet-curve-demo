@@ -1,0 +1,157 @@
+"""Token and chain marks, including the overlapping stack Curve uses.
+
+A pool is drawn as its coins' logos overlapping left-to-right, the way
+Curve's own list does it -- and for a metapool that means the *underlying*
+assets, not the base pool's LP token, which is why this takes
+`pool.display_coins` rather than `pool.coins`.
+
+Every logo degrades: plenty of tokens have no image upstream, so a missing
+one becomes a lettered disc in a colour derived from the symbol. That is
+not only a fallback for a skipped `tools/build_assets.py` -- it is the
+normal case for long-tail tokens.
+"""
+
+from __future__ import annotations
+
+import flet as ft
+
+from curve.models import Coin, Pool
+
+from .assets import chain_logo, token_logo
+
+#: How much of each logo the next one covers. Enough to read as a group,
+#: little enough that four coins are still four distinguishable discs.
+OVERLAP = 0.34
+
+#: Colours for the lettered fallback. Picked per symbol so a token looks the
+#: same everywhere it appears, and from the Material palette so both themes
+#: stay legible.
+_FALLBACK_COLORS = (
+    ft.Colors.BLUE_400,
+    ft.Colors.TEAL_400,
+    ft.Colors.PURPLE_300,
+    ft.Colors.ORANGE_400,
+    ft.Colors.PINK_300,
+    ft.Colors.INDIGO_300,
+    ft.Colors.CYAN_400,
+    ft.Colors.AMBER_400,
+)
+
+
+def fallback_color(symbol: str) -> str:
+    """A stable colour for a symbol, so the same token always matches."""
+    if not symbol:
+        return _FALLBACK_COLORS[0]
+    return _FALLBACK_COLORS[sum(symbol.encode()) % len(_FALLBACK_COLORS)]
+
+
+def token_mark(coin: Coin, chain: str, size: float = 24) -> ft.Container:
+    """One coin's logo, or its initials when there is no image.
+
+    Always a `Container` with an explicit size, so it can be dropped
+    straight into a `Stack` with `left`/`top` and needs no extra wrapper.
+    """
+    source = token_logo(chain, coin.address)
+    initials = (coin.symbol or "?")[:2].upper()
+    letters = ft.Text(
+        initials,
+        size=size * 0.36,
+        weight=ft.FontWeight.BOLD,
+        color=ft.Colors.WHITE,
+        text_align=ft.TextAlign.CENTER,
+    )
+    if source:
+        content = ft.Image(
+            src=source,
+            width=size,
+            height=size,
+            fit=ft.BoxFit.COVER,
+            # A logo that 404s falls back rather than leaving a hole. The
+            # compiled subset can lag the API, and plenty of long-tail
+            # tokens have no image upstream at all.
+            error_content=ft.Container(
+                letters,
+                bgcolor=fallback_color(coin.symbol),
+                width=size,
+                height=size,
+                alignment=ft.Alignment.CENTER,
+            ),
+        )
+        background = None
+    else:
+        content = letters
+        background = fallback_color(coin.symbol)
+
+    return ft.Container(
+        content,
+        width=size,
+        height=size,
+        bgcolor=background,
+        border_radius=size / 2,
+        alignment=ft.Alignment.CENTER,
+        clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
+        tooltip=coin.symbol,
+    )
+
+
+def coin_stack(
+    coins: list[Coin], chain: str, size: float = 24, limit: int = 5
+) -> ft.Control:
+    """Overlapping logos for a pool's assets, as Curve draws them.
+
+    A `Stack` with explicit offsets, because Flet has no notion of negative
+    spacing in a `Row`. The wrapper's width is computed rather than left to
+    the Stack: a Stack sizes to its largest child, so without it every pool
+    would occupy one logo's width and overlap the next column.
+    """
+    shown = coins[:limit]
+    if not shown:
+        return ft.Container(width=0, height=size)
+
+    step = size * (1 - OVERLAP)
+    marks: list[ft.Control] = []
+    for index, coin in enumerate(shown):
+        mark = token_mark(coin, chain, size)
+        mark.left = index * step
+        mark.top = 0
+        # A ring in the surface colour separates each disc from the one it
+        # covers.
+        mark.border = ft.Border.all(1.5, ft.Colors.SURFACE)
+        marks.append(mark)
+
+    extra = len(coins) - len(shown)
+    if extra > 0:
+        marks.append(
+            ft.Container(
+                ft.Text(
+                    f"+{extra}", size=size * 0.34, color=ft.Colors.ON_SURFACE_VARIANT
+                ),
+                left=len(shown) * step,
+                top=0,
+                width=size,
+                height=size,
+                bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
+                border_radius=size / 2,
+                alignment=ft.Alignment.CENTER,
+            )
+        )
+
+    slots = len(shown) + (1 if extra > 0 else 0)
+    return ft.Container(
+        ft.Stack(marks, width=step * (slots - 1) + size, height=size),
+        width=step * (slots - 1) + size,
+        height=size,
+    )
+
+
+def pool_stack(pool: Pool, size: float = 24, limit: int = 5) -> ft.Control:
+    """The stack for a pool, decomposing a metapool into its underlying."""
+    return coin_stack(pool.display_coins, pool.chain, size, limit)
+
+
+def chain_mark(chain: str, size: float = 18) -> ft.Control | None:
+    """A network's logo, or None when there is no image for it."""
+    source = chain_logo(chain)
+    if not source:
+        return None
+    return ft.Image(src=source, width=size, height=size, fit=ft.BoxFit.CONTAIN)

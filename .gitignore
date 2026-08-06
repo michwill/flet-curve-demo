@@ -28,3 +28,6 @@ src/local_config.toml
 
 # uv lockfile - the venv is reproducible from requirements.txt
 uv.lock
+
+# Compiled from vendor/curve-assets by tools/build_assets.py
+src/assets/curve/

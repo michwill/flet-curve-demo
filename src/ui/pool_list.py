@@ -24,6 +24,7 @@ from curve.models import Pool
 from curve.sort import DEFAULT_SORT, SORTS
 
 from . import safe_update
+from .logos import pool_stack
 from .responsive import Layout, layout_for
 
 #: Column widths, shared by the header and every row so they line up.
@@ -92,13 +93,26 @@ def reward_lines(pool: Pool) -> list[ft.Control]:
     return lines
 
 
-def _name_cell(pool: Pool) -> ft.Control:
-    return ft.Column(
+def _name_cell(pool: Pool, logo_size: float = 24) -> ft.Control:
+    """Overlapping coin logos, then the pool's name and its assets."""
+    return ft.Row(
         [
-            ft.Text(pool.display_name, size=14, weight=ft.FontWeight.W_500),
-            ft.Text(" ".join(pool.coin_symbols), size=11, color=ft.Colors.ON_SURFACE_VARIANT),
+            pool_stack(pool, size=logo_size),
+            ft.Column(
+                [
+                    ft.Text(pool.display_name, size=14, weight=ft.FontWeight.W_500),
+                    ft.Text(
+                        " ".join(pool.coin_symbols),
+                        size=11,
+                        color=ft.Colors.ON_SURFACE_VARIANT,
+                    ),
+                ],
+                spacing=1,
+                expand=True,
+            ),
         ],
-        spacing=1,
+        spacing=10,
+        vertical_alignment=ft.CrossAxisAlignment.CENTER,
         expand=True,
     )
 

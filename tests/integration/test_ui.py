@@ -78,8 +78,10 @@ async def test_app_starts_and_lists_pools(flet_app) -> None:
     tester = flet_app.tester
     await tester.pump_and_settle()
 
-    # The chrome renders before any data arrives.
-    assert (await tester.find_by_text("CURVE")).count == 1
+    # The chrome renders before any data arrives. Keyed rather than found
+    # by text, because the brand is the Curve mark when the compiled assets
+    # are present and the wordmark when they are not.
+    assert (await tester.find_by_key("brand")).count == 1
 
     assert (await wait_for_pools(tester)).count >= 1, "the pool count never appeared"
     assert (await tester.find_by_key("pool-row-0")).count == 1

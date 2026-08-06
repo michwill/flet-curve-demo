@@ -1,0 +1,3 @@
+[submodule "vendor/curve-assets"]
+	path = vendor/curve-assets
+	url = git@github.com:curvefi/curve-assets.git

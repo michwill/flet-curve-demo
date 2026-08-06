@@ -155,6 +155,12 @@ class Pool:
     #: equivalent, so this column simply did not exist before.
     merkle_apr: float = 0.0
     is_meta: bool = False
+    #: Address of the pool this one is built on, when it is a metapool.
+    base_pool: str = ""
+    #: How many coins the *contract* has, from the detail endpoint. For a
+    #: metapool this is 2 while `coins` lists four or five, because v2
+    #: decomposes the base pool into the same list. 0 until detail loads.
+    onchain_coins: int = 0
     amplification: float = 0.0
     virtual_price: float = 0.0
     #: False until `merge_detail` has run: the list endpoint omits the LP
@@ -184,12 +190,52 @@ class Pool:
         return True
 
     @property
+    def pool_coins(self) -> list[Coin]:
+        """The coins the pool contract actually has.
+
+        For a metapool that is `[metaToken, basePoolLpToken]` -- two --
+        while `coins` lists the decomposed four or five. Everything that
+        touches the chain must use this: `add_liquidity` takes a
+        `uint256[N]` whose N is part of the function signature, so building
+        it from the decomposed list produces calldata for a function the
+        pool does not have. `balances` from the API lines up with this list
+        too, not with `coins`.
+        """
+        if self.onchain_coins and self.onchain_coins <= len(self.coins):
+            return self.coins[: self.onchain_coins]
+        return list(self.coins)
+
+    @property
     def n_coins(self) -> int:
-        return len(self.coins)
+        """Coins on the contract -- the N in `uint256[N]`."""
+        return len(self.pool_coins)
 
     @property
     def coin_symbols(self) -> list[str]:
-        return [c.symbol for c in self.coins]
+        return [c.symbol for c in self.display_coins]
+
+    @property
+    def display_coins(self) -> list[Coin]:
+        """The assets a depositor is actually exposed to.
+
+        v2 already decomposes a metapool for us: `coins` comes back as
+        `[metaToken, basePoolLpToken, ...underlying]` -- so the World
+        Liberty pool reports `USD1, crv2pool, USDC, USDT`. The LP token in
+        the middle is plumbing, not an asset, and Curve's own UI does not
+        show it either, so it is dropped.
+
+        Index 1 rather than an address match: on newer pools the base LP
+        token *is* the base pool contract and could be matched by address,
+        but on older ones (3Crv, crvFRAX) it is a separate contract and
+        cannot. A Curve metapool always has exactly two real coins, the
+        second being the base LP, so its position is the reliable part.
+
+        Only when the list was actually decomposed -- with two coins there
+        is nothing underlying and dropping one would lose a real asset.
+        """
+        if self.base_pool and len(self.coins) > 2:
+            return [self.coins[0], *self.coins[2:]]
+        return list(self.coins)
 
     @property
     def has_gauge(self) -> bool:
@@ -253,6 +299,7 @@ class Pool:
             ],
             merkle_apr=_float(raw.get("merkle_apr")),
             is_meta=bool(raw.get("is_metapool") or raw.get("metapool")),
+            base_pool=raw.get("base_pool") or "",
         )
 
     def merge_detail(self, raw: dict[str, Any]) -> "Pool":
@@ -273,12 +320,13 @@ class Pool:
         balances_usd = raw.get("balances_usd") or []
         if detail_coins:
             self.coins = [Coin.from_v2(c) for c in detail_coins]
-        for index, coin in enumerate(self.coins):
+        for index, coin in enumerate(self.pool_coins):
             if index < len(balances):
                 coin.balance = _float(balances[index])
             if index < len(balances_usd):
                 coin.balance_usd = _float(balances_usd[index])
 
+        self.onchain_coins = _int(raw.get("n_coins"))
         metadata = raw.get("metadata") or {}
         self.amplification = _float(metadata.get("a"))
         self.virtual_price = _float(metadata.get("virtual_price"))

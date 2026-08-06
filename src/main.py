@@ -43,7 +43,21 @@ PREFERRED_CHAINS = ("ethereum", "arbitrum", "base", "optimism", "polygon", "frax
 BRAND_LOGO = 34
 #: The network mark inside the picker. Smaller than a token mark elsewhere:
 #: a dense dropdown's field is barely taller than its text.
-CHAIN_ICON = 15
+CHAIN_ICON = 14
+
+
+def chain_icon(chain: str) -> ft.Control | None:
+    """The selected network's mark, inset from the field's border.
+
+    `Dropdown.leading_icon` goes straight into the decoration box with no
+    padding of its own, so the mark touches the left border however small
+    it is -- shrinking it alone just puts a smaller logo against the
+    border. The inset has to come from the mark itself.
+    """
+    mark = chain_mark(chain, CHAIN_ICON)
+    if mark is None:
+        return None
+    return ft.Container(mark, padding=ft.Padding.only(left=10, right=4))
 
 
 class CurveApp:
@@ -80,9 +94,7 @@ class CurveApp:
             value=self.chain,
             width=185,
             dense=True,
-            # Smaller than a token mark: a dense dropdown's field is barely
-            # taller than its text, so an 18px logo sits on both borders.
-            leading_icon=chain_mark(self.chain, CHAIN_ICON),
+            leading_icon=chain_icon(self.chain),
             on_select=self._chain_changed,
         )
         self.totals = ft.Text(
@@ -213,7 +225,7 @@ class CurveApp:
         self.chain = self.chain_picker.value or DEFAULT_CHAIN
         # The closed field carries the selected network's mark too, not
         # just the name.
-        self.chain_picker.leading_icon = chain_mark(self.chain, CHAIN_ICON)
+        self.chain_picker.leading_icon = chain_icon(self.chain)
         self.show_list()
         self.page.run_task(self.load_pools)
 
@@ -264,7 +276,7 @@ class CurveApp:
         if self.chain not in known and ordered:
             self.chain = ordered[0]
             self.chain_picker.value = self.chain
-        self.chain_picker.leading_icon = chain_mark(self.chain, CHAIN_ICON)
+        self.chain_picker.leading_icon = chain_icon(self.chain)
 
     # -- navigation -------------------------------------------------------
 

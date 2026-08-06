@@ -24,7 +24,9 @@ from dataclasses import dataclass
 from typing import Any
 
 from .http import ApiError, build_url, get_json
+from .lite import LITE_API, LITE_MIN_TVL, LiteChain, parse_hidden, parse_platforms, parse_pools, select
 from .models import Pool
+from .sort import get_sort
 
 PRICES_V2 = "https://prices.curve.finance/v2"
 PRICES_V1 = "https://prices.curve.finance/v1"
@@ -151,12 +153,17 @@ class CurveApi:
         return payload
 
     async def chains(self) -> dict[str, int]:
-        """Chain name -> numeric chain id.
+        """Chain name -> numeric chain id, across both APIs.
 
         v2 addresses chains by id, not by the name v1 used, so this mapping
         is needed before any pool call. Worth reading rather than
         hardcoding: v2 currently covers 12 chains against v1's 21, and the
         list will move.
+
+        Curve Lite chains are folded in here, so the picker offers one list
+        and everything downstream takes a chain id. Where a name is in both
+        -- Avalanche and Fantom are -- v2 wins, because it has volume and
+        charts and the Lite entry has neither.
         """
         cached = self._cached("chains")
         if cached is not None:
@@ -167,7 +174,74 @@ class CurveApi:
             for entry in payload.get("data") or []
             if entry.get("name") and entry.get("chain_id") is not None
         }
+        for name, chain in (await self.lite_chains()).items():
+            mapping.setdefault(name, chain.chain_id)
         return self._store("chains", mapping)
+
+    # -- Curve Lite -------------------------------------------------------
+
+    async def lite_chains(self) -> dict[str, LiteChain]:
+        """The Curve Lite deployments, or nothing if that API is down.
+
+        Nothing rather than an error: a failure here should cost the Lite
+        chains from the picker, not the whole list of chains.
+        """
+        cached = self._cached("lite:chains")
+        if cached is not None:
+            return cached
+        try:
+            payload = await get_json(f"{LITE_API}/get_platforms")
+        except ApiError:
+            return self._store("lite:chains", {})
+        return self._store("lite:chains", parse_platforms(payload))
+
+    async def lite_chain_ids(self) -> set[int]:
+        """Which chain ids are served by the Lite API rather than v2.
+
+        Only the ones v2 does not have: a chain in both is a full
+        deployment that the Lite API also happens to list.
+        """
+        cached = self._cached("lite:ids")
+        if cached is not None:
+            return cached
+        lite = await self.lite_chains()
+        # `chains()` calls this, so read v2 directly rather than recursing.
+        payload = await self._v2("/pools/chains/")
+        big = {
+            int(entry["chain_id"])
+            for entry in payload.get("data") or []
+            if entry.get("chain_id") is not None
+        }
+        ids = {chain.chain_id for chain in lite.values()} - big
+        return self._store("lite:ids", ids)
+
+    async def is_lite(self, chain_id: int) -> bool:
+        return chain_id in await self.lite_chain_ids()
+
+    async def _lite_pools(self, chain_id: int, chain: str) -> list[Pool]:
+        """Every pool on a Lite chain, in one request and then cached.
+
+        There is no paging on this API and no need for one: the largest
+        Lite chain is a couple of hundred pools, which is one response and
+        the whole chain, so the list can be ordered and searched locally.
+        """
+        key = f"lite:pools:{chain_id}"
+        cached = self._cached(key)
+        if cached is not None:
+            return cached
+        payload = await get_json(f"{LITE_API}/get_pools/{chain_id}")
+        pools = parse_pools(payload, chain or "", await self._lite_hidden())
+        return self._store(key, pools)
+
+    async def _lite_hidden(self) -> set[tuple[int, str]]:
+        cached = self._cached("lite:hidden")
+        if cached is not None:
+            return cached
+        try:
+            payload = await get_json(f"{LITE_API}/get_hidden_pools")
+        except ApiError:
+            return self._store("lite:hidden", set())
+        return self._store("lite:hidden", parse_hidden(payload))
 
     async def list_pools(
         self,
@@ -187,6 +261,19 @@ class CurveApi:
         a 50-row cap there is no way to sort correctly on the client
         without first pulling every page.
         """
+        if await self.is_lite(chain_id):
+            # Same contract, served from one cached response: a page and
+            # the total count, ordered and filtered the way v2 would have.
+            return select(
+                await self._lite_pools(chain_id, chain),
+                sort_local=get_sort(sort_by).local,
+                direction=direction,
+                search=search,
+                min_tvl=LITE_MIN_TVL if min_tvl else None,
+                page=page,
+                page_size=min(page_size, MAX_PAGE_SIZE),
+            )
+
         params: dict[str, Any] = {
             "chain_id": chain_id,
             "page": max(1, page),
@@ -212,17 +299,26 @@ class CurveApi:
         payload = await self._v2(f"/pools/{chain_id}/{address}")
         return self._store(key, payload)
 
-    async def chain_totals(self, chain_id: int) -> dict[str, float]:
+    async def chain_totals(self, chain_id: int) -> dict[str, float | None]:
         """Headline TVL and volume for the chain, for the list header.
 
         v2 has no totals endpoint, so this comes from v1's per-chain
         summary, which reports them for every pool rather than just the
         ones above the TVL floor.
+
+        A Lite chain has a TVL and no volume at all, and `None` is how that
+        is said -- the header omits the clause rather than printing a zero
+        that reads as "nobody traded today".
         """
         key = f"totals:{chain_id}"
         cached = self._cached(key)
         if cached is not None:
             return cached
+        if await self.is_lite(chain_id):
+            for chain in (await self.lite_chains()).values():
+                if chain.chain_id == chain_id:
+                    return self._store(key, {"tvl": chain.tvl, "volume": None})
+            return {"tvl": 0.0, "volume": None}
         try:
             chains = {v: k for k, v in (await self.chains()).items()}
             name = chains.get(chain_id, "ethereum")
@@ -341,10 +437,15 @@ class PoolFeed:
         direction: str = "desc",
         search: str = "",
         min_tvl: float | None = DEFAULT_MIN_TVL,
+        lite: bool = False,
     ) -> None:
         self.api = api
         self.chain = chain
         self.chain_id = chain_id
+        #: A Curve Lite chain: paged from one cached response rather than
+        #: from the server, and with no volume or base APR to show. The
+        #: view reads this to decide which columns exist at all.
+        self.lite = lite
         self.sort_by = sort_by
         self.direction = direction
         self.search = search

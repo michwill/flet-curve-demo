@@ -171,6 +171,44 @@ whatever happened to be in memory. Search is debounced and sent as
 is no rewards-without-base field, and the difference is immaterial when base APR
 is low single digits and incentive APRs run to hundreds of percent.
 
+### Curve Lite, and showing less on purpose
+
+A **Curve Lite** deployment is the factory contracts and a gauge without the
+indexing the big chains have — fifteen mainnets, from Etherlink and Monad down
+to pools worth a few hundred dollars — and it is served by a different API,
+`api2.curve.finance`. They are in the same chain picker; `curve/lite.py` has
+the client and `CurveApi` dispatches on chain id, so `PoolFeed` and the list
+view never learn which kind of chain they are showing.
+
+What that API does not have is the interesting part. **No volume, no base APR,
+no CRV boost range, and no OHLC at all.** Those are not zeroes — nothing
+measures them — so rather than print noughts that read as measurements:
+
+- the Volume and Base APY **columns come out** of the table, and their sort
+  options with them. The list opens on TVL, since sorting by a volume that is
+  unknown everywhere orders the page arbitrarily;
+- the chain header drops its volume clause, and so does the pool page;
+- the chart is replaced by one line saying why there isn't one;
+- a reward whose token has no price contributes nothing, rather than an APR
+  guessed from the emission rate.
+
+Three shape differences are handled in `Pool.from_lite`: raw integer balances
+with string decimals (v2 sends them scaled), a third spelling of the registry
+ids (`factory_stable_ng` where v2 says `stableswapng` — folded by
+`Pool.registry_key`, and getting it wrong would send fixed-array calldata to a
+`DynArray` pool), and metapool coins that are *not* decomposed, which is also
+why no zap route is offered there.
+
+Two other things this API decides rather than the app: pools marked `is_broken`
+and the `get_hidden_pools` list are both dropped, as Curve's own frontend drops
+them. And the TVL floor is zero here where the big chains use $10,000 — whole
+Lite deployments are smaller than that floor, so the same cut would empty the
+list. Sorting by TVL is what keeps the dust at the bottom.
+
+Paging is local: one request returns the whole chain, and `curve/lite.py`'s
+`select` filters, orders and slices it to the same `(page, total)` contract the
+server gives for v2.
+
 ## The chart
 
 `flet-charts`' `CandlestickChart` draws the candles and axes. It has no pan,

@@ -24,6 +24,7 @@ import flet as ft
 from curve import ApiError, CurveApi, Pool, PoolContract
 from curve.api import PoolFeed
 from curve.format import compact_usd
+from curve.sort import DEFAULT_SORT
 from ui.pool_detail import PoolDetailView
 from ui.pool_list import PoolListView
 from ui.assets import chain_name, curve_logo
@@ -350,8 +351,18 @@ class CurveApp:
                 self._sync_chain_options()
             chain_id = self.chains.get(self.chain)
             if chain_id is None:
-                raise ApiError(f"Curve's v2 API does not cover {self.chain}.")
-            self.feed = PoolFeed(self.api, self.chain, chain_id)
+                raise ApiError(f"Curve's API does not cover {self.chain}.")
+            # Curve Lite chains measure no trading, so the list opens on
+            # TVL: sorting by a volume that is unknown everywhere would
+            # order the page arbitrarily. See `curve.lite`.
+            lite = await self.api.is_lite(chain_id)
+            self.feed = PoolFeed(
+                self.api,
+                self.chain,
+                chain_id,
+                sort_by="tvl" if lite else DEFAULT_SORT,
+                lite=lite,
+            )
             self.list_view.attach(self.feed)
             self.page.update()
             await self.list_view.load_more()
@@ -363,9 +374,12 @@ class CurveApp:
             self.page.update()
             return
 
-        self.totals.value = (
-            f"TVL {compact_usd(totals['tvl'])}"
-            f"   ·   24h volume {compact_usd(totals['volume'])}"
+        # No volume clause on a Lite chain: nothing there counts trades,
+        # and "24h volume $0.00" would read as a quiet day rather than as
+        # an absent measurement.
+        volume = totals.get("volume")
+        self.totals.value = f"TVL {compact_usd(totals['tvl'] or 0.0)}" + (
+            f"   ·   24h volume {compact_usd(volume)}" if volume is not None else ""
         )
         self.progress.visible = False
         self.page.update()

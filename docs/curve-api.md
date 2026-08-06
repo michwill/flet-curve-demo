@@ -3,17 +3,19 @@
 Research notes for building a Curve Finance UI in Python/Flet. Everything here
 was verified against the live API, not just read from the docs.
 
-**This app uses Prices API v2 for pool data and v1 for charts.** The v1 main API
-(`api.curve.finance`) is documented at the end for reference; it is no longer
-used here.
+**This app uses Prices API v2 for pool data, v1 for charts, and the Lite API
+for the chains v2 does not cover.** The v1 main API (`api.curve.finance`) is
+documented at the end for reference; it is used only for the metapool zap
+addresses, which nothing else publishes.
 
-## The three surfaces
+## The four surfaces
 
 | | Base URL | Spec | Used for |
 |---|---|---|---|
 | **Prices v2** | `https://prices.curve.finance/v2` | [`/v2/docs/openapi.json`](https://prices.curve.finance/v2/docs/openapi.json) — 6 endpoints | **Pools**: TVL, volume, APR, gauges |
 | **Prices v1** | `https://prices.curve.finance/v1` | [`/feeds-docs/openapi.json`](https://prices.curve.finance/feeds-docs/openapi.json) — 136 endpoints | **Charts** (OHLC), crvUSD, lending, DAO |
-| **Main v1** | `https://api.curve.finance/v1` | [`/v1/openapi.json`](https://api.curve.finance/v1/openapi.json) — 44 endpoints | superseded by v2 for pools |
+| **Lite** | `https://api2.curve.finance` | [`/docs/openapi.json`](https://api2.curve.finance/docs/openapi.json) — 6 endpoints | **Curve Lite chains**: pools only |
+| **Main v1** | `https://api.curve.finance/v1` | [`/v1/openapi.json`](https://api.curve.finance/v1/openapi.json) — 44 endpoints | superseded by v2; still the only source of zap addresses |
 
 All public — no key, no auth.
 
@@ -114,6 +116,58 @@ speaks. Getting it wrong does not revert — it returns empty data (see below).
 
 These names differ from v1's hyphenated registry ids (`factory-stable-ng`,
 `factory-twocrypto`, …).
+
+---
+
+## Lite API — the small deployments
+
+`api2.curve.finance`. A **Curve Lite** deployment is the factory contracts and
+a gauge without the indexing the big chains have, so this API knows what the
+pools know and nothing about trading. Six endpoints, FastAPI, and the spec is
+at `/docs/openapi.json` (not `/openapi.json`, which 404s).
+
+| Endpoint | Returns |
+|---|---|
+| `GET /get_platforms` | every deployment: `chain_id`, display name, RPC URL, explorer, TVL, `is_mainnet` |
+| `GET /get_pools/{chain_id}` | **every pool on the chain in one response** — no paging, no filters |
+| `GET /get_hidden_pools` | `(chain_id, address)` pairs Curve's own frontend does not show |
+| `GET /get_deployment/{chain_id}` | factory addresses |
+| `GET /health`, `/ping` | — |
+
+24 platforms as of writing, 15 of them mainnets: Etherlink, Monad, Plasma,
+X Layer, Unichain, Ink, Plume, Robinhood, Sonic, Stable, Tac, Taiko, XDC, plus
+Avalanche and Fantom, which v2 also carries. Where both cover a chain, prefer
+v2 — it has volume and charts.
+
+### What is missing, which is the whole point
+
+No volume, no base APR, no CRV boost range, and **no OHLC anywhere**, so no
+chart. These are not zeroes to display: nothing measures them. Reward entries
+carry `apy: null` wherever the token has no price, which is most of the time —
+the emission `rate` beside it is not a substitute.
+
+### Pool object
+
+```
+address, chain_id, registry_id, name, symbol, tvl, total_supply,
+lp_token_address, virtual_price (1e18), amplification_coefficient,
+is_meta_pool, is_broken, gauge_address, gauge_is_killed, gauge_crv_apy,
+gauge_extra_rewards[], coins[{address, symbol, decimals, usd_price,
+pool_balance, is_base_pool_lp_token}]
+```
+
+Three differences from a v2 pool that matter when parsing:
+
+* `pool_balance` is a **raw integer** and `decimals` is a **string**; v2 sends
+  reserves already scaled;
+* `registry_id` uses underscores — `factory_stable_ng`, `factory_twocrypto`,
+  `factory_tricrypto` — where v2 writes `stableswapng` and v1 writes
+  `factory-stable-ng`. Same implementations, third spelling;
+* a metapool's `coins` are the contract's own two, not decomposed. There is no
+  base pool address at all, so the underlying route has nothing to address.
+
+`is_broken` pools and the `get_hidden_pools` list are both worth filtering:
+Curve's own frontend hides them.
 
 ---
 

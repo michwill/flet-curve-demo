@@ -42,14 +42,17 @@ class FakeFeed:
     everything loaded so far.
     """
 
-    def __init__(self, pools, page_size: int = 50) -> None:
+    def __init__(self, pools, page_size: int = 50, *, lite: bool = False) -> None:
         self._all = pools
         self._page_size = page_size
         self.pools: list = []
         self.total: int | None = None
         self.loading = False
         self.error = ""
-        self.sort_by = "volume"
+        #: As on the real feed: a Curve Lite chain, which has no volume or
+        #: base APR for the view to show.
+        self.lite = lite
+        self.sort_by = "tvl" if lite else "volume"
         self.search = ""
         self.resets = 0
 
@@ -360,3 +363,158 @@ def test_candle_chart_builds_and_accepts_an_empty_series() -> None:
     chart = CandleChart()
     chart.set_candles([])
     assert chart._empty.visible
+
+
+# -- Curve Lite ------------------------------------------------------------
+#
+# These chains have no volume and no base APR -- nothing indexes their
+# trades -- so those two columns are not empty, they are absent. See
+# `curve.lite` for the API and `test_lite.py` for the parsing.
+
+
+def make_lite_pool(tvl: float = 2_289_892.0) -> Pool:
+    return Pool.from_lite(
+        {
+            "address": "0x" + "ab" * 20,
+            "chain_id": 42793,
+            "name": "mBASIS/USDC",
+            "registry_id": "factory_stable_ng",
+            "tvl": tvl,
+            "lp_token_address": "0x" + "ab" * 20,
+            "coins": [
+                {
+                    "address": "0x" + f"{i:02x}" * 20,
+                    "symbol": f"C{i}",
+                    "decimals": "18",
+                    "usd_price": 1.0,
+                    "pool_balance": "1000000000000000000",
+                }
+                for i in range(2)
+            ],
+        },
+        "etherlink",
+    )
+
+
+def test_a_lite_row_drops_the_columns_that_measure_trading() -> None:
+    from ui.pool_list import COLUMN_WIDTH, visible_columns
+
+    wide = layout_for(2000.0)
+    assert set(visible_columns(wide.columns, False)) == set(wide.columns)
+    lite = visible_columns(wide.columns, True)
+    assert "volume" not in lite and "base" not in lite
+    assert "tvl" in lite and "incentives" in lite
+    # Whatever survives still has a width to lay out with.
+    assert all(key in COLUMN_WIDTH for key in lite)
+
+
+def test_a_lite_row_is_narrower_than_a_full_one() -> None:
+    """Same layout, fewer cells: the row builder reads the pool itself, so
+    a Lite pool and a full one can sit in the same list."""
+    layout = layout_for(2000.0)
+    full = PoolRow(make_pool(), on_open=lambda _p: None, layout=layout)
+    lite = PoolRow(make_lite_pool(), on_open=lambda _p: None, layout=layout)
+    assert len(lite.content.controls) == len(full.content.controls) - 2
+
+
+def test_a_lite_header_hides_those_sorts() -> None:
+    view = PoolListView(StubPage(), on_open=lambda _p: None)
+    view.attach(FakeFeed([make_lite_pool()], lite=True))
+    hidden = [key for key, cell in view._sort_cells.items() if not cell.visible]
+    assert "volume" in hidden and "base" in hidden
+    # And the phone's dropdown offers the same set the header does.
+    assert {o.key for o in view.sort_picker.options} == {"tvl", "incentives"}
+
+
+def test_a_lite_list_opens_on_tvl() -> None:
+    """Sorting by a volume that is unknown everywhere orders the page
+    arbitrarily, so the feed opens on TVL and the header agrees."""
+    view = PoolListView(StubPage(), on_open=lambda _p: None)
+    view.attach(FakeFeed([make_lite_pool()], lite=True))
+    assert view._sort == "tvl"
+    assert view.sort_picker.value == "tvl"
+
+
+def test_a_full_list_still_opens_on_volume() -> None:
+    view = PoolListView(StubPage(), on_open=lambda _p: None)
+    view.attach(FakeFeed([make_pool()]))
+    assert view._sort == "volume"
+    assert {o.key for o in view.sort_picker.options} == {
+        "volume", "tvl", "incentives", "base"
+    }
+
+
+def test_a_lite_card_leads_with_tvl() -> None:
+    """On a phone the headline number is whichever one exists."""
+    card = PoolRow(make_lite_pool(), on_open=lambda _p: None, layout=layout_for(400.0))
+    labels = [c.value for c in _texts(card) if isinstance(c.value, str)]
+    assert "TVL" in labels
+    assert "base" not in [label.lower() for label in labels]
+
+
+def _contains(control, target) -> bool:
+    """Is `target` anywhere in this control's tree? The chart's picker sits
+    inside a Row, not directly under the column."""
+    if control is target:
+        return True
+    for attr in ("controls", "content"):
+        child = getattr(control, attr, None)
+        if isinstance(child, list):
+            if any(_contains(item, target) for item in child):
+                return True
+        elif child is not None and _contains(child, target):
+            return True
+    return False
+
+
+def _texts(control, found=None) -> list:
+    found = [] if found is None else found
+    if isinstance(control, ft.Text):
+        found.append(control)
+    for attr in ("controls", "content"):
+        child = getattr(control, attr, None)
+        if isinstance(child, list):
+            for item in child:
+                _texts(item, found)
+        elif child is not None:
+            _texts(child, found)
+    return found
+
+
+def test_a_lite_pool_page_shows_no_chart() -> None:
+    """There is no OHLC endpoint for these chains at all, so the picker
+    and the canvas are replaced by a line saying why."""
+    view = PoolDetailView(
+        StubPage(), api=None, pool=make_lite_pool(),
+        get_contract=lambda: None, on_back=lambda: None,
+    )
+    assert not _contains(view._left, view.series)
+    assert not _contains(view._left, view.chart)
+    assert any(
+        "No price history" in (text.value or "") for text in _texts(view._left)
+    )
+
+
+def test_a_lite_pool_page_reports_no_volume() -> None:
+    """Same reason the column goes: "$0" reads as a quiet day rather than
+    as a measurement nobody took."""
+    lite = PoolDetailView(
+        StubPage(), api=None, pool=make_lite_pool(),
+        get_contract=lambda: None, on_back=lambda: None,
+    )
+    full = PoolDetailView(
+        StubPage(), api=None, pool=make_pool(),
+        get_contract=lambda: None, on_back=lambda: None,
+    )
+    labels = [text.value for text in _texts(lite.controls[0])]
+    assert "TVL" in labels and "24h volume" not in labels
+    assert "24h volume" in [text.value for text in _texts(full.controls[0])]
+
+
+def test_a_full_pool_page_still_shows_one() -> None:
+    view = PoolDetailView(
+        StubPage(), api=None, pool=make_pool(),
+        get_contract=lambda: None, on_back=lambda: None,
+    )
+    assert _contains(view._left, view.chart)
+    assert _contains(view._left, view.series)

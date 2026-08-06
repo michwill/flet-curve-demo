@@ -94,8 +94,25 @@ class PoolDetailView(ft.Column):
             on_select=self._size_changed,
         )
 
-        self._left = ft.Column(
+        # A Curve Lite chain has no OHLC endpoint at all -- no service
+        # indexes its trades -- so the chart and its two pickers are not
+        # merely empty there, they have nothing to ask. One line stands in
+        # their place; everything below it works exactly as it does
+        # anywhere else, because the rest comes from the pool itself.
+        chart_block: list[ft.Control] = (
             [
+                ft.Container(
+                    ft.Text(
+                        "No price history: Curve Lite chains have no trade "
+                        "indexing behind them.",
+                        size=SMALL,
+                        color=ft.Colors.ON_SURFACE_VARIANT,
+                    ),
+                    padding=ft.Padding.symmetric(vertical=10),
+                )
+            ]
+            if pool.lite
+            else [
                 ft.Row(
                     [self.series, ft.Container(expand=True), self.size_picker],
                     vertical_alignment=ft.CrossAxisAlignment.CENTER,
@@ -103,6 +120,11 @@ class PoolDetailView(ft.Column):
                 self.chart_caption,
                 self.chart,
                 self.chart_error,
+            ]
+        )
+        self._left = ft.Column(
+            [
+                *chart_block,
                 self._composition_slot,
                 self._yields_slot,
             ],
@@ -187,7 +209,13 @@ class PoolDetailView(ft.Column):
                     expand=True,
                 ),
                 self._stat("TVL", compact_usd(self.pool.tvl)),
-                self._stat("24h volume", compact_usd(self.pool.volume_24h)),
+                # Nothing counts trades on a Lite chain, so there is no
+                # volume to report -- and "$0" would read as a quiet day.
+                *(
+                    []
+                    if self.pool.lite
+                    else [self._stat("24h volume", compact_usd(self.pool.volume_24h))]
+                ),
             ],
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
             spacing=18,
@@ -303,18 +331,32 @@ class PoolDetailView(ft.Column):
         )
 
     def _yields(self) -> ft.Control:
-        lines: list[ft.Control] = [
-            self._yield_row("Base vAPY", percent(self.pool.base_apr)),
-        ]
+        # Base vAPY is fees earned, which needs somebody counting trades.
+        # On a Lite chain nobody is, so the row would be a nought standing
+        # for an unknown -- and the total below it would inherit that.
+        lines: list[ft.Control] = (
+            []
+            if self.pool.lite
+            else [self._yield_row("Base vAPY", percent(self.pool.base_apr))]
+        )
         if self.pool.crv_apr[1] > 0:
             lines.append(self._yield_row("CRV (min to max boost)", apr_range(*self.pool.crv_apr)))
         for incentive in self.pool.incentives:
             lines.append(self._yield_row(f"{incentive.symbol} incentives", percent(incentive.apr)))
-        lines.append(
-            self._yield_row(
-                "Total (max boost)", percent(self.pool.total_apr), bold=True
+        if len(lines) > 1:
+            lines.append(
+                self._yield_row(
+                    "Total (max boost)", percent(self.pool.total_apr), bold=True
+                )
             )
-        )
+        elif not lines:
+            lines.append(
+                ft.Text(
+                    "Rewards are not measured on this chain.",
+                    size=SMALL,
+                    color=ft.Colors.ON_SURFACE_VARIANT,
+                )
+            )
 
         facts = ft.Text(
             f"{self.pool.registry}  ·  {'metapool' if self.pool.is_meta else 'plain'}"
@@ -423,6 +465,8 @@ class PoolDetailView(ft.Column):
         self._page.run_task(self.load_chart)
 
     async def load_chart(self) -> None:
+        if self.pool.lite:
+            return  # nothing to ask; the panel says so instead
         size = get_candle_size(self._candle_size)
         # As many candles as the chart has room for at a readable pitch,
         # rather than a fixed number that looks cramped on one size and
@@ -470,8 +514,11 @@ class PoolDetailView(ft.Column):
         is no LP token to withdraw or stake without it, and no reserves to
         tabulate.
         """
+        # A Lite pool arrives complete -- reserves, prices, LP token and
+        # all -- because that API has no list/detail split to fill in.
         if self.pool.detailed:
             self._composition_slot.content = self._composition()
+            self._yields_slot.content = self._yields()
             return
         try:
             raw = await self.api.pool_detail(self.pool.chain_id, self.pool.address)

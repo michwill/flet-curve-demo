@@ -131,6 +131,21 @@ class Incentive:
             apr=_float(raw.get("apr")),
         )
 
+    @classmethod
+    def from_lite(cls, raw: dict[str, Any]) -> "Incentive":
+        """Curve Lite's gauge reward entry.
+
+        `apy` is null wherever the token has no price -- which on these
+        chains is most of the time -- and that is left as zero rather than
+        guessed at from the emission rate: a rate without a price is not
+        an APR.
+        """
+        return cls(
+            symbol=raw.get("symbol") or "?",
+            token_address=raw.get("token_address") or raw.get("address") or "",
+            apr=_float(raw.get("apy")),
+        )
+
 
 def _first_live_gauge(raw: Any) -> str:
     """Pull a usable gauge address out of either shape v2 returns.
@@ -185,6 +200,12 @@ class Pool:
     #: False until `merge_detail` has run: the list endpoint omits the LP
     #: token, the reserves and per-coin prices.
     detailed: bool = False
+    #: True for a pool from a **Curve Lite** deployment, which is served by
+    #: a different API (`api2.curve.finance`) that tracks no trading at
+    #: all. Volume, base APR and the CRV boost range are not zero on these
+    #: -- they are *unknown*, and the list shows them as such rather than
+    #: printing a nought that looks like a measurement.
+    lite: bool = False
     #: Which array shape the pool actually answered, once something has
     #: asked it. None until then, when the registry decides. A new factory
     #: this app has never heard of is thereby handled by asking rather than
@@ -193,6 +214,17 @@ class Pool:
     observed_dynamic: bool | None = None
 
     # -- derived ----------------------------------------------------------
+
+    @property
+    def registry_key(self) -> str:
+        """The pool type, in one spelling.
+
+        Three sources name the same implementations three ways: v2 says
+        `stableswapng`, the v1 registry ids say `factory-stable-ng`, and
+        Curve Lite says `factory_stable_ng`. Underscores fold to hyphens
+        so the type tables below need only two spellings rather than six.
+        """
+        return (self.registry or "").lower().replace("_", "-")
 
     @property
     def is_stableswap(self) -> bool:
@@ -204,7 +236,7 @@ class Pool:
         reverting -- see `curve.pool`. The registry is the only reliable
         discriminator available from the API.
         """
-        registry = (self.registry or "").lower()
+        registry = self.registry_key
         if registry in CRYPTO_POOL_TYPES:
             return False
         if registry in STABLE_POOL_TYPES:
@@ -224,7 +256,7 @@ class Pool:
         """
         if self.observed_dynamic is not None:
             return self.observed_dynamic
-        return (self.registry or "").lower() in DYNAMIC_ARRAY_TYPES
+        return self.registry_key in DYNAMIC_ARRAY_TYPES
 
     @property
     def pool_coins(self) -> list[Coin]:
@@ -369,3 +401,63 @@ class Pool:
         self.virtual_price = _float(metadata.get("virtual_price"))
         self.detailed = True
         return self
+
+    @classmethod
+    def from_lite(cls, raw: dict[str, Any], chain: str = "") -> "Pool":
+        """Build from one entry of Curve Lite's `get_pools/{chain_id}`.
+
+        A different API for a different kind of deployment: Curve Lite runs
+        the contracts without the indexing that the main chains have, so
+        there is no volume, no base APR, no CRV boost range and no price
+        history. What it does give in one call is everything the *pool*
+        knows -- reserves, prices, LP token, gauge, amplification -- so
+        unlike a v2 list entry this arrives complete and `detailed` is
+        true from the start.
+
+        The two other shape differences worth naming:
+
+          * amounts are raw integers with `decimals` as a string, where v2
+            sends reserves already scaled;
+          * a metapool's coins are the contract's own two, not the
+            decomposed list, so nothing needs dropping -- and with no base
+            pool address there is no zap route to offer either.
+        """
+        coins = []
+        for index, entry in enumerate(raw.get("coins") or []):
+            decimals = _int(entry.get("decimals"), 18)
+            balance = _float(entry.get("pool_balance")) / (10**decimals or 1)
+            price = _float(entry.get("usd_price"))
+            coins.append(
+                Coin(
+                    address=entry.get("address") or "",
+                    symbol=entry.get("symbol") or "?",
+                    decimals=decimals,
+                    index=index,
+                    usd_price=price,
+                    balance=balance,
+                    balance_usd=balance * price,
+                )
+            )
+        gauge = "" if raw.get("gauge_is_killed") else (raw.get("gauge_address") or "")
+        return cls(
+            address=raw.get("address") or "",
+            name=raw.get("name") or raw.get("symbol") or "",
+            chain=chain,
+            chain_id=_int(raw.get("chain_id")),
+            registry=raw.get("registry_id") or "",
+            coins=coins,
+            lp_token=raw.get("lp_token_address") or raw.get("address") or "",
+            tvl=_float(raw.get("tvl")),
+            gauge=gauge,
+            incentives=[
+                Incentive.from_lite(reward)
+                for reward in raw.get("gauge_extra_rewards") or []
+            ],
+            is_meta=bool(raw.get("is_meta_pool")),
+            onchain_coins=len(coins),
+            amplification=_float(raw.get("amplification_coefficient")),
+            # Reported in 1e18 fixed point, where v2 sends it as a float.
+            virtual_price=_float(raw.get("virtual_price")) / 1e18,
+            detailed=True,
+            lite=True,
+        )

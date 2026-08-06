@@ -40,6 +40,19 @@ COLUMN_WIDTH = {
     "volume": W_VOLUME,
     "tvl": W_TVL,
 }
+#: Columns that measure trading, which is the one thing a Curve Lite
+#: deployment has nobody doing: those chains run the contracts without the
+#: indexing behind volume and base APR. Showing "0.00%" there would be
+#: reporting a measurement that was never taken, so the columns come out
+#: entirely -- see `curve.lite`.
+UNMEASURED_ON_LITE = ("volume", "base")
+
+
+def visible_columns(columns, lite: bool) -> tuple[str, ...]:
+    """The layout's columns, minus any the chain has no data for."""
+    return tuple(c for c in columns if not (lite and c in UNMEASURED_ON_LITE))
+
+
 COLUMN_CONTENT = {
     "base": lambda p: ft.Text(percent(p.base_apr), size=BODY, text_align=ft.TextAlign.RIGHT),
     "incentives": lambda p: ft.Column(
@@ -156,7 +169,7 @@ class PoolRow(ft.Container):
 
     def _row(self, pool: Pool, layout: Layout) -> ft.Control:
         cells: list[ft.Control] = [_name_cell(pool)]
-        for column in layout.columns:
+        for column in visible_columns(layout.columns, pool.lite):
             cells.append(
                 ft.Container(
                     COLUMN_CONTENT[column](pool),
@@ -179,11 +192,16 @@ class PoolRow(ft.Container):
                 ft.Row(
                     [
                         _name_cell(pool),
+                        # On a Lite chain the headline is TVL, because
+                        # there is no volume to lead with.
                         ft.Column(
                             [
-                                ft.Text(compact_usd(pool.volume_24h), size=BODY),
                                 ft.Text(
-                                    f"{compact_usd(pool.tvl)} TVL",
+                                    compact_usd(pool.tvl if pool.lite else pool.volume_24h),
+                                    size=BODY,
+                                ),
+                                ft.Text(
+                                    "TVL" if pool.lite else f"{compact_usd(pool.tvl)} TVL",
                                     size=LABEL,
                                     color=ft.Colors.ON_SURFACE_VARIANT,
                                 ),
@@ -196,7 +214,7 @@ class PoolRow(ft.Container):
                 ),
                 ft.Row(
                     [
-                        _metric("base", percent(pool.base_apr)),
+                        *([] if pool.lite else [_metric("base", percent(pool.base_apr))]),
                         *(
                             [_metric("rewards", f"{apr_range(*pool.crv_apr)} CRV")]
                             if pool.crv_apr[1] > 0
@@ -219,6 +237,9 @@ class PoolListView(ft.Column):
     """Search box, sortable header, and a lazily-paged list of rows."""
 
     def __init__(self, page: ft.Page, on_open: Callable[[Pool], None]) -> None:
+        #: Whether the attached feed is a Curve Lite chain, which decides
+        #: what there is to show. Set before anything builds a header.
+        self._lite = False
         # `ft.Column` exposes `page` as a read-only property that raises
         # until the control is mounted, so the reference used for
         # `run_task` needs a name -- and a scroll handler must be able to
@@ -336,8 +357,9 @@ class PoolListView(ft.Column):
         build's font has no glyph for it and renders a tofu box, whereas the
         icon font is bundled and works on both platforms.
         """
+        showing = visible_columns(self._layout.columns, self._lite)
         for key, cell in self._sort_cells.items():
-            cell.visible = key in self._layout.columns
+            cell.visible = key in showing
             option = next(o for o in SORTS if o.key == key)
             active = key == self._sort
             label = ft.Text(
@@ -381,7 +403,16 @@ class PoolListView(ft.Column):
     def attach(self, feed: PoolFeed) -> None:
         """Point the view at a (new) feed, e.g. after a chain change."""
         self.feed = feed
-        self._sort = DEFAULT_SORT
+        self._lite = feed.lite
+        # A Lite chain has no volume to sort by, so the feed opens on TVL
+        # and the header has to agree with it.
+        self._sort = feed.sort_by or DEFAULT_SORT
+        self.sort_picker.value = self._sort
+        self.sort_picker.options = [
+            ft.DropdownOption(key=o.key, text=o.label)
+            for o in SORTS
+            if not (self._lite and o.key in UNMEASURED_ON_LITE)
+        ]
         self.search.value = ""
         self._sync_header()
         self.rows.controls = []

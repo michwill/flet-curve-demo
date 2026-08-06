@@ -522,6 +522,10 @@ class CurveApp:
             self.page.pop_dialog()
             self.page.run_task(self._change_wallet)
 
+        def disconnect(_e: ft.ControlEvent) -> None:
+            self.page.pop_dialog()
+            self.page.run_task(self._disconnect_wallet)
+
         # On the desktop there is one endpoint and no choice to offer: the
         # account is whichever one Frame or qeth has selected, and the app
         # now follows that by itself.
@@ -532,10 +536,6 @@ class CurveApp:
             ft.TextButton("Disconnect", on_click=disconnect),
             ft.TextButton("Close", on_click=lambda _e: self.page.pop_dialog()),
         ]
-
-        def disconnect(_e: ft.ControlEvent) -> None:
-            self.page.pop_dialog()
-            self.page.run_task(self._disconnect_wallet)
 
         return ft.AlertDialog(
             # The wallet's own icon, so the panel says which software you

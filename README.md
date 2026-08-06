@@ -220,6 +220,51 @@ the root `pyproject.toml`, fell back to bare `flet`, and the published app died
 in Pyodide with `ModuleNotFoundError: No module named 'flet_charts'`. Publish
 from the project root instead — `flet publish`, no path.
 
+## Responsive layout
+
+Every responsive decision comes from one pure function, `layout_for(width)` in
+`ui/responsive.py`, and each view is *told* the layout rather than measuring
+anything itself. Three breakpoints:
+
+| width | pool list | pool page |
+|---|---|---|
+| ≥ 1000 | five columns | chart beside the actions |
+| 900–1000 | drops **Base APY** | chart beside the actions |
+| 760–900 | drops **Base APY** | chart above the actions |
+| < 760 | **cards**, sort dropdown | chart above the actions |
+
+Base APY goes first because it is the least decisive number on the row. Below
+760px no amount of width-juggling saves five columns, so a row becomes a card:
+identity on one line, the figures underneath, each with its own label since
+there are no column headers left to read them against — and the headers are
+replaced by a sort dropdown, because you cannot click a column that is not
+there.
+
+Two things this exposed, both real bugs rather than cosmetics:
+
+- **`page.on_resize` fires on changes, not at startup**, so a window that
+  *opened* narrow never learned it was narrow. The layout is now applied on
+  first load as well.
+- **A flex child inside a scrolling Column is a Flutter layout error**, not a
+  visual glitch. The stacked pool page scrolls the page, so the action panel
+  there takes a fixed height instead of `expand` — the two arrangements need
+  opposite scrolling, which is why `_arrange` rebuilds rather than reflows.
+
+### Testing it without a window
+
+The breakpoints are a pure function of a number, so `tests/test_responsive.py`
+checks them exhaustively — at real device widths, at the exact boundaries, and
+that columns only ever *shrink* on the way down — with no window at all.
+`tests/test_views.py` then checks that each view actually reconfigures.
+
+That matters because **Flet's integration tests cannot resize the page in
+device mode** (`flet_app.page` is not bound; `resize_page` raises "page is not
+initialized", and host mode wants a Flutter test host this project does not
+provision). The UI suite therefore runs at whatever the test surface is — which
+turns out to be under 760px, so **those seven tests exercise the phone
+layout**. They caught the stacked-layout crash above. The wide layout is
+covered by the unit tests plus a browser pass.
+
 ## Talking to the pools
 
 `curve/abi.py` computes selectors with keccak-256 instead of hard-coding them,

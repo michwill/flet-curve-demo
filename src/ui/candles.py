@@ -403,7 +403,10 @@ class CandleChart(ft.Container):
         self._plot = Plot(800.0, height)
         self._last_hover = 0.0
         self._on_capacity_change = on_capacity_change
-        self._last_capacity = 0
+        # Seeded from the default plot size rather than left at zero: the
+        # first real layout must be *compared* against something, or a
+        # chart that opens narrow keeps the wide guess it was built with.
+        self._last_capacity = 0  # set below, once _plot exists
         # Price follows the visible candles until the user takes over. This
         # is what makes zooming in useful: without it, ten candles keep the
         # whole series' price range and stay squashed into a few pixels.
@@ -439,6 +442,7 @@ class CandleChart(ft.Container):
             ),
         )
         self._overlay = cv.Canvas(shapes=[], expand=True, on_resize=self._resized)
+        self._last_capacity = self.candle_capacity()
         self._empty = ft.Text(
             "No price history for this pair.",
             size=12,

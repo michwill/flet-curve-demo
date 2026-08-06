@@ -26,6 +26,7 @@ from curve.api import PoolFeed
 from curve.format import compact_usd
 from ui.pool_detail import PoolDetailView
 from ui.pool_list import PoolListView
+from ui.responsive import layout_for
 from wallet import Wallet, WalletChoice, WalletError, autoconnect, is_browser
 
 DEFAULT_CHAIN = "ethereum"
@@ -71,7 +72,14 @@ class CurveApp:
             dense=True,
             on_select=self._chain_changed,
         )
-        self.totals = ft.Text("", size=12, color=ft.Colors.ON_SURFACE_VARIANT)
+        self.totals = ft.Text(
+            "", size=12, color=ft.Colors.ON_SURFACE_VARIANT, no_wrap=True
+        )
+        self.build_label = ft.Text(
+            f"{'browser' if is_browser() else 'desktop'} build",
+            size=10,
+            color=ft.Colors.ON_SURFACE_VARIANT,
+        )
         self.account_label = ft.Text("", size=12)
         self.connect_button = ft.Button(
             "Connect wallet",
@@ -81,16 +89,15 @@ class CurveApp:
         self.theme_button = ft.IconButton(on_click=self._toggle_theme)
         self._sync_theme_button()
         page.on_platform_brightness_change = lambda _e: self._sync_theme_button(update=True)
+        # One source of responsive truth: every view is told the layout,
+        # nobody measures anything for itself.
+        page.on_resize = self._resized
 
         header = ft.Container(
             ft.Row(
                 [
                     ft.Text("CURVE", size=18, weight=ft.FontWeight.BOLD),
-                    ft.Text(
-                        f"{'browser' if is_browser() else 'desktop'} build",
-                        size=10,
-                        color=ft.Colors.ON_SURFACE_VARIANT,
-                    ),
+                    self.build_label,
                     self.chain_picker,
                     ft.Container(self.totals, expand=True),
                     self.account_label,
@@ -118,6 +125,27 @@ class CurveApp:
                 expand=True,
             )
         )
+
+    def _resized(self, e: ft.PageResizeEvent) -> None:
+        self._apply_layout(e.width)
+
+    def _apply_layout(self, width: float | None = None) -> None:
+        """Push the current layout at every view.
+
+        Also called on startup: `on_resize` fires on *changes*, so a window
+        that opens narrow would otherwise never be told it is narrow.
+        """
+        width = width or self.page.width or 0
+        if not width:
+            return
+        layout = layout_for(width)
+        # The chain totals are the first thing to go: a phone header has
+        # room for the chain and the wallet, and nothing else.
+        self.totals.visible = not layout.cards
+        self.build_label.visible = not layout.cards
+        self.list_view.set_layout(layout)
+        if self._detail is not None:
+            self._detail.set_layout(layout)
 
     def _sync_theme_button(self, update: bool = False) -> None:
         dark = self.page.theme_mode == ft.ThemeMode.DARK or (
@@ -151,6 +179,7 @@ class CurveApp:
         scrolls. See `curve.api.PoolFeed` for why paging beat loading
         everything up front.
         """
+        self._apply_layout()
         self.progress.visible = True
         self.error.visible = False
         self.page.update()
@@ -197,6 +226,8 @@ class CurveApp:
         self._detail = PoolDetailView(
             self.page, self.api, pool, self.contract_for, self.show_list
         )
+        if self.page.width:
+            self._detail.set_layout(layout_for(self.page.width))
         self.body.content = self._detail
         self.page.update()
         self.page.run_task(self._detail.load)
@@ -290,4 +321,9 @@ def main(page: ft.Page) -> None:
     CurveApp(page)
 
 
-ft.run(main)
+# Guarded so the module can be imported without launching -- which is what
+# Flet's host-mode tests do to drive the app in-process. `flet run` and
+# `flet publish` both execute this as `__main__` via runpy, so they are
+# unaffected.
+if __name__ == "__main__":
+    ft.run(main)

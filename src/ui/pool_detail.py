@@ -26,9 +26,16 @@ from curve.models import Pool
 from curve.pool import PoolContract
 
 from .actions import DepositTab, StakeTab, SwapTab, WithdrawTab
+from .responsive import Layout, layout_for
+from . import safe_update
 from .candles import CandleChart
 
 LP_SERIES = "__lp__"
+
+#: Height the action panel gets when stacked under the chart. Fixed because
+#: the page scrolls in that arrangement, and a flex child inside unbounded
+#: height is a Flutter layout error.
+STACKED_ACTIONS_HEIGHT = 560
 
 
 class PoolDetailView(ft.Column):
@@ -85,48 +92,78 @@ class PoolDetailView(ft.Column):
             on_select=self._size_changed,
         )
 
-        super().__init__(
-            controls=[
-                self._header(on_back),
+        self._left = ft.Column(
+            [
                 ft.Row(
-                    [
-                        ft.Container(
-                            ft.Column(
-                                [
-                                    ft.Row(
-                                        [
-                                            self.series,
-                                            ft.Container(expand=True),
-                                            self.size_picker,
-                                        ],
-                                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                                    ),
-                                    self.chart_caption,
-                                    self.chart,
-                                    self.chart_error,
-                                    self._composition_slot,
-                                    self._yields_slot,
-                                ],
-                                spacing=10,
-                                scroll=ft.ScrollMode.AUTO,
-                            ),
-                            expand=2,
-                        ),
-                        # Proportional rather than a fixed 360px: a fixed
-                        # width overflows its Row as soon as the window is
-                        # narrower than the sum of the two columns, which
-                        # Flutter raises as a widget exception rather than
-                        # just clipping.
-                        ft.Container(self._actions(), expand=1),
-                    ],
-                    vertical_alignment=ft.CrossAxisAlignment.START,
-                    spacing=20,
-                    expand=True,
+                    [self.series, ft.Container(expand=True), self.size_picker],
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
                 ),
+                self.chart_caption,
+                self.chart,
+                self.chart_error,
+                self._composition_slot,
+                self._yields_slot,
             ],
+            spacing=10,
+        )
+        self._right = ft.Container(self._actions())
+        # Side by side on a wide window, stacked on a narrow one. Rebuilt by
+        # `set_layout` rather than being two separate trees, so the chart and
+        # the action panel keep their state across a resize.
+        self._body = ft.Container(expand=True)
+        self._layout = layout_for(2000.0)
+
+        super().__init__(
+            controls=[self._header(on_back), self._body],
             spacing=14,
             expand=True,
         )
+        self._arrange()
+
+    # -- layout -----------------------------------------------------------
+
+    def set_layout(self, layout: Layout) -> None:
+        if layout.stacked == self._layout.stacked:
+            self._layout = layout
+            return
+        self._layout = layout
+        self._arrange()
+        safe_update(self)
+
+    def _arrange(self) -> None:
+        """Chart beside the actions, or above them when there is no room.
+
+        The two arrangements need opposite scrolling, which is why this
+        rebuilds rather than just reflowing. Side by side, the page is a
+        fixed frame and the left column scrolls inside it. Stacked, the
+        *page* scrolls -- and then nothing inside it may be `expand`, because
+        a flex child in unbounded height is a Flutter layout error, not a
+        cosmetic problem. That is what broke the pool page at phone widths.
+        """
+        if self._layout.stacked:
+            self.scroll = ft.ScrollMode.AUTO
+            self._left.scroll = None
+            self._left.expand = False
+            self._right.expand = False
+            # Bounded, because the page around it is not.
+            self._right.height = STACKED_ACTIONS_HEIGHT
+            self._body.expand = False
+            self._body.content = ft.Column(
+                [self._left, self._right], spacing=16, tight=True
+            )
+        else:
+            self.scroll = None
+            self._left.scroll = ft.ScrollMode.AUTO
+            self._left.expand = True
+            self._right.height = None
+            self._right.expand = 1
+            self._body.expand = True
+            self._body.content = ft.Row(
+                [ft.Container(self._left, expand=2), self._right],
+                vertical_alignment=ft.CrossAxisAlignment.START,
+                spacing=20,
+                expand=True,
+            )
 
     # -- header -----------------------------------------------------------
 

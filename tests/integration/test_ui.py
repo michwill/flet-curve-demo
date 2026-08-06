@@ -103,11 +103,20 @@ async def test_the_list_opens_on_one_page_of_fifty(flet_app) -> None:
     assert (await tester.find_by_key("pool-row-49")).count == 0
 
 
-async def test_every_column_heading_renders(flet_app) -> None:
+async def test_the_list_offers_a_way_to_sort(flet_app) -> None:
+    """Column headings on a wide window, a dropdown on a narrow one.
+
+    The test surface is well under the 760px card breakpoint, so this suite
+    exercises the *phone* layout -- which is worth knowing, and is why this
+    asserts on either control rather than on the headings. The breakpoints
+    themselves are covered exhaustively in `tests/test_responsive.py`,
+    where no window is needed at all.
+    """
     tester = flet_app.tester
     await wait_for_pools(tester)
-    for label in ("Pool", "Base APY", "Incentives", "Volume", "TVL"):
-        assert (await tester.find_by_text(label)).count >= 1, label
+    headings = (await tester.find_by_text("Volume")).count
+    dropdown = (await tester.find_by_key("pool-sort")).count
+    assert headings or dropdown, "no way to change the sort"
 
 
 async def test_searching_asks_the_server_and_narrows_the_list(flet_app) -> None:
@@ -177,6 +186,9 @@ async def test_opening_a_pool_shows_the_action_panel(flet_app) -> None:
         await wait_for(tester, lambda: tester.find_by_text_containing("LP token"))
     ).count >= 1
     assert (await tester.find_by_key("candle-size")).count == 1
+
+    # Let the chart request finish before teardown.
+    await wait_until_gone(tester, lambda: tester.find_by_text("Loading…"))
 
     # Let the chart request finish before the fixture tears the app down;
     # otherwise the Flutter process is killed mid-request and teardown errors.

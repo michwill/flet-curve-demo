@@ -24,12 +24,28 @@ from curve.models import Pool
 from curve.sort import DEFAULT_SORT, SORTS
 
 from . import safe_update
+from .responsive import Layout, layout_for
 
 #: Column widths, shared by the header and every row so they line up.
 W_BASE = 110
 W_REWARDS = 190
 W_VOLUME = 130
 W_TVL = 130
+
+COLUMN_WIDTH = {
+    "base": W_BASE,
+    "incentives": W_REWARDS,
+    "volume": W_VOLUME,
+    "tvl": W_TVL,
+}
+COLUMN_CONTENT = {
+    "base": lambda p: ft.Text(percent(p.base_apr), size=13, text_align=ft.TextAlign.RIGHT),
+    "incentives": lambda p: ft.Column(
+        reward_lines(p), spacing=0, horizontal_alignment=ft.CrossAxisAlignment.END
+    ),
+    "volume": lambda p: ft.Text(compact_usd(p.volume_24h), size=13),
+    "tvl": lambda p: ft.Text(compact_usd(p.tvl), size=13),
+}
 
 #: Start loading the next page this many pixels before the end. Roughly two
 #: screens, so the rows are usually there before the user reaches them.
@@ -40,84 +56,80 @@ SCROLL_THRESHOLD = 1200
 SEARCH_DEBOUNCE = 0.35
 
 
+def reward_lines(pool: Pool) -> list[ft.Control]:
+    """CRV first, then each incentive token on its own line.
+
+    The same shape Curve uses, and it keeps a pool with three reward tokens
+    from squeezing the other columns.
+    """
+    lines: list[ft.Control] = []
+    if pool.crv_apr[1] > 0:
+        lines.append(
+            ft.Text(f"{apr_range(*pool.crv_apr)} CRV", size=12, text_align=ft.TextAlign.RIGHT)
+        )
+    for incentive in pool.incentives:
+        lines.append(
+            ft.Text(
+                f"{percent(incentive.apr)} {incentive.symbol}",
+                size=12,
+                color=ft.Colors.ON_SURFACE_VARIANT,
+                text_align=ft.TextAlign.RIGHT,
+            )
+        )
+    if pool.merkle_apr > 0:
+        lines.append(
+            ft.Text(
+                f"{percent(pool.merkle_apr)} merkle",
+                size=12,
+                color=ft.Colors.ON_SURFACE_VARIANT,
+                text_align=ft.TextAlign.RIGHT,
+            )
+        )
+    if not lines:
+        lines.append(
+            ft.Text("–", size=13, color=ft.Colors.OUTLINE, text_align=ft.TextAlign.RIGHT)
+        )
+    return lines
+
+
+def _name_cell(pool: Pool) -> ft.Control:
+    return ft.Column(
+        [
+            ft.Text(pool.display_name, size=14, weight=ft.FontWeight.W_500),
+            ft.Text(" ".join(pool.coin_symbols), size=11, color=ft.Colors.ON_SURFACE_VARIANT),
+        ],
+        spacing=1,
+        expand=True,
+    )
+
+
+def _metric(label: str, value: str) -> ft.Control:
+    """A labelled figure, for the card layout where there are no headers."""
+    return ft.Row(
+        [
+            ft.Text(label, size=10, color=ft.Colors.ON_SURFACE_VARIANT),
+            ft.Text(value, size=12),
+        ],
+        spacing=4,
+        tight=True,
+    )
+
+
 class PoolRow(ft.Container):
     """One pool. Click anywhere to open it."""
 
-    def __init__(self, pool: Pool, on_open: Callable[[Pool], None], index: int = 0) -> None:
+    def __init__(
+        self,
+        pool: Pool,
+        on_open: Callable[[Pool], None],
+        index: int = 0,
+        layout: Layout | None = None,
+    ) -> None:
         self.pool = pool
-
-        title = ft.Text(pool.display_name, size=14, weight=ft.FontWeight.W_500)
-        coins = ft.Text(
-            " ".join(pool.coin_symbols),
-            size=11,
-            color=ft.Colors.ON_SURFACE_VARIANT,
-        )
-        name_cell = ft.Column([title, coins], spacing=1, expand=True)
-
-        base = ft.Text(percent(pool.base_apr), size=13, text_align=ft.TextAlign.RIGHT)
-
-        # CRV first, then each incentive token on its own line -- the same
-        # shape Curve uses, and it keeps a pool with three reward tokens
-        # from squeezing the other columns.
-        reward_lines: list[ft.Control] = []
-        if pool.crv_apr[1] > 0:
-            reward_lines.append(
-                ft.Text(
-                    f"{apr_range(*pool.crv_apr)} CRV",
-                    size=12,
-                    text_align=ft.TextAlign.RIGHT,
-                )
-            )
-        for incentive in pool.incentives:
-            reward_lines.append(
-                ft.Text(
-                    f"{percent(incentive.apr)} {incentive.symbol}",
-                    size=12,
-                    color=ft.Colors.ON_SURFACE_VARIANT,
-                    text_align=ft.TextAlign.RIGHT,
-                )
-            )
-        if pool.merkle_apr > 0:
-            reward_lines.append(
-                ft.Text(
-                    f"{percent(pool.merkle_apr)} merkle",
-                    size=12,
-                    color=ft.Colors.ON_SURFACE_VARIANT,
-                    text_align=ft.TextAlign.RIGHT,
-                )
-            )
-        if not reward_lines:
-            reward_lines.append(
-                ft.Text("–", size=13, color=ft.Colors.OUTLINE, text_align=ft.TextAlign.RIGHT)
-            )
-
+        layout = layout or layout_for(2000.0)
+        content = self._card(pool) if layout.cards else self._row(pool, layout)
         super().__init__(
-            content=ft.Row(
-                [
-                    name_cell,
-                    ft.Container(base, width=W_BASE, alignment=ft.Alignment.CENTER_RIGHT),
-                    ft.Container(
-                        ft.Column(
-                            reward_lines,
-                            spacing=0,
-                            horizontal_alignment=ft.CrossAxisAlignment.END,
-                        ),
-                        width=W_REWARDS,
-                        alignment=ft.Alignment.CENTER_RIGHT,
-                    ),
-                    ft.Container(
-                        ft.Text(compact_usd(pool.volume_24h), size=13),
-                        width=W_VOLUME,
-                        alignment=ft.Alignment.CENTER_RIGHT,
-                    ),
-                    ft.Container(
-                        ft.Text(compact_usd(pool.tvl), size=13),
-                        width=W_TVL,
-                        alignment=ft.Alignment.CENTER_RIGHT,
-                    ),
-                ],
-                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-            ),
+            content=content,
             padding=ft.Padding.symmetric(horizontal=16, vertical=10),
             border=ft.Border(bottom=ft.BorderSide(1, ft.Colors.OUTLINE_VARIANT)),
             on_click=lambda _e: on_open(pool),
@@ -125,6 +137,66 @@ class PoolRow(ft.Container):
             # Position-based rather than address-based so a UI test can
             # always reach "the first row" without knowing the data.
             key=f"pool-row-{index}",
+        )
+
+    def _row(self, pool: Pool, layout: Layout) -> ft.Control:
+        cells: list[ft.Control] = [_name_cell(pool)]
+        for column in layout.columns:
+            cells.append(
+                ft.Container(
+                    COLUMN_CONTENT[column](pool),
+                    width=COLUMN_WIDTH[column],
+                    alignment=ft.Alignment.CENTER_RIGHT,
+                )
+            )
+        return ft.Row(cells, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+
+    def _card(self, pool: Pool) -> ft.Control:
+        """Two lines instead of five columns.
+
+        Below ~760px a five-column table is unreadable however the widths
+        are juggled, so the row becomes a card: identity on the first line,
+        the figures that decide a pool underneath, each with its own label
+        since there are no column headers to read them against.
+        """
+        return ft.Column(
+            [
+                ft.Row(
+                    [
+                        _name_cell(pool),
+                        ft.Column(
+                            [
+                                ft.Text(compact_usd(pool.volume_24h), size=13),
+                                ft.Text(
+                                    f"{compact_usd(pool.tvl)} TVL",
+                                    size=10,
+                                    color=ft.Colors.ON_SURFACE_VARIANT,
+                                ),
+                            ],
+                            spacing=0,
+                            horizontal_alignment=ft.CrossAxisAlignment.END,
+                        ),
+                    ],
+                    vertical_alignment=ft.CrossAxisAlignment.START,
+                ),
+                ft.Row(
+                    [
+                        _metric("base", percent(pool.base_apr)),
+                        *(
+                            [_metric("rewards", f"{apr_range(*pool.crv_apr)} CRV")]
+                            if pool.crv_apr[1] > 0
+                            else []
+                        ),
+                        *[
+                            _metric(i.symbol, percent(i.apr))
+                            for i in pool.incentives[:2]
+                        ],
+                    ],
+                    spacing=14,
+                    wrap=True,
+                ),
+            ],
+            spacing=6,
         )
 
 
@@ -141,6 +213,7 @@ class PoolListView(ft.Column):
         self.feed: PoolFeed | None = None
         self._sort = DEFAULT_SORT
         self._search_token = 0
+        self._layout = layout_for(2000.0)
 
         self.search = ft.TextField(
             key="pool-search",
@@ -152,6 +225,17 @@ class PoolListView(ft.Column):
         )
         self.count_label = ft.Text(
             "", size=12, color=ft.Colors.ON_SURFACE_VARIANT, key="pool-count"
+        )
+        # Cards have no column headers to click, so narrow layouts sort
+        # through this instead. Hidden while the table is showing.
+        self.sort_picker = ft.Dropdown(
+            key="pool-sort",
+            options=[ft.DropdownOption(key=o.key, text=o.label) for o in SORTS],
+            value=self._sort,
+            width=140,
+            dense=True,
+            visible=False,
+            on_select=lambda _e: self._sort_by(self.sort_picker.value or DEFAULT_SORT),
         )
         self.rows = ft.ListView(
             key="pool-rows",
@@ -176,7 +260,11 @@ class PoolListView(ft.Column):
         super().__init__(
             controls=[
                 ft.Row(
-                    [ft.Container(self.search, expand=True), self.count_label],
+                    [
+                        ft.Container(self.search, expand=True),
+                        self.sort_picker,
+                        self.count_label,
+                    ],
                     vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     spacing=16,
                 ),
@@ -201,7 +289,7 @@ class PoolListView(ft.Column):
         better affordance anyway.
         """
         self._sort_cells: dict[str, ft.Container] = {}
-        widths = {"base": W_BASE, "incentives": W_REWARDS, "volume": W_VOLUME, "tvl": W_TVL}
+        widths = COLUMN_WIDTH
         cells: list[ft.Control] = [
             ft.Container(
                 ft.Text("Pool", size=12, color=ft.Colors.ON_SURFACE_VARIANT), expand=True
@@ -234,6 +322,7 @@ class PoolListView(ft.Column):
         icon font is bundled and works on both platforms.
         """
         for key, cell in self._sort_cells.items():
+            cell.visible = key in self._layout.columns
             option = next(o for o in SORTS if o.key == key)
             active = key == self._sort
             label = ft.Text(
@@ -255,6 +344,25 @@ class PoolListView(ft.Column):
 
     # -- feed -------------------------------------------------------------
 
+    def set_layout(self, layout: Layout) -> None:
+        """Adopt a new layout, rebuilding the rows only if it changed."""
+        if layout == self._layout:
+            return
+        self._layout = layout
+        self._header.visible = layout.shows_column_headers
+        self.sort_picker.visible = not layout.shows_column_headers
+        self.sort_picker.value = self._sort
+        self._sync_header()
+        self._rebuild_rows()
+        safe_update(self)
+
+    def _rebuild_rows(self) -> None:
+        """Re-render the rows already loaded, in the current layout."""
+        pools = [row.pool for row in self.rows.controls if isinstance(row, PoolRow)]
+        self.rows.controls = [
+            PoolRow(p, self._on_open, i, self._layout) for i, p in enumerate(pools)
+        ]
+
     def attach(self, feed: PoolFeed) -> None:
         """Point the view at a (new) feed, e.g. after a chain change."""
         self.feed = feed
@@ -268,6 +376,7 @@ class PoolListView(ft.Column):
         if self.feed is None or key == self._sort:
             return
         self._sort = key
+        self.sort_picker.value = key
         self._sync_header()
         from curve.sort import sort_field  # local: avoids a cycle at import
 
@@ -318,7 +427,7 @@ class PoolListView(ft.Column):
             return
         start = len(self.rows.controls)
         self.rows.controls.extend(
-            PoolRow(p, self._on_open, start + offset)
+            PoolRow(p, self._on_open, start + offset, self._layout)
             for offset, p in enumerate(new_pools)
         )
         self.footer.visible = False

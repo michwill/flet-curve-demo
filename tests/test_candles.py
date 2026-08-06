@@ -536,10 +536,20 @@ def test_a_small_resize_does_not_refetch() -> None:
     """Otherwise dragging a window edge fires a request per pixel."""
     calls = []
     chart = CandleChart(on_capacity_change=lambda: calls.append(1))
-    chart._resized(SimpleNamespace(width=800.0, height=340.0))
-    assert calls == []  # first layout only records
     chart._resized(SimpleNamespace(width=830.0, height=340.0))
-    assert calls == []  # under the tolerance
+    assert calls == []  # close enough to the 800px it was built with
+
+
+def test_the_first_layout_refetches_when_it_differs_from_the_guess() -> None:
+    """A chart that opens narrow must not keep the wide default.
+
+    The capacity is seeded from the default plot size, so the first real
+    layout is compared against something rather than silently accepted.
+    """
+    calls = []
+    chart = CandleChart(on_capacity_change=lambda: calls.append(1))
+    chart._resized(SimpleNamespace(width=440.0, height=340.0))
+    assert calls == [1]
 
 
 def test_a_large_resize_refetches() -> None:

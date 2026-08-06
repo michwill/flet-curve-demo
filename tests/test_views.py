@@ -31,6 +31,7 @@ from ui.actions import DepositTab, StakeTab, SwapTab, WithdrawTab
 from ui.candles import CandleChart
 from ui.pool_detail import PoolDetailView
 from ui.pool_list import PoolListView, PoolRow
+from ui.responsive import layout_for
 
 
 class FakeFeed:
@@ -194,6 +195,71 @@ def test_sorting_by_the_active_column_is_a_no_op() -> None:
     view.attach(feed)
     view._sort_by("volume")  # already the default
     assert feed.resets == 0
+
+
+# -- responsive ------------------------------------------------------------
+
+PHONE, TABLET, LAPTOP = 390.0, 820.0, 1280.0
+
+
+def test_the_list_swaps_headers_for_a_sort_dropdown_on_a_phone() -> None:
+    """Cards have no columns to click, so sorting needs its own control."""
+    view = PoolListView(StubPage(), on_open=lambda _p: None)
+    view.set_layout(layout_for(LAPTOP))
+    assert view._header.visible and not view.sort_picker.visible
+
+    view.set_layout(layout_for(PHONE))
+    assert view.sort_picker.visible and not view._header.visible
+
+
+def test_the_table_hides_its_least_decisive_column_on_a_tablet() -> None:
+    view = PoolListView(StubPage(), on_open=lambda _p: None)
+    view.set_layout(layout_for(TABLET))
+    assert not view._sort_cells["base"].visible
+    assert view._sort_cells["volume"].visible
+
+
+def test_rows_are_rebuilt_when_the_layout_changes() -> None:
+    view = PoolListView(StubPage(), on_open=lambda _p: None)
+    view.attach(FakeFeed([make_pool(), make_pool(3)]))
+    import asyncio
+
+    asyncio.run(view.load_more())
+    wide_rows = list(view.rows.controls)
+    view.set_layout(layout_for(PHONE))
+    assert len(view.rows.controls) == len(wide_rows)
+    assert view.rows.controls[0] is not wide_rows[0]  # rebuilt, not reused
+
+
+def test_a_repeated_layout_is_a_no_op() -> None:
+    """Resize fires constantly; rebuilding rows every time would thrash."""
+    view = PoolListView(StubPage(), on_open=lambda _p: None)
+    view.attach(FakeFeed([make_pool()]))
+    import asyncio
+
+    asyncio.run(view.load_more())
+    view.set_layout(layout_for(PHONE))
+    first = view.rows.controls[0]
+    view.set_layout(layout_for(PHONE + 5))  # same layout
+    assert view.rows.controls[0] is first
+
+
+def test_pool_rows_build_in_every_layout() -> None:
+    for width in (PHONE, TABLET, LAPTOP):
+        row = PoolRow(make_pool(3), lambda _p: None, 0, layout_for(width))
+        assert row is not None
+
+
+def test_the_pool_page_stacks_on_a_phone_and_splits_on_a_laptop() -> None:
+    view = PoolDetailView(
+        StubPage(), api=None, pool=make_pool(), get_contract=lambda: None,
+        on_back=lambda: None,
+    )
+    view.set_layout(layout_for(LAPTOP))
+    assert isinstance(view._body.content, ft.Row)
+
+    view.set_layout(layout_for(PHONE))
+    assert isinstance(view._body.content, ft.Column)
 
 
 # -- detail ----------------------------------------------------------------

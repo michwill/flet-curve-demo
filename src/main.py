@@ -77,6 +77,30 @@ def chain_icon(chain: str) -> ft.Control | None:
     return ft.Container(mark, padding=ft.Padding.only(left=10, right=4))
 
 
+def wallet_mark(icon: str | None, name: str, size: float = 28) -> ft.Control:
+    """The wallet software's own face, or its initial.
+
+    EIP-6963 requires a wallet to announce an icon, so this is usually the
+    real thing; WalletConnect announces none -- it is a protocol, not a
+    wallet -- and gets the one this app bundles. Anything else falls back
+    to a letter, which is also what a `data:` URI that fails to decode
+    ends up as.
+    """
+    initial = (name or "?").strip()[:1].upper() or "?"
+    fallback = ft.CircleAvatar(content=ft.Text(initial), radius=size / 2)
+    if not icon:
+        return fallback
+    return ft.Image(
+        src=icon,
+        width=size,
+        height=size,
+        fit=ft.BoxFit.CONTAIN,
+        cache_width=int(size * 3),
+        filter_quality=ft.FilterQuality.MEDIUM,
+        error_content=fallback,
+    )
+
+
 class CurveApp:
     def __init__(self, page: ft.Page) -> None:
         self.page = page
@@ -493,7 +517,17 @@ class CurveApp:
             self.page.run_task(self._disconnect_wallet)
 
         return ft.AlertDialog(
-            title=ft.Text(wallet.name or "Wallet"),
+            # The wallet's own icon, so the panel says which software you
+            # are looking at before you read a word of it.
+            title=ft.Row(
+                [
+                    wallet_mark(wallet.icon, wallet.name, 30),
+                    ft.Text(wallet.name or "Wallet"),
+                ],
+                spacing=12,
+                tight=True,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
             content=ft.Column(
                 [
                     ft.Text("ADDRESS", size=LABEL, color=ft.Colors.ON_SURFACE_VARIANT),
@@ -556,18 +590,7 @@ class CurveApp:
             content=ft.Column(
                 [
                     ft.ListTile(
-                        leading=(
-                            ft.Image(
-                                src=option.icon,
-                                width=28,
-                                height=28,
-                                # Wallet-supplied art is usually 96-256px.
-                                cache_width=28 * 3,
-                                filter_quality=ft.FilterQuality.MEDIUM,
-                            )
-                            if option.icon
-                            else ft.CircleAvatar(content=ft.Text(option.initial))
-                        ),
+                        leading=wallet_mark(option.icon, option.name),
                         title=ft.Text(option.name),
                         on_click=lambda _e, u=option.uuid: pick(u),
                     )

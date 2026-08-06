@@ -24,11 +24,16 @@
   const TOKEN_DECIMALS = 6n;
   const TOKEN_SYMBOL = "TEST";
 
+  // EIP-6963 requires an announced icon, so the mock announces one too --
+  // otherwise the app's icon path is never exercised in development.
+  const ICON =
+    "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PHJlY3Qgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiByeD0iMTQiIGZpbGw9IiM2NzUwQTQiLz48cGF0aCBkPSJNMTQgNDZWMThoOWw5IDE2IDktMTZoOXYyOGgtOFYzMmwtNyAxMmgtNmwtNy0xMnYxNHoiIGZpbGw9IiNmZmYiLz48L3N2Zz4=";
+
   const info = {
     uuid: "mock-wallet-0000-0000-0000-000000000000",
     name: "Mock Wallet (dev)",
     rdns: "dev.flet-pay.mock",
-    icon: null,
+    icon: ICON,
   };
 
   const word = (hex) => hex.replace(/^0x/, "").padStart(64, "0");

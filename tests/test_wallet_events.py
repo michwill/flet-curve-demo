@@ -127,3 +127,104 @@ def test_the_short_form_follows_the_new_account() -> None:
     provider, wallet, _ = make_wallet()
     provider.emit("accountsChanged", [OTHER])
     assert wallet.short_address == f"{OTHER[:6]}…{OTHER[-4:]}"
+
+
+# -- which wallet answered -------------------------------------------------
+
+
+class DiscoveringProvider(FakeProvider):
+    """A provider that announces wallets, the way the browser bridge does."""
+
+    def __init__(self, wallets: list[dict[str, Any]]) -> None:
+        super().__init__()
+        self.wallets = wallets
+        self.selected = ""
+
+    async def select_wallet(self, uuid: str) -> dict[str, Any]:
+        self.selected = uuid
+        return {}
+
+    async def request(self, method: str, params: list[Any] | None = None) -> Any:
+        if method == "eth_requestAccounts":
+            return [CHECKSUMMED]
+        if method == "eth_chainId":
+            return "0x1"
+        raise AssertionError(f"unexpected {method}")
+
+
+async def connect_with(monkeypatch, wallets, choose=None) -> Wallet:
+    from wallet import session
+
+    provider = DiscoveringProvider(wallets)
+
+    async def fake_connect_provider() -> WalletProvider:
+        return provider
+
+    monkeypatch.setattr(session, "connect_provider", fake_connect_provider)
+    return await Wallet.connect(choose=choose)
+
+
+PIXEL = "data:image/png;base64,iVBORw0KGgo="
+
+
+async def test_the_wallet_keeps_the_icon_of_the_one_that_was_chosen(monkeypatch) -> None:
+    """The panel draws it, so the choice has to outlive the picker."""
+
+    async def choose(options):
+        return options[1].uuid
+
+    wallet = await connect_with(
+        monkeypatch,
+        [
+            {"uuid": "a", "name": "Rabby", "icon": PIXEL},
+            {"uuid": "b", "name": "MetaMask", "icon": PIXEL.replace("iVBO", "iVBP")},
+        ],
+        choose=choose,
+    )
+    assert wallet.name  # provider name, untouched by this
+    assert wallet.icon == PIXEL.replace("iVBO", "iVBP")
+
+
+async def test_a_single_wallet_still_has_a_face(monkeypatch) -> None:
+    """No picker appears, but the panel still needs the icon."""
+    wallet = await connect_with(
+        monkeypatch, [{"uuid": "only", "name": "Rabby", "icon": PIXEL}]
+    )
+    assert wallet.icon == PIXEL
+
+
+async def test_walletconnect_falls_back_to_the_bundled_icon(monkeypatch) -> None:
+    """It announces none, being a protocol rather than a wallet."""
+    wallet = await connect_with(
+        monkeypatch,
+        [{"uuid": "wc", "name": "WalletConnect", "connector": "walletconnect"}],
+    )
+    assert wallet.icon and wallet.icon.startswith("data:image/svg+xml;base64,")
+
+
+async def test_a_wallet_with_no_icon_at_all_has_none(monkeypatch) -> None:
+    """The UI draws a lettered tile; None is the signal for it."""
+    wallet = await connect_with(monkeypatch, [{"uuid": "x", "name": "Nameless"}])
+    assert wallet.icon is None
+
+
+async def test_a_remote_icon_url_is_refused(monkeypatch) -> None:
+    """A relative or http src would be resolved against the asset bundle.
+
+    `_safe_icon` already guards the picker; the same guard has to hold for
+    the icon the session carries around.
+    """
+    wallet = await connect_with(
+        monkeypatch,
+        [{"uuid": "x", "name": "Sketchy", "icon": "https://example.com/icon.png"}],
+    )
+    assert wallet.icon is None
+
+
+async def test_a_desktop_provider_announces_nothing_and_still_connects(
+    monkeypatch,
+) -> None:
+    """qeth has no wallet list; `connect` must not index into an empty one."""
+    wallet = await connect_with(monkeypatch, [])
+    assert wallet.address == CHECKSUMMED
+    assert wallet.icon is None

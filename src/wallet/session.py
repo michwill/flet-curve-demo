@@ -109,10 +109,20 @@ def autoconnect() -> bool:
 class Wallet:
     """A connected wallet: an account, on a chain, that can send tokens."""
 
-    def __init__(self, provider: WalletProvider, address: str, chain: Chain) -> None:
+    def __init__(
+        self,
+        provider: WalletProvider,
+        address: str,
+        chain: Chain,
+        icon: str | None = None,
+    ) -> None:
         self.provider = provider
         self.address = address
         self.chain = chain
+        #: The chosen wallet's own icon as a `data:` URI, if it announced
+        #: one. Kept from the choice rather than re-derived: only `connect`
+        #: knows which of the announced wallets won.
+        self.icon = _safe_icon(icon)
         self._change_handlers: list[Callable[[], None]] = []
         self._disconnect_handlers: list[Callable[[], None]] = []
         provider.on("accountsChanged", self._accounts_changed)
@@ -147,6 +157,7 @@ class Wallet:
             )
             for w in getattr(provider, "wallets", [])
         ]
+        uuid = options[0].uuid if options else ""
         if len(options) > 1:
             uuid = await choose(options) if choose else options[0].uuid
             if not uuid:
@@ -160,8 +171,18 @@ class Wallet:
                 "The wallet returned no accounts. Is it unlocked?"
             )
 
+        # Which option won -- for its icon. With one wallet there was no
+        # choice to make, but it still has a face.
+        chosen = next(
+            (o for o in options if o.uuid == uuid), options[0] if options else None
+        )
         chain = chains.get_chain(await provider.chain_id())
-        return cls(provider, erc20.to_checksum_address(accounts[0]), chain)
+        return cls(
+            provider,
+            erc20.to_checksum_address(accounts[0]),
+            chain,
+            icon=chosen.icon if chosen else None,
+        )
 
     async def disconnect(self) -> None:
         await self.provider.close()

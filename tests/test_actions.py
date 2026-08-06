@@ -831,3 +831,70 @@ async def test_and_loses_the_number_once_it_is_approved() -> None:
     await tab._sync_approval(contract)
     assert tab.submit_button.content == "Deposit"
     assert not tab.approve_button.visible
+
+
+# -- the status line -------------------------------------------------------
+#
+# A wallet takes seconds to answer and a block takes twelve. A line of text
+# that just sits there is indistinguishable from one that has stopped, so
+# the waiting states spin and the panel is tinted by what it is saying.
+
+
+def status_of(tab):
+    return tab.status.value, tab.status_spinner.visible, tab.status_panel.bgcolor
+
+
+async def test_waiting_states_spin() -> None:
+    from ui.actions import DepositTab
+
+    provider = MinedProvider(pending=2)
+    tab = deposit_tab(provider)
+    tab.fields[0].value = "1"
+
+    seen = []
+    say = tab._say
+
+    def record(message, colour=None, *, pending=False):
+        seen.append((message, pending))
+        say(message, colour, pending=pending)
+
+    tab._say = record
+    await tab._approve_clicked(None)
+
+    assert any(pending for _m, pending in seen), "nothing ever showed as pending"
+    waiting = [m for m, pending in seen if pending]
+    assert any("wallet" in m for m in waiting)
+    assert any("confirm" in m for m in waiting)
+
+
+async def test_the_panel_hides_when_there_is_nothing_to_say() -> None:
+    from ui.actions import DepositTab
+
+    tab, _ = tab_with_fee(DepositTab, 1_000_000)
+    assert not tab.status_panel.visible
+
+    tab._say("something")
+    assert tab.status_panel.visible
+    tab._say("")
+    assert not tab.status_panel.visible
+
+
+def test_each_kind_of_status_gets_its_own_tint() -> None:
+    """Told apart before the words are read."""
+    from ui.actions import DepositTab
+
+    tab, _ = tab_with_fee(DepositTab, 1_000_000)
+    tints = {}
+    for label, colour, pending in [
+        ("pending", None, True),
+        ("failed", ft.Colors.ERROR, False),
+        ("done", ft.Colors.GREEN_600, False),
+        ("plain", None, False),
+    ]:
+        tab._say(label, colour, pending=pending)
+        tints[label] = tab.status_panel.bgcolor
+    assert len(set(tints.values())) == 4, tints
+    tab._say("pending", None, pending=True)
+    assert tab.status_spinner.visible
+    tab._say("done", ft.Colors.GREEN_600)
+    assert not tab.status_spinner.visible

@@ -132,6 +132,17 @@ def format_slippage(percent: float) -> str:
     return text or "0"
 
 
+def _status_tint(colour: str | None, pending: bool) -> str:
+    """The panel behind a status line, keyed to what it is saying."""
+    if pending:
+        return ft.Colors.with_opacity(0.10, ft.Colors.PRIMARY)
+    if colour == ft.Colors.ERROR:
+        return ft.Colors.with_opacity(0.10, ft.Colors.ERROR)
+    if colour == ft.Colors.GREEN_600:
+        return ft.Colors.with_opacity(0.12, ft.Colors.GREEN_600)
+    return ft.Colors.with_opacity(0.06, ft.Colors.ON_SURFACE)
+
+
 def _stacked(*controls: ft.Control) -> ft.Column:
     """A field with its caption underneath, both as wide as the panel."""
     return ft.Column(
@@ -190,7 +201,20 @@ class ActionTab:
         #: What the last suggestion was for, so a fee is read once per pair
         #: rather than on every keystroke.
         self._fee_read_for: object = _NOT_READ
-        self.status = ft.Text("", size=SMALL, selectable=True)
+        self.status = ft.Text("", size=SMALL, selectable=True, expand=True)
+        #: Shown while a transaction is in flight. A wallet takes seconds
+        #: and a block takes twelve, and a line of text that simply sits
+        #: there is indistinguishable from one that has stopped.
+        self.status_spinner = ft.ProgressRing(width=14, height=14, stroke_width=2)
+        #: The status line as a whole: a tinted panel rather than loose
+        #: text, so "waiting", "done" and "failed" are told apart before
+        #: the words are read.
+        self.status_panel = ft.Container(
+            ft.Row([self.status_spinner, self.status], spacing=10, tight=True),
+            padding=ft.Padding.symmetric(horizontal=10, vertical=8),
+            border_radius=8,
+            visible=False,
+        )
         self.estimate = ft.Text("", size=SMALL, color=ft.Colors.ON_SURFACE_VARIANT)
 
         # Labels go through `content`, not `text`: `ft.Button` has no `text`
@@ -279,7 +303,7 @@ class ActionTab:
             self.estimate,
             self.approve_button,
             self.submit_button,
-            self.status,
+            self.status_panel,
         ]
         return self.control
 
@@ -296,9 +320,19 @@ class ActionTab:
     def with_slippage(self, amount: int) -> int:
         return apply_slippage(amount, self.slippage_pct())
 
-    def _say(self, message: str, colour: str | None = None) -> None:
+    def _say(
+        self, message: str, colour: str | None = None, *, pending: bool = False
+    ) -> None:
+        """Show a status. `pending` means a spinner and a neutral tint.
+
+        The tint is derived from the text colour rather than passed in, so
+        a caller cannot say "green" and get an amber panel.
+        """
         self.status.value = message
         self.status.color = colour or ft.Colors.ON_SURFACE_VARIANT
+        self.status_spinner.visible = pending
+        self.status_panel.visible = bool(message)
+        self.status_panel.bgcolor = _status_tint(colour, pending)
         self.page.update()
 
     def _busy(self, busy: bool) -> None:
@@ -315,7 +349,7 @@ class ActionTab:
         shows the state before it. That is why an approval used to land and
         leave the button disabled.
         """
-        self._say(f"Waiting for {tx[:14]}… to confirm.")
+        self._say(f"Waiting for {tx[:14]}… to confirm.", pending=True)
         block = await wait_for_confirmation(
             contract.provider, tx, interval=CONFIRM_INTERVAL
         )
@@ -333,7 +367,7 @@ class ActionTab:
                 self._say("Already approved.")
             else:
                 token, spender, amount = pending
-                self._say("Confirm the approval in your wallet…")
+                self._say("Confirm the approval in your wallet…", pending=True)
                 tx = await contract.approve(token, spender, amount)
                 await self._confirm(contract, tx, "Approved.")
         except WalletError as exc:
@@ -349,7 +383,7 @@ class ActionTab:
             return
         self._busy(True)
         try:
-            self._say("Confirm in your wallet…")
+            self._say("Confirm in your wallet…", pending=True)
             tx = await self.submit(contract)
             await self._confirm(contract, tx, f"{self.title} confirmed.")
             self.clear_inputs()

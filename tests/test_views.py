@@ -1133,3 +1133,77 @@ def test_the_panel_never_runs_off_a_laptop_screen() -> None:
     from ui.pool_detail import ACTIONS_MAX, actions_height
 
     assert actions_height(make_pool(8)) == ACTIONS_MAX
+
+
+# -- the header nav --------------------------------------------------------
+
+
+def nav_app(page=None, on: str = "pools"):
+    """`CurveApp` with only the header parts, as `themed_app` does."""
+    import main as app_module
+
+    app = app_module.CurveApp.__new__(app_module.CurveApp)
+    app.page = page or StubPage()
+    app._page_name = on
+    app.nav = ft.Container(width=0)                # closed, as the app starts
+    app.menu = ft.PopupMenuButton(visible=False)   # wide, as the app starts
+    app.totals = ft.Text("")
+    return app
+
+
+def test_the_current_page_is_marked_and_the_other_is_not() -> None:
+    """Colour alone is a weak signal, so the current page is underlined
+    as well -- and it is the *page*, not the hover, that decides."""
+    app = nav_app(on="portfolio")
+    app._sync_nav()
+    links = {link.content.value: link for link in app.nav.content.controls}
+
+    assert links["Portfolio"].border is not None
+    assert links["Pools"].border is None
+    assert links["Portfolio"].content.color != links["Pools"].content.color
+
+
+def test_the_links_are_as_big_as_a_pool_name_and_bold() -> None:
+    from ui.typography import ROW_TITLE
+
+    app = nav_app()
+    app._sync_nav()
+    for link in app.nav.content.controls:
+        assert link.content.size == ROW_TITLE
+        assert link.content.weight == ft.FontWeight.BOLD
+
+
+def test_the_links_are_containers_not_text_buttons() -> None:
+    """A `TextButton` in this app hovers correctly and never fires its
+    handler in the published web build -- the sortable column headings
+    are Containers for the same reason."""
+    app = nav_app()
+    app._sync_nav()
+    for link in app.nav.content.controls:
+        assert isinstance(link, ft.Container)
+        assert link.on_click is not None
+
+
+def test_hovering_opens_the_nav_and_fades_the_totals() -> None:
+    from main import NAV_WIDTH
+
+    app = nav_app()
+    app._brand_hovered(SimpleNamespace(data=True))
+    assert app.nav.width == NAV_WIDTH
+    assert app.totals.opacity == 0.0
+
+    app._brand_hovered(SimpleNamespace(data=False))
+    assert app.nav.width == 0
+    assert app.totals.opacity == 1.0
+
+
+def test_a_narrow_page_uses_the_menu_button_instead() -> None:
+    """There is no room to slide anything open, so hovering does nothing
+    and the mark is a menu button."""
+    app = nav_app()
+    app.menu.visible = True
+
+    app._brand_hovered(SimpleNamespace(data=True))
+
+    assert app.nav.width == 0
+    assert app.totals.opacity == 1.0

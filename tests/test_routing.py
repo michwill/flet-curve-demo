@@ -153,6 +153,7 @@ def make_app(route: str = "/", *, pool=_DEFAULT, chain: str = "ethereum"):
     app.progress = ft.ProgressBar(visible=False)
     app.error = ft.Text("", visible=False)
     app.chain_picker = ft.Dropdown(options=[], value=chain)
+    app.nav = ft.Container()          # the header's page links
     app.opened: list[Pool] = []
 
     def open_pool(pool_to_open):

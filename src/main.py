@@ -38,7 +38,7 @@ from ui.pool_detail import PoolDetailView
 from ui.pool_list import PoolListView
 from ui.portfolio import PortfolioView
 from ui.responsive import layout_for
-from ui.typography import BODY, LABEL, SMALL, TITLE
+from ui.typography import BODY, LABEL, ROW_TITLE, SMALL, TITLE
 from wallet import Wallet, WalletChoice, WalletError, autoconnect, is_browser
 from wallet.base import RpcError
 
@@ -80,10 +80,10 @@ ADDRESS_EXPAND_MIN_PAGE = 1100
 PAGE_POOLS = "pools"
 PAGE_PORTFOLIO = "portfolio"
 
-#: How wide the nav slides open. Enough for both links; measured rather
-#: than guessed, because a Row inside a clipped Container has no width of
-#: its own to animate from.
-NAV_WIDTH = 168
+#: How wide the nav slides open. Enough for both links at pool-name size
+#: and bold; a Row inside a clipped Container has no width of its own to
+#: animate from, so this is measured rather than derived.
+NAV_WIDTH = 210
 
 #: Below this the header has no room to slide anything open, so the mark
 #: becomes a menu button instead. Same threshold the address chip uses --
@@ -269,14 +269,6 @@ class CurveApp:
         )
         # The pages, revealed by hovering the mark. See `_brand_hovered`.
         self.nav = ft.Container(
-            ft.Row(
-                [
-                    self._nav_link("Pools", PAGE_POOLS),
-                    self._nav_link("Portfolio", PAGE_PORTFOLIO),
-                ],
-                spacing=4,
-                tight=True,
-            ),
             width=0,
             clip_behavior=ft.ClipBehavior.HARD_EDGE,
             animate=ft.Animation(
@@ -284,6 +276,7 @@ class CurveApp:
                 curve=ft.AnimationCurve.EASE_OUT,
             ),
         )
+        self._sync_nav()
         # On a narrow page the mark is a menu button instead: there is no
         # room to slide anything open, and a tap has to be enough.
         self.menu = ft.PopupMenuButton(
@@ -360,18 +353,23 @@ class CurveApp:
         # open from either half of a lockup that reads as one thing.
         brand = ft.Container(
             ft.Row([self.brand, self.build_label], spacing=8, tight=True),
-            on_hover=self._brand_hovered,
             on_click=lambda _e: self.go_page(PAGE_POOLS),
             ink=True,
             border_radius=8,
             padding=ft.Padding.symmetric(horizontal=4, vertical=2),
         )
+        # **The hover target is the mark *and* the links.** With it on the
+        # mark alone, moving the pointer onto a link left the mark, which
+        # closed the very thing being reached for.
+        lockup = ft.Container(
+            ft.Row([brand, self.nav], spacing=0, tight=True),
+            on_hover=self._brand_hovered,
+        )
         self.header = ft.Container(
             ft.Row(
                 [
                     self.menu,
-                    brand,
-                    self.nav,
+                    lockup,
                     ft.Container(self.totals, expand=True),
                     self.account_chip,
                     # On the right, where the connected wallet used to
@@ -756,6 +754,7 @@ class CurveApp:
     def show_list(self) -> None:
         self._detail = None
         self._page_name = PAGE_POOLS
+        self._sync_nav()
         self.body.content = self.list_view
         self._go(routing.build(self.chain))
         self.page.update()
@@ -766,6 +765,7 @@ class CurveApp:
         """Open the portfolio page and start filling it in."""
         self._detail = None
         self._page_name = PAGE_PORTFOLIO
+        self._sync_nav()
         self.body.content = self.portfolio_view
         if self.page.width:
             self.portfolio_view.set_layout(layout_for(self.page.width).cards)
@@ -975,10 +975,44 @@ class CurveApp:
         self.account_chip.tooltip = f"{wallet.name}  ·  {wallet.chain.name}"
 
     def _nav_link(self, label: str, page: str) -> ft.Control:
-        return ft.TextButton(
-            content=ft.Text(label, size=SMALL),
+        """One page link: as big as a pool name, and it says where you are.
+
+        A `Container` rather than a `TextButton` for the reason the
+        sortable column headings are -- a TextButton in this app hovers
+        correctly and never fires its handler in the published web build.
+        """
+        here = self._page_name == page
+        return ft.Container(
+            ft.Text(
+                label,
+                size=ROW_TITLE,
+                weight=ft.FontWeight.BOLD,
+                # Full-strength ink for the page you are on, and the muted
+                # one for the page you are not. Not the theme's primary:
+                # under Chad that is a chocolate brown which reads as
+                # decoration rather than as a link.
+                color=ft.Colors.ON_SURFACE if here else ft.Colors.ON_SURFACE_VARIANT,
+            ),
             on_click=lambda _e, target=page: self.go_page(target),
-            style=ft.ButtonStyle(padding=ft.Padding.symmetric(horizontal=10)),
+            ink=True,
+            border_radius=6,
+            padding=ft.Padding.symmetric(horizontal=10, vertical=4),
+            # And an underline under the current page, because colour alone
+            # is a weak signal and not everyone sees it.
+            border=ft.Border(bottom=ft.BorderSide(2, ft.Colors.PRIMARY))
+            if here
+            else None,
+        )
+
+    def _sync_nav(self) -> None:
+        """Redraw the links, so the current page is marked as current."""
+        self.nav.content = ft.Row(
+            [
+                self._nav_link("Pools", PAGE_POOLS),
+                self._nav_link("Portfolio", PAGE_PORTFOLIO),
+            ],
+            spacing=4,
+            tight=True,
         )
 
     def _brand_hovered(self, e: ft.Event[ft.Container]) -> None:

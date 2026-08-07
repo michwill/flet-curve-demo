@@ -755,7 +755,7 @@ fills them in and knows the chain better than this app does.
 ## Checks
 
 ```bash
-uv pip install --python .venv/bin/python mypy ruff   # once
+uv pip install --python .venv/bin/python mypy ruff hypothesis   # once
 .venv/bin/python tools/check.py                       # ruff, mypy, pytest
 .venv/bin/python tools/check.py --fix                 # let ruff fix first
 ```
@@ -785,10 +785,11 @@ type — `Event[Any]`, which is what the alias resolves to at runtime anyway.
 
 ## Testing
 
-Three layers, and the first two need nothing at all:
+Four layers, and the first three need nothing at all:
 
 ```bash
-.venv/bin/python -m pytest tests/ -q                      # 599 tests, ~4s
+.venv/bin/python -m pytest tests/ -q                      # 634 tests, ~9s
+HYPOTHESIS_PROFILE=deep .venv/bin/python -m pytest tests/test_stateful.py
 .venv/bin/python -m pytest tests/integration -m flet_ui   # 6 tests, ~25s each
 ```
 
@@ -805,7 +806,34 @@ Flet validates control arguments in `__init__`, so this catches the whole class 
 `on_scroll_interval` (it is `scroll_interval`) and `ft.Tab(content=…)` immediately.
 What it cannot see is layout, hit-testing or paint.
 
-**3. UI tests — `flet.testing`.** Seven tests that start the real app and drive it:
+**3. Stateful tests — `test_stateful.py`.** The layers above check one
+transition each. This one checks that no *ordering* of transitions leaves the app
+broken, which is a different question and the one that had been going unasked:
+the bug that shipped was "switch theme a few times, then hover a row", and every
+step of it passed its own test.
+
+A Hypothesis `RuleBasedStateMachine` drives the real `CurveApp` — theme cycling,
+sorting, searching, resizing, chain switches, opening a pool, Back, deep links —
+and fires handlers it picks out of the live control tree by index rather than by
+name, so it reaches handlers written after it. Invariants assert what must always
+hold: the theme's decorations match the theme, the route matches what is on
+screen, and nothing the app will later assign to has been frozen.
+
+**What makes it more than a smoke test is that it runs Flet's real diff.**
+`tests/fake_session.py` calls `ObjectPatch.from_diff` and then serialises what
+the diff reports as added — the two halves of a real update — so a keyed control
+that a rebuild re-made ends up `_frozen` exactly as it does behind a browser.
+Put the shipped hover bug back and the machine finds it in about four seconds,
+shrunk to a handful of steps. It also found one that had not been noticed:
+switching theme while a pool page was open left the *list* wearing the old
+theme, so pressing Back landed on a table with no border, no shadow and the
+wrong hover.
+
+Two profiles: the default keeps it to a few seconds so it stays part of
+`check.py`; `HYPOTHESIS_PROFILE=deep` runs 500 examples of 80 steps (~7 minutes)
+for when something smells.
+
+**4. UI tests — `flet.testing`.** Seven tests that start the real app and drive it:
 `find_by_key`, `tap`, `enter_text`, `pump_and_settle`, screenshots. They are
 marked `flet_ui` and excluded from the default run.
 

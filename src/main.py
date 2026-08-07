@@ -452,18 +452,23 @@ class CurveApp:
         self._rebuild_view()
 
     def _rebuild_view(self) -> None:
-        """Re-make whichever view is on screen, in the current theme.
+        """Take on a theme that changed, everywhere -- not just on screen.
 
-        The header is not re-made -- it outlives every view, so it only
-        needs the shadow the new theme asks for.
+        The header is not re-made: it outlives every view, so it only
+        needs what the new theme asks for. The list is not re-made either,
+        but it *is* told, whether or not it is the view showing. It
+        outlives a pool page, and one built under another theme keeps that
+        theme's shadow, border and hover until something rebuilds it --
+        so switching theme on a pool page and pressing Back landed on a
+        stale list. Found by the stateful tests, which is exactly the kind
+        of ordering no single-transition test looks at.
         """
         self.header.shadow = themes.bar_shadow(self.page)
         self.account_chip.border = themes.panel_border(self.page)
         self.connect_button.style = ft.ButtonStyle(side=themes.border_side(self.page))
+        self.list_view.rebuild()
         if self._detail is not None:
             self.open_pool(self._detail.pool)
-        else:
-            self.list_view.rebuild()
         self.page.update()
 
     # -- data -------------------------------------------------------------

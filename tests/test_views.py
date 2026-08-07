@@ -1350,3 +1350,16 @@ async def test_losing_the_wallet_reloads_the_portfolio() -> None:
     assert app.wallet is None
     assert app.connect_button.visible is True
     assert reloaded == [True]
+
+
+def test_token_marks_are_resampled_bicubically() -> None:
+    """These are small round marks with fine detail -- a torus of
+    hairlines, letters inside a disc -- and Flutter's `medium` is
+    bilinear, which leaves that soft. `high` is the bicubic one."""
+    from curve.models import Coin
+    from ui.logos import token_mark
+
+    mark = token_mark(Coin("0x" + "11" * 20, "CRV", 18), "ethereum", 27)
+    images = [c for c in _all_controls(mark) if isinstance(c, ft.Image)]
+    for image in images:
+        assert image.filter_quality == ft.FilterQuality.HIGH

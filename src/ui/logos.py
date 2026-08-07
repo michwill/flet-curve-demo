@@ -29,6 +29,14 @@ from .assets import chain_logo, token_logo
 #: full-resolution art for every one of a few hundred logos.
 DECODE_SCALE = 3
 
+#: How the GPU resamples what is left after that decode. Flutter's scale
+#: is `none` (nearest), `low` (bilinear), `medium` (bilinear plus
+#: mipmaps) and `high` (**bicubic**). These are small round marks with
+#: fine detail -- a torus of hairlines, letters inside a disc -- and
+#: bilinear leaves that detail soft. Bicubic costs more per pixel, on
+#: images that are at most a few dozen pixels across.
+SAMPLING = ft.FilterQuality.HIGH
+
 
 #: How much of each logo the next one covers. Enough to read as a group,
 #: little enough that four coins are still four distinguishable discs.
@@ -106,7 +114,7 @@ def token_mark(coin: Coin, chain: str, size: float = 24) -> ft.Container:
             # Width only: with both set the codec would stretch a logo
             # that is not square rather than fit it.
             cache_width=int(size * DECODE_SCALE),
-            filter_quality=ft.FilterQuality.MEDIUM,
+            filter_quality=SAMPLING,
             # A logo that 404s falls back rather than leaving a hole. The
             # compiled subset can lag the API, and plenty of long-tail
             # tokens have no image upstream at all.
@@ -192,5 +200,5 @@ def chain_mark(chain: str, size: float = 18) -> ft.Control | None:
         height=size,
         fit=ft.BoxFit.CONTAIN,
         cache_width=int(size * DECODE_SCALE),
-        filter_quality=ft.FilterQuality.MEDIUM,
+        filter_quality=SAMPLING,
     )

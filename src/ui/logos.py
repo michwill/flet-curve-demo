@@ -93,7 +93,11 @@ def initials_mark(symbol: str, size: float) -> ft.Container:
         height=size,
         bgcolor=ft.Colors.with_opacity(0.18, accent),
         border=ft.Border.all(1, ft.Colors.with_opacity(0.45, accent)),
-        border_radius=size / 2,
+        # Not `size / 2`. A border sits *outside* the box, so half the
+        # content width no longer reaches the corners of the box it has
+        # to round -- which draws a rounded square. Anything at or past
+        # the half-width of the outer box is clamped to a circle.
+        border_radius=size,
         alignment=ft.Alignment.CENTER,
     )
 
@@ -153,9 +157,12 @@ def coin_stack(
         mark = token_mark(coin, chain, size)
         mark.left = index * step
         mark.top = 0
-        # A ring in the surface colour separates each disc from the one it
-        # covers.
-        mark.border = ft.Border.all(1.5, ft.Colors.SURFACE)
+        # **No ring.** It used to draw one in the surface colour to
+        # separate each disc from the one it covers, and it cost the
+        # circle its shape: a border sits *outside* the box, so a 27px
+        # mark with a 1.5px ring is a 30px box with a 13.5px radius --
+        # a rounded square, which is exactly what crvUSD looked like.
+        # The discs are their own separation.
         marks.append(mark)
 
     extra = len(coins) - len(shown)

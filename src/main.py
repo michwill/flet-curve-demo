@@ -374,19 +374,25 @@ class CurveApp:
             border_radius=8,
             padding=ft.Padding.symmetric(horizontal=4, vertical=2),
         )
-        # **The hover target is the mark *and* the links.** With it on the
-        # mark alone, moving the pointer onto a link left the mark, which
-        # closed the very thing being reached for.
+        # **The hover target is the mark, the links, and the space the
+        # links slide over.** With it on the mark alone, moving the
+        # pointer onto a link left the mark and closed the very thing
+        # being reached for; with it on the mark and links only, the
+        # totals beside them were dead space in the middle of a gesture
+        # that is about to cover them anyway.
         lockup = ft.Container(
-            ft.Row([brand, self.nav], spacing=0, tight=True),
+            ft.Row(
+                [brand, self.nav, ft.Container(self.totals, expand=True)],
+                spacing=0,
+            ),
             on_hover=self._brand_hovered,
+            expand=True,
         )
         self.header = ft.Container(
             ft.Row(
                 [
                     self.menu,
                     lockup,
-                    ft.Container(self.totals, expand=True),
                     self.account_chip,
                     # On the right, where the connected wallet used to
                     # repeat the network name back at you.

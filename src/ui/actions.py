@@ -460,7 +460,7 @@ class ActionTab:
 
     async def _approve_clicked(self, _e: ft.ControlEvent) -> None:
         contract = self.get_contract()
-        if contract is None:
+        if contract is None or not contract.can_send:
             self._say("Connect a wallet first.", ft.Colors.ERROR)
             return
         self._busy(True)
@@ -483,7 +483,7 @@ class ActionTab:
 
     async def _submit_clicked(self, _e: ft.ControlEvent) -> None:
         contract = self.get_contract()
-        if contract is None:
+        if contract is None or not contract.can_send:
             self._say("Connect a wallet first.", ft.Colors.ERROR)
             return
         self._busy(True)
@@ -504,9 +504,12 @@ class ActionTab:
 
     async def _sync_approval(self, contract: PoolContract | None) -> None:
         """Show or hide the approve step based on the current allowance."""
-        if contract is None:
+        if contract is None or not contract.can_send:
+            # A public node can quote but has no account to spend from and
+            # no key to sign with -- see `curve.rpc`.
             self.approve_button.visible = False
             self.submit_button.disabled = True
+            self.submit_button.content = self.submit_label
             return
         try:
             pending = await self.approval_needed(contract)
@@ -821,7 +824,7 @@ class DepositTab(ActionTab):
             return
         await self.suggest_slippage(contract)
         rows = self.rows
-        if contract is not None:
+        if contract is not None and contract.can_send:
             for index, coin in enumerate(rows.coins):
                 try:
                     rows.balances[index] = await contract.balance_of(coin.address)
@@ -1051,7 +1054,7 @@ class WithdrawTab(ActionTab):
             return
         await self.suggest_slippage(contract)
         amount = self._lp_amount()
-        if contract is not None:
+        if contract is not None and contract.can_send:
             try:
                 self.lp_balance = await contract.lp_balance()
                 self.lp_label.value = f"Balance: {format_units(self.lp_balance, 18)} LP"
@@ -1334,7 +1337,7 @@ class SwapTab(ActionTab):
         await self.suggest_slippage(contract)
         dx = self._dx()
 
-        if contract is not None:
+        if contract is not None and contract.can_send:
             try:
                 self.balance = await contract.balance_of(self.coins[i].address)
                 self.balance_label.value = (

@@ -61,6 +61,68 @@ async def get_json(url: str, timeout: float = DEFAULT_TIMEOUT) -> Any:
     return await _get_json_desktop(url, timeout)
 
 
+async def post_json(url: str, payload: Any, timeout: float = DEFAULT_TIMEOUT) -> Any:
+    """POST JSON and parse the answer. Raises `ApiError`.
+
+    JSON-RPC needs this; the Curve APIs do not, which is why everything
+    else here is a GET. Same platform split for the same reason.
+    """
+    body = json.dumps(payload)
+    if is_browser():
+        return await _post_json_browser(url, body, timeout)
+    return await asyncio.to_thread(_post_blocking, url, body, timeout)
+
+
+async def _post_json_browser(url: str, body: str, timeout: float) -> Any:
+    from pyodide.http import pyfetch  # noqa: PLC0415 -- browser-only
+
+    try:
+        response = await asyncio.wait_for(
+            pyfetch(
+                url,
+                method="POST",
+                body=body,
+                headers={"Content-Type": "application/json", "User-Agent": USER_AGENT},
+            ),
+            timeout,
+        )
+    except asyncio.TimeoutError:
+        raise ApiError(f"Timed out after {timeout:.0f}s: {url}") from None
+    except Exception as exc:
+        raise ApiError(f"Network error: {exc}") from exc
+
+    if response.status >= 400:
+        raise ApiError(f"HTTP {response.status} from {url}")
+    try:
+        return await response.json()
+    except Exception as exc:
+        raise ApiError(f"Response was not valid JSON: {url}") from exc
+
+
+def _post_blocking(url: str, body: str, timeout: float) -> Any:
+    import urllib.error  # noqa: PLC0415
+    import urllib.request  # noqa: PLC0415
+
+    request = urllib.request.Request(
+        url,
+        data=body.encode(),
+        headers={"Content-Type": "application/json", "User-Agent": USER_AGENT},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            payload = response.read()
+    except urllib.error.HTTPError as exc:
+        raise ApiError(f"HTTP {exc.code} from {url}") from exc
+    except urllib.error.URLError as exc:
+        raise ApiError(f"Could not reach {url}: {exc.reason}") from exc
+    except TimeoutError:
+        raise ApiError(f"Timed out after {timeout:.0f}s: {url}") from None
+    try:
+        return json.loads(payload)
+    except ValueError as exc:
+        raise ApiError(f"Response was not valid JSON: {url}") from exc
+
+
 async def _get_json_browser(url: str, timeout: float) -> Any:
     from pyodide.http import pyfetch  # noqa: PLC0415 -- browser-only
 

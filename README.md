@@ -166,7 +166,27 @@ zap on its own chain, quoting a real deposit. The Gnosis gap that prompted this
 was a sweep bug: Curve's API calls that chain `xdai`, and asking for `gnosis`
 quietly returned nothing.
 
-**Reads go through the wallet's provider**, so they land on whatever network the
+**Quotes work with no wallet.** Nothing about `get_dy` or `calc_token_amount`
+needs an account, so with nothing connected the panels read through public
+endpoints instead — rates and the fee-derived slippage appear before anyone
+connects anything, and only the buttons that move tokens stay off.
+
+The endpoints come from [chainlist.org](https://chainlist.org)'s `rpcs.json`,
+which is CORS-open so the browser build can read it too. It is a *list* because
+they fall over: a request walks it until one answers, and the survivor is where
+the next read starts, so a dead host at the top is paid for once rather than on
+every keystroke. Entries this app cannot call are dropped up front — websockets,
+API-key templates, plain `http://` — and endpoints that report keeping no logs
+are tried first. A JSON-RPC *error* is not retried: a reverted `eth_call` is an
+answer, and asking somebody else gets the same one.
+
+The file is a couple of megabytes and there is no per-chain endpoint, so it is
+fetched once, lazily, on the first read that needs it — a session with a wallet
+connected never asks for it at all. Which is the other half of the rule:
+
+**a connected wallet is always preferred.** It is the node that will execute the
+transaction, so a quote read through it is the quote least likely to surprise.
+And reads go through the wallet's provider, so they land on whatever network the
 *wallet* is on. Browsing Gnosis with a wallet on Ethereum quotes Gnosis
 addresses against Ethereum, where they hold no code: every estimate comes back
 "the pool did not answer", which reads as a pool this app cannot handle.

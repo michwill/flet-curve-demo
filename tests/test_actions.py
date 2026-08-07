@@ -1188,3 +1188,90 @@ async def test_a_refused_switch_is_reported_not_swallowed() -> None:
     await tab._switch_network(None)
 
     assert "rejected" in tab.status.value.lower()
+
+
+# -- reading without a wallet ----------------------------------------------
+#
+# A quote needs no account, so the panels show rates before anything is
+# connected -- through a public node (see `curve.rpc`). What must not
+# happen is the rest of the panel pretending it can act.
+
+
+def read_only_contract(provider=None):
+    """What `contract_for` builds with no wallet: a node, and no account."""
+    return PoolContract(provider or FakeProvider(), make_pool(), "")
+
+
+async def test_a_quote_needs_no_account() -> None:
+    provider = FakeProvider({"0x3883e119": word(0), "0x5e0d443f": word(99 * 10**18)})
+    contract = read_only_contract(provider)
+    assert contract.can_send is False
+    assert await contract.get_dy(0, 1, 10**6) == 99 * 10**18
+
+
+async def test_the_swap_panel_quotes_with_no_wallet() -> None:
+    from ui.actions import SwapTab
+
+    provider = FakeProvider({"0x5e0d443f": word(99 * 10**18)})
+    contract = read_only_contract(provider)
+    tab = SwapTab(StubPage(), contract.pool, lambda: contract, None)
+    tab.mount()
+    tab.amount.value = "100"
+
+    await tab.refresh()
+
+    assert "99" in tab.estimate.value
+    assert tab.submit_button.disabled is True
+    assert tab.approve_button.visible is False
+
+
+async def test_the_slippage_suggestion_works_with_no_wallet() -> None:
+    """It comes from `fee()`, which is a read like any other -- so the box
+    is right before connecting rather than stuck on the 0.5% default."""
+    from ui.actions import SLIPPAGE_OF_FEE, SwapTab, slippage_for
+
+    # Both spellings: a swap asks `dynamic_fee` first and falls back.
+    provider = FakeProvider(
+        {"0xddca3f43": word(4_000_000), "0x76a9cd3e": word(4_000_000)}
+    )
+    contract = read_only_contract(provider)
+    tab = SwapTab(StubPage(), contract.pool, lambda: contract, None)
+    tab.mount()
+
+    await tab.suggest_slippage(contract)
+
+    assert float(tab.slippage.value) == pytest.approx(
+        slippage_for(4_000_000, SLIPPAGE_OF_FEE), rel=1e-3
+    )
+
+
+async def test_balances_are_not_read_without_an_account() -> None:
+    """`allowance` and `balanceOf` both take an address, and "" is not
+    one -- encoding it would raise rather than fail politely."""
+    from ui.actions import DepositTab
+
+    provider = FakeProvider()
+    contract = read_only_contract(provider)
+    tab = DepositTab(StubPage(), contract.pool, lambda: contract, None)
+    tab.mount()
+    tab.fields[0].value = "1"
+
+    await tab.refresh()   # must not raise
+
+    assert tab.balance_labels[0].value in ("", None)
+    assert tab.submit_button.disabled is True
+
+
+async def test_pressing_deposit_without_a_wallet_says_so() -> None:
+    from ui.actions import DepositTab
+
+    contract = read_only_contract()
+    tab = DepositTab(StubPage(), contract.pool, lambda: contract, None)
+    tab.mount()
+    tab.fields[0].value = "1"
+
+    await tab._submit_clicked(None)
+    assert "connect a wallet" in tab.status.value.lower()
+
+    await tab._approve_clicked(None)
+    assert "connect a wallet" in tab.status.value.lower()

@@ -24,6 +24,7 @@ import flet as ft
 from curve import ApiError, CurveApi, Pool, PoolContract
 from curve.api import PoolFeed
 from curve.format import compact_usd
+from curve.rpc import ChainlistDirectory, PublicNode
 from curve.sort import DEFAULT_SORT
 from ui.pool_detail import PoolDetailView
 from ui.pool_list import PoolListView
@@ -119,6 +120,11 @@ class CurveApp:
         self.page = page
         self.api = CurveApi()
         self.wallet: Wallet | None = None
+        #: Public JSON-RPC, for reading a pool with no wallet connected.
+        #: The directory is shared and fetched lazily -- a session that
+        #: connects a wallet never asks chainlist for anything.
+        self._chainlist = ChainlistDirectory()
+        self._public_nodes: dict[int, PublicNode] = {}
         self.chain = DEFAULT_CHAIN
         self.chains: dict[str, int] = {}
         self.feed: PoolFeed | None = None
@@ -482,10 +488,26 @@ class CurveApp:
         self.page.update()
 
     def contract_for(self) -> PoolContract | None:
-        """The bound contract for the open pool, or None with no wallet."""
-        if self.wallet is None or self._detail is None:
+        """The open pool, bound to the best provider available.
+
+        A wallet when there is one: it is the node that will execute the
+        transaction, so a quote read through it is the quote least likely
+        to surprise. Otherwise a public node, which can read but not sign
+        -- rates are worth showing before anyone connects anything, and
+        `get_dy` never needed an account. See `curve.rpc`.
+        """
+        if self._detail is None:
             return None
-        return PoolContract(self.wallet.provider, self._detail.pool, self.wallet.address)
+        pool = self._detail.pool
+        if self.wallet is not None:
+            return PoolContract(self.wallet.provider, pool, self.wallet.address)
+        if not pool.chain_id:
+            return None
+        node = self._public_nodes.get(pool.chain_id)
+        if node is None:
+            node = PublicNode(pool.chain_id, self._chainlist)
+            self._public_nodes[pool.chain_id] = node
+        return PoolContract(node, pool, "")
 
     # -- wallet -----------------------------------------------------------
 

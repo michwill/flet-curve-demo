@@ -42,11 +42,23 @@ class PoolContract:
     def __init__(self, provider: WalletProvider, pool: Pool, account: str) -> None:
         self.provider = provider
         self.pool = pool
+        #: Empty when the contract is bound to a public node rather than a
+        #: wallet: quotes work, nothing else does. See `curve.rpc`.
         self.account = account
         #: The deposit zap for this pool's underlying coins, if there is
         #: one. None for every pool that is not a factory metapool, which
         #: is nearly all of them.
         self.zap: Zap | None = zap_for(pool)
+
+    @property
+    def can_send(self) -> bool:
+        """Is there an account behind this, or only a node?
+
+        A quote needs neither an account nor a signature, so the panels
+        show rates with no wallet connected; everything that moves a token
+        needs both, and asks this first.
+        """
+        return bool(self.account)
 
     # -- reads ------------------------------------------------------------
 

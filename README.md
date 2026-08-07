@@ -293,6 +293,38 @@ Paging is local: one request returns the whole chain, and `curve/lite.py`'s
 `select` filters, orders and slices it to the same `(page, total)` contract the
 server gives for v2.
 
+### The address bar
+
+On web, a pool page has an address worth sending to somebody:
+
+```
+/                       the list, on the default chain
+/ethereum               the list, on that chain
+/ethereum/0xC09e82…     that pool
+```
+
+Flet gives the browser's URL as `page.route`, pushes history entries with
+`page.go`, and calls `on_route_change` when either the app or the *user*
+navigates — the Back button included. There is no way to tell those two apart,
+and no need to: `apply_route` compares the route with what is on screen and
+moves only if they differ, so the same handler serves a click, a deep link and
+a Back press without looping.
+
+Chain names are the API's own (`xdai`, `x-layer`), because they are what every
+other part of this app keys by. A deep link asks the API for that *one* pool
+rather than paging until it turns up — it may be below the TVL floor or on page
+nine — and a rotted link lands on the list with a message rather than nowhere.
+
+Two consequences worth knowing. The published build routes on the URL **path**,
+which a static server knows nothing about, so `tools/serve.py` falls back to
+`index.html` for any path that is not a file; deploying elsewhere needs the same
+one-line rule. And the in-app back arrow *pushes* the list route rather than
+popping history, because Flet exposes no pop — so after using it, the browser's
+Back returns to the pool you just left.
+
+None of this touches the desktop build, which has no address bar; `page.route`
+is simply never anything but `/`.
+
 ## The chart
 
 `flet-charts`' `CandlestickChart` draws the candles and axes. It has no pan,

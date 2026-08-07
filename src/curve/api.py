@@ -299,6 +299,30 @@ class CurveApi:
         payload = await self._v2(f"/pools/{chain_id}/{address}")
         return self._store(key, payload)
 
+    async def get_pool(self, chain_id: int, address: str, chain: str = "") -> Pool:
+        """One pool by address, without paging a list to find it.
+
+        What a deep link needs: someone opens `/ethereum/0xC09e…` and the
+        pool it names may be nowhere near the first page, or below the TVL
+        floor, or on a chain whose list has not loaded yet.
+
+        The two APIs answer differently. v2 has a detail endpoint that
+        returns a whole pool, so it is read and merged in one go. Curve
+        Lite has no such endpoint -- but it hands over the entire chain in
+        one request anyway, and that response is already cached, so this
+        is a lookup rather than a fetch.
+        """
+        if await self.is_lite(chain_id):
+            for pool in await self._lite_pools(chain_id, chain):
+                if pool.address.lower() == address.lower():
+                    return pool
+            raise ApiError(f"No pool at {address} on this network.")
+        payload = await self.pool_detail(chain_id, address)
+        if not isinstance(payload, dict) or not payload.get("address"):
+            raise ApiError(f"No pool at {address} on this network.")
+        pool = Pool.from_v2(payload, chain)
+        return pool.merge_detail(payload)
+
     async def chain_totals(self, chain_id: int) -> dict[str, float | None]:
         """Headline TVL and volume for the chain, for the list header.
 

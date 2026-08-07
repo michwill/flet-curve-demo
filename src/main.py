@@ -31,6 +31,7 @@ from ui.pool_list import PoolListView
 from ui.assets import chain_name, curve_logo
 from ui.logos import chain_mark
 from ui.responsive import layout_for
+from ui import routing
 from ui.typography import BODY, LABEL, SMALL, TITLE
 from wallet import Wallet, WalletChoice, WalletError, autoconnect, is_browser
 from wallet.base import RpcError
@@ -123,6 +124,8 @@ class CurveApp:
         #: Public JSON-RPC, for reading a pool with no wallet connected.
         #: The directory is shared and fetched lazily -- a session that
         #: connects a wallet never asks chainlist for anything.
+        #: Has the URL the page was opened with been acted on yet?
+        self._route_applied = False
         self._chainlist = ChainlistDirectory()
         self._public_nodes: dict[int, PublicNode] = {}
         self.chain = DEFAULT_CHAIN
@@ -132,6 +135,7 @@ class CurveApp:
         self._address_expanded = False
 
         self._build()
+        page.on_route_change = self._route_changed
         if not is_browser():
             page.run_task(self.dress_window)
         page.run_task(self.load_pools)
@@ -408,6 +412,9 @@ class CurveApp:
         self.error.visible = True
         self.page.update()
 
+    def _route_changed(self, event) -> None:
+        self.page.run_task(self.apply_route, getattr(event, "route", None))
+
     async def load_pools(self) -> None:
         """Point the list at a fresh feed for the current chain.
 
@@ -441,6 +448,12 @@ class CurveApp:
             self.page.update()
             await self.list_view.load_more()
             totals = await self.api.chain_totals(chain_id)
+            if not self._route_applied:
+                # Deep link: the URL the page was opened with. Done here
+                # rather than at startup because it may name a chain, and
+                # a chain is only checkable once the API has listed them.
+                self._route_applied = True
+                self.page.run_task(self.apply_route, self.page.route)
         except ApiError as exc:
             self.error.value = str(exc)
             self.error.visible = True
@@ -479,13 +492,80 @@ class CurveApp:
         if self.page.width:
             self._detail.set_layout(layout_for(self.page.width))
         self.body.content = self._detail
+        self._go(routing.build(pool.chain or self.chain, pool.address))
         self.page.update()
         self.page.run_task(self._detail.load)
 
     def show_list(self) -> None:
         self._detail = None
         self.body.content = self.list_view
+        self._go(routing.build(self.chain))
         self.page.update()
+
+    # -- the address bar --------------------------------------------------
+    #
+    # On web this is the browser's URL: a pool page has an address worth
+    # sending to someone, and Back means what it looks like it means.
+    # `page.go` pushes a history entry and fires `on_route_change`, which
+    # the browser also fires on Back -- so one handler serves both, and it
+    # is written to be idempotent rather than to guess who called it.
+
+    def _go(self, route: str) -> None:
+        """Push a route, unless the browser is already showing it."""
+        if (self.page.route or "") != route:
+            self.page.go(route)
+
+    async def apply_route(self, raw: str | None) -> None:
+        """Show whatever the address bar says. Safe to call repeatedly.
+
+        Called for the first URL and again on every route change, which
+        includes the Back and Forward buttons -- there is no way to tell
+        those apart, and no need to: this compares the route with what is
+        on screen and moves only if they differ.
+        """
+        route = routing.parse(raw)
+        if route.chain and route.chain != self.chain and route.chain in self.chains:
+            self.chain = route.chain
+            self.chain_picker.value = route.chain
+            self.chain_picker.leading_icon = chain_icon(route.chain)
+            self.show_list()
+            await self.load_pools()
+
+        if not route.is_pool:
+            if self._detail is not None:
+                self.show_list()
+            return
+
+        open_already = self._detail is not None and routing.same_pool(
+            route.pool, self._detail.pool.address
+        )
+        if open_already:
+            return
+        await self.open_pool_by_address(route.pool)
+
+    async def open_pool_by_address(self, address: str) -> None:
+        """Open a pool named in a URL, fetching it if need be.
+
+        A link can name a pool that is nowhere in the loaded list -- below
+        the TVL floor, or on page nine -- so this asks the API for that one
+        pool rather than paging until it turns up.
+        """
+        chain_id = self.chains.get(self.chain)
+        if not chain_id:
+            return
+        self.progress.visible = True
+        self.page.update()
+        try:
+            pool = await self.api.get_pool(chain_id, address, self.chain)
+        except ApiError as exc:
+            self.error.value = str(exc)
+            self.error.visible = True
+            self.show_list()
+            return
+        finally:
+            self.progress.visible = False
+            self.page.update()
+        self.open_pool(pool)
 
     def contract_for(self) -> PoolContract | None:
         """The open pool, bound to the best provider available.

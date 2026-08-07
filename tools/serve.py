@@ -27,6 +27,23 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 class NoCacheHandler(http.server.SimpleHTTPRequestHandler):
+    def send_head(self):
+        """Serve `index.html` for any path that is not a file.
+
+        The published build routes on the URL *path* (`/ethereum/0xC09e…`
+        is a pool page), which a static server knows nothing about: it
+        looks for a directory of that name and 404s. Every single-page app
+        needs this fallback, and without it a shared link only works if
+        you were already in the app.
+
+        Real files are still served as files, so this cannot shadow the
+        assets -- only paths that do not exist reach the app.
+        """
+        path = Path(self.translate_path(self.path))
+        if not path.exists() and "." not in path.name:
+            self.path = "/index.html"
+        return super().send_head()
+
     def end_headers(self) -> None:
         self.send_header("Cache-Control", "no-store, must-revalidate")
         self.send_header("Pragma", "no-cache")

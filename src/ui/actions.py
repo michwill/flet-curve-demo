@@ -288,7 +288,26 @@ class ActionTab:
         # wide a text field wants to be left the amounts ending short of
         # the right edge -- by about the width of the slippage box, which
         # made it look like they were dodging it.
+        #
+        # Two columns rather than one, and this is what puts the button
+        # against the bottom of the panel. The panel's height is a guess
+        # -- `TabBarView` cannot size to its content, see
+        # `pool_detail.actions_height` -- so whatever the guess is over by
+        # has to go somewhere, and in a single top-aligned column it went
+        # *under* the button: a 46px moat below it against 14px of padding
+        # at its sides. Here the fields take the slack instead, because
+        # they are the flexible part, and the buttons stay where a card's
+        # buttons belong.
         self.control = ft.Column(
+            spacing=12,
+            horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+            # The scroll lives here now, on the part that can be too tall.
+            # A flexible child inside a scrolling column is a Flutter
+            # layout error, so these two cannot be the same column.
+            scroll=ft.ScrollMode.AUTO,
+            expand=True,
+        )
+        self.frame = ft.Column(
             spacing=12, horizontal_alignment=ft.CrossAxisAlignment.STRETCH
         )
 
@@ -357,11 +376,18 @@ class ActionTab:
             # as part of the action rather than as a setting for it.
             *([_aside(self.slippage)] if self.uses_slippage else []),
             self.estimate,
+        ]
+        # The status line goes with the buttons rather than with the
+        # fields: it is what the button did, and it appears while a
+        # transaction is in flight -- which is exactly when a panel must
+        # not be scrolled away from the thing it is saying.
+        self.frame.controls = [
+            self.control,
             self._approve_box,
             self._submit_box,
             self.status_panel,
         ]
-        return self.control
+        return self.frame
 
     async def network_ok(self, contract: PoolContract | None) -> bool:
         """Is the wallet on the network these pools are on?

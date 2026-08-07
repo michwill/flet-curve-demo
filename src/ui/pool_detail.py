@@ -580,14 +580,12 @@ class PoolDetailView(ft.Column):
                             expand=True,
                             controls=[
                                 # A panel taller than the box scrolls rather
-                                # than overflowing; `Container` has no
-                                # `scroll`, so the Column carries it.
-                                ft.Container(
-                                    ft.Column(
-                                        [tab.mount()], scroll=ft.ScrollMode.AUTO
-                                    ),
-                                    padding=14,
-                                )
+                                # than overflowing. The scroll is inside the
+                                # tab, on its fields alone -- see
+                                # `ActionTab.__init__`: scrolling the buttons
+                                # too would leave them wherever the guessed
+                                # height put them.
+                                ft.Container(tab.mount(), padding=14)
                                 for tab in self.tabs
                             ],
                         ),

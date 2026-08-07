@@ -283,28 +283,45 @@ def test_slippage_is_small_and_out_of_the_way() -> None:
     assert row.alignment == ft.MainAxisAlignment.END
 
 
+def test_the_buttons_sit_against_the_bottom_of_the_panel() -> None:
+    """`TabBarView` cannot size to its content, so the panel's height is a
+    guess -- and whatever the guess runs over by has to land somewhere. In
+    one top-aligned column it landed under the button, which left a 46px
+    moat below it against 14px of padding at its sides. The fields are the
+    flexible part, so they take it."""
+    for tab in tabs():
+        frame = tab.mount()
+        assert tab.control.expand is True
+        assert tab.control.scroll == ft.ScrollMode.AUTO
+        # And the frame does not scroll: a scrolling column has no bottom
+        # to pin anything against.
+        assert frame.scroll is None
+        assert frame.controls[-1] is tab.status_panel
+
+
 def test_slippage_sits_with_the_amounts_not_with_the_button() -> None:
     """Against the submit button it reads as part of the action rather
-    than as a setting for it."""
+    than as a setting for it. They are in different columns now -- the
+    fields scroll and the buttons are pinned to the panel's bottom -- so
+    being in the field column is the whole of it."""
     for tab in tabs():
         if not tab.uses_slippage:
             continue
-        controls = tab.mount().controls
+        frame = tab.mount()
+        fields = tab.control.controls
         slippage_at = next(
             i
-            for i, c in enumerate(controls)
+            for i, c in enumerate(fields)
             if isinstance(c, ft.Row) and tab.slippage in (c.controls or [])
         )
-        # The button sits inside a container -- the one that draws Chad's
-        # shadow -- so the panel is asked which of its children holds it
-        # rather than where the button itself is.
-        submit_at = next(
-            i
-            for i, c in enumerate(controls)
-            if c is tab.submit_button or getattr(c, "content", None) is tab.submit_button
-        )
-        assert slippage_at < submit_at - 1
-        assert slippage_at < controls.index(tab.estimate)
+        assert slippage_at < fields.index(tab.estimate)
+        # The buttons are in the frame, below the fields, each inside the
+        # container that draws Chad's shadow.
+        assert tab.control is frame.controls[0]
+        assert [getattr(c, "content", c) for c in frame.controls[1:3]] == [
+            tab.approve_button,
+            tab.submit_button,
+        ]
 
 
 # -- filling a field with everything you have ------------------------------

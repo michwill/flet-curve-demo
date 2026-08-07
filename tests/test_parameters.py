@@ -16,10 +16,17 @@ from __future__ import annotations
 
 import pytest
 
-from curve import explorers
+from curve import abi, explorers
 from curve.models import Coin, Pool
+from curve.multicall import (
+    AGGREGATE3,
+    MULTICALL3,
+    decode_aggregate3,
+    decode_uints,
+    encode_aggregate3,
+)
 from curve.parameters import PARAMETERS, Kind, format_value, rows
-from curve.pool import INDEXED_PARAMETERS, PoolCallFailed, PoolContract
+from curve.pool import INDEXED_PARAMETERS, PoolCallFailed, PoolContract, _parameter_plan
 from wallet.base import WalletError
 
 # -- scales ----------------------------------------------------------------
@@ -180,14 +187,16 @@ async def test_an_indexed_price_is_found_after_the_plain_one_fails() -> None:
     assert values == {"price_oracle": 65_003_125_444_859_976_272_179}
 
 
-async def test_only_the_prices_are_tried_twice() -> None:
-    """Nine parameters, and eight of them have one spelling. Trying a
-    second for each would double the reads a pool page makes."""
+async def test_a_chain_without_multicall_asks_one_at_a_time() -> None:
+    """The batch is tried first and answers nothing -- there is no way to
+    ask whether Multicall3 is deployed that is cheaper than calling it --
+    and then every parameter is asked on its own."""
     contract = contract_with({})
     await contract.parameters()
 
     asked = contract.provider.asked
-    assert len(asked) == len(PARAMETERS) + len(INDEXED_PARAMETERS)
+    assert asked[0].startswith(abi.selector(AGGREGATE3), 2)
+    assert len(asked) == 1 + len(PARAMETERS) + len(INDEXED_PARAMETERS)
 
 
 async def test_a_provider_that_cannot_read_at_all_is_not_fatal() -> None:
@@ -251,3 +260,107 @@ async def test_it_does_not_raise_on_a_pool_call_failure() -> None:
     """`parameters()` swallows exactly two exception types; anything else
     would reach a page that has no handler for it."""
     assert issubclass(PoolCallFailed, WalletError)
+
+
+# -- one round trip instead of eleven --------------------------------------
+
+
+def word(value: int) -> str:
+    return f"{value:064x}"
+
+
+def aggregate3_response(answers: list[int | None]) -> str:
+    """Encode `(bool success, bytes returnData)[]` as Multicall3 returns it.
+
+    Writing the encoder the decoder is tested against is only worth
+    anything because the *real* one was checked against mainnet -- see
+    `curve/multicall.py`. This is here so the failure modes (a call that
+    reverted, a call that answered nothing) can be produced on demand.
+    """
+    elements = []
+    for value in answers:
+        if value is None:
+            elements.append(word(0) + word(0x40) + word(0))
+        else:
+            elements.append(word(1) + word(0x40) + word(32) + word(value))
+    heads, position = [], len(elements) * 32
+    for element in elements:
+        heads.append(word(position))
+        position += len(element) // 2
+    return "0x" + word(0x20) + word(len(elements)) + "".join(heads) + "".join(elements)
+
+
+class BatchingProvider:
+    """A chain with Multicall3 on it."""
+
+    def __init__(self, answers: dict[str, int]) -> None:
+        self.answers = answers
+        self.asked: list[tuple[str, str]] = []
+
+    async def call(self, to: str, data: str) -> str:
+        self.asked.append((to, data))
+        if to.lower() != MULTICALL3.lower():
+            raise AssertionError("asked the pool directly despite the batch")
+        plan = _parameter_plan()
+        return aggregate3_response([self.answers.get(key) for key, _ in plan])
+
+
+async def test_the_whole_batch_is_one_call() -> None:
+    contract = PoolContract(
+        BatchingProvider({"A": 1_707_629, "gamma": 11_809_167_828_997}),
+        make_pool(),
+        "",
+    )
+
+    values = await contract.parameters()
+
+    assert values == {"A": 1_707_629, "gamma": 11_809_167_828_997}
+    assert len(contract.provider.asked) == 1
+    assert contract.provider.asked[0][0] == MULTICALL3
+
+
+async def test_the_batch_is_sent_to_the_pool_with_failures_allowed() -> None:
+    """`aggregate3`, not `aggregate`: half these calls are *expected* to
+    fail, and one failure would take the whole batch down with it."""
+    contract = PoolContract(BatchingProvider({"A": 4_000}), make_pool(), "")
+    await contract.parameters()
+
+    _to, data = contract.provider.asked[0]
+    plan = _parameter_plan()
+    assert data.startswith("0x" + abi.selector(AGGREGATE3))
+    # One `true` per call, and every target is this pool.
+    assert data.count(word(1)) >= len(plan)
+    assert data.lower().count(make_pool().address[2:].lower()) == len(plan)
+
+
+def test_the_encoding_round_trips() -> None:
+    calls = [("0x" + "11" * 20, "0xf446c1d0"), ("0x" + "22" * 20, "0xb1373929")]
+    data = encode_aggregate3(calls)
+
+    assert data.startswith("0x" + abi.selector(AGGREGATE3))
+    # Head: offset to the array, then its length.
+    body = data[10:]
+    assert int(body[0:64], 16) == 32
+    assert int(body[64:128], 16) == 2
+    assert decode_uints(aggregate3_response([1, None]), 2) == [1, None]
+
+
+@pytest.mark.parametrize(
+    "result",
+    ["0x", "", "0x00", "0x" + "ff" * 64, None],
+)
+def test_nothing_readable_is_no_answers(result) -> None:
+    """A chain with no Multicall3 answers `0x` from an address with no
+    code. That is not an error, it is a chain to ask one call at a time."""
+    assert decode_aggregate3(result) == []
+
+
+def test_a_failed_call_reads_as_no_value() -> None:
+    assert decode_aggregate3(aggregate3_response([None])) == [None]
+    assert decode_uints(aggregate3_response([None, 7]), 2) == [None, 7]
+
+
+def test_a_short_answer_is_not_mistaken_for_a_full_batch() -> None:
+    """Better to ask again one at a time than to line up nine answers
+    against eleven questions."""
+    assert decode_uints(aggregate3_response([1, 2]), 11) == [None] * 11

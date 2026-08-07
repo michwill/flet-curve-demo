@@ -30,13 +30,23 @@ from wallet.base import RpcError, WalletError, WalletProvider
 
 from . import abi
 from .models import Pool
+from .multicall import MULTICALL3, decode_uints, encode_aggregate3
 from .parameters import PARAMETERS
 from .zaps import Zap, zap_for
 
-#: The two parameters a tricrypto pool indexes and everything else does
-#: not. Index 0 is the pool's first priced coin, which is the one a single
-#: line of a summary should show.
+#: The two parameters that are spelled two ways: a tricrypto pool holds
+#: several prices and takes an index, twocrypto and the stable factories
+#: hold one and take none. The registry does not say which, so both are
+#: asked -- which costs nothing now that they go in one batch. Index 0 is
+#: the first priced coin, the one a single line of a summary should show.
 INDEXED_PARAMETERS = ("price_oracle", "price_scale")
+
+
+def _parameter_plan() -> list[tuple[str, str]]:
+    """What to ask the pool, as `(key, calldata)`, bare spellings first."""
+    plan = [(parameter.key, abi.encode_parameter(parameter.key)) for parameter in PARAMETERS]
+    plan += [(key, abi.encode_indexed_parameter(key, 0)) for key in INDEXED_PARAMETERS]
+    return plan
 
 
 class PoolCallFailed(WalletError):
@@ -189,45 +199,53 @@ class PoolContract:
     async def parameters(self) -> dict[str, int]:
         """Every curve parameter this pool will answer, raw and unscaled.
 
-        One read per parameter, and a pool that does not implement one is
-        the normal case, not a failure: `gamma` on a StableSwap pool,
-        `offpeg_fee_multiplier` on anything but StableSwap-NG. Those are
-        left out rather than reported, so the caller shows what exists.
+        A pool that does not implement one is the normal case, not a
+        failure: `gamma` on a StableSwap pool, `offpeg_fee_multiplier` on
+        anything but StableSwap-NG. Those are left out rather than
+        reported, so the caller shows what exists.
 
-        Reads are sequential. A pool page makes nine of them once, against
-        a provider that is usually the user's own node, and running them
-        concurrently would mean nine simultaneous requests at a public
-        endpoint that rate-limits -- which is how you turn nine cheap
-        reads into one failed panel.
+        Eleven questions -- nine parameters, and a second spelling for the
+        two that have one -- asked in a **single** `eth_call` through
+        Multicall3, which is why `curve.multicall` exists. Sequentially
+        that is eleven round trips for one panel, and on a public endpoint
+        eleven chances to be rate-limited.
         """
+        plan = _parameter_plan()
+        answers = await self._read_many(plan)
         found: dict[str, int] = {}
-        for parameter in PARAMETERS:
-            with contextlib.suppress(PoolCallFailed, WalletError):
-                found[parameter.key] = await self._parameter(parameter.key)
+        for (key, _data), value in zip(plan, answers, strict=True):
+            # First spelling that answers wins, and the plan lists the
+            # bare form before the indexed one.
+            if value is not None and key not in found:
+                found[key] = value
         return found
 
-    async def _parameter(self, name: str) -> int:
-        """One parameter, in whichever spelling the pool has.
+    async def _read_many(self, plan: list[tuple[str, str]]) -> list[int | None]:
+        """The batch, or one call each where there is no batching.
 
-        `price_oracle`/`price_scale` take an index on a tricrypto pool and
-        no argument anywhere else, and the registry does not say which --
-        so the no-argument form is tried first and the indexed one covers
-        the pools that refuse it. Everything else is no-argument only, and
-        the first read is the only read.
+        Multicall3 is at the same address on every chain that has it, and
+        a chain without it is a normal case -- a Lite deployment on a new
+        chain may well predate it. There is no way to ask whether it is
+        there that is cheaper than trying, and nothing distinguishes "no
+        multicall" from "the batch answered nothing", so an empty answer
+        falls back to asking one at a time.
         """
-        try:
-            return await self._read(
-                self.pool.address, abi.encode_parameter(name), name, subject="The pool"
+        with contextlib.suppress(Exception):
+            result = await self.provider.call(
+                MULTICALL3,
+                encode_aggregate3([(self.pool.address, data) for _key, data in plan]),
             )
-        except PoolCallFailed:
-            if name not in INDEXED_PARAMETERS:
-                raise
-        return await self._read(
-            self.pool.address,
-            abi.encode_indexed_parameter(name, 0),
-            name,
-            subject="The pool",
-        )
+            values = decode_uints(result, len(plan))
+            if any(value is not None for value in values):
+                return values
+        return [await self._maybe(data) for _key, data in plan]
+
+    async def _maybe(self, data: str) -> int | None:
+        """One read, where not being implemented is an expected answer."""
+        try:
+            return await self._read(self.pool.address, data, "a pool parameter")
+        except (PoolCallFailed, WalletError):
+            return None
 
     async def pair_fee(self, i: int, j: int) -> int:
         """The fee that applies to swapping `i` for `j`.

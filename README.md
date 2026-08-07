@@ -630,7 +630,9 @@ worth knowing about:
 
 **The shadows are the other half of it.** Material's elevation draws a blurred
 gradient; Chad draws a hard offset instead — `blur_radius=0`, one constant
-opacity, 3px down and right, 2px for things inside a panel. That is what a
+opacity, 3px down and right, 2px for things inside a panel, and 3px *straight
+down* for the top bar, which reaches both window edges and so has no side to
+cast from. That is what a
 shadow under a bordered box looked like before shadows became soft. (The site
 itself has no shadows at all — `box-shadow` is `none` everywhere on that page.
 These are an addition, in the spirit of the rest.) Because the same shadow

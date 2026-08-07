@@ -698,6 +698,18 @@ def test_the_column_headings_get_a_band_under_chad() -> None:
     assert plain._header.bgcolor is None
 
 
+def test_the_top_bar_casts_straight_down() -> None:
+    """A bar that reaches both window edges has no side to cast from, so
+    this one is the only shadow here with no sideways offset."""
+    from ui import theme
+
+    assert theme.bar_shadow(ThemedPage("chad")) is theme.BAR_SHADOW
+    assert theme.bar_shadow(ThemedPage("light")) is None
+    assert theme.BAR_SHADOW.offset.x == 0
+    assert theme.BAR_SHADOW.offset.y > 0
+    assert theme.BAR_SHADOW.blur_radius == 0
+
+
 def test_a_pool_page_takes_the_shadow_under_chad() -> None:
     from ui import theme
 

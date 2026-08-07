@@ -281,7 +281,7 @@ class CurveApp:
         # nobody measures anything for itself.
         page.on_resize = self._resized
 
-        header = ft.Container(
+        self.header = ft.Container(
             ft.Row(
                 [
                     self.brand,
@@ -299,6 +299,8 @@ class CurveApp:
             ),
             padding=ft.Padding.symmetric(horizontal=20, vertical=10),
             bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
+            # Chad only, and hard-edged, like the panels below it.
+            shadow=themes.bar_shadow(page),
         )
 
         self.list_view = PoolListView(page, on_open=self.open_pool)
@@ -310,7 +312,7 @@ class CurveApp:
 
         page.add(
             ft.Column(
-                [header, self.progress, self.error, self.body],
+                [self.header, self.progress, self.error, self.body],
                 spacing=0,
                 expand=True,
             )
@@ -443,7 +445,12 @@ class CurveApp:
         self._rebuild_view()
 
     def _rebuild_view(self) -> None:
-        """Re-make whichever view is on screen, in the current theme."""
+        """Re-make whichever view is on screen, in the current theme.
+
+        The header is not re-made -- it outlives every view, so it only
+        needs the shadow the new theme asks for.
+        """
+        self.header.shadow = themes.bar_shadow(self.page)
         if self._detail is not None:
             self.open_pool(self._detail.pool)
         else:

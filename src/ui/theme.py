@@ -99,6 +99,17 @@ INSET_SHADOW = ft.BoxShadow(
     color=ft.Colors.with_opacity(0.16, TITLE),
 )
 
+#: For the top bar, which spans the window: straight down, with no
+#: sideways offset. A bar that reaches both edges has no right-hand edge
+#: to cast from, and 3px of shadow hanging off the side of the window is
+#: how you can tell a panel shadow was reused for one.
+BAR_SHADOW = ft.BoxShadow(
+    spread_radius=0,
+    blur_radius=0,
+    offset=ft.Offset(0, 3),
+    color=ft.Colors.with_opacity(0.20, TITLE),
+)
+
 #: Theme names as the app stores them, in the order the button cycles.
 NAMES = ("light", "dark", "chad")
 
@@ -202,6 +213,11 @@ def panel_shadow(page: ft.Page, *, inset: bool = False) -> ft.BoxShadow | None:
     if not is_chad(page):
         return None
     return INSET_SHADOW if inset else PANEL_SHADOW
+
+
+def bar_shadow(page: ft.Page) -> ft.BoxShadow | None:
+    """The top bar's shadow: straight down. None outside Chad."""
+    return BAR_SHADOW if is_chad(page) else None
 
 
 def rows_theme(page: ft.Page) -> ft.Theme | None:

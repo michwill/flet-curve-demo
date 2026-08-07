@@ -245,3 +245,41 @@ async def test_a_deep_link_asks_the_api_for_that_one_pool() -> None:
     app = make_app(f"/ethereum/{WL}")
     await app.apply_route(app.page.route)
     assert app.api.asked == [(1, WL)]
+
+
+# -- the chain picker ------------------------------------------------------
+
+
+def test_picking_the_chain_you_are_already_on_does_nothing() -> None:
+    """A dropdown reports a selection, not a change.
+
+    Opening the picker on a pool page and choosing the network already
+    shown arrives at the handler looking exactly like a real switch --
+    and everything the handler does closes the pool page and reloads the
+    list, which is an answer to a question nobody asked.
+    """
+    app = make_app(f"/ethereum/{WL}")
+    app.open_pool(make_pool())
+    app.page.pushed.clear()
+    app.page.tasks.clear()
+    detail = app._detail
+
+    app.chain_picker.value = "ethereum"          # the one already selected
+    app._chain_changed(None)
+
+    assert app._detail is detail                  # still on the pool
+    assert app.page.pushed == []                  # no history entry
+    assert app.page.tasks == []                   # and nothing refetched
+
+
+def test_picking_a_different_chain_does_switch() -> None:
+    app = make_app(f"/ethereum/{WL}")
+    app.open_pool(make_pool())
+    app.page.tasks.clear()
+
+    app.chain_picker.value = "xdai"
+    app._chain_changed(None)
+
+    assert app.chain == "xdai"
+    assert app._detail is None                    # back to the list
+    assert app.page.tasks                          # and it reloads it

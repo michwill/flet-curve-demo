@@ -474,7 +474,16 @@ class CurveApp:
     # -- data -------------------------------------------------------------
 
     def _chain_changed(self, _e: AnyEvent) -> None:
-        self.chain = self.chain_picker.value or DEFAULT_CHAIN
+        picked = self.chain_picker.value or DEFAULT_CHAIN
+        # A dropdown reports a *selection*, not a change, and picking the
+        # network you are already on is a selection. Everything below
+        # closes the pool page and reloads the list, so without this,
+        # opening the picker on a pool and choosing where you already are
+        # throws you back to the list -- an answer to a question the user
+        # did not ask.
+        if picked == self.chain:
+            return
+        self.chain = picked
         # The closed field carries the selected network's mark too, not
         # just the name.
         self.chain_picker.leading_icon = chain_icon(self.chain)

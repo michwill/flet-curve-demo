@@ -255,6 +255,22 @@ class AppMachine(RuleBasedStateMachine):
         self.app._chain_changed(Event())
         self.pump()
 
+    @rule()
+    def reselect_the_current_chain(self) -> None:
+        """Open the picker on the network you are already on, and pick it.
+
+        A dropdown reports a selection, not a change, so this arrives at
+        the handler looking exactly like a real switch. It must do
+        nothing: a pool page open here has to stay open.
+        """
+        before = self.app._detail
+        route = self.session.route
+        self.app.chain_picker.value = self.app.chain
+        self.app._chain_changed(Event())
+        self.pump()
+        assert self.app._detail is before
+        assert self.session.route == route
+
     @rule(index=st.integers(min_value=0, max_value=5))
     @precondition(lambda self: bool(self.rows))
     def open_pool(self, index: int) -> None:

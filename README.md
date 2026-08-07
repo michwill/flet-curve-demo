@@ -569,6 +569,55 @@ Every logo degrades to a lettered disc, coloured from the symbol so a token
 looks the same everywhere. That is not just insurance against a skipped build
 step — plenty of long-tail tokens have no image upstream.
 
+## Themes
+
+Three, cycled by the one button in the header: **light**, **dark**, and
+**Chad**. The first two are Material's — one seed colour, and the generator
+works out the other forty-five slots. Chad is not generated: it is a hand-set
+palette taken from [linux.org.ru](https://www.linux.org.ru)'s default
+stylesheet (`waltz/combined.css`, the `:root` block), which is a particular
+yellowed grey no seed will produce.
+
+The mapping is by *role*, not by name — what a colour does there is what it
+does here, and `ui/theme.py` lists each one against the CSS variable it came
+from. The page grey (`--main-background`) becomes `surface_container` and is
+also set on `page.bgcolor`; white (`--article-background`) becomes `surface`,
+so panels are white boxes on grey, which is the shape of the site it comes
+from. Two Material slots have no counterpart there and are derived, noted in
+the module.
+
+**The shadows are the other half of it.** Material's elevation draws a blurred
+gradient; Chad draws a hard offset instead — `blur_radius=0`, one constant
+opacity, 3px down and right, 2px for things inside a panel. That is what a
+shadow under a bordered box looked like before shadows became soft, and it is
+what makes the theme read as itself rather than as light mode in beige.
+Because it would look like a mistake under a Material surface, every caller
+asks `theme.panel_shadow(page)`, which returns `None` unless Chad is on.
+
+Two consequences worth knowing:
+
+- **Switching theme rebuilds the view, not just the colours.** Shadows are set
+  when a control is built, so `_rebuild_view()` re-makes whichever view is on
+  screen. Colour alone would repaint fine; a shadow appearing would not.
+- **Which theme is on is read off the page**, by `theme.is_chad(page)`, rather
+  than tracked in a variable — a control built at any moment then asks the same
+  question and gets the current answer.
+
+The button shows the theme you will *get*, not the one you are in: a moon, a
+sun, and for Chad the wireframe Curve mark (`logo-bw.svg`, from curve-assets —
+`curve_illustration-chad.svg` there is a 1441×618 background illustration, not
+a button-sized mark). That is also why the button is a `Container` and not an
+`IconButton`, which takes only an icon.
+
+The choice is remembered in `SharedPreferences` under `flet-curve.theme` — the
+browser's storage on web, a file on the desktop — and put back on load. Both
+halves of that API are **coroutines**, and calling one without `await` fails
+silently: the write never happens and the read returns a coroutine object that
+no `isinstance` will match. The restore therefore runs as a task, so the first
+paint is in the default theme and the saved one arrives just after; failure at
+either end is swallowed, because a private window with no storage should still
+open the app.
+
 ## Responsive layout
 
 Every responsive decision comes from one pure function, `layout_for(width)` in

@@ -48,7 +48,7 @@ from curve.zaps import zap_for
 from wallet.base import WalletError
 from wallet.erc20 import format_units, parse_units
 
-from . import AnyEvent
+from . import AnyEvent, theme
 from .assets import chain_name
 from .logos import pool_stack, token_mark
 from .typography import BODY, LABEL, SMALL
@@ -238,6 +238,7 @@ class ActionTab:
             padding=ft.Padding.symmetric(horizontal=10, vertical=8),
             border_radius=8,
             visible=False,
+            shadow=theme.panel_shadow(page, inset=True),
         )
         self.estimate = ft.Text("", size=SMALL, color=ft.Colors.ON_SURFACE_VARIANT)
 
@@ -257,6 +258,7 @@ class ActionTab:
             border_radius=8,
             bgcolor=ft.Colors.with_opacity(0.12, ft.Colors.TERTIARY),
             visible=False,
+            shadow=theme.panel_shadow(page, inset=True),
         )
 
         # Labels go through `content`, not `text`: `ft.Button` has no `text`

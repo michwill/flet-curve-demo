@@ -23,7 +23,7 @@ from curve.format import apr_range, compact_usd, percent
 from curve.models import Pool
 from curve.sort import DEFAULT_SORT, SORTS
 
-from . import AnyEvent, safe_update
+from . import AnyEvent, safe_update, theme
 from .logos import pool_stack
 from .responsive import Layout, layout_for
 from .typography import BODY, LABEL, ROW_TITLE, SMALL
@@ -300,6 +300,18 @@ class PoolListView(ft.Column):
         )
         self._header = self._build_header()
 
+        # The table is a panel: white, with the rules between its rows.
+        # Explicit rather than inherited, because the Chad theme puts a
+        # grey page behind it and the table must stay on white -- in the
+        # Material themes `SURFACE` is the page colour anyway, so this
+        # changes nothing there.
+        self._table = ft.Container(
+            ft.Column([self._header, self.rows], spacing=0, expand=True),
+            bgcolor=ft.Colors.SURFACE,
+            border_radius=8,
+            expand=True,
+            shadow=theme.panel_shadow(page),
+        )
         super().__init__(
             controls=[
                 ft.Row(
@@ -311,8 +323,7 @@ class PoolListView(ft.Column):
                     vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     spacing=16,
                 ),
-                self._header,
-                self.rows,
+                self._table,
                 self.footer,
             ],
             spacing=10,
@@ -406,6 +417,18 @@ class PoolListView(ft.Column):
         self.rows.controls = [
             PoolRow(p, self._on_open, i, self._layout) for i, p in enumerate(pools)
         ]
+
+    def rebuild(self) -> None:
+        """Re-make the rows for a theme that changed.
+
+        Colour repaints itself; what does not is anything decided at build
+        time. The list carries no shadow of its own -- borders are what
+        separate its rows, under Chad as everywhere else -- but the marks
+        inside a row are built once, so the rows are re-made.
+        """
+        self._table.shadow = theme.panel_shadow(self._page)
+        self._rebuild_rows()
+        self._sync_header()
 
     def attach(self, feed: PoolFeed) -> None:
         """Point the view at a (new) feed, e.g. after a chain change."""

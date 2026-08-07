@@ -28,7 +28,8 @@ from curve.format import compact_usd
 from curve.rpc import ChainlistDirectory, PublicNode
 from curve.sort import DEFAULT_SORT
 from ui import AnyEvent, routing
-from ui.assets import chain_name, curve_logo
+from ui import theme as themes
+from ui.assets import chain_name, curve_logo, curve_wireframe
 from ui.logos import chain_mark
 from ui.pool_detail import PoolDetailView
 from ui.pool_list import PoolListView
@@ -42,6 +43,10 @@ DEFAULT_CHAIN = "ethereum"
 #: v2 covers 12 chains against v1's 21 -- see docs/curve-api.md -- so the
 #: real list is read from `/pools/chains/` rather than hardcoded.
 PREFERRED_CHAINS = ("ethereum", "arbitrum", "base", "optimism", "polygon", "fraxtal")
+
+#: Where the chosen theme is remembered, per browser or per desktop
+#: install. Namespaced, because shared preferences are shared.
+THEME_KEY = "flet-curve.theme"
 
 #: What a wallet answers when it has never heard of the network being asked
 #: for (EIP-3085). Anything else is a refusal, or a wallet that cannot
@@ -135,7 +140,13 @@ class CurveApp:
         self._detail: PoolDetailView | None = None
         self._address_expanded = False
 
+        # Key-value storage: the browser's on web, a file on the desktop.
+        # Constructing it registers it with the page -- `page.shared_
+        # preferences` does the same thing and is on its way out.
+        self.storage = ft.SharedPreferences()
+
         self._build()
+        page.run_task(self.restore_theme)
         page.on_route_change = self._route_changed
         if not is_browser():
             page.run_task(self.dress_window)
@@ -183,9 +194,12 @@ class CurveApp:
         page = self.page
         page.title = "Curve — Flet"
         page.padding = 0
+        # Light and dark are Material's, seeded; Chad is a hand-set
+        # palette -- see `ui/theme.py`. Which one is on decides more than
+        # colour: it also decides whether panels get a hard shadow.
         page.theme_mode = ft.ThemeMode.SYSTEM
-        page.theme = ft.Theme(color_scheme_seed=ft.Colors.INDIGO)
-        page.dark_theme = ft.Theme(color_scheme_seed=ft.Colors.INDIGO)
+        page.theme = themes.material()
+        page.dark_theme = themes.material()
         page.window.width = 1280
         page.window.height = 900
 
@@ -250,7 +264,17 @@ class CurveApp:
             icon=ft.Icons.ACCOUNT_BALANCE_WALLET,
             on_click=self.connect,
         )
-        self.theme_button = ft.IconButton(on_click=self._toggle_theme)
+        # A Container rather than an IconButton: one of the three states
+        # is drawn with an image (the wireframe mark), and an IconButton
+        # takes only an icon. The same reason the sortable column headings
+        # are Containers -- and, as there, `ink` keeps the press visible.
+        self.theme_button = ft.Container(
+            on_click=self._toggle_theme,
+            ink=True,
+            border_radius=22,
+            padding=8,
+            alignment=ft.Alignment.CENTER,
+        )
         self._sync_theme_button()
         page.on_platform_brightness_change = lambda _e: self._sync_theme_button(update=True)
         # One source of responsive truth: every view is told the layout,
@@ -324,21 +348,104 @@ class CurveApp:
         )
 
     def _sync_theme_button(self, update: bool = False) -> None:
+        """Show what pressing it will get you: the *next* theme's mark.
+
+        Three states now, so the icon names the destination rather than
+        the state -- a moon while light, a sun while dark, and the
+        wireframe mark for Chad.
+        """
+        if themes.is_chad(self.page):
+            self._set_theme_button(ft.Icon(ft.Icons.LIGHT_MODE), "Light theme")
+            if update:
+                self.page.update()
+            return
         dark = self.page.theme_mode == ft.ThemeMode.DARK or (
             self.page.theme_mode == ft.ThemeMode.SYSTEM
             and self.page.platform_brightness == ft.Brightness.DARK
         )
-        self.theme_button.icon = ft.Icons.LIGHT_MODE if dark else ft.Icons.DARK_MODE
+        # From dark the next stop is Chad, which has a mark of its own.
+        wireframe = curve_wireframe()
+        if dark and wireframe:
+            self._set_theme_button(
+                ft.Image(src=wireframe, width=20, height=20, fit=ft.BoxFit.CONTAIN),
+                "Chad theme",
+            )
+        elif dark:
+            self._set_theme_button(ft.Icon(ft.Icons.LIGHT_MODE), "Light theme")
+        else:
+            self._set_theme_button(ft.Icon(ft.Icons.DARK_MODE), "Dark theme")
         if update:
             self.page.update()
 
+    async def restore_theme(self) -> None:
+        """Put back the theme this browser was last left in.
+
+        Asynchronous because the storage is: on web it is the browser's,
+        reached over the same channel as everything else, so the first
+        paint happens in the default theme and this arrives just after.
+
+        Silent about failure: storage can be unavailable (a private
+        window, a desktop with no writable state directory), and the
+        answer then is the system's own light or dark, which is what the
+        app did before it had a third theme at all.
+        """
+        try:
+            saved = await self.storage.get(THEME_KEY)
+        except Exception:
+            return
+        if isinstance(saved, str) and saved in themes.NAMES:
+            self._set_theme(saved, remember=False)
+
+    async def _remember_theme(self, name: str) -> None:
+        with contextlib.suppress(Exception):
+            await self.storage.set(THEME_KEY, name)
+
+    def _set_theme_button(self, mark: ft.Control, tooltip: str) -> None:
+        self.theme_button.content = mark
+        self.theme_button.tooltip = tooltip
+
     def _toggle_theme(self, _e: AnyEvent) -> None:
+        """Cycle light -> dark -> Chad.
+
+        Chad changes shape as well as colour -- its panels carry a hard
+        shadow that the Material themes must not -- so the views are
+        rebuilt rather than repainted.
+        """
+        if themes.is_chad(self.page):
+            self._set_theme("light")
+            return
         dark = self.page.theme_mode == ft.ThemeMode.DARK or (
             self.page.theme_mode == ft.ThemeMode.SYSTEM
             and self.page.platform_brightness == ft.Brightness.DARK
         )
-        self.page.theme_mode = ft.ThemeMode.LIGHT if dark else ft.ThemeMode.DARK
+        self._set_theme("chad" if dark else "dark")
+
+    def _set_theme(self, name: str, *, remember: bool = True) -> None:
+        theme, mode = themes.theme_for(name)
+        self.page.theme = theme
+        self.page.theme_mode = mode
+        # Chad puts white panels on a grey page, which is the shape of the
+        # site it comes from. Material's own themes leave the page to the
+        # scheme, so this is set back to None for them.
+        self.page.bgcolor = themes.PAGE if name == "chad" else None
+        if remember:
+            # Survives a reload, which matters more now that a pool page
+            # has a URL somebody might open twice. Fired and not waited
+            # for: the theme is already on screen, and whether the write
+            # landed changes nothing until the next load.
+            with contextlib.suppress(Exception):
+                self.page.run_task(self._remember_theme, name)
         self._sync_theme_button()
+        # Shadows are set when a control is built, so the view has to be
+        # built again for them to appear or go.
+        self._rebuild_view()
+
+    def _rebuild_view(self) -> None:
+        """Re-make whichever view is on screen, in the current theme."""
+        if self._detail is not None:
+            self.open_pool(self._detail.pool)
+        else:
+            self.list_view.rebuild()
         self.page.update()
 
     # -- data -------------------------------------------------------------

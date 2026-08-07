@@ -109,6 +109,11 @@ def curve_logo() -> str | None:
     return asset_url("branding", "logo.svg") if _exists("branding/logo.svg") else None
 
 
+def curve_wireframe() -> str | None:
+    """The same mark as a bare wireframe, for the Chad theme's button."""
+    return asset_url("branding", "logo-bw.svg") if _exists("branding/logo-bw.svg") else None
+
+
 #: Chains whose display name is not just a capitalisation of the API's.
 CHAIN_NAMES = {
     "bsc": "BNB Chain",

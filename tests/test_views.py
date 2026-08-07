@@ -518,3 +518,237 @@ def test_a_full_pool_page_still_shows_one() -> None:
     )
     assert _contains(view._left, view.chart)
     assert _contains(view._left, view.series)
+
+
+# -- themes ----------------------------------------------------------------
+#
+# Three now: Material's light and dark, and Chad -- a hand-set palette from
+# linux.org.ru, which differs in shape as well as colour because its panels
+# carry a hard shadow. See `ui/theme.py`.
+
+
+def test_the_three_themes_are_what_the_button_cycles() -> None:
+    from ui import theme
+
+    assert theme.NAMES == ("light", "dark", "chad")
+
+
+def test_light_and_dark_are_generated_and_chad_is_not() -> None:
+    """Material can produce a great many palettes from a seed; a yellowed
+    grey off a Russian web forum is not among them."""
+    from ui import theme
+
+    assert theme.material().color_scheme_seed is not None
+    assert theme.material().color_scheme is None
+    assert theme.chad().color_scheme_seed is None
+    assert theme.chad().color_scheme is not None
+
+
+def test_chad_uses_the_stylesheets_own_colours() -> None:
+    from ui import theme
+
+    scheme = theme.chad().color_scheme
+    assert scheme.primary == theme.ACTIVE          # --icon-button-active-color
+    assert scheme.secondary == theme.AMBER         # --tagpage-group-label-background
+    assert scheme.surface == theme.PANEL           # --article-background
+    assert scheme.surface_container == theme.PAGE  # --main-background
+    assert scheme.outline == theme.BORDER          # --article-border-color
+    assert scheme.outline_variant == theme.RULE    # --table-border-color
+    assert scheme.error == theme.DANGER            # --targeted-message-border-color
+
+
+def test_chad_is_pinned_to_light_mode() -> None:
+    """It is a light theme with its own colours; leaving the mode on
+    SYSTEM would let a dark desktop swap `dark_theme` in behind it."""
+    import flet as ft
+
+    from ui import theme
+
+    assert theme.theme_for("chad")[1] == ft.ThemeMode.LIGHT
+    assert theme.theme_for("dark")[1] == ft.ThemeMode.DARK
+    assert theme.theme_for("light")[1] == ft.ThemeMode.LIGHT
+
+
+def test_an_unknown_theme_name_lands_on_light() -> None:
+    from ui import theme
+
+    assert theme.theme_for("nonsense")[0].color_scheme is None
+
+
+def test_the_shadow_is_hard_edged() -> None:
+    """The point of it: Material's elevation is a blurred gradient, and
+    this theme wants one colour and one edge."""
+    from ui import theme
+
+    for shadow in (theme.PANEL_SHADOW, theme.INSET_SHADOW):
+        assert shadow.blur_radius == 0
+        assert shadow.spread_radius == 0
+        assert shadow.offset.x > 0 and shadow.offset.y > 0
+
+
+class ThemedPage(StubPage):
+    def __init__(self, name: str = "light") -> None:
+        super().__init__()
+        from ui import theme
+
+        self.theme, self.theme_mode = theme.theme_for(name)
+
+
+def test_shadows_are_chads_alone() -> None:
+    from ui import theme
+
+    assert theme.panel_shadow(ThemedPage("chad")) is theme.PANEL_SHADOW
+    assert theme.panel_shadow(ThemedPage("chad"), inset=True) is theme.INSET_SHADOW
+    assert theme.panel_shadow(ThemedPage("light")) is None
+    assert theme.panel_shadow(ThemedPage("dark")) is None
+
+
+def test_a_page_that_cannot_answer_is_not_chad() -> None:
+    """A stub, or a page whose theme has not been set yet. The useful
+    default is no shadow rather than an exception."""
+    from ui import theme
+
+    assert theme.is_chad(StubPage()) is False
+    assert theme.panel_shadow(StubPage()) is None
+
+
+def test_an_action_panel_takes_the_shadow_under_chad() -> None:
+    from ui import theme
+    from ui.actions import DepositTab
+
+    chad = DepositTab(ThemedPage("chad"), make_pool(), lambda: None, None)
+    plain = DepositTab(ThemedPage("light"), make_pool(), lambda: None, None)
+
+    assert chad.status_panel.shadow is theme.INSET_SHADOW
+    assert plain.status_panel.shadow is None
+
+
+def test_a_pool_page_takes_the_shadow_under_chad() -> None:
+    from ui import theme
+
+    chad = PoolDetailView(
+        ThemedPage("chad"), api=None, pool=make_pool(),
+        get_contract=lambda: None, on_back=lambda: None,
+    )
+    plain = PoolDetailView(
+        ThemedPage("light"), api=None, pool=make_pool(),
+        get_contract=lambda: None, on_back=lambda: None,
+    )
+    # `_right` is the slot; the bordered box inside it is what casts.
+    assert chad._right.content.shadow is theme.PANEL_SHADOW
+    assert plain._right.content.shadow is None
+
+
+# -- remembering the theme -------------------------------------------------
+#
+# Both halves of the storage API are coroutines, and calling one without
+# awaiting it fails *silently* -- the write never happens and the read
+# returns a coroutine object that no `isinstance` will match. So these
+# tests use a fake that is async in the same way.
+
+
+class FakePreferences:
+    def __init__(self, stored: dict | None = None) -> None:
+        self.stored = dict(stored or {})
+
+    async def get(self, key):
+        return self.stored.get(key)
+
+    async def set(self, key, value) -> bool:
+        self.stored[key] = value
+        return True
+
+
+class StoringPage(ThemedPage):
+    def __init__(self, name: str = "light") -> None:
+        super().__init__(name)
+        self.bgcolor = None
+
+
+def themed_app(page, stored: dict | None = None):
+    """`CurveApp` with its constructor skipped -- only the theme parts."""
+    import main as app_module
+
+    app = app_module.CurveApp.__new__(app_module.CurveApp)
+    app.page = page
+    app.storage = FakePreferences(stored)
+    app._sync_theme_button = lambda update=False: None  # type: ignore[method-assign]
+    app._rebuild_view = lambda: None                    # type: ignore[method-assign]
+    return app
+
+
+async def test_choosing_a_theme_writes_it_down() -> None:
+    import main as app_module
+
+    page = StoringPage()
+    app = themed_app(page)
+
+    app._set_theme("chad")
+
+    # Scheduled rather than awaited: the theme is already on screen.
+    assert page.tasks == [app._remember_theme]
+    await app._remember_theme("chad")
+    assert app.storage.stored[app_module.THEME_KEY] == "chad"
+
+
+async def test_the_remembered_theme_comes_back() -> None:
+    import main as app_module
+
+    page = StoringPage()
+    app = themed_app(page, {app_module.THEME_KEY: "chad"})
+
+    await app.restore_theme()
+
+    from ui import theme
+
+    assert theme.is_chad(page)
+    assert page.bgcolor == theme.PAGE
+
+
+async def test_restoring_does_not_write_back_what_it_just_read() -> None:
+    """It would be harmless, but a write on every load is a write that can
+    fail on every load."""
+    import main as app_module
+
+    page = StoringPage()
+    app = themed_app(page, {app_module.THEME_KEY: "dark"})
+
+    await app.restore_theme()
+
+    assert page.tasks == []
+
+
+async def test_nothing_remembered_leaves_the_theme_alone() -> None:
+    page = StoringPage("light")
+    was = page.theme
+    await themed_app(page).restore_theme()
+    assert page.theme is was
+
+
+async def test_junk_in_storage_is_ignored() -> None:
+    """Storage is shared with whatever else lives on this origin, and the
+    value could be from an older version of this app."""
+    import main as app_module
+
+    for junk in ("solarized", "", 7, ["chad"]):
+        page = StoringPage()
+        was = page.theme
+        await themed_app(page, {app_module.THEME_KEY: junk}).restore_theme()
+        assert page.theme is was
+
+
+async def test_storage_that_will_not_answer_is_not_fatal() -> None:
+    """A private window, or a desktop with no writable state directory.
+    The app should open in the default theme, not fail to open."""
+    page = StoringPage()
+    app = themed_app(page)
+
+    async def broken(key):
+        raise RuntimeError("no storage here")
+
+    app.storage.get = broken
+    was = page.theme
+
+    await app.restore_theme()
+
+    assert page.theme is was

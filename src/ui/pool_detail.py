@@ -25,7 +25,7 @@ from curve.http import ApiError
 from curve.models import Pool
 from curve.pool import PoolContract
 
-from . import AnyEvent, safe_update
+from . import AnyEvent, safe_update, theme
 from .actions import DepositTab, StakeTab, SwapTab, WithdrawTab
 from .candles import CandleChart
 from .logos import pool_stack, token_mark
@@ -425,9 +425,13 @@ class PoolDetailView(ft.Column):
                     expand=True,
                 ),
             ),
+            bgcolor=ft.Colors.SURFACE,
             border=ft.Border.all(1, ft.Colors.OUTLINE_VARIANT),
             border_radius=10,
             clip_behavior=ft.ClipBehavior.HARD_EDGE,
+            # Chad only, and hard-edged: see `ui/theme.py`. Everywhere
+            # else this is None and Material's own flatness stands.
+            shadow=theme.panel_shadow(self._page),
         )
 
     async def refresh_actions(self) -> None:

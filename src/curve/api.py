@@ -399,7 +399,9 @@ class CurveApi:
                     lp_token=pool.lp_token or pool.address,
                     gauge=pool.gauge,
                     tvl=pool.tvl,
-                    symbols=tuple(pool.coin_symbols),
+                    coins=tuple(
+                        (coin.address, coin.symbol) for coin in pool.display_coins
+                    ),
                 )
                 for pool in await self._lite_pools(chain_id, chain)
                 if pool.tvl > 0
@@ -422,8 +424,9 @@ class CurveApi:
                     lp_token=raw.get("lp_token_address") or address,
                     gauge=gauges.get(address.lower(), ""),
                     tvl=float(raw.get("tvl_usd") or 0.0),
-                    symbols=tuple(
-                        coin.get("symbol") or "?" for coin in raw.get("coins") or []
+                    coins=tuple(
+                        (coin.get("address") or "", coin.get("symbol") or "?")
+                        for coin in raw.get("coins") or []
                     ),
                 )
             )

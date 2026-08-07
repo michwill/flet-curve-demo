@@ -223,13 +223,15 @@ def test_the_table_hides_its_least_decisive_column_on_a_tablet() -> None:
 
 
 def test_rows_are_rebuilt_when_the_layout_changes() -> None:
-    view = PoolListView(StubPage(), on_open=lambda _p: None)
-    view.attach(FakeFeed([make_pool(), make_pool(3)]))
     import asyncio
 
+    view = PoolListView(StubPage(), on_open=lambda _p: None)
+    view.attach(FakeFeed([make_pool(), make_pool(3)]))
     asyncio.run(view.load_more())
     wide_rows = list(view.rows.controls)
+
     view.set_layout(layout_for(PHONE))
+
     assert len(view.rows.controls) == len(wide_rows)
     assert view.rows.controls[0] is not wide_rows[0]  # rebuilt, not reused
 
@@ -671,7 +673,8 @@ def test_nothing_is_assigned_to_a_row_after_it_is_built() -> None:
 
 
 def test_a_theme_change_leaves_the_rows_where_they_are() -> None:
-    """Which is the fix: re-making them is what freezes them."""
+    """Which is the fix for the frozen-control bug: re-making a keyed row
+    is what freezes it."""
     from ui import theme
 
     view = PoolListView(ThemedPage("light"), on_open=lambda _p: None)
@@ -682,7 +685,7 @@ def test_a_theme_change_leaves_the_rows_where_they_are() -> None:
     view._page.theme, view._page.theme_mode = theme.theme_for("chad")
     view.rebuild()
 
-    assert view.rows.controls == before
+    assert all(a is b for a, b in zip(view.rows.controls, before, strict=True))
     assert view._rows_box.theme.hover_color == theme.HOVER
 
 
@@ -1207,3 +1210,98 @@ def test_a_narrow_page_uses_the_menu_button_instead() -> None:
 
     assert app.nav.width == 0
     assert app.totals.opacity == 1.0
+
+
+# -- the portfolio page ----------------------------------------------------
+
+
+def make_holding(**kw):
+    from curve.portfolio import Holding
+
+    base = {
+        "address": "0x" + "11" * 20, "name": "pyUSD/crvUSD", "chain": "ethereum",
+        "wallet": 3 * 10**18, "staked": 0, "tvl": 100.0, "supply": 10.0,
+        "coins": (("0x" + "aa" * 20, "PYUSD"), ("0x" + "bb" * 20, "crvUSD")),
+        "lp_token": "0x" + "11" * 20, "gauge": "",
+    }
+    base.update(kw)
+    return Holding(**base)
+
+
+def portfolio_view(page=None):
+    from ui.portfolio import PortfolioView
+
+    return PortfolioView(page or StubPage(), on_open=lambda _h: None)
+
+
+def test_the_portfolio_draws_its_marks_the_way_the_pool_list_does() -> None:
+    """Same helper, same size, same overlap -- they are the same kind of
+    row in the same column, and the portfolio was drawing lettered discs
+    because a holding carried symbols but no addresses.
+
+    Asserted against `coin_stack` itself rather than against an image:
+    with no compiled assets on the machine running this, every mark is
+    the lettered fallback, which is exactly what the pool list draws
+    there too."""
+    from curve.models import Coin
+    from ui.logos import coin_stack
+    from ui.portfolio import LOGO_SIZE
+
+    holding = make_holding()
+    view = portfolio_view()
+    view.show([holding])
+
+    drawn = view.rows.controls[0].content.controls[0].controls[0]
+    expected = coin_stack(
+        [Coin(a, s, 18, index=n) for n, (a, s) in enumerate(holding.coins)],
+        holding.chain,
+        LOGO_SIZE,
+    )
+    assert drawn.width == expected.width
+    assert drawn.height == expected.height == LOGO_SIZE
+
+
+def test_the_heading_is_one_line() -> None:
+    """The page name on the left, what it comes to on the right. The
+    address is in the top bar already and is not repeated."""
+    view = portfolio_view()
+    view.show([make_holding()])
+    heading = view.controls[0]
+
+    assert isinstance(heading, ft.Row)
+    assert [t for t in texts(heading) if t == "Portfolio"]
+    assert any("Total value" in t for t in texts(heading))
+    assert not any(t.startswith("0x") for t in texts(heading))
+
+
+def test_progress_is_a_bar_and_not_a_sentence() -> None:
+    view = portfolio_view()
+    view.progress_to(0.5)
+
+    assert view.progress.visible and view.progress.value == 0.5
+    assert not [t for t in texts(view) if "%" in t or "Checking" in t]
+
+    view.progress_to(1.0)
+    assert not view.progress.visible
+
+
+def test_the_table_wears_the_theme_like_the_pool_list_does() -> None:
+    from ui import theme
+
+    chad = portfolio_view(ThemedPage("chad"))
+    plain = portfolio_view(ThemedPage("light"))
+
+    assert chad._table.shadow is theme.PANEL_SHADOW
+    assert chad._table.border is not None
+    assert chad._header.bgcolor == theme.RULE
+    assert chad._rows_box.theme.hover_color == theme.HOVER
+    assert plain._table.shadow is None and plain._table.border is None
+
+
+def test_a_theme_change_reaches_the_portfolio_too() -> None:
+    from ui import theme
+
+    view = portfolio_view(ThemedPage("light"))
+    view._page.theme, view._page.theme_mode = theme.theme_for("chad")
+    view.rebuild()
+    assert view._table.shadow is theme.PANEL_SHADOW

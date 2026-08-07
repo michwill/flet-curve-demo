@@ -79,11 +79,19 @@ class Holding:
     #: whole tokens, as the API reports TVL in whole dollars.
     tvl: float = 0.0
     supply: float = 0.0
-    symbols: tuple[str, ...] = ()
+    #: `(address, symbol)` per coin. The address is what the token marks
+    #: are drawn from -- curve-assets names its images by address -- so a
+    #: symbol on its own would give lettered discs where the pool list
+    #: shows real logos.
+    coins: tuple[tuple[str, str], ...] = ()
     #: Kept so a remembered holding can be re-read on its own, before any
     #: pool list has loaded. That is the whole point of remembering it.
     lp_token: str = ""
     gauge: str = ""
+
+    @property
+    def symbols(self) -> tuple[str, ...]:
+        return tuple(symbol for _address, symbol in self.coins)
 
     @property
     def total(self) -> int:
@@ -121,7 +129,7 @@ class Target:
     gauge: str = ""
     tvl: float = 0.0
     supply: float = 0.0
-    symbols: tuple[str, ...] = field(default_factory=tuple)
+    coins: tuple[tuple[str, str], ...] = field(default_factory=tuple)
 
 
 def calls_for(targets: Sequence[Target]) -> list[str]:
@@ -167,7 +175,7 @@ def holdings_from(
             staked=staked.get(index, 0),
             tvl=target.tvl,
             supply=target.supply,
-            symbols=target.symbols,
+            coins=target.coins,
             lp_token=target.lp_token,
             gauge=target.gauge,
         )
@@ -282,7 +290,7 @@ def to_json(holdings: Sequence[Holding], account: str, chain: str) -> dict[str, 
                 "staked": str(holding.staked),
                 "tvl": holding.tvl,
                 "supply": holding.supply,
-                "symbols": list(holding.symbols),
+                "coins": [list(coin) for coin in holding.coins],
                 "lp_token": holding.lp_token,
                 "gauge": holding.gauge,
             }
@@ -316,7 +324,11 @@ def from_json(payload: Any, account: str, chain: str) -> list[Holding]:
                     staked=int(raw.get("staked") or 0),
                     tvl=float(raw.get("tvl") or 0.0),
                     supply=float(raw.get("supply") or 0.0),
-                    symbols=tuple(raw.get("symbols") or ()),
+                    coins=tuple(
+                        (str(coin[0]), str(coin[1]))
+                        for coin in raw.get("coins") or ()
+                        if isinstance(coin, (list, tuple)) and len(coin) == 2
+                    ),
                     lp_token=str(raw.get("lp_token") or ""),
                     gauge=str(raw.get("gauge") or ""),
                 )
@@ -342,7 +354,7 @@ def targets_for(holdings: Sequence[Holding]) -> list[Target]:
             lp_token=holding.lp_token or holding.address,
             gauge=holding.gauge,
             tvl=holding.tvl,
-            symbols=holding.symbols,
+            coins=holding.coins,
         )
         for holding in holdings
     ]

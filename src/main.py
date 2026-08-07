@@ -48,6 +48,10 @@ DEFAULT_CHAIN = "ethereum"
 #: real list is read from `/pools/chains/` rather than hardcoded.
 PREFERRED_CHAINS = ("ethereum", "arbitrum", "base", "optimism", "polygon", "fraxtal")
 
+#: Where the progress bar sits when the pool list has arrived and the
+#: balances have not been read yet. The two take about the same time.
+PORTFOLIO_DISCOVERY_SHARE = 0.5
+
 #: Where the last portfolio scan is remembered, so the page has something
 #: to show while the next one runs.
 PORTFOLIO_KEY = "flet-curve.portfolio"
@@ -173,8 +177,10 @@ class CurveApp:
         self.feed: PoolFeed | None = None
         self._detail: PoolDetailView | None = None
         #: Which of the two pages is showing. The detail view is a state
-        #: of the pools page rather than a page of its own.
+        #: of whichever page opened it rather than a page of its own,
+        #: which is what `_opened_from` remembers for the Back button.
         self._page_name = PAGE_POOLS
+        self._opened_from = PAGE_POOLS
         self._address_expanded = False
 
         # Key-value storage: the browser's on web, a file on the desktop.
@@ -737,12 +743,16 @@ class CurveApp:
     # -- navigation -------------------------------------------------------
 
     def open_pool(self, pool: Pool) -> None:
+        # Where Back goes. A pool opened from the portfolio belongs to the
+        # portfolio: sending it to the pool list instead loses the page the
+        # user was actually on, and the list is not even where they were.
+        self._opened_from = self._page_name
         self._detail = PoolDetailView(
             self.page,
             self.api,
             pool,
             self.contract_for,
-            self.show_list,
+            self.go_back,
             explorer=self.explorer_base(pool),
         )
         if self.page.width:
@@ -751,6 +761,13 @@ class CurveApp:
         self._go(routing.build(pool.chain or self.chain, pool.address))
         self.page.update()
         self.page.run_task(self._detail.load)
+
+    def go_back(self) -> None:
+        """Leave a pool page for whichever page it was opened from."""
+        if self._opened_from == PAGE_PORTFOLIO:
+            self.show_portfolio(reload=False)
+        else:
+            self.show_list()
 
     def open_holding(self, holding: portfolio.Holding) -> None:
         """A portfolio row names a pool; opening it needs the pool itself.
@@ -771,16 +788,23 @@ class CurveApp:
 
     # -- portfolio --------------------------------------------------------
 
-    def show_portfolio(self) -> None:
-        """Open the portfolio page and start filling it in."""
+    def show_portfolio(self, *, reload: bool = True) -> None:
+        """Open the portfolio page and start filling it in.
+
+        `reload` is false when coming *back* to it from a pool page: the
+        rows are still there and still right, and rescanning a thousand
+        pools because somebody pressed Back would be rude.
+        """
         self._detail = None
         self._page_name = PAGE_PORTFOLIO
         self._sync_nav()
         self.body.content = self.portfolio_view
         if self.page.width:
             self.portfolio_view.set_layout(layout_for(self.page.width).cards)
+        self._go(routing.build(self.chain, page=PAGE_PORTFOLIO))
         self.page.update()
-        self.page.run_task(self.load_portfolio)
+        if reload:
+            self.page.run_task(self.load_portfolio)
 
     def portfolio_provider(self) -> tuple[Any, str] | None:
         """Who to ask, and about whom.
@@ -820,34 +844,41 @@ class CurveApp:
             return
         account = wallet.address
         chain_id = self.chains.get(self.chain) or 0
-        view.set_account(account)
 
         remembered = await self._remembered_portfolio(account)
         if remembered:
-            view.show(remembered, note="Showing what was here last time…")
+            view.show(remembered)
 
         provider = wallet.provider
+        view.progress_to(0.0)
         try:
             if remembered:
                 # A handful of calls, so the numbers on screen stop being
                 # last week's before the pool list has even arrived.
-                view.show(
-                    await portfolio.scan(
-                        provider, portfolio.targets_for(remembered), account
-                    ),
-                    note="Checking every other pool…",
-                )
+                view.show(await portfolio.scan(
+                    provider, portfolio.targets_for(remembered), account
+                ))
+            # The two halves of the wait cost about the same, so the bar
+            # splits at the middle: asking which pools exist, then asking
+            # the chain about all of them.
             targets = await self.api.portfolio_targets(self.chain, chain_id)
+            view.progress_to(PORTFOLIO_DISCOVERY_SHARE)
             holdings = await portfolio.scan(
-                provider, targets, account, on_progress=view.scanning
+                provider,
+                targets,
+                account,
+                on_progress=lambda done, total: view.progress_to(
+                    PORTFOLIO_DISCOVERY_SHARE
+                    + (1 - PORTFOLIO_DISCOVERY_SHARE) * (done / max(total, 1))
+                ),
             )
         except (WalletError, ApiError) as exc:
             if not remembered:
                 view.say(f"Could not read this chain: {exc}")
-            view.done_scanning()
+            view.done_loading()
             return
 
-        view.done_scanning()
+        view.done_loading()
         if holdings:
             view.show(holdings)
         else:
@@ -1043,7 +1074,6 @@ class CurveApp:
     def go_page(self, page: str) -> None:
         """Switch pages, through the URL so that Back works."""
         if page == PAGE_PORTFOLIO:
-            self._go(routing.build(self.chain, page=PAGE_PORTFOLIO))
             self.show_portfolio()
         else:
             self.show_list()
@@ -1122,6 +1152,11 @@ class CurveApp:
         self.page.update()
         if self._detail is not None:
             await self._detail.refresh_actions()
+        # A portfolio opened by URL asks before the wallet is back --
+        # restoring is asynchronous and deliberately quiet -- so it would
+        # otherwise sit on "connect a wallet" with an address in the bar.
+        if self._page_name == PAGE_PORTFOLIO:
+            await self.load_portfolio()
 
     async def _wallet_changed(self) -> None:
         """The wallet switched account or network behind our back.
@@ -1141,6 +1176,9 @@ class CurveApp:
             return
         if self._detail is not None:
             await self._detail.refresh_actions()
+        # Another account holds other things.
+        if self._page_name == PAGE_PORTFOLIO:
+            await self.load_portfolio()
 
     async def _follow_wallet_chain(self) -> bool:
         """Point the app at the network the wallet moved to. Did it move?

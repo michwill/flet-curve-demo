@@ -25,11 +25,16 @@ from collections.abc import Callable
 import flet as ft
 
 from curve.format import compact_usd, percent, short_address, token_amount
+from curve.models import Coin
 from curve.portfolio import LP_UNIT, Holding
 
 from . import safe_update, theme
-from .logos import initials_mark
+from .logos import coin_stack
 from .typography import BODY, LABEL, METRIC, ROW_TITLE, SMALL
+
+#: The same size the pool list draws its coin marks at, because this is
+#: the same kind of row and they sit in the same column.
+LOGO_SIZE = 27
 
 #: Column widths, shared by the header and the rows so they line up.
 W_WALLET = 150
@@ -62,17 +67,23 @@ class HoldingRow(ft.Container):
             border=ft.Border(bottom=ft.BorderSide(1, ft.Colors.OUTLINE_VARIANT)),
             on_click=lambda _e: on_open(holding),
             ink=True,
-            key=f"holding-row-{index}",
+            # **No key.** The page draws its rows three times over -- the
+            # remembered set, then the refreshed one, then the scan -- and
+            # a keyed control that a rebuild matches to its predecessor is
+            # frozen by Flet. A frozen row keeps its size and its text and
+            # its token images never paint: they are fetched, they arrive,
+            # and nothing appears. Nothing needs to find these by key.
         )
 
     def _name(self, holding: Holding) -> ft.Control:
+        # Real token images, overlapped exactly as the pool list overlaps
+        # them: `coin_stack` wants coins, which is why a holding carries
+        # addresses and not only symbols.
+        coins = [Coin(address, symbol, 18, index=n)
+                 for n, (address, symbol) in enumerate(holding.coins)]
         return ft.Row(
             [
-                ft.Row(
-                    [initials_mark(symbol, 22) for symbol in holding.symbols[:4]],
-                    spacing=-6,
-                    tight=True,
-                ),
+                coin_stack(coins, holding.chain, LOGO_SIZE),
                 ft.Column(
                     [
                         ft.Text(holding.name or short_address(holding.address),
@@ -178,10 +189,8 @@ class PortfolioView(ft.Column):
         self._narrow = narrow
         self._holdings: list[Holding] = []
 
-        self.account = ft.Text("", size=SMALL, color=ft.Colors.ON_SURFACE_VARIANT)
         self.total = ft.Text("", size=METRIC, weight=ft.FontWeight.BOLD)
-        self.status = ft.Text("", size=SMALL, color=ft.Colors.ON_SURFACE_VARIANT)
-        self.progress = ft.ProgressBar(visible=False, height=3)
+        self.progress = ft.ProgressBar(visible=False, height=3, value=0.0)
 
         self.rows = ft.ListView(expand=True, spacing=0, key="holding-rows")
         self._header = self._build_header()
@@ -203,25 +212,21 @@ class PortfolioView(ft.Column):
 
         super().__init__(
             controls=[
+                # One line: the page on the left, what it comes to on the
+                # right. The address is already in the top bar, so it is
+                # not repeated here.
                 ft.Row(
                     [
-                        ft.Column(
-                            [ft.Text("PORTFOLIO", size=LABEL, weight=ft.FontWeight.BOLD),
-                             self.account],
-                            spacing=2,
-                            expand=True,
-                        ),
-                        ft.Column(
-                            [ft.Text("Total value", size=LABEL,
-                                     color=ft.Colors.ON_SURFACE_VARIANT), self.total],
-                            spacing=0,
-                            horizontal_alignment=ft.CrossAxisAlignment.END,
-                        ),
+                        ft.Text("Portfolio", size=METRIC, weight=ft.FontWeight.BOLD,
+                                expand=True),
+                        ft.Text("Total value:", size=SMALL,
+                                color=ft.Colors.ON_SURFACE_VARIANT),
+                        self.total,
                     ],
-                    vertical_alignment=ft.CrossAxisAlignment.END,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    spacing=8,
                 ),
                 self.progress,
-                self.status,
                 self.empty,
                 self._table,
             ],
@@ -231,49 +236,42 @@ class PortfolioView(ft.Column):
 
     # -- what the app calls ------------------------------------------------
 
-    def set_account(self, account: str) -> None:
-        self.account.value = short_address(account) if account else ""
-        safe_update(self.account)
-
-    def show(self, holdings: list[Holding], *, note: str = "") -> None:
-        """Draw a set of positions, with a line saying how fresh it is."""
+    def show(self, holdings: list[Holding]) -> None:
+        """Draw a set of positions."""
         self._holdings = holdings
         self.rows.controls = [
             HoldingRow(holding, self._on_open, index, self._narrow)
             for index, holding in enumerate(holdings)
         ]
         self.total.value = compact_usd(sum(holding.value for holding in holdings))
-        self.status.value = note
-        self.status.visible = bool(note)
         self._table.visible = bool(holdings)
+        self.empty.visible = False
         safe_update(self)
 
     def say(self, message: str) -> None:
         """The page has nothing to show, and this is why."""
         self.rows.controls = []
         self.total.value = ""
-        self.status.value = ""
-        self.status.visible = False
         self._table.visible = False
         self.empty.content = ft.Text(message, size=SMALL,
                                      color=ft.Colors.ON_SURFACE_VARIANT)
         self.empty.visible = True
         safe_update(self)
 
-    def scanning(self, done: int, total: int) -> None:
-        """Progress, in calls. A scan is over a thousand of them."""
-        self.empty.visible = False
-        self.progress.visible = done < total
-        self.progress.value = (done / total) if total else None
-        self.status.value = (
-            f"Checking {total:,} balances… {done * 100 // max(total, 1)}%"
-            if done < total
-            else ""
-        )
-        self.status.visible = done < total
-        safe_update(self)
+    def progress_to(self, fraction: float) -> None:
+        """How far along the load is, 0 to 1, and nothing in words.
 
-    def done_scanning(self) -> None:
+        The two halves cost about the same: asking the API which pools
+        exist is the first half, reading a thousand balances is the
+        second. So the bar crosses the middle when the pool list lands --
+        see `CurveApp.load_portfolio`.
+        """
+        self.empty.visible = False
+        self.progress.value = max(0.0, min(1.0, fraction))
+        self.progress.visible = fraction < 1.0
+        safe_update(self.progress)
+
+    def done_loading(self) -> None:
         self.progress.visible = False
         safe_update(self.progress)
 
@@ -282,7 +280,7 @@ class PortfolioView(ft.Column):
             return
         self._narrow = narrow
         self._header.visible = not narrow
-        self.show(self._holdings, note=self.status.value or "")
+        self.show(self._holdings)
 
     def rebuild(self) -> None:
         """Take on a theme that changed -- see `ui.theme`."""
@@ -290,7 +288,9 @@ class PortfolioView(ft.Column):
         self._table.border = theme.panel_border(self._page)
         self._header.bgcolor = theme.header_bg(self._page)
         self._rows_box.theme = theme.rows_theme(self._page)
-        safe_update(self)
+        # See `PoolListView.rebuild`: rows built before the nested theme
+        # arrives lose their token marks, so they are built again.
+        self.show(self._holdings)
 
     # -- header ------------------------------------------------------------
 
@@ -309,7 +309,7 @@ class PortfolioView(ft.Column):
                 ],
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
             ),
-            padding=ft.Padding.symmetric(horizontal=16, vertical=8),
+            padding=ft.Padding.symmetric(horizontal=16, vertical=2),
             border=ft.Border(bottom=ft.BorderSide(1, ft.Colors.OUTLINE)),
             bgcolor=theme.header_bg(self._page),
             visible=not self._narrow,

@@ -35,7 +35,7 @@ def target(name: str, *, gauge: str = "", tvl: float = 0.0, supply: float = 0.0)
         gauge=gauge,
         tvl=tvl,
         supply=supply,
-        symbols=("A", "B"),
+        coins=(("0x" + "aa" * 20, "A"), ("0x" + "bb" * 20, "B")),
     )
 
 
@@ -228,7 +228,7 @@ def holding(name: str = "p", **kw) -> Holding:
     base = {
         "address": "0x" + "a" * 40, "name": name, "chain": "ethereum",
         "wallet": 3 * UNIT, "staked": 0, "tvl": 100.0, "supply": 10.0,
-        "symbols": ("A", "B"), "lp_token": "0x" + "1" * 40, "gauge": "0x" + "2" * 40,
+        "coins": (("0x" + "aa" * 20, "A"),), "lp_token": "0x" + "1" * 40, "gauge": "0x" + "2" * 40,
     }
     base.update(kw)
     return Holding(**base)

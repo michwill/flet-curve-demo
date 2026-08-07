@@ -204,14 +204,27 @@ def panel_shadow(page: ft.Page, *, inset: bool = False) -> ft.BoxShadow | None:
     return INSET_SHADOW if inset else PANEL_SHADOW
 
 
-def row_hover(page: ft.Page) -> str | None:
-    """What a table row goes when the pointer is over it.
+def rows_theme(page: ft.Page) -> ft.Theme | None:
+    """A theme for the rows alone, colouring the hover plum.
 
-    The plum, which is the single most recognisable thing about that site
-    and the one colour a Material palette would never arrive at. None
-    elsewhere, where Material's own ink overlay does the job.
+    The plum is the single most recognisable thing about that site, and
+    Material would never arrive at it: `hover_color` is what an `InkWell`
+    paints on hover, and it defaults to a translucent tint of the surface.
+    An opaque colour there covers the row.
+
+    Doing it through the theme rather than the row is not a stylistic
+    choice. A row carries `key="pool-row-N"`, and Flet **freezes** a keyed
+    control when a rebuild matches an old one to a new one by key -- after
+    which assigning to any of its properties raises "Frozen controls
+    cannot be updated". An `on_hover` handler that set `bgcolor` therefore
+    worked exactly until the first rebuild (a theme change, a resize) and
+    then threw on the next hover. Nothing here touches a row at all.
+
+    Nested and without a `theme_mode`, so it inherits the page's own theme
+    and overrides this one value. None elsewhere: Material's ink overlay
+    is right for a Material palette.
     """
-    return HOVER if is_chad(page) else None
+    return ft.Theme(hover_color=HOVER) if is_chad(page) else None
 
 
 def header_bg(page: ft.Page) -> str | None:

@@ -159,14 +159,8 @@ class PoolRow(ft.Container):
         on_open: Callable[[Pool], None],
         index: int = 0,
         layout: Layout | None = None,
-        hover: str | None = None,
     ) -> None:
         self.pool = pool
-        #: What this row goes when the pointer is over it, where the theme
-        #: says so. Material's ink overlay already handles the hover, but
-        #: it can only tint -- the Chad theme's row colour is a flat plum
-        #: that no tint of the surface arrives at, so it is painted.
-        self._hover = hover
         layout = layout or layout_for(2000.0)
         content = self._card(pool) if layout.cards else self._row(pool, layout)
         super().__init__(
@@ -174,19 +168,14 @@ class PoolRow(ft.Container):
             padding=ft.Padding.symmetric(horizontal=16, vertical=10),
             border=ft.Border(bottom=ft.BorderSide(1, ft.Colors.OUTLINE_VARIANT)),
             on_click=lambda _e: on_open(pool),
-            on_hover=self._hovered if hover else None,
+            # The hover colour is the theme's business, not this control's
+            # -- a keyed control is frozen after a rebuild and cannot be
+            # assigned to at all. See `theme.rows_theme`.
             ink=True,
             # Position-based rather than address-based so a UI test can
             # always reach "the first row" without knowing the data.
             key=f"pool-row-{index}",
         )
-
-    def _hovered(self, event: AnyEvent) -> None:
-        # `data` is a bool in 0.86 -- entering is True, leaving is False.
-        # Older Flet sent the strings "true"/"false", which is what this
-        # compared against at first, and which silently never matched.
-        self.bgcolor = self._hover if event.data in (True, "true") else None
-        safe_update(self)
 
     def _row(self, pool: Pool, layout: Layout) -> ft.Control:
         cells: list[ft.Control] = [_name_cell(pool)]
@@ -314,13 +303,18 @@ class PoolListView(ft.Column):
         )
         self._header = self._build_header()
 
+        # Wraps the rows so a theme can be scoped to them: `ListView` takes
+        # none, and the headings above are not rows and should not take the
+        # rows' hover colour.
+        self._rows_box = ft.Container(self.rows, expand=True, theme=theme.rows_theme(page))
+
         # The table is a panel: white, with the rules between its rows.
         # Explicit rather than inherited, because the Chad theme puts a
         # grey page behind it and the table must stay on white -- in the
         # Material themes `SURFACE` is the page colour anyway, so this
         # changes nothing there.
         self._table = ft.Container(
-            ft.Column([self._header, self.rows], spacing=0, expand=True),
+            ft.Column([self._header, self._rows_box], spacing=0, expand=True),
             bgcolor=ft.Colors.SURFACE,
             border_radius=8,
             expand=True,
@@ -432,22 +426,22 @@ class PoolListView(ft.Column):
     def _rebuild_rows(self) -> None:
         """Re-render the rows already loaded, in the current layout."""
         pools = [row.pool for row in self.rows.controls if isinstance(row, PoolRow)]
-        hover = theme.row_hover(self._page)
         self.rows.controls = [
-            PoolRow(p, self._on_open, i, self._layout, hover) for i, p in enumerate(pools)
+            PoolRow(p, self._on_open, i, self._layout) for i, p in enumerate(pools)
         ]
 
     def rebuild(self) -> None:
-        """Re-make the rows for a theme that changed.
+        """Take on a theme that changed.
 
-        Colour repaints itself; what does not is anything decided at build
-        time. The list carries no shadow of its own -- borders are what
-        separate its rows, under Chad as everywhere else -- but the marks
-        inside a row are built once, so the rows are re-made.
+        Colour repaints itself; what does not is anything decided when a
+        control was built -- the panel's shadow, the band behind the
+        headings, and the rows' hover colour. All three live on containers
+        that outlive the theme change, so the rows themselves are left
+        alone: re-making them is what freezes them.
         """
         self._table.shadow = theme.panel_shadow(self._page)
         self._header.bgcolor = theme.header_bg(self._page)
-        self._rebuild_rows()
+        self._rows_box.theme = theme.rows_theme(self._page)
         self._sync_header()
 
     def attach(self, feed: PoolFeed) -> None:
@@ -529,7 +523,7 @@ class PoolListView(ft.Column):
             return
         start = len(self.rows.controls)
         self.rows.controls.extend(
-            PoolRow(p, self._on_open, start + offset, self._layout, theme.row_hover(self._page))
+            PoolRow(p, self._on_open, start + offset, self._layout)
             for offset, p in enumerate(new_pools)
         )
         self.footer.visible = False

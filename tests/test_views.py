@@ -640,30 +640,50 @@ def test_an_action_panel_takes_the_shadow_under_chad() -> None:
 
 def test_a_row_goes_plum_under_the_pointer_in_chad() -> None:
     """The one colour that makes the theme recognisable, and the one an
-    ink overlay cannot produce -- Material can only tint the surface."""
+    ink overlay cannot produce on its own -- Material's default hover is a
+    translucent tint of the surface."""
     from ui import theme
 
     view = PoolListView(ThemedPage("chad"), on_open=lambda _p: None)
-    view.attach(FakeFeed([make_pool()]))
-    row = PoolRow(make_pool(), lambda _p: None, 0, hover=theme.row_hover(view._page))
 
-    assert row.bgcolor is None
-    # `data` is a bool in Flet 0.86. Comparing it against the string an
-    # older Flet sent is what this did first, and nothing ever matched.
-    row._hovered(SimpleNamespace(data=True))
-    assert row.bgcolor == theme.HOVER
-    row._hovered(SimpleNamespace(data=False))
-    assert row.bgcolor is None
+    assert view._rows_box.theme.hover_color == theme.HOVER
 
 
 def test_elsewhere_the_row_leaves_the_hover_to_material() -> None:
-    from ui import theme
+    view = PoolListView(ThemedPage("light"), on_open=lambda _p: None)
+    assert view._rows_box.theme is None
 
-    plain = PoolListView(ThemedPage("light"), on_open=lambda _p: None)
-    assert theme.row_hover(plain._page) is None
-    row = PoolRow(make_pool(), lambda _p: None, 0, hover=None)
+
+def test_nothing_is_assigned_to_a_row_after_it_is_built() -> None:
+    """Rows carry `key="pool-row-N"`, and Flet freezes a keyed control
+    once a rebuild has matched it to its predecessor by key: assigning to
+    any property then raises "Frozen controls cannot be updated". An
+    `on_hover` that painted `bgcolor` did exactly that -- fine until the
+    first theme change, then an unhandled error on the next hover."""
+    row = PoolRow(make_pool(), lambda _p: None, 0)
+
     assert row.on_hover is None
     assert row.ink is True
+
+    row._frozen = True  # what Flet does to a keyed control it re-diffs
+    with pytest.raises(RuntimeError, match="Frozen"):
+        row.bgcolor = "#FF0000"
+
+
+def test_a_theme_change_leaves_the_rows_where_they_are() -> None:
+    """Which is the fix: re-making them is what freezes them."""
+    from ui import theme
+
+    view = PoolListView(ThemedPage("light"), on_open=lambda _p: None)
+    view.attach(FakeFeed([make_pool(), make_pool()]))
+    view.rows.controls = [PoolRow(make_pool(), lambda _p: None, i) for i in range(2)]
+    before = list(view.rows.controls)
+
+    view._page.theme, view._page.theme_mode = theme.theme_for("chad")
+    view.rebuild()
+
+    assert view.rows.controls == before
+    assert view._rows_box.theme.hover_color == theme.HOVER
 
 
 def test_the_column_headings_get_a_band_under_chad() -> None:

@@ -609,10 +609,24 @@ tell**: `#AD7FA8`, a flat plum, is the single most recognisable thing about
 that site and the one colour no seed-generated palette arrives at. The first
 version had it as a pale amber, which is what the wrong stylesheet says.
 
-Material's ink overlay cannot produce it either — an overlay can only tint the
-surface — so `PoolRow` paints it from `on_hover`. Note `Event.data` there is a
-**bool** in Flet 0.86; older Flet sent `"true"`/`"false"`, and comparing
-against the string is a hover that silently never fires.
+Material's ink overlay will not produce it on its own — its default hover is a
+translucent tint of the surface — so the Chad theme sets Flutter's own
+`hover_color`, scoped to the rows by a nested `ft.Theme` on the container that
+holds them. Two earlier attempts at that hover are in `git log`, and both are
+worth knowing about:
+
+- **`Event.data` for `on_hover` is a bool in Flet 0.86.** Older Flet sent
+  `"true"`/`"false"`. Comparing against the string is a handler that fires and
+  does nothing, with no error anywhere.
+- **A keyed control is frozen once a rebuild has re-diffed it.** Rows carry
+  `key="pool-row-N"` so the integration tests can find them; when Flet matches
+  an old row to a new one by key it marks the result `_frozen`, and *any*
+  assignment to it then raises `Frozen controls cannot be updated`. So an
+  `on_hover` that painted `bgcolor` worked until the first theme change or
+  window resize and threw on the next hover. Anything a handler needs to
+  change must live on a control that is **not** keyed and outlives the
+  rebuild — which is why the theme carries the hover colour and why
+  `rebuild()` no longer re-makes the rows at all.
 
 **The shadows are the other half of it.** Material's elevation draws a blurred
 gradient; Chad draws a hard offset instead — `blur_radius=0`, one constant
@@ -825,6 +839,17 @@ it live instead.
 Things that cost a debugging round here, beyond the ones already in
 flet-pay-example's README:
 
+- **A `key` makes a control read-only after its first rebuild.** When Flet
+  re-diffs a list and matches an old item to a new one by `key`, the survivor
+  is marked `_frozen`, and every property assignment on it then raises
+  `Frozen controls cannot be updated` — from inside an event handler, where it
+  surfaces as an unhandled error and not as anything the caller can catch. Keys
+  are for finding controls (integration tests, in this app); state that
+  handlers mutate belongs on an unkeyed control that outlives the rebuild.
+- **`SharedPreferences.get`/`set` are coroutines**, and `page.shared_preferences`
+  is deprecated in 0.86 (removed in 0.90) in favour of constructing
+  `ft.SharedPreferences()`, which registers itself with the page. Calling either
+  method without `await` fails silently — see the themes section.
 - **Charts are not in core — they are in `flet-charts`.** An earlier version of
   this app drew candles by hand on `flet.canvas` because core has no chart
   controls and I did not check for a separate package. `flet-charts` is official,

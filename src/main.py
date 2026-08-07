@@ -586,7 +586,14 @@ class CurveApp:
         self.header.shadow = themes.bar_shadow(self.page)
         self.account_chip.border = themes.panel_border(self.page)
         self.connect_button.style = ft.ButtonStyle(side=themes.border_side(self.page))
+        # *Both* tables, whichever is showing. The portfolio is built once
+        # at startup, when the theme is still whatever the app opened in,
+        # and the saved theme arrives later -- so left untold it kept the
+        # first theme's header band, border, shadow and hover while the
+        # pool list wore the new one. Two tables that are meant to be the
+        # same table.
         self.list_view.rebuild()
+        self.portfolio_view.rebuild()
         if self._detail is not None:
             self.open_pool(self._detail.pool)
         self.page.update()

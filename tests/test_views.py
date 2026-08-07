@@ -1383,3 +1383,34 @@ def test_coin_marks_are_painted_right_to_left() -> None:
     assert [mark.left for mark in stack.controls] == sorted(
         [mark.left for mark in stack.controls], reverse=True
     )
+
+
+def test_a_theme_change_reaches_both_tables() -> None:
+    """The portfolio is built at startup and the saved theme arrives
+    later, so left untold it keeps the first theme's header band, border,
+    shadow and hover -- while the pool list wears the new one. Two tables
+    meant to be the same table."""
+    import main as app_module
+
+    app = app_module.CurveApp.__new__(app_module.CurveApp)
+    app.page = ThemedPage("chad")
+    app.header = ft.Container()
+    app.account_chip = ft.Container()
+    app.connect_button = ft.Button("Connect")
+    app._detail = None
+    app.list_view = PoolListView(app.page, on_open=lambda _p: None)
+    app.portfolio_view = portfolio_view(app.page)
+
+    # Both were built light; the page is Chad now.
+    app.portfolio_view._table.shadow = None
+    app.portfolio_view._header.bgcolor = None
+
+    app._rebuild_view()
+
+    from ui import theme
+
+    assert app.list_view._table.shadow is theme.PANEL_SHADOW
+    assert app.portfolio_view._table.shadow is theme.PANEL_SHADOW
+    assert app.portfolio_view._table.border is not None
+    assert app.portfolio_view._header.bgcolor == theme.RULE
+    assert app.portfolio_view._rows_box.theme.hover_color == theme.HOVER

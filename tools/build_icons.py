@@ -20,7 +20,9 @@ Four kinds of output, and they differ for reasons worth stating:
     opaque background, inset to Android's safe zone: a maskable icon may
     lose everything outside the middle 80%.
   * `icon.png` -- 1024px, the one `flet build` slices up for desktop and
-    mobile packages.
+    mobile packages;
+  * `icons/loading-animation.png` -- what the page shows while the Python
+    runtime starts, in place of Flet's own logo.
 
 Rendering goes through `rsvg-convert` at each output size rather than
 downscaling one big raster: the mark is a mesh gradient, and letting the
@@ -105,6 +107,12 @@ def main() -> int:
         write(render(size), ASSETS / "icons" / f"icon-{size}.png")
         write(on_backdrop(size), ASSETS / "icons" / f"icon-maskable-{size}.png")
     write(on_backdrop(192), ASSETS / "icons" / "apple-touch-icon-192.png")
+    # The image the page shows while Pyodide starts. Flet ships its own
+    # logo there; this is the same override as the favicon -- same name,
+    # copied over theirs at publish time. 512px because the loading
+    # screen's CSS scales it down to ~40% and then zooms it away, so it is
+    # briefly large on a high-density screen.
+    write(render(512), ASSETS / "icons" / "loading-animation.png")
     write_x11_icon(ASSETS / "window_icon.argb")
     print("These overwrite Flet's defaults on `flet publish` and `flet build`.")
     return 0

@@ -469,6 +469,11 @@ exactly the same. That is how Gnosis ended up with nothing but lettered
 circles — it was never in the list, and nothing said so. Note upstream calls
 that chain `xdai`, as Curve's API does.
 
+`build_icons.py` also writes `icons/loading-animation.png`, which is what the
+page shows while the Python runtime starts — Flet puts its own logo there, and
+it is overridden the same way the favicon is: same file name, copied over
+theirs at publish time.
+
 A token with no image upstream still draws initials, but quietly: the hue
 derived from its symbol tints the disc and its border, and the letters take
 the theme's own colour. White letters on a saturated disc read as a brand

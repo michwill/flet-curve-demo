@@ -294,6 +294,10 @@ EXPECTED_ICONS = {
     "icons/icon-maskable-192.png": 192,
     "icons/icon-maskable-512.png": 512,
     "icons/apple-touch-icon-192.png": 192,
+    # What the page shows while the Python runtime starts, in place of
+    # Flet's own logo. Same override as the favicon: same name, copied
+    # over theirs.
+    "icons/loading-animation.png": 512,
 }
 
 

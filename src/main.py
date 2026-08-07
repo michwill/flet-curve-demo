@@ -248,6 +248,10 @@ class CurveApp:
             visible=False,
             width=ADDRESS_SHORT_WIDTH,
             padding=ft.Padding.symmetric(horizontal=10, vertical=6),
+            # The same thin outline the network picker beside it has, and
+            # the panels below: the header's controls are all the same
+            # kind of box.
+            border=ft.Border.all(1, ft.Colors.OUTLINE_VARIANT),
             border_radius=8,
             alignment=ft.Alignment.CENTER_LEFT,
             clip_behavior=ft.ClipBehavior.HARD_EDGE,
@@ -263,6 +267,9 @@ class CurveApp:
             CONNECT_LABEL,
             icon=ft.Icons.ACCOUNT_BALANCE_WALLET,
             on_click=self.connect,
+            # A button draws no border of its own; `side` is where one
+            # goes, and it keeps the tonal fill underneath.
+            style=ft.ButtonStyle(side=ft.BorderSide(1, ft.Colors.OUTLINE_VARIANT)),
         )
         # A Container rather than an IconButton: one of the three states
         # is drawn with an image (the wireframe mark), and an IconButton

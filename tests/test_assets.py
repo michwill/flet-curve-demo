@@ -17,7 +17,6 @@ import pytest
 from curve.models import Coin, Pool
 from ui.assets import ASSET_ROOT, chain_logo, chain_name, curve_logo, token_logo
 from ui.logos import (
-    DECODE_SCALE,
     OVERLAP,
     coin_stack,
     fallback_color,
@@ -260,19 +259,22 @@ def test_balances_line_up_with_the_contract_coins() -> None:
     assert [c.balance for c in pool.pool_coins] == [10.0, 20.0]
 
 
-def test_marks_decode_at_the_size_they_are_drawn() -> None:
-    """Otherwise the GPU scales 256px art down to 26 with one bilinear tap.
+def test_marks_are_minified_with_mipmaps_from_the_full_image() -> None:
+    """Both halves of this were wrong before, and they interact.
 
-    That reads roughly one source pixel in a hundred, which is what makes
-    the logos look nearest-neighboured. `cache_width` moves the reduction
-    into the decoder, where it is a proper resample.
+    `cache_width` decoded at 3x the display size, which throws away the
+    resolution a mipmap chain is built from; and the quality was `high`,
+    which is bicubic -- a *magnification* filter that reads a few source
+    pixels per output pixel when reducing tenfold, so fine artwork comes
+    out noisy. Compared side by side at 27px against the real assets,
+    full-resolution decode with `medium` was the only combination that
+    looked right.
     """
     mark = token_mark(coin("USDC", USDC), "ethereum", 26)
     image = mark.content
     assert isinstance(image, ft.Image)
-    assert image.cache_width == int(26 * DECODE_SCALE)
-    # Height is deliberately left alone: setting both would stretch a logo
-    # that is not square instead of fitting it.
+    assert image.filter_quality == ft.FilterQuality.MEDIUM
+    assert image.cache_width is None
     assert image.cache_height is None
 
 

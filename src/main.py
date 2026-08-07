@@ -275,8 +275,8 @@ class CurveApp:
                 width=BRAND_LOGO,
                 height=BRAND_LOGO,
                 fit=ft.BoxFit.CONTAIN,
-                # Bicubic, as the token marks are -- see `ui.logos`.
-                filter_quality=ft.FilterQuality.HIGH,
+                # Mipmapped, as the token marks are -- see `ui.logos`.
+                filter_quality=ft.FilterQuality.MEDIUM,
                 # If the compiled assets are missing, the wordmark stands in.
                 error_content=ft.Text("CURVE", size=TITLE, weight=ft.FontWeight.BOLD),
             )

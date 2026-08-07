@@ -1352,17 +1352,17 @@ async def test_losing_the_wallet_reloads_the_portfolio() -> None:
     assert reloaded == [True]
 
 
-def test_token_marks_are_resampled_bicubically() -> None:
-    """These are small round marks with fine detail -- a torus of
-    hairlines, letters inside a disc -- and Flutter's `medium` is
-    bilinear, which leaves that soft. `high` is the bicubic one."""
+def test_token_marks_are_resampled_with_mipmaps() -> None:
+    """`high` is bicubic, which is for *magnifying*; these are minified
+    tenfold and came out noisy. `medium` is the mipmapped one -- see
+    `ui.logos.SAMPLING`."""
     from curve.models import Coin
     from ui.logos import token_mark
 
     mark = token_mark(Coin("0x" + "11" * 20, "CRV", 18), "ethereum", 27)
     images = [c for c in _all_controls(mark) if isinstance(c, ft.Image)]
     for image in images:
-        assert image.filter_quality == ft.FilterQuality.HIGH
+        assert image.filter_quality == ft.FilterQuality.MEDIUM
 
 
 def test_coin_marks_are_painted_right_to_left() -> None:

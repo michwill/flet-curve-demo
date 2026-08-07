@@ -19,23 +19,25 @@ from curve.models import Coin, Pool
 
 from .assets import chain_logo, token_logo
 
-#: Upstream art is 200-256px and every mark here is drawn at a fraction of
-#: that. Flutter samples a scaled image with a single bilinear tap, which
-#: at a 10x reduction reads one source pixel in a hundred -- the crunchy,
-#: nearest-neighbour look. Decoding at the display size instead resamples
-#: properly, so what the GPU scales is already close to the right size.
+#: How a logo gets from 200-280px of source art down to the 22-34px it is
+#: drawn at. Two knobs, and the answer is not the intuitive one.
 #:
-#: Three times the logical size covers a 3x display without decoding the
-#: full-resolution art for every one of a few hundred logos.
-DECODE_SCALE = 3
-
-#: How the GPU resamples what is left after that decode. Flutter's scale
-#: is `none` (nearest), `low` (bilinear), `medium` (bilinear plus
-#: mipmaps) and `high` (**bicubic**). These are small round marks with
-#: fine detail -- a torus of hairlines, letters inside a disc -- and
-#: bilinear leaves that detail soft. Bicubic costs more per pixel, on
-#: images that are at most a few dozen pixels across.
-SAMPLING = ft.FilterQuality.HIGH
+#: Flutter's filter qualities are `none` (nearest), `low` (bilinear),
+#: `medium` (bilinear **plus mipmaps**) and `high` (bicubic). Bicubic is a
+#: *magnification* filter: reducing an image tenfold with it still reads a
+#: few source pixels per output pixel, so fine artwork -- a torus of
+#: hairlines, letters inside a disc -- comes out noisy. Mipmaps are what
+#: minification wants, because each level is an average of the one above,
+#: and `medium` is the only quality that uses them.
+#:
+#: The other knob is `cache_width`, which decodes the file at a chosen
+#: size. It was set to three times the display size on the theory that
+#: the decoder resamples better than the GPU. It does -- but it also
+#: throws away the resolution the mipmap chain is built from, and the
+#: result was worse than leaving it alone. Compared side by side at 27px
+#: against the real assets, full-resolution decode with `medium` was the
+#: only combination that looked right.
+SAMPLING = ft.FilterQuality.MEDIUM
 
 
 #: How much of each logo the next one covers. Enough to read as a group,
@@ -111,9 +113,6 @@ def token_mark(coin: Coin, chain: str, size: float = 24) -> ft.Container:
             width=size,
             height=size,
             fit=ft.BoxFit.COVER,
-            # Width only: with both set the codec would stretch a logo
-            # that is not square rather than fit it.
-            cache_width=int(size * DECODE_SCALE),
             filter_quality=SAMPLING,
             # A logo that 404s falls back rather than leaving a hole. The
             # compiled subset can lag the API, and plenty of long-tail
@@ -211,6 +210,5 @@ def chain_mark(chain: str, size: float = 18) -> ft.Control | None:
         width=size,
         height=size,
         fit=ft.BoxFit.CONTAIN,
-        cache_width=int(size * DECODE_SCALE),
         filter_quality=SAMPLING,
     )

@@ -307,3 +307,50 @@ def test_the_portfolio_route_reads_back() -> None:
 def test_a_pool_route_is_not_a_portfolio() -> None:
     assert not routing.parse(f"/ethereum/{WL}").is_portfolio
     assert not routing.parse("/ethereum").is_portfolio
+
+
+# -- opening somewhere else --------------------------------------------
+
+
+def test_a_route_can_be_asked_for_on_the_command_line(monkeypatch) -> None:
+    """For looking at the app: every visual check otherwise starts with
+    hovering a logo and clicking through, and the desktop build has no
+    address bar to shortcut that with."""
+    import main as app_module
+
+    monkeypatch.setenv(app_module.ROUTE_ENV, "/ethereum/portfolio")
+    assert app_module.startup_route() == "/ethereum/portfolio"
+
+
+@pytest.mark.parametrize("junk", ["", "portfolio", "  ", "ethereum/portfolio"])
+def test_a_route_that_is_not_one_is_ignored(monkeypatch, junk) -> None:
+    import main as app_module
+
+    monkeypatch.setenv(app_module.ROUTE_ENV, junk)
+    assert app_module.startup_route() == ""
+
+
+def test_a_theme_can_be_asked_for_too(monkeypatch) -> None:
+    import main as app_module
+
+    monkeypatch.setenv(app_module.THEME_ENV, "CHAD")
+    assert app_module.startup_theme() == "chad"
+
+
+@pytest.mark.parametrize("junk", ["", "solarized", "dark mode"])
+def test_a_theme_that_is_not_one_is_ignored(monkeypatch, junk) -> None:
+    import main as app_module
+
+    monkeypatch.setenv(app_module.THEME_ENV, junk)
+    assert app_module.startup_theme() == ""
+
+
+def test_nothing_asked_for_is_nothing_forced(monkeypatch) -> None:
+    """A normal launch is unchanged: the platform's route, the remembered
+    theme."""
+    import main as app_module
+
+    monkeypatch.delenv(app_module.ROUTE_ENV, raising=False)
+    monkeypatch.delenv(app_module.THEME_ENV, raising=False)
+    assert app_module.startup_route() == ""
+    assert app_module.startup_theme() == ""

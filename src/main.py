@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
 from typing import Any
 
 import flet as ft
@@ -51,6 +52,36 @@ PREFERRED_CHAINS = ("ethereum", "arbitrum", "base", "optimism", "polygon", "frax
 #: Where the progress bar sits when the pool list has arrived and the
 #: balances have not been read yet. The two take about the same time.
 PORTFOLIO_DISCOVERY_SHARE = 0.5
+
+# -- opening somewhere other than the front page ------------------------
+#
+# Two knobs for driving the app without driving the *UI*: which page to
+# open on, and which theme to open in. They exist for looking at it --
+# every visual check otherwise starts with hovering a logo and clicking
+# through to the page in question, and on the desktop build there is no
+# address bar to shortcut that with.
+#
+# Environment rather than argv, because `flet run` owns the command line
+# and passes nothing through:
+#
+#     CURVE_ROUTE=/ethereum/portfolio CURVE_THEME=chad flet run src/main.py
+#
+# Both are ignored when unset, so a normal launch is unchanged.
+ROUTE_ENV = "CURVE_ROUTE"
+THEME_ENV = "CURVE_THEME"
+
+
+def startup_route() -> str:
+    """The route to open on, or empty for whatever the platform says."""
+    route = os.environ.get(ROUTE_ENV, "").strip()
+    return route if route.startswith("/") else ""
+
+
+def startup_theme() -> str:
+    """The theme to open in, or empty to use the remembered one."""
+    wanted = os.environ.get(THEME_ENV, "").strip().lower()
+    return wanted if wanted in themes.NAMES else ""
+
 
 #: Where the last portfolio scan is remembered, so the page has something
 #: to show while the next one runs.
@@ -189,7 +220,16 @@ class CurveApp:
         self.storage = ft.SharedPreferences()
 
         self._build()
-        page.run_task(self.restore_theme)
+        # A theme asked for on the command line wins over the remembered
+        # one, and skips reading storage at all.
+        forced = startup_theme()
+        if forced:
+            self._set_theme(forced, remember=False)
+        else:
+            page.run_task(self.restore_theme)
+        opening = startup_route()
+        if opening:
+            page.route = opening
         page.on_route_change = self._route_changed
         if not is_browser():
             page.run_task(self.dress_window)

@@ -831,6 +831,33 @@ Flet validates control arguments in `__init__`, so this catches the whole class 
 `on_scroll_interval` (it is `scroll_interval`) and `ft.Tab(content=…)` immediately.
 What it cannot see is layout, hit-testing or paint.
 
+**Looking at it.** Two environment variables open the app somewhere other
+than the front page, which is the difference between one command and a
+sequence of hovers and clicks — and on the desktop build there is no address
+bar to shortcut with:
+
+```bash
+CURVE_ROUTE=/ethereum/portfolio CURVE_THEME=chad .venv/bin/flet run src/main.py
+```
+
+`CURVE_ROUTE` takes any route the address bar accepts; `CURVE_THEME` takes
+`light`, `dark` or `chad` and skips the remembered one. Both are ignored when
+unset, so a normal launch is unchanged.
+
+That matters more than it sounds, because **the desktop window can be captured
+from the X server** and the browser cannot be trusted to screenshot itself:
+
+```bash
+wmctrl -lx | grep flet.Flet             # find the window
+import -window 0x07a00003 shot.png      # ImageMagick, whole window
+```
+
+Chrome's DevTools screenshots of this app intermittently come back missing
+every token logo — text renders, images do not — which sent a long hunt after
+a bug that was never in the app. An `import -window` capture of the real
+window has never lied. It is also how the logo sampling was chosen: the same
+mark rendered eight ways at 27px, captured, and magnified.
+
 **3. Stateful tests — `test_stateful.py`.** The layers above check one
 transition each. This one checks that no *ordering* of transitions leaves the app
 broken, which is a different question and the one that had been going unasked:

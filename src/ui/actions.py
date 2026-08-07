@@ -48,7 +48,7 @@ from curve.zaps import zap_for
 from wallet.base import WalletError
 from wallet.erc20 import format_units, parse_units
 
-from . import AnyEvent, theme
+from . import AnyEvent, buttons, theme
 from .assets import chain_name
 from .logos import pool_stack, token_mark
 from .typography import BODY, LABEL, SMALL
@@ -267,11 +267,22 @@ class ActionTab:
         # labelled "Stake", and why the numbered "2. Deposit" step never
         # appeared next to "1. Approve".
         self.approve_button = ft.Button(
-            "1. Approve", on_click=self._approve_clicked, visible=False, disabled=True
+            "1. Approve",
+            on_click=self._approve_clicked,
+            visible=False,
+            disabled=True,
+            style=buttons.style(page),
         )
         self.submit_button = ft.Button(
-            self.submit_label, on_click=self._submit_clicked, disabled=True
+            self.submit_label,
+            on_click=self._submit_clicked,
+            disabled=True,
+            style=buttons.style(page),
         )
+        # Wrapped for the shadow. `visible` is still set on the buttons
+        # themselves everywhere below -- the wrapper follows it.
+        self._approve_box = buttons.shadowed(self.approve_button, page)
+        self._submit_box = buttons.shadowed(self.submit_button, page)
         # STRETCH, so every field fills the panel. Without it a Column
         # gives each child its intrinsic width, and Material's idea of how
         # wide a text field wants to be left the amounts ending short of
@@ -346,8 +357,8 @@ class ActionTab:
             # as part of the action rather than as a setting for it.
             *([_aside(self.slippage)] if self.uses_slippage else []),
             self.estimate,
-            self.approve_button,
-            self.submit_button,
+            self._approve_box,
+            self._submit_box,
             self.status_panel,
         ]
         return self.control

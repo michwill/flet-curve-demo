@@ -80,6 +80,11 @@ SKY = "#729FCF"        # Sky Blue 1   --button-primary-background
 GREEN = "#4E9A06"      # Chameleon 3  --signature-user-color
 DANGER = "#CC0000"     # Scarlet 2    --button-danger-background
 
+#: Half a step above `PANEL`, for the one surface Material calls raised --
+#: which here is a button's face. Derived rather than tango's: that page
+#: has nothing raised on it.
+RAISED = "#F3F3F1"
+
 #: A hard shadow: no blur, no spread, one constant opacity. Material's own
 #: elevation would put a gradient here, which is exactly the thing this
 #: theme is not. Cast in the palette's near-black rather than pure black,
@@ -162,7 +167,7 @@ def chad() -> ft.Theme:
             surface_bright="#F6F6F4",
             surface_dim=PAGE,
             surface_container_lowest="#FFFFFF",
-            surface_container_low="#F3F3F1",
+            surface_container_low=RAISED,
             surface_container=PAGE,
             surface_container_high="#C9CDC6",
             surface_container_highest=RULE,

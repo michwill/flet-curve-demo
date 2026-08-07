@@ -31,7 +31,7 @@ from curve.format import compact_usd
 from curve.lite import LiteChain
 from curve.rpc import ChainlistDirectory, PublicNode
 from curve.sort import DEFAULT_SORT
-from ui import AnyEvent, routing, safe_update
+from ui import AnyEvent, buttons, routing, safe_update
 from ui import theme as themes
 from ui.assets import chad_mark, chain_name, curve_logo
 from ui.logos import chain_mark
@@ -390,11 +390,14 @@ class CurveApp:
             CONNECT_LABEL,
             icon=ft.Icons.ACCOUNT_BALANCE_WALLET,
             on_click=self.connect,
-            # A button draws no border of its own; `side` is where one
-            # goes, and it keeps the tonal fill underneath. None outside
-            # Chad, which is the same as not passing a style at all.
-            style=ft.ButtonStyle(side=themes.border_side(page)),
+            # A button draws no border of its own; the style is where one
+            # goes, along with Chad's corners. None outside Chad, which is
+            # the same as not passing a style at all.
+            style=buttons.style(page),
         )
+        #: The same wrapper the Approve/Deposit buttons get, so this one
+        #: casts the same shadow as the panel it will sit above.
+        self.connect_box = buttons.shadowed(self.connect_button, page)
         # A Container rather than an IconButton: one of the three states
         # is drawn with an image (the wireframe mark), and an IconButton
         # takes only an icon. The same reason the sortable column headings
@@ -450,7 +453,7 @@ class CurveApp:
                     # On the right, where the connected wallet used to
                     # repeat the network name back at you.
                     self.chain_picker,
-                    self.connect_button,
+                    self.connect_box,
                     self.theme_button,
                 ],
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
@@ -637,7 +640,7 @@ class CurveApp:
         """
         self.header.shadow = themes.bar_shadow(self.page)
         self.account_chip.border = themes.panel_border(self.page)
-        self.connect_button.style = ft.ButtonStyle(side=themes.border_side(self.page))
+        self.connect_button.style = buttons.style(self.page)
         # *Both* tables, whichever is showing. The portfolio is built once
         # at startup, when the theme is still whatever the app opened in,
         # and the saved theme arrives later -- so left untold it kept the

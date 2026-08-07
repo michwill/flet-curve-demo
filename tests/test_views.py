@@ -640,6 +640,108 @@ def test_an_action_panel_takes_the_shadow_under_chad() -> None:
     assert plain.status_panel.shadow is None
 
 
+def test_a_button_is_square_ish_and_outlined_under_chad() -> None:
+    """Material's own is a stadium with a tonal fill and no edge, which
+    among this theme's bordered boxes reads as a borrowed control."""
+    from ui import buttons
+
+    style = buttons.style(ThemedPage("chad"))
+
+    assert style is not None
+    assert style.shape.radius == buttons.RADIUS < 10
+    assert _state(style.side, ft.ControlState.DEFAULT).width == 1
+    # No elevation: the shadow is the wrapper's, and Material's own would
+    # be a second one with a gradient in it.
+    assert style.elevation == 0
+
+
+def _state(value: object, state: ft.ControlState):
+    """One entry of a ButtonStyle's per-state map, whatever its type."""
+    assert isinstance(value, dict)
+    return value[state]
+
+
+def _channels(colour: str) -> tuple[int, int, int]:
+    return tuple(int(colour[i : i + 2], 16) for i in (1, 3, 5))  # type: ignore[return-value]
+
+
+def test_a_disabled_button_says_what_colour_it_is_in_full() -> None:
+    """Any style at all costs a Flet button its disabled colours, and a
+    scheme colour with opacity does not resolve inside a state map -- so
+    the fill and the label are literal, or Deposit sits there in slate
+    grey looking like something went wrong."""
+    from ui import buttons
+
+    style = buttons.style(ThemedPage("chad"))
+    off = ft.ControlState.DISABLED
+
+    for value in (_state(style.bgcolor, off), _state(style.color, off)):
+        assert value.startswith("#") and len(value) == 7
+    # Material's own recipe: 12% of the body colour for the fill, 38% for
+    # the label on top of it. What matters is that the fill stays light --
+    # it reads as "not yet", where the slate Flutter falls back to (#8D8E8E)
+    # reads as a warning -- and that the label is still darker than it.
+    fill = _channels(buttons.DISABLED_FILL)
+    assert min(fill) > 0xC0
+    assert max(_channels(buttons.DISABLED_TEXT)) < min(fill)
+    on = ft.ControlState.DEFAULT
+    assert _state(style.bgcolor, on) == ft.Colors.SURFACE_CONTAINER_LOW
+
+
+def test_elsewhere_a_button_is_left_to_material() -> None:
+    from ui import buttons
+
+    assert buttons.style(ThemedPage("light")) is None
+    assert buttons.style(ThemedPage("dark")) is None
+
+
+def test_the_action_buttons_cast_the_hard_shadow_under_chad() -> None:
+    from ui import theme
+    from ui.actions import DepositTab
+
+    chad = DepositTab(ThemedPage("chad"), make_pool(), lambda: None, None)
+    plain = DepositTab(ThemedPage("light"), make_pool(), lambda: None, None)
+
+    for tab, expected in ((chad, theme.INSET_SHADOW), (plain, None)):
+        for box in (tab._approve_box, tab._submit_box):
+            box.before_update()
+            assert box.shadow is expected
+
+
+def test_a_wrapped_button_takes_no_room_while_it_is_hidden() -> None:
+    """Flet skips an invisible control, so a hidden Approve step costs
+    nothing -- but a *wrapper* around one is still a child of the column
+    and still takes its spacing. The gap would sit there until an approval
+    was needed."""
+    from ui import buttons
+
+    button = ft.Button("1. Approve", visible=False)
+    box = buttons.shadowed(button, ThemedPage("chad"))
+
+    box.before_update()
+    assert box.visible is False
+
+    button.visible = True
+    box.before_update()
+    assert box.visible is True
+
+
+def test_a_button_takes_the_new_theme_without_being_rebuilt() -> None:
+    """The header is built once and outlives every theme switch, so the
+    wrapper reads the page rather than remembering what it was born in."""
+    from ui import buttons, theme
+
+    page = ThemedPage("light")
+    box = buttons.shadowed(ft.Button("Connect wallet"), page)
+
+    box.before_update()
+    assert box.shadow is None
+
+    page.theme, page.theme_mode = theme.theme_for("chad")
+    box.before_update()
+    assert box.shadow is theme.INSET_SHADOW
+
+
 def test_a_row_goes_plum_under_the_pointer_in_chad() -> None:
     """The one colour that makes the theme recognisable, and the one an
     ink overlay cannot produce on its own -- Material's default hover is a

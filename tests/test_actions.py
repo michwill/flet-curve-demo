@@ -295,7 +295,15 @@ def test_slippage_sits_with_the_amounts_not_with_the_button() -> None:
             for i, c in enumerate(controls)
             if isinstance(c, ft.Row) and tab.slippage in (c.controls or [])
         )
-        assert slippage_at < controls.index(tab.submit_button) - 1
+        # The button sits inside a container -- the one that draws Chad's
+        # shadow -- so the panel is asked which of its children holds it
+        # rather than where the button itself is.
+        submit_at = next(
+            i
+            for i, c in enumerate(controls)
+            if c is tab.submit_button or getattr(c, "content", None) is tab.submit_button
+        )
+        assert slippage_at < submit_at - 1
         assert slippage_at < controls.index(tab.estimate)
 
 

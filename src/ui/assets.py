@@ -109,9 +109,22 @@ def curve_logo() -> str | None:
     return asset_url("branding", "logo.svg") if _exists("branding/logo.svg") else None
 
 
-def curve_wireframe() -> str | None:
-    """The same mark as a bare wireframe, for the Chad theme's button."""
-    return asset_url("branding", "logo-bw.svg") if _exists("branding/logo-bw.svg") else None
+def bundled(name: str) -> str:
+    """A file committed straight into `src/assets`.
+
+    The same web/desktop split as `asset_url`, without the `curve/` prefix:
+    these are not compiled from the submodule, they are in the repository.
+    """
+    return name if not is_browser() else f"{_web_base()}{name}"
+
+
+def chad_mark() -> str:
+    """The Chad, for the theme button.
+
+    From curve-frontend (`packages/ui/src/images/chad.png`) rather than
+    curve-assets, which is why it is committed rather than compiled.
+    """
+    return bundled("chad.png")
 
 
 #: Chains whose display name is not just a capitalisation of the API's.

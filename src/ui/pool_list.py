@@ -159,8 +159,14 @@ class PoolRow(ft.Container):
         on_open: Callable[[Pool], None],
         index: int = 0,
         layout: Layout | None = None,
+        hover: str | None = None,
     ) -> None:
         self.pool = pool
+        #: What this row goes when the pointer is over it, where the theme
+        #: says so. Material's ink overlay already handles the hover, but
+        #: it can only tint -- the Chad theme's row colour is a flat plum
+        #: that no tint of the surface arrives at, so it is painted.
+        self._hover = hover
         layout = layout or layout_for(2000.0)
         content = self._card(pool) if layout.cards else self._row(pool, layout)
         super().__init__(
@@ -168,11 +174,19 @@ class PoolRow(ft.Container):
             padding=ft.Padding.symmetric(horizontal=16, vertical=10),
             border=ft.Border(bottom=ft.BorderSide(1, ft.Colors.OUTLINE_VARIANT)),
             on_click=lambda _e: on_open(pool),
+            on_hover=self._hovered if hover else None,
             ink=True,
             # Position-based rather than address-based so a UI test can
             # always reach "the first row" without knowing the data.
             key=f"pool-row-{index}",
         )
+
+    def _hovered(self, event: AnyEvent) -> None:
+        # `data` is a bool in 0.86 -- entering is True, leaving is False.
+        # Older Flet sent the strings "true"/"false", which is what this
+        # compared against at first, and which silently never matched.
+        self.bgcolor = self._hover if event.data in (True, "true") else None
+        safe_update(self)
 
     def _row(self, pool: Pool, layout: Layout) -> ft.Control:
         cells: list[ft.Control] = [_name_cell(pool)]
@@ -366,6 +380,10 @@ class PoolListView(ft.Column):
             ft.Row(cells, vertical_alignment=ft.CrossAxisAlignment.CENTER),
             padding=ft.Padding.symmetric(horizontal=16, vertical=2),
             border=ft.Border(bottom=ft.BorderSide(1, ft.Colors.OUTLINE)),
+            # A grey band above the rows, where the theme asks for one:
+            # `thead` takes the table's border colour on linux.org.ru.
+            # None everywhere else, and a Material table has no band.
+            bgcolor=theme.header_bg(self._page),
         )
 
     def _sync_header(self) -> None:
@@ -414,8 +432,9 @@ class PoolListView(ft.Column):
     def _rebuild_rows(self) -> None:
         """Re-render the rows already loaded, in the current layout."""
         pools = [row.pool for row in self.rows.controls if isinstance(row, PoolRow)]
+        hover = theme.row_hover(self._page)
         self.rows.controls = [
-            PoolRow(p, self._on_open, i, self._layout) for i, p in enumerate(pools)
+            PoolRow(p, self._on_open, i, self._layout, hover) for i, p in enumerate(pools)
         ]
 
     def rebuild(self) -> None:
@@ -427,6 +446,7 @@ class PoolListView(ft.Column):
         inside a row are built once, so the rows are re-made.
         """
         self._table.shadow = theme.panel_shadow(self._page)
+        self._header.bgcolor = theme.header_bg(self._page)
         self._rebuild_rows()
         self._sync_header()
 
@@ -509,7 +529,7 @@ class PoolListView(ft.Column):
             return
         start = len(self.rows.controls)
         self.rows.controls.extend(
-            PoolRow(p, self._on_open, start + offset, self._layout)
+            PoolRow(p, self._on_open, start + offset, self._layout, theme.row_hover(self._page))
             for offset, p in enumerate(new_pools)
         )
         self.footer.visible = False

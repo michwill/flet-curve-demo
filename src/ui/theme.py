@@ -1,35 +1,56 @@
 """Three themes: light, dark, and Chad.
 
 The first two are Material's, seeded from one colour and left to work out
-the rest. **Chad** is not: it is a hand-set palette lifted from
-linux.org.ru's default stylesheet, which is a particular kind of yellowed
-grey that Material's generator will not produce from any seed.
+the rest. **Chad** is not: it is a hand-set palette taken from
+linux.org.ru's default look, which is the Tango palette -- warm greys with
+chocolate, butter and orange accents -- and which Material's generator
+will not produce from any seed.
 
-The colours below are that site's `:root` block, taken from
-`waltz/combined.css` and mapped onto Material's slots by role rather than
-by name -- what a colour *does* there is what it does here:
+**Where these numbers come from.** The site ships several stylesheets and
+the default one is `tango/combined.css`, not the `waltz` sheet linked from
+the settings page; and within tango the `:root` block appears twice, dark
+first and light second. An earlier version of this file took the waltz
+values, which are a different palette wearing the same variable names --
+that theme's row highlight is a pale amber, and the real one is plum.
+These were read off the live page instead (`getComputedStyle` on
+`document.documentElement` at `/forum/talks/`), which is the only way to
+be sure which sheet and which block actually win:
 
-    --main-background      #ECECEC   the page behind everything
-    --article-background   #FFF      panels, rows, dialogs
-    --table-hover-background #FFE9C0 the yellow a row goes when hovered
-    --icon-button-active-color #c17d11 an active control
-    --tagpage-group-label-background #E7AF55 a label that wants noticing
-    --tag-color            #77521D   secondary text with a brown cast
-    --article-border-color #808080   a real border
-    --table-border-color   #CCC      a rule between rows
-    --link-color           #275096   the one blue in the place
-    --targeted-message-border-color #a00  an error
+    --main-background                #D3D7CF   the page behind everything
+    --article-background             #EEEEEC   panels, boxes, dialogs
+    --text-color                     #3B4245   body text
+    --header-color                   #232829   headings
+    --table-link-color               #171B1C   a table's own links
+    --blockquote-color               #555753   quieter text
+    --table-border-color             #BABDB6   the rule between rows
+    --table-hover-background         #AD7FA8   the row under the pointer
+    --icon-button-active-color       #C17D11   an active control
+    --tagpage-group-label-background #E9B96E   a label that wants noticing
+    --main-menu-color                #8F5902   the navigation
+    --tag-color                      #CE5C00   tags
+    --link-color                     #204A87   an ordinary link
+    --button-primary-background      #729FCF   a primary button
+    --signature-user-color           #4E9A06   a name, i.e. something good
+    --button-danger-background       #CC0000   something dangerous
 
-Two Material slots have no equivalent and are derived: `surface_tint`
-(Material blends it into elevated surfaces, so it takes the amber) and
-`inverse_*` (used by snackbars, which this app does not raise).
+Mapped onto Material's slots by role rather than by name -- what a colour
+*does* there is what it does here. Aluminium 4 (`#888A85`) is the one
+addition: tango leaves `--article-border-color` undefined, so the border
+around a box falls back to the text colour, and a real border colour from
+the same palette is closer to how it looks than `#3B4245` would be.
+
+Two Material slots have no counterpart at all and are derived:
+`surface_tint` (Material blends it into elevated surfaces, so it takes the
+butter) and `error_container` (nothing on that page is a soft red).
 
 **Shadows.** The other half of the look. Material's elevation draws a
 blurred gradient; this theme draws a hard offset instead -- one colour,
 one edge, no blur -- which is what the shadow under a bordered box looked
 like before shadows became soft. `PANEL_SHADOW` is that, and it is only
 used under Chad: the same shadow under a Material surface would look like
-a mistake.
+a mistake. (linux.org.ru itself has no shadows at all -- `box-shadow` is
+`none` everywhere on that page. These are the requested addition, in the
+spirit of the rest.)
 """
 
 from __future__ import annotations
@@ -39,30 +60,35 @@ import flet as ft
 #: The seed the Material themes are generated from.
 SEED = ft.Colors.INDIGO
 
-# -- Chad's palette, from linux.org.ru ------------------------------------
+# -- Chad's palette: Tango, as linux.org.ru uses it ------------------------
 
-PAGE = "#ECECEC"
-PANEL = "#FFFFFF"
-HOVER = "#FFE9C0"
-AMBER = "#E7AF55"
-ACTIVE = "#C17D11"
-BROWN = "#77521D"
-BORDER = "#808080"
-RULE = "#CCCCCC"
-LINK = "#275096"
-DANGER = "#AA0000"
-INK = "#000000"
-QUIET = "#444444"
-POSITIVE = "#447019"
+PAGE = "#D3D7CF"       # Aluminium 2  --main-background
+PANEL = "#EEEEEC"      # Aluminium 1  --article-background
+INK = "#3B4245"        #              --text-color
+HEADING = "#232829"    #              --header-color
+TITLE = "#171B1C"      #              --table-link-color
+QUIET = "#555753"      # Aluminium 5  --blockquote-color
+RULE = "#BABDB6"       # Aluminium 3  --table-border-color
+BORDER = "#888A85"     # Aluminium 4  (tango leaves this one undefined)
+HOVER = "#AD7FA8"      # Plum 1       --table-hover-background
+ACTIVE = "#C17D11"     # Chocolate 2  --icon-button-active-color
+LABEL = "#E9B96E"      # Chocolate 1  --tagpage-group-label-background
+BROWN = "#8F5902"      # Chocolate 3  --main-menu-color
+ORANGE = "#CE5C00"     # Orange 3     --tag-color
+LINK = "#204A87"       # Sky Blue 3   --link-color
+SKY = "#729FCF"        # Sky Blue 1   --button-primary-background
+GREEN = "#4E9A06"      # Chameleon 3  --signature-user-color
+DANGER = "#CC0000"     # Scarlet 2    --button-danger-background
 
 #: A hard shadow: no blur, no spread, one constant opacity. Material's own
 #: elevation would put a gradient here, which is exactly the thing this
-#: theme is not.
+#: theme is not. Cast in the palette's near-black rather than pure black,
+#: which goes blue against these warm greys.
 PANEL_SHADOW = ft.BoxShadow(
     spread_radius=0,
     blur_radius=0,
     offset=ft.Offset(3, 3),
-    color=ft.Colors.with_opacity(0.18, INK),
+    color=ft.Colors.with_opacity(0.20, TITLE),
 )
 
 #: The same, smaller, for things that sit inside a panel.
@@ -70,7 +96,7 @@ INSET_SHADOW = ft.BoxShadow(
     spread_radius=0,
     blur_radius=0,
     offset=ft.Offset(2, 2),
-    color=ft.Colors.with_opacity(0.14, INK),
+    color=ft.Colors.with_opacity(0.16, TITLE),
 )
 
 #: Theme names as the app stores them, in the order the button cycles.
@@ -88,53 +114,57 @@ def material() -> ft.Theme:
 
 
 def chad() -> ft.Theme:
-    """The yellowed-grey theme, spelled out slot by slot.
+    """The Tango theme, spelled out slot by slot.
 
-    Every value is from the stylesheet above except where Material asks
-    for something that page has no equivalent of, and those are noted.
+    Every value is from the palette above except where Material asks for
+    something that page has no equivalent of, and those are noted.
     """
     return ft.Theme(
         color_scheme=ft.ColorScheme(
             # An active control, and the thing the eye should land on.
             primary=ACTIVE,
             on_primary=PANEL,
-            primary_container=HOVER,
+            primary_container=LABEL,
             on_primary_container=BROWN,
-            # A label that wants noticing without being a control.
-            secondary=AMBER,
-            on_secondary=INK,
-            secondary_container=HOVER,
-            on_secondary_container=BROWN,
-            # The one blue in the place: links, and the wrong-network note.
+            # A label that wants noticing without being a control. The
+            # navigation brown, over the butter it sits on there.
+            secondary=BROWN,
+            on_secondary=PANEL,
+            secondary_container=LABEL,
+            on_secondary_container=TITLE,
+            # Links, and the wrong-network notice, which is drawn as a
+            # tint of this.
             tertiary=LINK,
             on_tertiary=PANEL,
-            tertiary_container="#D8E2F2",
-            on_tertiary_container=LINK,
+            tertiary_container=SKY,
+            on_tertiary_container=TITLE,
             error=DANGER,
             on_error=PANEL,
-            error_container="#FFC8BD",  # the stylesheet's own soft red
+            # Derived: nothing on that page is a soft red.
+            error_container="#EFC7C2",
             on_error_container=DANGER,
-            # Panels are white; the page behind them is the grey.
+            # Panels are the light aluminium; the page behind them is the
+            # darker one, which is the whole shape of the site.
             surface=PANEL,
             on_surface=INK,
             on_surface_variant=QUIET,
-            surface_bright=PANEL,
-            surface_dim="#DCDCDC",
-            surface_container_lowest=PANEL,
-            surface_container_low="#F6F6F6",
+            surface_bright="#F6F6F4",
+            surface_dim=PAGE,
+            surface_container_lowest="#FFFFFF",
+            surface_container_low="#F3F3F1",
             surface_container=PAGE,
-            surface_container_high="#E4E4E4",
-            surface_container_highest="#DCDCDC",
+            surface_container_high="#C9CDC6",
+            surface_container_highest=RULE,
             # Material blends this into anything it considers elevated.
-            # Amber, so elevation warms rather than tinting toward blue.
-            surface_tint=AMBER,
+            # Butter, so elevation warms rather than tinting toward blue.
+            surface_tint=LABEL,
             outline=BORDER,
             outline_variant=RULE,
-            shadow=INK,
-            scrim=INK,
-            inverse_surface="#2B2B2B",
-            on_inverse_surface="#F0F0F0",
-            inverse_primary=AMBER,
+            shadow=TITLE,
+            scrim=TITLE,
+            inverse_surface=INK,
+            on_inverse_surface=PANEL,
+            inverse_primary=LABEL,
         ),
     )
 
@@ -172,3 +202,23 @@ def panel_shadow(page: ft.Page, *, inset: bool = False) -> ft.BoxShadow | None:
     if not is_chad(page):
         return None
     return INSET_SHADOW if inset else PANEL_SHADOW
+
+
+def row_hover(page: ft.Page) -> str | None:
+    """What a table row goes when the pointer is over it.
+
+    The plum, which is the single most recognisable thing about that site
+    and the one colour a Material palette would never arrive at. None
+    elsewhere, where Material's own ink overlay does the job.
+    """
+    return HOVER if is_chad(page) else None
+
+
+def header_bg(page: ft.Page) -> str | None:
+    """The strip behind a table's column headings.
+
+    `#bd .forum table thead` takes the *border* colour there, which reads
+    as a grey band above white rows. None elsewhere: Material tables have
+    no band, and adding one would be this theme leaking.
+    """
+    return RULE if is_chad(page) else None

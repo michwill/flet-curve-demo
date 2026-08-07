@@ -534,8 +534,8 @@ def test_the_three_themes_are_what_the_button_cycles() -> None:
 
 
 def test_light_and_dark_are_generated_and_chad_is_not() -> None:
-    """Material can produce a great many palettes from a seed; a yellowed
-    grey off a Russian web forum is not among them."""
+    """Material can produce a great many palettes from a seed; the Tango
+    palette off a Russian web forum is not among them."""
     from ui import theme
 
     assert theme.material().color_scheme_seed is not None
@@ -544,17 +544,32 @@ def test_light_and_dark_are_generated_and_chad_is_not() -> None:
     assert theme.chad().color_scheme is not None
 
 
+def test_chad_is_the_palette_that_site_actually_serves() -> None:
+    """Pinned to the values read off the live page, because the first
+    version of this theme took them from a stylesheet the site does not
+    use by default and every one of them was wrong."""
+    from ui import theme
+
+    assert theme.PAGE == "#D3D7CF"    # --main-background
+    assert theme.PANEL == "#EEEEEC"   # --article-background
+    assert theme.HOVER == "#AD7FA8"   # --table-hover-background: plum, not amber
+    assert theme.RULE == "#BABDB6"    # --table-border-color
+    assert theme.ACTIVE == "#C17D11"  # --icon-button-active-color
+    assert theme.LABEL == "#E9B96E"   # --tagpage-group-label-background
+    assert theme.BROWN == "#8F5902"   # --main-menu-color
+    assert theme.LINK == "#204A87"    # --link-color
+
+
 def test_chad_uses_the_stylesheets_own_colours() -> None:
     from ui import theme
 
     scheme = theme.chad().color_scheme
     assert scheme.primary == theme.ACTIVE          # --icon-button-active-color
-    assert scheme.secondary == theme.AMBER         # --tagpage-group-label-background
+    assert scheme.secondary == theme.BROWN         # --main-menu-color
     assert scheme.surface == theme.PANEL           # --article-background
     assert scheme.surface_container == theme.PAGE  # --main-background
-    assert scheme.outline == theme.BORDER          # --article-border-color
     assert scheme.outline_variant == theme.RULE    # --table-border-color
-    assert scheme.error == theme.DANGER            # --targeted-message-border-color
+    assert scheme.error == theme.DANGER            # --button-danger-background
 
 
 def test_chad_is_pinned_to_light_mode() -> None:
@@ -623,6 +638,46 @@ def test_an_action_panel_takes_the_shadow_under_chad() -> None:
     assert plain.status_panel.shadow is None
 
 
+def test_a_row_goes_plum_under_the_pointer_in_chad() -> None:
+    """The one colour that makes the theme recognisable, and the one an
+    ink overlay cannot produce -- Material can only tint the surface."""
+    from ui import theme
+
+    view = PoolListView(ThemedPage("chad"), on_open=lambda _p: None)
+    view.attach(FakeFeed([make_pool()]))
+    row = PoolRow(make_pool(), lambda _p: None, 0, hover=theme.row_hover(view._page))
+
+    assert row.bgcolor is None
+    # `data` is a bool in Flet 0.86. Comparing it against the string an
+    # older Flet sent is what this did first, and nothing ever matched.
+    row._hovered(SimpleNamespace(data=True))
+    assert row.bgcolor == theme.HOVER
+    row._hovered(SimpleNamespace(data=False))
+    assert row.bgcolor is None
+
+
+def test_elsewhere_the_row_leaves_the_hover_to_material() -> None:
+    from ui import theme
+
+    plain = PoolListView(ThemedPage("light"), on_open=lambda _p: None)
+    assert theme.row_hover(plain._page) is None
+    row = PoolRow(make_pool(), lambda _p: None, 0, hover=None)
+    assert row.on_hover is None
+    assert row.ink is True
+
+
+def test_the_column_headings_get_a_band_under_chad() -> None:
+    """`thead` takes the table's border colour on that site: a grey strip
+    above the rows. A Material table has no band at all."""
+    from ui import theme
+
+    chad = PoolListView(ThemedPage("chad"), on_open=lambda _p: None)
+    plain = PoolListView(ThemedPage("light"), on_open=lambda _p: None)
+
+    assert chad._header.bgcolor == theme.RULE
+    assert plain._header.bgcolor is None
+
+
 def test_a_pool_page_takes_the_shadow_under_chad() -> None:
     from ui import theme
 
@@ -675,6 +730,66 @@ def themed_app(page, stored: dict | None = None):
     app._sync_theme_button = lambda update=False: None  # type: ignore[method-assign]
     app._rebuild_view = lambda: None                    # type: ignore[method-assign]
     return app
+
+
+def button_app(page):
+    """`themed_app` with the real `_sync_theme_button`, and a button for it
+    to draw into."""
+    app = themed_app(page)
+    del app._sync_theme_button  # the stub; these tests are about the real one
+    app.theme_button = ft.Container()
+    return app
+
+
+@pytest.mark.parametrize(
+    "name,expected",
+    [("light", ft.Icons.LIGHT_MODE), ("dark", ft.Icons.DARK_MODE)],
+)
+def test_the_button_shows_the_theme_you_are_in(name, expected) -> None:
+    """Not the one a click would get you, which is what it did first: a
+    moon on a plainly light screen says the opposite of what is true."""
+    page = StoringPage(name)
+    page.platform_brightness = ft.Brightness.LIGHT
+    app = button_app(page)
+
+    app._sync_theme_button()
+
+    assert app.theme_button.content.icon == expected
+
+
+def test_chad_gets_the_chad() -> None:
+    page = StoringPage("chad")
+    page.platform_brightness = ft.Brightness.LIGHT
+    app = button_app(page)
+
+    app._sync_theme_button()
+
+    assert isinstance(app.theme_button.content, ft.Image)
+    assert app.theme_button.content.src.endswith("chad.png")
+
+
+def test_the_tooltip_carries_the_destination() -> None:
+    """Which is where there is room to say it in words."""
+    page = StoringPage("dark")
+    page.platform_brightness = ft.Brightness.LIGHT
+    app = button_app(page)
+
+    app._sync_theme_button()
+
+    assert app.theme_button.tooltip == "Dark theme — click for chad"
+
+
+def test_the_cycle_is_light_dark_chad_and_round() -> None:
+    page = StoringPage("light")
+    page.platform_brightness = ft.Brightness.LIGHT
+    app = button_app(page)
+    seen = []
+
+    for _ in range(4):
+        app._toggle_theme(None)
+        seen.append(app._theme_name())
+
+    assert seen == ["dark", "chad", "light", "dark"]
 
 
 async def test_choosing_a_theme_writes_it_down() -> None:

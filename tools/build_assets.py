@@ -107,15 +107,11 @@ def main() -> int:
     # The Curve mark for the header. Only the wordless logo is taken.
     branding = TARGET / "branding"
     branding.mkdir()
-    # `logo.svg` is the header mark; `logo-bw.svg` is the same shape as a
-    # bare wireframe, which is what the Chad theme's button uses -- it
-    # belongs to the same drawing as that theme's own illustration.
-    for name in ("logo.svg", "logo-bw.svg"):
-        logo = SOURCE / "branding" / name
-        if logo.is_file():
-            shutil.copy2(logo, branding / name)
-            total += logo.stat().st_size
-            print(f"  branding/{name:<12} {logo.stat().st_size / 1024:.0f} KB")
+    logo = SOURCE / "branding" / "logo.svg"
+    if logo.is_file():
+        shutil.copy2(logo, branding / "logo.svg")
+        total += logo.stat().st_size
+        print(f"  branding/logo.svg  {logo.stat().st_size / 1024:.0f} KB")
 
     files, size = copy_tree(SOURCE / "chains", TARGET / "chains")
     total += size

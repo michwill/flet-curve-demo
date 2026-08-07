@@ -574,40 +574,73 @@ step — plenty of long-tail tokens have no image upstream.
 Three, cycled by the one button in the header: **light**, **dark**, and
 **Chad**. The first two are Material's — one seed colour, and the generator
 works out the other forty-five slots. Chad is not generated: it is a hand-set
-palette taken from [linux.org.ru](https://www.linux.org.ru)'s default
-stylesheet (`waltz/combined.css`, the `:root` block), which is a particular
-yellowed grey no seed will produce.
+palette taken from [linux.org.ru](https://www.linux.org.ru), which is the
+Tango palette — warm aluminium greys under chocolate, butter and orange
+accents.
 
-The mapping is by *role*, not by name — what a colour does there is what it
-does here, and `ui/theme.py` lists each one against the CSS variable it came
-from. The page grey (`--main-background`) becomes `surface_container` and is
-also set on `page.bgcolor`; white (`--article-background`) becomes `surface`,
-so panels are white boxes on grey, which is the shape of the site it comes
-from. Two Material slots have no counterpart there and are derived, noted in
-the module.
+**Getting the palette right took two attempts, and the failure is instructive.**
+The obvious move is to read the stylesheet: pull `combined.css`, find the
+`:root` block, copy the hex. That produced a theme that was *plausible and
+wrong* — every variable name matched, every value was a different colour. Two
+reasons. The site ships several sheets and the default is `tango/`, not the
+`waltz/` one linked from its settings page; and within tango the `:root` block
+appears **twice**, dark first, light second. A grep finds whichever it finds.
+
+The values below were read off the live page instead —
+`getComputedStyle(document.documentElement)` on `/forum/talks/` — which is the
+only way to know which sheet and which block actually win:
+
+| variable | | role |
+| --- | --- | --- |
+| `--main-background` | `#D3D7CF` | the page behind everything |
+| `--article-background` | `#EEEEEC` | panels, boxes, dialogs |
+| `--text-color` | `#3B4245` | body text |
+| `--table-border-color` | `#BABDB6` | the rule between rows |
+| `--table-hover-background` | `#AD7FA8` | the row under the pointer |
+| `--icon-button-active-color` | `#C17D11` | an active control |
+| `--tagpage-group-label-background` | `#E9B96E` | a label that wants noticing |
+| `--main-menu-color` | `#8F5902` | the navigation |
+| `--tag-color` | `#CE5C00` | tags |
+| `--link-color` | `#204A87` | an ordinary link |
+
+The mapping into Material's slots is by *role*, not by name, and `ui/theme.py`
+lists each one against the variable it came from. The **row highlight is the
+tell**: `#AD7FA8`, a flat plum, is the single most recognisable thing about
+that site and the one colour no seed-generated palette arrives at. The first
+version had it as a pale amber, which is what the wrong stylesheet says.
+
+Material's ink overlay cannot produce it either — an overlay can only tint the
+surface — so `PoolRow` paints it from `on_hover`. Note `Event.data` there is a
+**bool** in Flet 0.86; older Flet sent `"true"`/`"false"`, and comparing
+against the string is a hover that silently never fires.
 
 **The shadows are the other half of it.** Material's elevation draws a blurred
 gradient; Chad draws a hard offset instead — `blur_radius=0`, one constant
 opacity, 3px down and right, 2px for things inside a panel. That is what a
-shadow under a bordered box looked like before shadows became soft, and it is
-what makes the theme read as itself rather than as light mode in beige.
-Because it would look like a mistake under a Material surface, every caller
-asks `theme.panel_shadow(page)`, which returns `None` unless Chad is on.
+shadow under a bordered box looked like before shadows became soft. (The site
+itself has no shadows at all — `box-shadow` is `none` everywhere on that page.
+These are an addition, in the spirit of the rest.) Because the same shadow
+under a Material surface would read as a mistake, every caller asks
+`theme.panel_shadow(page)`, which returns `None` unless Chad is on.
 
 Two consequences worth knowing:
 
-- **Switching theme rebuilds the view, not just the colours.** Shadows are set
-  when a control is built, so `_rebuild_view()` re-makes whichever view is on
-  screen. Colour alone would repaint fine; a shadow appearing would not.
+- **Switching theme rebuilds the view, not just the colours.** Shadows and the
+  row hover are set when a control is built, so `_rebuild_view()` re-makes
+  whichever view is on screen. Colour alone would repaint fine.
 - **Which theme is on is read off the page**, by `theme.is_chad(page)`, rather
   than tracked in a variable — a control built at any moment then asks the same
   question and gets the current answer.
 
-The button shows the theme you will *get*, not the one you are in: a moon, a
-sun, and for Chad the wireframe Curve mark (`logo-bw.svg`, from curve-assets —
-`curve_illustration-chad.svg` there is a 1441×618 background illustration, not
-a button-sized mark). That is also why the button is a `Container` and not an
-`IconButton`, which takes only an icon.
+The button shows the theme you are **in**: a sun for light, a moon for dark,
+and the Chad himself for Chad — `chad.png` from
+[curve-frontend](https://github.com/curvefi/curve-frontend/blob/main/packages/ui/src/images/chad.png),
+which is why it is committed to `src/assets` rather than compiled out of the
+curve-assets submodule like everything else. Showing the theme a click would
+*get* you is what this did first, and it is unreadable: a moon on a plainly
+light screen says the opposite of what is true. The destination goes in the
+tooltip, where there is room to say it in words. Drawing an image is also why
+the button is a `Container` and not an `IconButton`, which takes only an icon.
 
 The choice is remembered in `SharedPreferences` under `flet-curve.theme` — the
 browser's storage on web, a file on the desktop — and put back on load. Both

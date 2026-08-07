@@ -29,7 +29,7 @@ from curve.rpc import ChainlistDirectory, PublicNode
 from curve.sort import DEFAULT_SORT
 from ui import AnyEvent, routing
 from ui import theme as themes
-from ui.assets import chain_name, curve_logo, curve_wireframe
+from ui.assets import chad_mark, chain_name, curve_logo
 from ui.logos import chain_mark
 from ui.pool_detail import PoolDetailView
 from ui.pool_list import PoolListView
@@ -348,34 +348,42 @@ class CurveApp:
         )
 
     def _sync_theme_button(self, update: bool = False) -> None:
-        """Show what pressing it will get you: the *next* theme's mark.
+        """Show the theme you are *in*: sun for light, moon for dark, the
+        Chad for Chad.
 
-        Three states now, so the icon names the destination rather than
-        the state -- a moon while light, a sun while dark, and the
-        wireframe mark for Chad.
+        The other reading -- showing the theme the click will get you --
+        is what this did first, and it is unreadable: a moon while the
+        screen is plainly light says the opposite of what is true. The
+        tooltip carries the destination instead, where there is room to
+        say it in words.
+        """
+        current = self._theme_name()
+        mark: ft.Control
+        if current == "chad":
+            mark = ft.Image(src=chad_mark(), width=22, height=22, fit=ft.BoxFit.CONTAIN)
+        elif current == "dark":
+            mark = ft.Icon(ft.Icons.DARK_MODE)
+        else:
+            mark = ft.Icon(ft.Icons.LIGHT_MODE)
+        following = themes.NAMES[(themes.NAMES.index(current) + 1) % len(themes.NAMES)]
+        self._set_theme_button(mark, f"{current.capitalize()} theme — click for {following}")
+        if update:
+            self.page.update()
+
+    def _theme_name(self) -> str:
+        """Which of the three is on screen.
+
+        Derived rather than remembered: the theme can also change under
+        the app, when the desktop's own brightness flips while the mode is
+        still SYSTEM.
         """
         if themes.is_chad(self.page):
-            self._set_theme_button(ft.Icon(ft.Icons.LIGHT_MODE), "Light theme")
-            if update:
-                self.page.update()
-            return
+            return "chad"
         dark = self.page.theme_mode == ft.ThemeMode.DARK or (
             self.page.theme_mode == ft.ThemeMode.SYSTEM
             and self.page.platform_brightness == ft.Brightness.DARK
         )
-        # From dark the next stop is Chad, which has a mark of its own.
-        wireframe = curve_wireframe()
-        if dark and wireframe:
-            self._set_theme_button(
-                ft.Image(src=wireframe, width=20, height=20, fit=ft.BoxFit.CONTAIN),
-                "Chad theme",
-            )
-        elif dark:
-            self._set_theme_button(ft.Icon(ft.Icons.LIGHT_MODE), "Light theme")
-        else:
-            self._set_theme_button(ft.Icon(ft.Icons.DARK_MODE), "Dark theme")
-        if update:
-            self.page.update()
+        return "dark" if dark else "light"
 
     async def restore_theme(self) -> None:
         """Put back the theme this browser was last left in.
@@ -411,14 +419,8 @@ class CurveApp:
         shadow that the Material themes must not -- so the views are
         rebuilt rather than repainted.
         """
-        if themes.is_chad(self.page):
-            self._set_theme("light")
-            return
-        dark = self.page.theme_mode == ft.ThemeMode.DARK or (
-            self.page.theme_mode == ft.ThemeMode.SYSTEM
-            and self.page.platform_brightness == ft.Brightness.DARK
-        )
-        self._set_theme("chad" if dark else "dark")
+        following = themes.NAMES.index(self._theme_name()) + 1
+        self._set_theme(themes.NAMES[following % len(themes.NAMES)])
 
     def _set_theme(self, name: str, *, remember: bool = True) -> None:
         theme, mode = themes.theme_for(name)

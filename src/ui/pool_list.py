@@ -316,11 +316,13 @@ class PoolListView(ft.Column):
         self._table = ft.Container(
             ft.Column([self._header, self._rows_box], spacing=0, expand=True),
             bgcolor=ft.Colors.SURFACE,
-            # The same outline as the action panel on a pool page, so the
-            # two read as the same kind of thing. Clipped, because the
-            # heading band and the rows' own rules are square and would
-            # otherwise cross the rounded corners.
-            border=ft.Border.all(1, ft.Colors.OUTLINE_VARIANT),
+            # Outlined under Chad, which is a theme of bordered boxes and
+            # needs an edge for its shadow to come from; left alone in
+            # light and dark, where tone already separates the table from
+            # the page. Clipped either way, because the heading band and
+            # the rows' own rules are square and would otherwise cross the
+            # rounded corners.
+            border=theme.panel_border(page),
             border_radius=10,
             clip_behavior=ft.ClipBehavior.HARD_EDGE,
             expand=True,
@@ -446,6 +448,7 @@ class PoolListView(ft.Column):
         alone: re-making them is what freezes them.
         """
         self._table.shadow = theme.panel_shadow(self._page)
+        self._table.border = theme.panel_border(self._page)
         self._header.bgcolor = theme.header_bg(self._page)
         self._rows_box.theme = theme.rows_theme(self._page)
         self._sync_header()

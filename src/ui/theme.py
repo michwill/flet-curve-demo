@@ -220,6 +220,23 @@ def bar_shadow(page: ft.Page) -> ft.BoxShadow | None:
     return BAR_SHADOW if is_chad(page) else None
 
 
+def border_side(page: ft.Page) -> ft.BorderSide | None:
+    """A hairline outline, under Chad only.
+
+    Chad is a theme of boxes -- everything on that page sits in a bordered
+    one -- and the shadows it casts need an edge to come from. Material's
+    own light and dark separate things by tone instead, and an outline
+    there only adds a line where there was contrast already.
+    """
+    return ft.BorderSide(1, ft.Colors.OUTLINE_VARIANT) if is_chad(page) else None
+
+
+def panel_border(page: ft.Page) -> ft.Border | None:
+    """The same outline, on all four sides. None outside Chad."""
+    side = border_side(page)
+    return ft.Border.all(side.width, side.color) if side else None
+
+
 def rows_theme(page: ft.Page) -> ft.Theme | None:
     """A theme for the rows alone, colouring the hover plum.
 

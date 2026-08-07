@@ -698,6 +698,24 @@ def test_the_column_headings_get_a_band_under_chad() -> None:
     assert plain._header.bgcolor is None
 
 
+def test_the_outline_is_chads_alone() -> None:
+    """Chad is a theme of bordered boxes, and its shadows need an edge to
+    come from. Light and dark separate by tone, and looked better without
+    an extra line."""
+    from ui import theme
+
+    chad = PoolListView(ThemedPage("chad"), on_open=lambda _p: None)
+    plain = PoolListView(ThemedPage("light"), on_open=lambda _p: None)
+
+    assert chad._table.border is not None
+    assert plain._table.border is None
+    # ...and it comes and goes with the theme, on a container that
+    # outlives the change.
+    plain._page.theme, plain._page.theme_mode = theme.theme_for("chad")
+    plain.rebuild()
+    assert plain._table.border is not None
+
+
 def test_the_top_bar_casts_straight_down() -> None:
     """A bar that reaches both window edges has no side to cast from, so
     this one is the only shadow here with no sideways offset."""

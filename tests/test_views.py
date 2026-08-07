@@ -1305,3 +1305,30 @@ def test_a_theme_change_reaches_the_portfolio_too() -> None:
     view._page.theme, view._page.theme_mode = theme.theme_for("chad")
     view.rebuild()
     assert view._table.shadow is theme.PANEL_SHADOW
+
+
+async def test_losing_the_wallet_reloads_the_portfolio() -> None:
+    """Whoever's positions those were, they are not on screen for a page
+    with no wallet behind it. The same reload hangs off connecting,
+    restoring and switching account -- each changes the answer, and the
+    page showing it is often the page you are on."""
+    import main as app_module
+
+    app = app_module.CurveApp.__new__(app_module.CurveApp)
+    app.page = StubPage()
+    app.wallet = object()
+    app._page_name = "portfolio"
+    app.connect_button = ft.Button("Connect")
+    app._show_account = lambda **_kw: None      # type: ignore[method-assign]
+    reloaded = []
+
+    async def load_portfolio() -> None:
+        reloaded.append(True)
+
+    app.load_portfolio = load_portfolio      # type: ignore[method-assign]
+
+    await app._wallet_gone()
+
+    assert app.wallet is None
+    assert app.connect_button.visible is True
+    assert reloaded == [True]

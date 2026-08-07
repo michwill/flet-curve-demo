@@ -403,12 +403,14 @@ TestApp = AppMachine.TestCase
 
 
 @pytest.mark.parametrize("theme_name", ["light", "dark", "chad"])
-def test_a_rebuild_freezes_the_rows_it_re_makes(theme_name: str) -> None:
+def test_re_making_a_keyed_control_freezes_it(theme_name: str) -> None:
     """The mechanism the machine above relies on, checked directly.
 
-    If Flet ever stops freezing keyed controls this will fail, and the
-    stateful tests will have quietly stopped testing the thing they exist
-    for -- which is worth knowing about.
+    It is also the reason the pool list keeps its keys on *slots* that
+    outlive the rows inside them: a frozen control cannot be assigned to,
+    and its images are fetched, arrive and never paint. If Flet ever
+    stops freezing keyed controls this fails, and the stateful tests will
+    have quietly stopped testing the thing they exist for.
     """
     session = Session()
     app = build_app(session)
@@ -416,14 +418,16 @@ def test_a_rebuild_freezes_the_rows_it_re_makes(theme_name: str) -> None:
     session.baseline()
 
     view = app.list_view
-    view.rows.controls = [PoolRow(make_pool(i), lambda _p: None, i) for i in range(3)]
+    view.rows.controls = [ft.Container(key=f"row-{n}") for n in range(3)]
     session.flush()
     assert not any(hasattr(row, "_frozen") for row in view.rows.controls)
 
-    # Same keys, new objects: what re-making the rows used to do.
-    view.rows.controls = [PoolRow(make_pool(i), lambda _p: None, i) for i in range(3)]
+    # Same keys, new objects: what re-making a keyed row does.
+    view.rows.controls = [ft.Container(key=f"row-{n}") for n in range(3)]
     session.flush()
 
     assert all(hasattr(row, "_frozen") for row in view.rows.controls)
     with pytest.raises(RuntimeError, match="Frozen"):
         view.rows.controls[0].bgcolor = "#AD7FA8"
+
+

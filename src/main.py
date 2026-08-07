@@ -1135,6 +1135,11 @@ class CurveApp:
         self.page.update()
         if self._detail is not None:
             await self._detail.refresh_actions()
+        # Connecting *while on the portfolio* is the whole point of the
+        # empty state it is showing, so read it now rather than making
+        # the user find their way back to the page they are on.
+        if self._page_name == PAGE_PORTFOLIO:
+            await self.load_portfolio()
 
     async def restore(self) -> None:
         """Pick up the previous session, silently, or leave things as they are."""
@@ -1224,6 +1229,10 @@ class CurveApp:
         self.connect_button.visible = True
         self.connect_button.disabled = False
         self.page.update()
+        # Whoever's positions those were, they are not on screen for a
+        # page with no wallet behind it.
+        if self._page_name == PAGE_PORTFOLIO:
+            await self.load_portfolio()
 
     # -- the wallet panel -------------------------------------------------
 

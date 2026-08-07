@@ -219,6 +219,7 @@ def app_with(wallet) -> main.CurveApp:
     app.page = StubPage()
     app.wallet = wallet
     app._detail = None
+    app._page_name = "pools"      # not the portfolio, so nothing reloads
     app._address_expanded = False
     app.account_label = ft.Text("")
     app.account_chip = ft.Container(app.account_label)

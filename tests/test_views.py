@@ -1098,3 +1098,38 @@ async def test_a_chain_that_cannot_be_read_says_so_rather_than_showing_nothing()
     await view.load_parameters()
 
     assert any("No public node" in value for value in texts(view._parameter_rows))
+
+
+def test_the_action_panel_is_sized_to_what_the_pool_puts_in_it() -> None:
+    """`TabBarView` cannot size to its content, so the panel has to be
+    told -- and telling it one number for every pool is what left a
+    Deposit button floating in a few hundred pixels of empty card."""
+    from ui.pool_detail import ACTIONS_MAX, ACTIONS_MIN, ACTIONS_ROW, actions_height
+
+    two, three = actions_height(make_pool(2)), actions_height(make_pool(3))
+    assert three - two == ACTIONS_ROW
+    assert ACTIONS_MIN <= two <= ACTIONS_MAX
+
+
+def test_a_metapool_gets_room_for_its_switch_and_its_underlying_rows() -> None:
+    """The underlying route lists more rows than the pool has coins, and
+    it is the one that opens by default."""
+    from curve.models import Coin, Pool
+    from ui.pool_detail import actions_height
+
+    meta = Pool(
+        address="0x" + "11" * 20, name="Meta", chain="ethereum", chain_id=1,
+        registry="stableswapng", lp_token="0x" + "11" * 20, base_pool="0x" + "33" * 20,
+        coins=[Coin("0x" + f"{i:02x}" * 20, f"C{i}", 18, index=i) for i in range(4)],
+    )
+    meta.onchain_coins = 2
+
+    assert meta.has_underlying
+    assert actions_height(meta) > actions_height(make_pool(2))
+
+
+def test_the_panel_never_runs_off_a_laptop_screen() -> None:
+    """Past the ceiling the tab body scrolls, which it is built to do."""
+    from ui.pool_detail import ACTIONS_MAX, actions_height
+
+    assert actions_height(make_pool(8)) == ACTIONS_MAX

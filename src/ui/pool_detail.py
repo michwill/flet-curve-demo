@@ -41,10 +41,40 @@ LP_SERIES = "__lp__"
 #: chart's left edge, so the fold reads as one block.
 PARAMETER_PADDING = ft.Padding.only(left=6, bottom=4)
 
-#: Height the action panel gets when stacked under the chart. Fixed because
-#: the page scrolls in that arrangement, and a flex child inside unbounded
-#: height is a Flutter layout error.
-STACKED_ACTIONS_HEIGHT = 560
+# -- how tall the action panel is --------------------------------------
+#
+# It has to be told. `TabBarView` takes its height from the box around it
+# and cannot size to its content (see `_actions`), so the choice is
+# between a number and a panel that fills the window -- and filling the
+# window leaves the Deposit button floating in several hundred pixels of
+# empty card.
+#
+# The number is built from what the pool actually puts in the panel,
+# because the difference is large: a two-coin plain pool needs half of
+# what a four-coin metapool does. Measured against the browser build, at
+# the sizes in `typography.py`:
+
+#: Tab bar, padding, slippage field and the submit button -- everything
+#: that is there whatever the pool is.
+ACTIONS_CHROME = 250
+#: One amount row, of which there is one per coin.
+ACTIONS_ROW = 61
+#: The Pool tokens / Underlying switch, on metapools only.
+ACTIONS_SWITCH = 34
+#: Floor and ceiling. The floor keeps a two-coin pool's panel from looking
+#: like a widget; the ceiling stops a many-coin pool from running off a
+#: laptop screen -- past it the tab body scrolls, which it is built to do.
+ACTIONS_MIN = 340
+ACTIONS_MAX = 620
+
+
+def actions_height(pool: Pool) -> float:
+    """How tall the action panel needs to be for this pool."""
+    # The underlying route lists more rows than the pool has coins, and
+    # it is the default where it exists, so it is what to size for.
+    rows = max(len(pool.pool_coins), len(pool.coins) if pool.has_underlying else 0)
+    wanted = ACTIONS_CHROME + rows * ACTIONS_ROW + (ACTIONS_SWITCH if pool.has_underlying else 0)
+    return float(min(ACTIONS_MAX, max(ACTIONS_MIN, wanted)))
 
 
 class PoolDetailView(ft.Column):
@@ -199,7 +229,7 @@ class PoolDetailView(ft.Column):
             self._left.expand = False
             self._right.expand = False
             # Bounded, because the page around it is not.
-            self._right.height = STACKED_ACTIONS_HEIGHT
+            self._right.height = actions_height(self.pool)
             self._body.expand = False
             self._body.content = ft.Column(
                 [self._left, self._right], spacing=16, tight=True
@@ -208,7 +238,7 @@ class PoolDetailView(ft.Column):
             self.scroll = None
             self._left.scroll = ft.ScrollMode.AUTO
             self._left.expand = True
-            self._right.height = None
+            self._right.height = actions_height(self.pool)
             self._right.expand = 1
             self._body.expand = True
             self._body.content = ft.Row(

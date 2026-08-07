@@ -80,10 +80,19 @@ ADDRESS_EXPAND_MIN_PAGE = 1100
 PAGE_POOLS = "pools"
 PAGE_PORTFOLIO = "portfolio"
 
-#: How wide the nav slides open. Enough for both links at pool-name size
-#: and bold; a Row inside a clipped Container has no width of its own to
-#: animate from, so this is measured rather than derived.
-NAV_WIDTH = 210
+#: Space between the mark and the first link. It lives *inside* the nav
+#: rather than between the two, so it slides in with the links instead of
+#: sitting there as a permanent gap after the wordmark.
+NAV_GAP = 26
+
+#: Space between the links themselves. They are bold and pool-name sized
+#: now, so they need more air between them than a caption would.
+NAV_SPACING = 14
+
+#: How wide the nav slides open: the gap, plus both links. A Row inside a
+#: clipped Container has no width of its own to animate from, so this is
+#: measured rather than derived.
+NAV_WIDTH = NAV_GAP + NAV_SPACING + 210
 
 #: Below this the header has no room to slide anything open, so the mark
 #: becomes a menu button instead. Same threshold the address chip uses --
@@ -270,6 +279,7 @@ class CurveApp:
         # The pages, revealed by hovering the mark. See `_brand_hovered`.
         self.nav = ft.Container(
             width=0,
+            padding=ft.Padding.only(left=NAV_GAP),
             clip_behavior=ft.ClipBehavior.HARD_EDGE,
             animate=ft.Animation(
                 duration=ft.Duration(milliseconds=160),
@@ -1011,7 +1021,7 @@ class CurveApp:
                 self._nav_link("Pools", PAGE_POOLS),
                 self._nav_link("Portfolio", PAGE_PORTFOLIO),
             ],
-            spacing=4,
+            spacing=NAV_SPACING,
             tight=True,
         )
 

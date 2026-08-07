@@ -144,9 +144,12 @@ def test_fallback_colour_of_nothing_does_not_crash() -> None:
 def test_logos_overlap_rather_than_sit_side_by_side() -> None:
     size = 24
     stack = coin_stack([coin("A"), coin("B"), coin("C")], "ethereum", size)
-    lefts = [c.left for c in stack.content.controls]
+    # Painted right to left -- see `coin_stack` -- so read the positions
+    # back in the order they are laid out rather than the order they are
+    # drawn in.
+    lefts = sorted(c.left for c in stack.content.controls)
     step = lefts[1] - lefts[0]
-    assert 0 < step < size, "each logo must cover part of the previous one"
+    assert 0 < step < size, "each logo must overlap its neighbour"
     assert step == pytest.approx(size * (1 - OVERLAP))
 
 

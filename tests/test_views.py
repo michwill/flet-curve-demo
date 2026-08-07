@@ -1363,3 +1363,23 @@ def test_token_marks_are_resampled_bicubically() -> None:
     images = [c for c in _all_controls(mark) if isinstance(c, ft.Image)]
     for image in images:
         assert image.filter_quality == ft.FilterQuality.HIGH
+
+
+def test_coin_marks_are_painted_right_to_left() -> None:
+    """So each disc is under the one before it, not over it.
+
+    A `Stack` paints in order. The natural way round puts every coin's
+    left edge on top of its neighbour, and a logo with artwork in its
+    top-left corner then floats that corner in the middle of the seam --
+    tacETH carries an Ethereum badge there, and it read as a third coin
+    in the pool."""
+    from curve.models import Coin
+    from ui.logos import coin_stack
+
+    coins = [Coin("0x" + f"{n:02x}" * 20, f"C{n}", 18, index=n) for n in range(3)]
+    stack = coin_stack(coins, "ethereum", 27).content
+
+    # Left-most last in the paint order means left-most on top.
+    assert [mark.left for mark in stack.controls] == sorted(
+        [mark.left for mark in stack.controls], reverse=True
+    )

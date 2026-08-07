@@ -178,7 +178,19 @@ def coin_stack(
 
     slots = len(shown) + (1 if extra > 0 else 0)
     return ft.Container(
-        ft.Stack(marks, width=step * (slots - 1) + size, height=size),
+        # **Painted right to left**, so each disc is *under* the one
+        # before it rather than over it.
+        #
+        # A `Stack` paints in order, so the natural way round puts every
+        # coin's left edge on top of its neighbour -- and a logo with
+        # anything drawn in its top-left corner then floats that corner
+        # in the middle of the seam. tacETH is the example: its artwork
+        # carries an Ethereum badge up there, which landed on the WETH
+        # disc beside it and read as a third coin in the pool.
+        #
+        # Reversed, a mark can only ever cover the one to its right, and
+        # a corner badge disappears under its neighbour where it belongs.
+        ft.Stack(list(reversed(marks)), width=step * (slots - 1) + size, height=size),
         width=step * (slots - 1) + size,
         height=size,
     )

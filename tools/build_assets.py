@@ -62,17 +62,70 @@ def available_chains(source: Path) -> list[str]:
     return chains
 
 
-def copy_tree(source: Path, target: Path) -> tuple[int, int]:
+#: How much breathing room a full-bleed logo gets, as a fraction of its
+#: width. The app draws every token mark as a circle, and a circle cut out
+#: of a square loses 21% of it -- corners *and* whatever artwork reaches
+#: them. crvUSD is the obvious victim: its torus touches all four edges,
+#: so the mark came out visibly clipped.
+#:
+#: Padding it with its own background colour means the circle eats
+#: background instead of artwork. A full 41% would fit the entire square
+#: inside the circle, and would leave these logos looking smaller than
+#: everything beside them; a fifth is the compromise -- the artwork
+#: survives, the mark still fills its circle.
+BLEED_PAD = 0.20
+
+
+def pad_full_bleed(path: Path, target: Path) -> bool:
+    """Copy a token image, giving a full-bleed one room to be a circle.
+
+    Most token logos are round artwork on transparency and are copied
+    untouched -- clipping those to a circle removes nothing. A logo whose
+    corners are *opaque* was drawn as a square, and that is the one that
+    needs the padding.
+    """
+    try:
+        from PIL import Image
+    except ImportError:  # pragma: no cover - Pillow is a build-time tool
+        shutil.copy2(path, target)
+        return False
+
+    with Image.open(path) as image:
+        rgba = image.convert("RGBA")
+        width, height = rgba.size
+        spots = ((0, 0), (width - 1, 0), (0, height - 1), (width - 1, height - 1))
+        corners = [rgba.getpixel(spot) for spot in spots]
+        if any(not isinstance(pixel, tuple) or pixel[3] == 0 for pixel in corners):
+            shutil.copy2(path, target)
+            return False
+
+        pad = round(width * BLEED_PAD)
+        # The background to extend is whatever the corner is -- these are
+        # flat-backed logos, which is why they are square in the first
+        # place.
+        canvas = Image.new("RGBA", (width + pad * 2, height + pad * 2), corners[0])
+        canvas.paste(rgba, (pad, pad), rgba)
+        canvas.save(target)
+    return True
+
+
+def copy_tree(source: Path, target: Path, *, tokens: bool = False) -> tuple[int, int]:
     if not source.is_dir():
         return 0, 0
     target.mkdir(parents=True, exist_ok=True)
-    files = size = 0
+    files = size = padded = 0
     for item in source.iterdir():
         if not item.is_file():
             continue
-        shutil.copy2(item, target / item.name)
+        destination = target / item.name
+        if tokens and item.suffix.lower() == ".png":
+            padded += pad_full_bleed(item, destination)
+        else:
+            shutil.copy2(item, destination)
         files += 1
-        size += item.stat().st_size
+        size += destination.stat().st_size
+    if padded:
+        print(f"  padded {padded} full-bleed logo(s) in {target.name}")
     return files, size
 
 
@@ -119,7 +172,7 @@ def main() -> int:
 
     for chain in chains:
         files, size = copy_tree(
-            SOURCE / "images" / token_dir(chain), TARGET / "tokens" / chain
+            SOURCE / "images" / token_dir(chain), TARGET / "tokens" / chain, tokens=True
         )
         total += size
         if files:

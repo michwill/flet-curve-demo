@@ -115,6 +115,12 @@ ADDRESS_EXPAND_MIN_PAGE = 1100
 PAGE_POOLS = "pools"
 PAGE_PORTFOLIO = "portfolio"
 
+#: Space between the wordmark and the chain totals. Wider than the gap
+#: *inside* the totals -- "TVL … · 24h volume …" separates its two halves
+#: with three spaces around an interpunct -- because otherwise the TVL
+#: reads as belonging to the word Curve rather than to the line it is in.
+TOTALS_GAP = 22
+
 #: Space between the mark and the first link. It lives *inside* the nav
 #: rather than between the two, so it slides in with the links instead of
 #: sitting there as a permanent gap after the wordmark.
@@ -423,7 +429,13 @@ class CurveApp:
         # that is about to cover them anyway.
         lockup = ft.Container(
             ft.Row(
-                [brand, self.nav, ft.Container(self.totals, expand=True)],
+                [
+                    brand,
+                    self.nav,
+                    ft.Container(
+                        self.totals, expand=True, padding=ft.Padding.only(left=TOTALS_GAP)
+                    ),
+                ],
                 spacing=0,
             ),
             on_hover=self._brand_hovered,

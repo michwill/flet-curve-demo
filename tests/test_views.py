@@ -1274,15 +1274,33 @@ def test_the_heading_is_one_line() -> None:
     assert not any(t.startswith("0x") for t in texts(heading))
 
 
-def test_progress_is_a_bar_and_not_a_sentence() -> None:
+def test_the_portfolio_has_no_progress_bar_of_its_own() -> None:
+    """It uses the app's, in the strip under the top bar -- the same place
+    the pool list fills. A bar inside the page would push the table down
+    as it appeared and pull it back up as it went."""
     view = portfolio_view()
-    view.progress_to(0.5)
+    view.show([make_holding()])
 
-    assert view.progress.visible and view.progress.value == 0.5
-    assert not [t for t in texts(view) if "%" in t or "Checking" in t]
+    assert not any(isinstance(c, ft.ProgressBar) for c in _all_controls(view))
+    # The share column is a percentage; a *progress* percentage is not.
+    assert not [t for t in texts(view) if "Checking" in t or "Loading" in t]
 
-    view.progress_to(1.0)
-    assert not view.progress.visible
+
+def test_the_app_bar_carries_the_portfolio_progress() -> None:
+    import main as app_module
+
+    app = app_module.CurveApp.__new__(app_module.CurveApp)
+    app.page = StubPage()
+    app.progress = ft.ProgressBar(visible=False)
+
+    app.loading(0.5)
+    assert app.progress.visible and app.progress.value == 0.5
+
+    app.loading()                      # indefinite, as the pool list uses it
+    assert app.progress.value is None
+
+    app.loaded()
+    assert not app.progress.visible
 
 
 def test_the_table_wears_the_theme_like_the_pool_list_does() -> None:

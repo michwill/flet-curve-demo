@@ -30,7 +30,7 @@ from curve.format import compact_usd
 from curve.lite import LiteChain
 from curve.rpc import ChainlistDirectory, PublicNode
 from curve.sort import DEFAULT_SORT
-from ui import AnyEvent, routing
+from ui import AnyEvent, routing, safe_update
 from ui import theme as themes
 from ui.assets import chad_mark, chain_name, curve_logo
 from ui.logos import chain_mark
@@ -856,7 +856,7 @@ class CurveApp:
             view.show(remembered)
 
         provider = wallet.provider
-        view.progress_to(0.0)
+        self.loading(0.0)
         try:
             if remembered:
                 # A handful of calls, so the numbers on screen stop being
@@ -868,12 +868,12 @@ class CurveApp:
             # splits at the middle: asking which pools exist, then asking
             # the chain about all of them.
             targets = await self.api.portfolio_targets(self.chain, chain_id)
-            view.progress_to(PORTFOLIO_DISCOVERY_SHARE)
+            self.loading(PORTFOLIO_DISCOVERY_SHARE)
             holdings = await portfolio.scan(
                 provider,
                 targets,
                 account,
-                on_progress=lambda done, total: view.progress_to(
+                on_progress=lambda done, total: self.loading(
                     PORTFOLIO_DISCOVERY_SHARE
                     + (1 - PORTFOLIO_DISCOVERY_SHARE) * (done / max(total, 1))
                 ),
@@ -881,15 +881,32 @@ class CurveApp:
         except (WalletError, ApiError) as exc:
             if not remembered:
                 view.say(f"Could not read this chain: {exc}")
-            view.done_loading()
+            self.loaded()
             return
 
-        view.done_loading()
+        self.loaded()
         if holdings:
             view.show(holdings)
         else:
             view.say(f"No deposits in any {chain_name(self.chain)} pool.")
         self.page.run_task(self._remember_portfolio, holdings, account)
+
+    def loading(self, fraction: float | None = None) -> None:
+        """Show the strip under the top bar, at `fraction` or indefinite.
+
+        The same bar the pool list uses, in the same place: under the
+        header and above whatever is loading. It sits in the page's own
+        column, so showing it moves nothing -- a bar inside the page
+        would push the table down as it appears and pull it back up as it
+        goes.
+        """
+        self.progress.value = fraction
+        self.progress.visible = True
+        safe_update(self.progress)
+
+    def loaded(self) -> None:
+        self.progress.visible = False
+        safe_update(self.progress)
 
     async def _remembered_portfolio(self, account: str) -> list[portfolio.Holding]:
         with contextlib.suppress(Exception):

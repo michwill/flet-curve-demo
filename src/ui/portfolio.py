@@ -12,7 +12,9 @@ them in order:
     calls. The numbers on screen become current before the pool list has
     finished loading;
   * **scanned** -- everything else, which is where a new position turns
-    up. A progress bar counts this one, because it is the long part.
+    up. The strip under the top bar counts this one, because it is the
+    long part -- the app's own bar, in the same place the pool list uses,
+    so that nothing on the page moves while it fills.
 
 The table is sorted by what a position is worth, which is the order the
 question is usually asked in.
@@ -190,7 +192,6 @@ class PortfolioView(ft.Column):
         self._holdings: list[Holding] = []
 
         self.total = ft.Text("", size=METRIC, weight=ft.FontWeight.BOLD)
-        self.progress = ft.ProgressBar(visible=False, height=3, value=0.0)
 
         self.rows = ft.ListView(expand=True, spacing=0, key="holding-rows")
         self._header = self._build_header()
@@ -226,7 +227,6 @@ class PortfolioView(ft.Column):
                     vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     spacing=8,
                 ),
-                self.progress,
                 self.empty,
                 self._table,
             ],
@@ -257,23 +257,6 @@ class PortfolioView(ft.Column):
                                      color=ft.Colors.ON_SURFACE_VARIANT)
         self.empty.visible = True
         safe_update(self)
-
-    def progress_to(self, fraction: float) -> None:
-        """How far along the load is, 0 to 1, and nothing in words.
-
-        The two halves cost about the same: asking the API which pools
-        exist is the first half, reading a thousand balances is the
-        second. So the bar crosses the middle when the pool list lands --
-        see `CurveApp.load_portfolio`.
-        """
-        self.empty.visible = False
-        self.progress.value = max(0.0, min(1.0, fraction))
-        self.progress.visible = fraction < 1.0
-        safe_update(self.progress)
-
-    def done_loading(self) -> None:
-        self.progress.visible = False
-        safe_update(self.progress)
 
     def set_layout(self, narrow: bool) -> None:
         if narrow == self._narrow:

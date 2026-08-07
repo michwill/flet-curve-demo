@@ -917,3 +917,184 @@ async def test_storage_that_will_not_answer_is_not_fatal() -> None:
     await app.restore_theme()
 
     assert page.theme is was
+
+
+# -- pool parameters -------------------------------------------------------
+
+
+def detail_view(page=None, **kw):
+    return PoolDetailView(
+        page or StubPage(), api=None, pool=make_pool(),
+        get_contract=lambda: None, on_back=lambda: None, **kw,
+    )
+
+
+def texts(control) -> list[str]:
+    """Every string in a subtree, for asserting on what a panel says."""
+    found: list[str] = []
+
+    def walk(node, seen):
+        if id(node) in seen:
+            return
+        seen.add(id(node))
+        if isinstance(node, ft.Text) and node.value:
+            found.append(node.value)
+        if isinstance(node, ft.Control):
+            for name in node.__dataclass_fields__:
+                walk(getattr(node, name, None), seen)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item, seen)
+
+    walk(control, set())
+    return found
+
+
+def test_the_parameters_start_folded_away() -> None:
+    """Reference material: wanted rarely, and precisely when wanted."""
+    view = detail_view()
+    assert isinstance(view._parameters_slot.content, ft.ExpansionTile)
+    assert "Pool parameters" in texts(view._parameters_slot)
+
+
+def test_the_registry_line_is_gone() -> None:
+    """It spent two thirds of its width on the registry name and the word
+    "plain", neither of which anybody can act on."""
+    view = detail_view()
+    assert not any("plain" in value for value in texts(view._yields_slot))
+
+
+def test_a_wide_page_prints_the_whole_address() -> None:
+    """An address you have to hover to read is no use for checking a
+    contract against one you already have."""
+    view = detail_view()
+    view.set_layout(layout_for(LAPTOP))
+    assert make_pool().address in texts(view._parameters_slot)
+
+
+def test_a_phone_shortens_it() -> None:
+    """42 characters wrap onto three lines and push the row off screen."""
+    view = detail_view()
+    view.set_layout(layout_for(PHONE))
+    shown = texts(view._parameters_slot)
+    assert make_pool().address not in shown
+    assert any("…" in value for value in shown)
+
+
+def test_the_gauge_is_listed_when_there_is_one() -> None:
+    with_gauge = detail_view()
+    assert "Gauge" in texts(with_gauge._parameters_slot)
+
+
+def test_a_pool_with_no_gauge_lists_no_gauge_row() -> None:
+    view = PoolDetailView(
+        StubPage(), api=None, pool=make_pool(gauge=""),
+        get_contract=lambda: None, on_back=lambda: None,
+    )
+    assert "Gauge" not in texts(view._parameters_slot)
+
+
+def test_each_address_links_to_the_chains_explorer() -> None:
+    from curve import explorers
+    from curve.models import Coin, Pool
+
+    pool = Pool(
+        address="0x" + "11" * 20, name="P", chain="ethereum", chain_id=1,
+        registry="main", lp_token="0x" + "11" * 20,
+        coins=[Coin("0x" + "22" * 20, "C", 18, index=0)],
+    )
+    view = PoolDetailView(
+        StubPage(), api=None, pool=pool,
+        get_contract=lambda: None, on_back=lambda: None,
+    )
+    links = _links(view._parameters_slot)
+
+    assert links == [explorers.address_url(1, pool.address)]
+    assert links[0].startswith("https://etherscan.io/address/0x")
+
+
+def test_a_pool_on_a_chain_with_no_table_entry_still_links_somewhere() -> None:
+    """blockscan searches across chains: a link that lands somewhere
+    useful beats an address you cannot click."""
+    from curve import explorers
+
+    view = detail_view()          # the stub pool names no chain at all
+    assert all(link.startswith(explorers.FALLBACK) for link in _links(view._parameters_slot))
+
+
+def test_a_lite_chain_links_to_the_explorer_it_publishes() -> None:
+    """Those are the chains a hardcoded table would be wrong about."""
+    view = detail_view(explorer="https://monadscan.com/")
+    links = _links(view._parameters_slot)
+    assert links
+    assert all(link.startswith("https://monadscan.com/address/") for link in links)
+
+
+def _links(root) -> list[str]:
+    return [
+        control.url.url
+        for control in _all_controls(root)
+        if isinstance(control, ft.IconButton) and control.url is not None
+    ]
+
+
+def _all_controls(root):
+    seen: set[int] = set()
+    out: list = []
+
+    def walk(node):
+        if id(node) in seen:
+            return
+        seen.add(id(node))
+        if isinstance(node, ft.Control):
+            out.append(node)
+            for name in node.__dataclass_fields__:
+                walk(getattr(node, name, None))
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(root)
+    return out
+
+
+async def test_with_no_contract_the_addresses_stay_and_the_values_say_why() -> None:
+    view = detail_view()
+    await view.load_parameters()
+    assert "Connect a wallet to read them." in texts(view._parameter_rows)
+
+
+async def test_the_values_land_in_the_panel() -> None:
+    class Contract:
+        async def parameters(self):
+            return {"A": 4_000, "fee": 1_500_000}
+
+    contract = Contract()
+    view = PoolDetailView(
+        StubPage(), api=None, pool=make_pool(),
+        get_contract=lambda: contract,  # type: ignore[return-value]
+        on_back=lambda: None,
+    )
+    await view.load_parameters()
+
+    shown = texts(view._parameter_rows)
+    assert "A" in shown and "4,000" in shown
+    assert "0.0150%" in shown
+
+
+async def test_a_chain_that_cannot_be_read_says_so_rather_than_showing_nothing() -> None:
+    from wallet.base import WalletError
+
+    class Contract:
+        async def parameters(self):
+            raise WalletError("No public node is known for this network.")
+
+    contract = Contract()
+    view = PoolDetailView(
+        StubPage(), api=None, pool=make_pool(),
+        get_contract=lambda: contract,  # type: ignore[return-value]
+        on_back=lambda: None,
+    )
+    await view.load_parameters()
+
+    assert any("No public node" in value for value in texts(view._parameter_rows))

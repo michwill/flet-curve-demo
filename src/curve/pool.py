@@ -19,6 +19,7 @@ read here rejects empty return data.
 
 from __future__ import annotations
 
+import contextlib
 import sys
 from pathlib import Path
 
@@ -29,7 +30,13 @@ from wallet.base import RpcError, WalletError, WalletProvider
 
 from . import abi
 from .models import Pool
+from .parameters import PARAMETERS
 from .zaps import Zap, zap_for
+
+#: The two parameters a tricrypto pool indexes and everything else does
+#: not. Index 0 is the pool's first priced coin, which is the one a single
+#: line of a summary should show.
+INDEXED_PARAMETERS = ("price_oracle", "price_scale")
 
 
 class PoolCallFailed(WalletError):
@@ -178,6 +185,49 @@ class PoolContract:
     async def fee(self) -> int:
         """The pool's swap fee, in Curve's 1e10 units."""
         return await self._read(self.pool.address, abi.encode_fee(), "the pool fee")
+
+    async def parameters(self) -> dict[str, int]:
+        """Every curve parameter this pool will answer, raw and unscaled.
+
+        One read per parameter, and a pool that does not implement one is
+        the normal case, not a failure: `gamma` on a StableSwap pool,
+        `offpeg_fee_multiplier` on anything but StableSwap-NG. Those are
+        left out rather than reported, so the caller shows what exists.
+
+        Reads are sequential. A pool page makes nine of them once, against
+        a provider that is usually the user's own node, and running them
+        concurrently would mean nine simultaneous requests at a public
+        endpoint that rate-limits -- which is how you turn nine cheap
+        reads into one failed panel.
+        """
+        found: dict[str, int] = {}
+        for parameter in PARAMETERS:
+            with contextlib.suppress(PoolCallFailed, WalletError):
+                found[parameter.key] = await self._parameter(parameter.key)
+        return found
+
+    async def _parameter(self, name: str) -> int:
+        """One parameter, in whichever spelling the pool has.
+
+        `price_oracle`/`price_scale` take an index on a tricrypto pool and
+        no argument anywhere else, and the registry does not say which --
+        so the no-argument form is tried first and the indexed one covers
+        the pools that refuse it. Everything else is no-argument only, and
+        the first read is the only read.
+        """
+        try:
+            return await self._read(
+                self.pool.address, abi.encode_parameter(name), name, subject="The pool"
+            )
+        except PoolCallFailed:
+            if name not in INDEXED_PARAMETERS:
+                raise
+        return await self._read(
+            self.pool.address,
+            abi.encode_indexed_parameter(name, 0),
+            name,
+            subject="The pool",
+        )
 
     async def pair_fee(self, i: int, j: int) -> int:
         """The fee that applies to swapping `i` for `j`.

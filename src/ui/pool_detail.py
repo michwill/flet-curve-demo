@@ -8,10 +8,12 @@ an alternative UI at all.
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Callable
 
 import flet as ft
 
+from curve import explorers, parameters
 from curve.api import CANDLE_SIZES, DEFAULT_CANDLE_SIZE, CurveApi, get_candle_size
 from curve.format import (
     apr_range,
@@ -24,6 +26,7 @@ from curve.format import (
 from curve.http import ApiError
 from curve.models import Pool
 from curve.pool import PoolContract
+from wallet.base import WalletError
 
 from . import AnyEvent, safe_update, theme
 from .actions import DepositTab, StakeTab, SwapTab, WithdrawTab
@@ -33,6 +36,10 @@ from .responsive import Layout, layout_for
 from .typography import BODY, LABEL, METRIC, SMALL, TITLE
 
 LP_SERIES = "__lp__"
+
+#: The parameter list is indented under its heading, not against the
+#: chart's left edge, so the fold reads as one block.
+PARAMETER_PADDING = ft.Padding.only(left=6, bottom=4)
 
 #: Height the action panel gets when stacked under the chart. Fixed because
 #: the page scrolls in that arrangement, and a flex child inside unbounded
@@ -50,6 +57,7 @@ class PoolDetailView(ft.Column):
         pool: Pool,
         get_contract: Callable[[], PoolContract | None],
         on_back: Callable[[], None],
+        explorer: str = "",
     ) -> None:
         # `ft.Column` exposes `page` as a read-only property, so the reference
         # kept for `run_task`/`update` needs a name of its own.
@@ -57,6 +65,13 @@ class PoolDetailView(ft.Column):
         self.api = api
         self.pool = pool
         self.get_contract = get_contract
+        #: The chain's own explorer, where the chain publishes one. Lite
+        #: chains do; the rest come from a table. See `curve.explorers`.
+        self._explorer = explorer
+
+        # Set before anything is built: the address rows ask it whether
+        # they have room to print 42 characters.
+        self._layout = layout_for(2000.0)
 
         self.chart = CandleChart(height=340, on_capacity_change=self._chart_resized)
         self.chart_caption = ft.Text("", size=SMALL, color=ft.Colors.ON_SURFACE_VARIANT)
@@ -77,6 +92,13 @@ class PoolDetailView(ft.Column):
             ft.Text("Loading pool details…", size=SMALL, color=ft.Colors.ON_SURFACE_VARIANT)
         )
         self._yields_slot = ft.Container(self._yields())
+        # Read from the pool itself, so it cannot be built until the
+        # provider has answered. The rows are replaced in place -- this
+        # container outlives the reads and is never re-made, which is what
+        # keeps it assignable (see `theme.rows_theme` for what happens to
+        # controls that are not).
+        self._parameter_rows = ft.Column(spacing=2)
+        self._parameters_slot = ft.Container(self._parameters())
 
         # A dropdown rather than a segmented button: nine candle sizes do
         # not fit as buttons, and it is the control Curve uses for the same
@@ -127,6 +149,7 @@ class PoolDetailView(ft.Column):
                 *chart_block,
                 self._composition_slot,
                 self._yields_slot,
+                self._parameters_slot,
             ],
             spacing=10,
         )
@@ -135,7 +158,6 @@ class PoolDetailView(ft.Column):
         # `set_layout` rather than being two separate trees, so the chart and
         # the action panel keep their state across a resize.
         self._body = ft.Container(expand=True)
-        self._layout = layout_for(2000.0)
 
         super().__init__(
             controls=[self._header(on_back), self._body],
@@ -147,10 +169,17 @@ class PoolDetailView(ft.Column):
     # -- layout -----------------------------------------------------------
 
     def set_layout(self, layout: Layout) -> None:
-        if layout.stacked == self._layout.stacked:
-            self._layout = layout
-            return
+        was = self._layout
         self._layout = layout
+        if layout.cards != was.cards:
+            # Addresses are written in full where there is room and
+            # shortened where there is not, so this crossing is the one
+            # that re-makes them. The rows of values are the same object
+            # either way and keep whatever has been read.
+            self._parameters_slot.content = self._parameters()
+        if layout.stacked == was.stacked:
+            safe_update(self)
+            return
         self._arrange()
         safe_update(self)
 
@@ -358,17 +387,129 @@ class PoolDetailView(ft.Column):
                 )
             )
 
-        facts = ft.Text(
-            f"{self.pool.registry}  ·  {'metapool' if self.pool.is_meta else 'plain'}"
-            f"  ·  {'gauge ' + short_address(self.pool.gauge) if self.pool.has_gauge else 'no gauge'}"
-            + (f"  ·  A = {self.pool.amplification:,.0f}" if self.pool.amplification else ""),
-            size=LABEL,
-            color=ft.Colors.ON_SURFACE_VARIANT,
-        )
         return ft.Column(
-            [ft.Text("YIELD", size=LABEL, weight=ft.FontWeight.BOLD), *lines, facts],
+            [ft.Text("YIELD", size=LABEL, weight=ft.FontWeight.BOLD), *lines],
             spacing=4,
         )
+
+    # -- parameters -------------------------------------------------------
+
+    def _parameters(self) -> ft.Control:
+        """The addresses and the curve's own numbers, folded away.
+
+        Collapsed by default: this is reference material, wanted rarely
+        and precisely when it is wanted. It replaces the line of facts
+        that used to sit under the yields, which spent two thirds of its
+        width on the registry name and the word "plain" -- neither of
+        which anybody can act on.
+        """
+        rows: list[ft.Control] = [
+            self._address_row("Pool", self.pool.address),
+        ]
+        if self.pool.has_gauge:
+            rows.append(self._address_row("Gauge", self.pool.gauge))
+        rows.append(self._parameter_rows)
+        return ft.ExpansionTile(
+            title=ft.Text("Pool parameters", size=LABEL, weight=ft.FontWeight.BOLD),
+            controls=[ft.Container(ft.Column(rows, spacing=6), padding=PARAMETER_PADDING)],
+            tile_padding=ft.Padding.symmetric(horizontal=0),
+            controls_padding=ft.Padding.only(bottom=6),
+            dense=True,
+            min_tile_height=34,
+        )
+
+    def _address_row(self, label: str, address: str) -> ft.Control:
+        """An address, in full where there is room, with a copy and a link.
+
+        Shortened only on a narrow layout. On a phone the full 42
+        characters wrap onto three lines and push the row off the screen;
+        on anything wider they are what someone came here for -- an
+        address you have to hover or click to read is not much use for
+        checking a contract.
+        """
+        shown = short_address(address) if self._layout.cards else address
+        url = explorers.address_url(self.pool.chain_id, address, self._explorer)
+        return ft.Row(
+            [
+                ft.Text(label, size=SMALL, color=ft.Colors.ON_SURFACE_VARIANT, width=54),
+                ft.Text(
+                    shown,
+                    size=SMALL,
+                    font_family="monospace",
+                    selectable=True,
+                    expand=True,
+                ),
+                ft.IconButton(
+                    ft.Icons.COPY_ALL_OUTLINED,
+                    icon_size=14,
+                    tooltip="Copy address",
+                    on_click=lambda _e, value=address: self._copy(value),
+                ),
+                ft.IconButton(
+                    ft.Icons.OPEN_IN_NEW,
+                    icon_size=14,
+                    tooltip="Open in the explorer",
+                    # `Url` rather than a bare string so it opens in a new
+                    # tab: this app is a page you were in the middle of.
+                    url=ft.Url(url, target=ft.UrlTarget.BLANK) if url else None,
+                ),
+            ],
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            spacing=4,
+        )
+
+    def _copy(self, value: str) -> None:
+        self._page.run_task(self._copy_now, value)
+
+    async def _copy_now(self, value: str) -> None:
+        with contextlib.suppress(Exception):
+            await ft.Clipboard().set(value)
+
+    async def load_parameters(self) -> None:
+        """Ask the pool what shape it is.
+
+        Nine reads, and a pool answers between two and eight of them --
+        which ones is the pool's own answer to what family it belongs to,
+        and is not inferable from the registry name. See
+        `curve.parameters`.
+
+        With no wallet these go through a public node, which may not
+        exist for the chain; the section then keeps the addresses and says
+        so, because they are the half that needs no chain at all.
+        """
+        contract = self.get_contract()
+        if contract is None:
+            self._parameter_rows.controls = [self._unread("Connect a wallet to read them.")]
+            safe_update(self._parameter_rows)
+            return
+        try:
+            values = await contract.parameters()
+        except WalletError as exc:
+            self._parameter_rows.controls = [self._unread(str(exc))]
+            safe_update(self._parameter_rows)
+            return
+        self._parameter_rows.controls = [
+            self._parameter_row(parameter, shown)
+            for parameter, shown in parameters.rows(values)
+        ] or [self._unread("This pool answered none of them.")]
+        safe_update(self._parameter_rows)
+
+    def _parameter_row(self, parameter: parameters.Parameter, shown: str) -> ft.Control:
+        return ft.Row(
+            [
+                ft.Text(
+                    parameter.label,
+                    size=SMALL,
+                    color=ft.Colors.ON_SURFACE_VARIANT,
+                    tooltip=parameter.note,
+                    expand=True,
+                ),
+                ft.Text(shown, size=SMALL, selectable=True),
+            ]
+        )
+
+    def _unread(self, why: str) -> ft.Control:
+        return ft.Text(why, size=SMALL, color=ft.Colors.ON_SURFACE_VARIANT)
 
     def _yield_row(self, label: str, value: str, *, bold: bool = False) -> ft.Control:
         weight = ft.FontWeight.BOLD if bold else ft.FontWeight.NORMAL
@@ -551,3 +692,4 @@ class PoolDetailView(ft.Column):
         await self._load_detail()
         await self.load_chart()
         await self.refresh_actions()
+        await self.load_parameters()

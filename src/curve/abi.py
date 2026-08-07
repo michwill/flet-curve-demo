@@ -150,6 +150,27 @@ def encode_fee() -> str:
     return _call("fee()")
 
 
+def encode_parameter(name: str) -> str:
+    """A no-argument `uint256` getter, by name.
+
+    All the pool parameters are shaped alike -- `A()`, `gamma()`,
+    `mid_fee()`, `offpeg_fee_multiplier()` -- so they need one encoder
+    rather than nine. Which of them a given pool implements is a question
+    for the pool; see `curve.parameters`.
+    """
+    return _call(f"{name}()")
+
+
+def encode_indexed_parameter(name: str, index: int) -> str:
+    """The same getter, on a pool that holds several of them.
+
+    Tricrypto pools take an index for `price_oracle` and `price_scale`;
+    twocrypto and the stable factories take none. There is no way to tell
+    from the registry, so callers try both.
+    """
+    return _call(f"{name}(uint256)", _uint(index))
+
+
 def encode_dynamic_fee(i: int, j: int) -> str:
     """The fee for one particular pair, on the pools that price pairs.
 

@@ -25,6 +25,7 @@ import flet as ft
 from curve import ApiError, CurveApi, Pool, PoolContract
 from curve.api import PoolFeed
 from curve.format import compact_usd
+from curve.lite import LiteChain
 from curve.rpc import ChainlistDirectory, PublicNode
 from curve.sort import DEFAULT_SORT
 from ui import AnyEvent, routing
@@ -136,6 +137,9 @@ class CurveApp:
         self._public_nodes: dict[int, PublicNode] = {}
         self.chain = DEFAULT_CHAIN
         self.chains: dict[str, int] = {}
+        #: Lite deployments by chain name, once the list has loaded. Only
+        #: they publish an explorer URL; everything else is a table.
+        self._lite_chains: dict[str, LiteChain] = {}
         self.feed: PoolFeed | None = None
         self._detail: PoolDetailView | None = None
         self._address_expanded = False
@@ -451,6 +455,17 @@ class CurveApp:
         # built again for them to appear or go.
         self._rebuild_view()
 
+    def explorer_base(self, pool: Pool) -> str:
+        """The block explorer for the chain a pool is on, if it is known.
+
+        A Lite chain says which one it uses, and that answer is better
+        than any table -- those are the chains a table would be wrong
+        about. Empty otherwise, which `curve.explorers` reads as "use the
+        table".
+        """
+        lite = self._lite_chains.get(pool.chain or self.chain)
+        return lite.explorer if lite else ""
+
     def _rebuild_view(self) -> None:
         """Take on a theme that changed, everywhere -- not just on screen.
 
@@ -577,6 +592,10 @@ class CurveApp:
             # TVL: sorting by a volume that is unknown everywhere would
             # order the page arbitrarily. See `curve.lite`.
             lite = await self.api.is_lite(chain_id)
+            # Kept because the pool page needs it synchronously: a Lite
+            # chain publishes its own block explorer, and the addresses on
+            # that page link to it.
+            self._lite_chains = await self.api.lite_chains()
             self.feed = PoolFeed(
                 self.api,
                 self.chain,
@@ -627,7 +646,12 @@ class CurveApp:
 
     def open_pool(self, pool: Pool) -> None:
         self._detail = PoolDetailView(
-            self.page, self.api, pool, self.contract_for, self.show_list
+            self.page,
+            self.api,
+            pool,
+            self.contract_for,
+            self.show_list,
+            explorer=self.explorer_base(pool),
         )
         if self.page.width:
             self._detail.set_layout(layout_for(self.page.width))

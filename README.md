@@ -370,6 +370,14 @@ and a label — which is what canvas is for, unlike the candles, which were not.
   `(agg_number, agg_units)` on `lp_ohlc`; `agg_units` accepts only `minute`,
   `hour`, `day`.
 
+**A pair is charted the way it is written.** "WBTC/USDC" is WBTC priced in
+USDC, so it should read ~64,000 and not ~0.0000154. The `/ohlc` endpoint's
+parameters are the other way round from how they read — it prices
+`reference_token` *in* `main_token` — so the quote coin is what goes in
+`main_token`. Taking those names at face value inverts every pair chart, which
+is easy to miss unless one side is a stablecoin. The measurement is in
+[`docs/curve-api.md`](docs/curve-api.md).
+
 **How many candles is a function of the plot width, not a fixed number.**
 `CandlestickChart` draws bodies at a fixed width — measured at ~3 logical
 pixels, and unchanged whether it is handed 20 spots or 365 — so the only lever

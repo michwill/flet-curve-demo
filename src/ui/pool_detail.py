@@ -487,12 +487,14 @@ class PoolDetailView(ft.Column):
                     self.pool.chain, self.pool.address, size=size, count=count
                 )
             else:
+                # `i:j` is the pair as it is written and read: coin i
+                # priced in coin j.
                 i, j = (int(x) for x in value.split(":"))
                 candles = await self.api.pair_candles(
                     self.pool.chain,
                     self.pool.address,
-                    self.pool.pool_coins[i].address,
-                    self.pool.pool_coins[j].address,
+                    base=self.pool.pool_coins[i].address,
+                    quote=self.pool.pool_coins[j].address,
                     size=size,
                     count=count,
                 )

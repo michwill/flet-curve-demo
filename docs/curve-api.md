@@ -224,6 +224,19 @@ GET /v1/volume/{chain}/{address}
 which market to read them from. `start`/`end` are Unix seconds. These use the
 chain *name*, not the id.
 
+**`/ohlc` prices `reference_token` in `main_token`, which is the opposite of how
+the names read.** A pair written "WBTC/USDC" means WBTC priced in USDC, so USDC
+is what goes in `main_token`. Measured on tricryptoUSDC
+(`0x7f86bf177dd4f3494b841a37e810a34dd56c829b`):
+
+```
+main_token=WBTC&reference_token=USDC   ->  0.0000156     (USDC in WBTC)
+main_token=USDC&reference_token=WBTC   ->  63586.60      (WBTC in USDC)
+```
+
+Taking the parameter names at face value inverts every pair chart, and it is not
+obvious from the chart itself unless one side is a stablecoin.
+
 `/v1/chains/{chain}` also returns every pool on a chain in one call (1298 on
 Ethereum, 2.4 MB) — but its `page`/`per_page` params are broken (500).
 

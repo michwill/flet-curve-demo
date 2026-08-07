@@ -408,28 +408,38 @@ class CurveApi:
         self,
         chain: str,
         pool: str,
-        main_token: str,
-        reference_token: str,
+        base: str,
+        quote: str,
         *,
         size: CandleSize,
         count: int = CANDLE_COUNT,
         now: int | None = None,
     ) -> list[Candle]:
-        """Candles for one coin priced in another, within a single pool.
+        """Candles for `base` priced in `quote`, within a single pool.
 
-        `main_token`/`reference_token` are coin addresses; the pool address
-        only says which market to read them from.
+        Named the way a pair is read: "WBTC/USDC" is the price of WBTC in
+        USDC, so `base` is WBTC and `quote` is USDC. Both are coin
+        addresses; the pool address only says which market to read them
+        from.
+
+        **The endpoint's own parameters are the other way round.** It
+        returns the price of `reference_token` *denominated in*
+        `main_token`, so the quote coin goes in `main_token`. Measured
+        rather than assumed, on tricryptoUSDC: `main_token=WBTC,
+        reference_token=USDC` answers 0.0000156, and swapping them answers
+        63,586. Reading the names as base/quote is the natural mistake and
+        it inverts every pair chart.
         """
         end = int(now if now is not None else time.time())
-        key = f"ohlc:{chain}:{pool}:{main_token}:{reference_token}:{size.label}:{count}"
+        key = f"ohlc:{chain}:{pool}:{base}:{quote}:{size.label}:{count}"
         cached = self._cached(key)
         if cached is not None:
             return cached
         payload = await self._v1(
             f"/ohlc/{chain}/{pool}",
             {
-                "main_token": main_token,
-                "reference_token": reference_token,
+                "main_token": quote,
+                "reference_token": base,
                 "start": end - size.window(count),
                 "end": end,
                 "agg_number": size.agg_number,

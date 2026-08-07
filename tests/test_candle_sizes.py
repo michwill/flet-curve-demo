@@ -92,7 +92,31 @@ async def test_pair_candles_sends_the_same_aggregation() -> None:
     )
     _, params = api.calls[-1]
     assert (params["agg_number"], params["agg_units"]) == (4, "hour")
-    assert params["main_token"] == "0xa" and params["reference_token"] == "0xb"
+
+
+async def test_a_pair_is_sent_the_way_the_endpoint_reads_it() -> None:
+    """"WBTC/USDC" is the price of WBTC in USDC, and this endpoint prices
+    `reference_token` *in* `main_token` -- so the quote coin is the main
+    one. Measured on tricryptoUSDC: main=WBTC/reference=USDC answers
+    0.0000156, and swapped it answers 63,586. Taking the parameter names
+    at face value inverts every pair chart, which is what it did."""
+    api = RecordingApi()
+    await api.pair_candles(
+        "ethereum", "0xpool", base="0xWBTC", quote="0xUSDC",
+        size=get_candle_size("4h"), now=1_000_000,
+    )
+    _, params = api.calls[-1]
+    assert params["main_token"] == "0xUSDC"
+    assert params["reference_token"] == "0xWBTC"
+
+
+async def test_the_two_directions_of_a_pair_are_cached_apart() -> None:
+    api = RecordingApi()
+    for base, quote in [("0xa", "0xb"), ("0xb", "0xa"), ("0xa", "0xb")]:
+        await api.pair_candles(
+            "ethereum", "0xpool", base, quote, size=get_candle_size("1h"), now=1_000_000
+        )
+    assert len(api.calls) == 2  # the repeat came from cache, the flip did not
 
 
 async def test_each_size_is_cached_separately() -> None:

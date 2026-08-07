@@ -28,6 +28,7 @@ from .http import ApiError, build_url, get_json
 from .lite import (
     LITE_API,
     LITE_MIN_TVL,
+    LITE_TIMEOUT,
     LiteChain,
     parse_hidden,
     parse_platforms,
@@ -200,7 +201,7 @@ class CurveApi:
         if cached is not None:
             return cached
         try:
-            payload = await get_json(f"{LITE_API}/get_platforms")
+            payload = await get_json(f"{LITE_API}/get_platforms", timeout=LITE_TIMEOUT)
         except ApiError:
             return self._store("lite:chains", {})
         return self._store("lite:chains", parse_platforms(payload))

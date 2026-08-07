@@ -36,6 +36,16 @@ from .models import Pool
 
 LITE_API = "https://api2.curve.finance"
 
+#: How long to wait on the Lite API before giving up on it.
+#:
+#: Short, because this is on the critical path for **every** chain, not
+#: just the Lite ones: `chains()` folds the Lite deployments into the
+#: picker, so the first page of Ethereum pools waits on this call. At the
+#: 30-second default a slow `api2` means a pool list that looks like it is
+#: loading forever; at five it means a session with no Lite chains in the
+#: picker, which is the degradation `lite_chains` already promises.
+LITE_TIMEOUT = 5.0
+
 #: The list floor for a Lite chain. Zero, where the main chains use
 #: $10,000: whole Lite deployments are smaller than that floor -- Sonic's
 #: pools come to about $200k between them -- so the same cut would empty

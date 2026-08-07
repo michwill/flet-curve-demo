@@ -324,3 +324,52 @@ def test_the_floor_is_zero_by_default() -> None:
 def test_a_floor_still_applies_when_asked_for() -> None:
     _page, total = select(spread(5), sort_local=get_sort("tvl").local, min_tvl=3)
     assert total == 2
+
+
+# -- what a slow Lite API is allowed to cost -------------------------------
+
+
+async def test_the_platforms_call_gives_up_quickly() -> None:
+    """It is on the critical path for *every* chain: `chains()` folds the
+    Lite deployments into the picker, so the first page of Ethereum pools
+    waits on it. At the 30-second default a slow api2 is a pool list that
+    looks like it is loading forever."""
+    from curve import api as api_module
+    from curve.lite import LITE_TIMEOUT
+
+    asked: list[tuple[str, float]] = []
+
+    async def fake_get_json(url, timeout=30.0):
+        asked.append((url, timeout))
+        return {"data": {"platforms_metadata": {}}}
+
+    api = api_module.CurveApi()
+    original = api_module.get_json
+    api_module.get_json = fake_get_json
+    try:
+        await api.lite_chains()
+    finally:
+        api_module.get_json = original
+
+    from curve.http import DEFAULT_TIMEOUT
+
+    assert asked and asked[0][1] == LITE_TIMEOUT
+    assert LITE_TIMEOUT < DEFAULT_TIMEOUT
+
+
+async def test_a_lite_api_that_never_answers_costs_only_the_lite_chains() -> None:
+    """The degradation `lite_chains` promises: the picker loses them, the
+    main chains carry on."""
+    from curve import api as api_module
+    from curve.http import ApiError
+
+    async def timing_out(url, timeout=30.0):
+        raise ApiError("timed out")
+
+    api = api_module.CurveApi()
+    original = api_module.get_json
+    api_module.get_json = timing_out
+    try:
+        assert await api.lite_chains() == {}
+    finally:
+        api_module.get_json = original

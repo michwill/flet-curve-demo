@@ -27,12 +27,11 @@ from __future__ import annotations
 
 import math
 import time
+from collections.abc import Callable
 
 import flet as ft
 import flet.canvas as cv
 import flet_charts as fc
-
-from typing import Callable
 
 from curve.api import Candle
 from curve.format import token_amount
@@ -95,7 +94,7 @@ def price_decimals(span: float) -> int:
     """How many decimals a value needs across a given span."""
     if span <= 0:
         return 2
-    return max(2, min(10, int(math.ceil(-math.log10(span))) + 2))
+    return max(2, min(10, math.ceil(-math.log10(span)) + 2))
 
 
 def interval_decimals(interval: float) -> int:
@@ -196,8 +195,8 @@ def visible_slice(candles: list[Candle], view: Viewport) -> list[Candle]:
     """The candles inside the window, for refitting the price axis."""
     if not candles:
         return []
-    start = max(0, int(math.floor(view.x_min)))
-    end = min(len(candles), int(math.ceil(view.x_max)) + 1)
+    start = max(0, math.floor(view.x_min))
+    end = min(len(candles), math.ceil(view.x_max) + 1)
     return candles[start:end] or candles
 
 
@@ -247,8 +246,8 @@ def date_axis(candles: list[Candle], view: Viewport) -> fc.ChartAxis:
     if not candles:
         return fc.ChartAxis(labels=[])
     stride = max(1, int(view.x_span) // DATE_LABELS)
-    first = max(0, int(math.floor(view.x_min)))
-    last = min(len(candles) - 1, int(math.ceil(view.x_max)))
+    first = max(0, math.floor(view.x_min))
+    last = min(len(candles) - 1, math.ceil(view.x_max))
     values = [i for i in range(0, len(candles), stride) if first <= i <= last]
     return fc.ChartAxis(
         label_size=28,
@@ -264,8 +263,8 @@ def visible_range(candles: list[Candle], view: Viewport) -> tuple[int, int]:
     """The slice of candles worth sending for a given window."""
     if not candles:
         return 0, 0
-    start = max(0, int(math.floor(view.x_min)) - SPOT_MARGIN)
-    end = min(len(candles), int(math.ceil(view.x_max)) + SPOT_MARGIN + 1)
+    start = max(0, math.floor(view.x_min) - SPOT_MARGIN)
+    end = min(len(candles), math.ceil(view.x_max) + SPOT_MARGIN + 1)
     return start, max(start, end)
 
 
@@ -357,7 +356,7 @@ def crosshair_shapes(
         )
     )
 
-    index = int(round(plot.data_x(px, view)))
+    index = round(plot.data_x(px, view))
     if 0 <= index < len(candles):
         candle = candles[index]
         # Time, pinned under the cursor on the date axis.
@@ -544,6 +543,8 @@ class CandleChart(ft.Container):
         if not self._candles:
             return
         delta = e.local_delta
+        if delta is None:
+            return
         view = self._view.panned(
             -self._plot.dx(delta.x, self._view),
             # Screen y grows downward, so dragging down must raise prices.

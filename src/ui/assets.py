@@ -55,7 +55,7 @@ def _web_base() -> str:
     a Web Worker, but there is a `location`.
     """
     try:
-        import js  # noqa: PLC0415 -- browser-only
+        import js
 
         href = str(js.location.href)
     except Exception:

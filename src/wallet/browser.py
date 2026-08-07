@@ -34,11 +34,13 @@ Everything above `request()` is the same code the desktop build runs.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import sys
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from . import settings
-from .base import RpcError, WalletProvider, WalletUnavailable
+from .base import RpcError, WalletError, WalletProvider, WalletUnavailable
 
 #: Same string as in assets/wallet_bridge.js. Both sides must agree.
 CHANNEL_NAME = "flet-wallet"
@@ -81,8 +83,8 @@ class BrowserWalletProvider(WalletProvider):
     kind = "browser"
 
     def __init__(self) -> None:
-        import js  # noqa: PLC0415  -- only importable inside Pyodide
-        from pyodide.ffi import create_proxy  # noqa: PLC0415
+        import js
+        from pyodide.ffi import create_proxy
 
         self._js = js
         self._channel = js.BroadcastChannel.new(CHANNEL_NAME)
@@ -112,7 +114,7 @@ class BrowserWalletProvider(WalletProvider):
     # -- plumbing ----------------------------------------------------------
 
     def _to_js(self, value: Any):
-        from pyodide.ffi import to_js  # noqa: PLC0415
+        from pyodide.ffi import to_js
 
         # dict_converter is required, and applies recursively, so nested tx
         # dicts arrive as real JS objects rather than Maps (which the wallet
@@ -135,10 +137,9 @@ class BrowserWalletProvider(WalletProvider):
         direction = message.get("dir")
         if direction == "evt":
             for handler in self._handlers.get(message.get("event", ""), []):
-                try:
+                # A bad handler must not kill the channel.
+                with contextlib.suppress(Exception):
                     handler(message.get("data"))
-                except Exception:  # a bad handler must not kill the channel
-                    pass
             return
 
         if direction != "res":
@@ -187,7 +188,7 @@ class BrowserWalletProvider(WalletProvider):
 
         try:
             return await asyncio.wait_for(future, timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             self._pending.pop(request_id, None)
             if method == "bridge_selectWallet":
                 raise WalletUnavailable(
@@ -238,7 +239,7 @@ class BrowserWalletProvider(WalletProvider):
         )
         try:
             return await asyncio.wait_for(future, HANDSHAKE_TIMEOUT)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             self._pending.pop(request_id, None)
             raise WalletUnavailable(
                 "The page loaded without the wallet bridge.\n\n"
@@ -260,11 +261,9 @@ class BrowserWalletProvider(WalletProvider):
 
     async def forget(self) -> None:
         """Stop remembering the last wallet. Called on an explicit disconnect."""
-        try:
+        # Nothing to forget, or the bridge is already gone.
+        with contextlib.suppress(WalletError):
             await self.request("bridge_forget")
-        except WalletError:
-            # Nothing to forget, or the bridge is already gone.
-            pass
 
     async def select_wallet(self, uuid: str, *, silent: bool = False) -> dict[str, Any]:
         """Choose which discovered wallet subsequent requests go to.

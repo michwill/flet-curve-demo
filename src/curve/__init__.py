@@ -17,21 +17,21 @@ from __future__ import annotations
 from .api import Candle, CurveApi, PoolFeed
 from .http import ApiError
 from .models import Coin, Incentive, Pool
-from .pool import PoolContract, PoolCallFailed
+from .pool import PoolCallFailed, PoolContract
 from .sort import DEFAULT_SORT, SORTS, search_pools, sort_pools
 
 __all__ = [
-    "CurveApi",
-    "PoolFeed",
-    "Candle",
-    "ApiError",
-    "Pool",
-    "Coin",
-    "Incentive",
-    "PoolContract",
-    "PoolCallFailed",
-    "SORTS",
     "DEFAULT_SORT",
-    "sort_pools",
+    "SORTS",
+    "ApiError",
+    "Candle",
+    "Coin",
+    "CurveApi",
+    "Incentive",
+    "Pool",
+    "PoolCallFailed",
+    "PoolContract",
+    "PoolFeed",
     "search_pools",
+    "sort_pools",
 ]

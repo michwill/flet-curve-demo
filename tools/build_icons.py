@@ -35,6 +35,10 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # Pillow is a build-time dependency, not a runtime one
+    from PIL.Image import Image
 
 ROOT = Path(__file__).resolve().parent.parent
 LOGO = ROOT / "src" / "assets" / "curve" / "branding" / "logo.svg"
@@ -50,23 +54,23 @@ SAFE_ZONE = 0.78
 BACKDROP = (255, 255, 255, 255)
 
 
-def render(size: int) -> "Image.Image":  # noqa: F821
+def render(size: int) -> Image:
     """The mark at `size`, transparent, antialiased by the SVG renderer."""
-    from PIL import Image  # noqa: PLC0415
+    from PIL import Image
 
     out = subprocess.run(
         ["rsvg-convert", "-w", str(size), "-h", str(size), str(LOGO)],
         check=True,
         capture_output=True,
     ).stdout
-    import io  # noqa: PLC0415
+    import io
 
     return Image.open(io.BytesIO(out)).convert("RGBA")
 
 
-def on_backdrop(size: int) -> "Image.Image":  # noqa: F821
+def on_backdrop(size: int) -> Image:
     """The mark inset into the safe zone, on an opaque square."""
-    from PIL import Image  # noqa: PLC0415
+    from PIL import Image
 
     inner = round(size * SAFE_ZONE)
     canvas = Image.new("RGBA", (size, size), BACKDROP)
@@ -76,7 +80,7 @@ def on_backdrop(size: int) -> "Image.Image":  # noqa: F821
     return canvas
 
 
-def write(image: "Image.Image", path: Path) -> None:  # noqa: F821
+def write(image: Image, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     image.save(path, "PNG", optimize=True)
     print(f"  {path.relative_to(ROOT)}  {image.size[0]}px  {path.stat().st_size:,} B")
@@ -94,7 +98,7 @@ def main() -> int:
         print("rsvg-convert not found (librsvg).", file=sys.stderr)
         return 1
     try:
-        import PIL  # noqa: F401, PLC0415
+        import PIL  # noqa: F401
     except ImportError:
         print("Pillow not installed.", file=sys.stderr)
         return 1
@@ -149,7 +153,7 @@ def write_x11_icon(path: Path) -> None:
     are eight bytes on 64-bit, so the reader widens them -- doing that
     here instead would make the file architecture-specific.
     """
-    import struct  # noqa: PLC0415
+    import struct
 
     words: list[int] = []
     for size in X11_SIZES:

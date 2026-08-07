@@ -117,7 +117,7 @@ class StubPage:
 
     def run_task(self, handler, *args):
         self.tasks.append((handler, args))
-        return None
+        return
 
 
 class FakeApi:

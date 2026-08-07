@@ -20,7 +20,7 @@ one code path, byte-identical on every platform, and no network fetch.
 from __future__ import annotations
 
 from base64 import b64encode
-from functools import lru_cache
+from functools import cache
 from pathlib import Path
 
 _ICON_DIR = Path(__file__).parent / "icons"
@@ -41,7 +41,7 @@ _BY_CONNECTOR = {
 }
 
 
-@lru_cache(maxsize=None)
+@cache
 def data_uri(filename: str) -> str | None:
     """Load a bundled icon as a `data:` URI, or None if it is missing.
 

@@ -25,8 +25,7 @@ from curve import abi
 from curve.models import Coin, Pool
 from curve.pool import PoolCallFailed, PoolContract
 from curve.zaps import ZAPS, zap_for
-
-from test_actions import ACCOUNT, FakeProvider, StubPage, word, words_of
+from tests.test_actions import ACCOUNT, FakeProvider, StubPage, word, words_of
 
 NG_ZAP = "0xE07a16358aA878CBDa2D49A88E5106871E0db307"
 LEGACY_ZAP = "0xA79828DF1850E8a3A3064576f380D90aECDD3359"
@@ -326,7 +325,7 @@ async def test_the_underlying_route_deposits_through_the_zap() -> None:
 
     sent = provider.sent[-1]
     assert sent["to"] == NG_ZAP
-    pool_word, offset, min_mint, length, *amounts = words_of(sent["data"])
+    pool_word, _offset, min_mint, length, *amounts = words_of(sent["data"])
     assert pool_word == int(META, 16)
     assert length == 3
     assert amounts == [0, 1000 * 10**6, 0]

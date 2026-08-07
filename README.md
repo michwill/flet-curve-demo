@@ -646,12 +646,43 @@ Two smaller decisions worth stating: approvals are for the **exact amount**, not
 `MAX_UINT256`; and gas and nonce are never set, because every wallet in scope
 fills them in and knows the chain better than this app does.
 
+## Checks
+
+```bash
+uv pip install --python .venv/bin/python mypy ruff   # once
+.venv/bin/python tools/check.py                       # ruff, mypy, pytest
+.venv/bin/python tools/check.py --fix                 # let ruff fix first
+```
+
+Both tools are configured in `pyproject.toml`, so an editor and this script
+agree by construction. Ruff earned its place immediately: it found an
+`except WalletError` in a module that never imported the name, so the handler
+written to swallow a failed disconnect would have raised `NameError` instead.
+That one is now pinned by a test.
+
+`ruff format` is deliberately **not** part of this. The formatting here is
+hand-set — aligned comments, tables in docstrings, wrapped prose — and letting
+a formatter reflow it would cost more than it returns.
+
+Mypy checks `src` and `tools` with nothing excused. The tests are checked too,
+but with the error codes a test double trips by existing switched off
+(`arg-type`, `attr-defined`, `method-assign` and friends): a fake API passed
+where `CurveApi` is declared is the point of the file, not a mistake in it.
+
+One thing worth knowing about Flet's own hints, since they are good but not
+complete: `ft.ControlEvent` is `Event[BaseControl]` to a type checker, and
+`Event` is invariant, so a handler annotated with Flet's own alias cannot be
+passed to `TextField(on_change=…)`, which wants `Event[TextField]`. Naming the
+concrete control does not work either, because several handlers here are shared
+between a TextField, a Dropdown and a RadioGroup. `ui.AnyEvent` is the accurate
+type — `Event[Any]`, which is what the alias resolves to at runtime anyway.
+
 ## Testing
 
 Three layers, and the first two need nothing at all:
 
 ```bash
-.venv/bin/python -m pytest tests/ -q                      # 154 tests, ~0.9s
+.venv/bin/python -m pytest tests/ -q                      # 599 tests, ~4s
 .venv/bin/python -m pytest tests/integration -m flet_ui   # 6 tests, ~25s each
 ```
 

@@ -96,6 +96,7 @@ def token_mark(coin: Coin, chain: str, size: float = 24) -> ft.Container:
     """
     source = token_logo(chain, coin.address)
     letters = initials_mark(coin.symbol, size)
+    content: ft.Control
     if source:
         content = ft.Image(
             src=source,

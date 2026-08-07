@@ -7,6 +7,23 @@ encoding and API parsing can be exercised by plain pytest.
 
 from __future__ import annotations
 
+import contextlib
+from typing import Any
+
+import flet as ft
+
+#: An event from whatever control fired it.
+#:
+#: Flet's own `ft.ControlEvent` is `Event[BaseControl]` to a type checker
+#: (`Any` only at runtime), and `Event` is invariant in that parameter --
+#: so a handler annotated with it cannot be passed to
+#: `TextField(on_change=…)`, which asks for `Event[TextField]`. Naming the
+#: concrete control instead is no good either: several handlers here are
+#: shared between a TextField, a Dropdown and a RadioGroup. `Any` is the
+#: accurate description of what they accept, and it is what Flet's alias
+#: resolves to at runtime anyway.
+AnyEvent = ft.Event[Any]
+
 
 def safe_update(control) -> None:
     """`update()` the control if it is on a page; otherwise do nothing.
@@ -21,7 +38,5 @@ def safe_update(control) -> None:
     detail page and only then swaps it into the layout, and the tests build
     views with no page at all.
     """
-    try:
+    with contextlib.suppress(RuntimeError):
         control.update()
-    except RuntimeError:
-        pass

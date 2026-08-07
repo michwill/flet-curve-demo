@@ -15,11 +15,13 @@ also add it to the Pyodide dependency set for the web build, for no gain.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import urllib.error
 import urllib.request
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from .base import RpcError, WalletProvider, WalletUnavailable
 
@@ -154,10 +156,9 @@ class DesktopWalletProvider(WalletProvider):
 
     def _emit(self, event: str, data: Any) -> None:
         for handler in list(self._handlers.get(event, [])):
-            try:
+            # A bad handler must not kill the poller.
+            with contextlib.suppress(Exception):
                 handler(data)
-            except Exception:  # a bad handler must not kill the poller
-                pass
 
     async def _poll(self) -> None:
         # Reads first, sleeps after: the opening pass seeds the baseline, so

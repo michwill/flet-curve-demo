@@ -27,24 +27,24 @@ from pathlib import Path
 if __package__ in (None, ""):  # pragma: no cover - direct-script import
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from wallet.erc20 import decode_uint, keccak256, to_checksum_address  # noqa: E402
+from wallet.erc20 import decode_uint, keccak256
 
 __all__ = [
-    "selector",
-    "encode_approve",
-    "encode_allowance",
-    "encode_get_dy",
-    "encode_exchange",
+    "MAX_UINT256",
+    "apply_slippage",
+    "decode_uint",
     "encode_add_liquidity",
+    "encode_allowance",
+    "encode_approve",
     "encode_calc_token_amount",
-    "encode_remove_liquidity",
-    "encode_remove_liquidity_one_coin",
     "encode_calc_withdraw_one_coin",
+    "encode_exchange",
     "encode_gauge_deposit",
     "encode_gauge_withdraw",
-    "decode_uint",
-    "apply_slippage",
-    "MAX_UINT256",
+    "encode_get_dy",
+    "encode_remove_liquidity",
+    "encode_remove_liquidity_one_coin",
+    "selector",
 ]
 
 MAX_UINT256 = (1 << 256) - 1
@@ -521,5 +521,5 @@ def apply_slippage(amount: int, tolerance_pct: float) -> int:
         raise ValueError(f"slippage must be in [0, 100): {tolerance_pct}")
     # basis-point-of-a-basis-point resolution, enough for any UI slider
     scale = 1_000_000
-    keep = int(round((100.0 - tolerance_pct) / 100.0 * scale))
+    keep = round((100.0 - tolerance_pct) / 100.0 * scale)
     return amount * keep // scale

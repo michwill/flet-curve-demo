@@ -51,21 +51,21 @@ class Viewport:
     def y_span(self) -> float:
         return max(self.y_max - self.y_min, 1e-12)
 
-    def panned(self, dx: float, dy: float) -> "Viewport":
+    def panned(self, dx: float, dy: float) -> Viewport:
         return Viewport(
             self.x_min + dx, self.x_max + dx, self.y_min + dy, self.y_max + dy
         )
 
-    def zoomed_y(self, factor: float, focus: float) -> "Viewport":
+    def zoomed_y(self, factor: float, focus: float) -> Viewport:
         """Scale the price window, holding `focus` (a price) still."""
         below = (focus - self.y_min) * factor
         above = (self.y_max - focus) * factor
         return Viewport(self.x_min, self.x_max, focus - below, focus + above)
 
-    def with_y(self, y_min: float, y_max: float) -> "Viewport":
+    def with_y(self, y_min: float, y_max: float) -> Viewport:
         return Viewport(self.x_min, self.x_max, y_min, y_max)
 
-    def zoomed_x(self, factor: float, focus: float) -> "Viewport":
+    def zoomed_x(self, factor: float, focus: float) -> Viewport:
         """Scale the x window by `factor`, holding `focus` (a data x) still.
 
         Anchoring on the cursor is what makes wheel-zoom feel right: the
@@ -75,7 +75,7 @@ class Viewport:
         right = (self.x_max - focus) * factor
         return Viewport(focus - left, focus + right, self.y_min, self.y_max)
 
-    def clamped(self, count: int) -> "Viewport":
+    def clamped(self, count: int) -> Viewport:
         """Keep the window over the data and no narrower than `MIN_VISIBLE`.
 
         Panning is allowed to run half a window past each end -- stopping

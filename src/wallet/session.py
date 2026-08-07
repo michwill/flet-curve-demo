@@ -19,7 +19,9 @@ Nothing here imports Flet, and nothing here knows which platform it is on.
 
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable
+import contextlib
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from . import chains, consent, erc20, icons
 from .base import RpcError, WalletError, WalletProvider, WalletUnavailable
@@ -74,7 +76,7 @@ class WalletChoice:
     which case draw a fallback from `initial`.
     """
 
-    __slots__ = ("uuid", "name", "rdns", "icon")
+    __slots__ = ("icon", "name", "rdns", "uuid")
 
     def __init__(self, uuid: str, name: str, rdns: str = "", icon: str | None = None):
         self.uuid = uuid
@@ -126,8 +128,8 @@ class Wallet:
         #: one. Kept from the choice rather than re-derived: only `connect`
         #: knows which of the announced wallets won.
         self.icon = _safe_icon(icon)
-        self._change_handlers: list[Callable[[], None]] = []
-        self._disconnect_handlers: list[Callable[[], None]] = []
+        self._change_handlers: list[Callable[[], Any]] = []
+        self._disconnect_handlers: list[Callable[[], Any]] = []
         provider.on("accountsChanged", self._accounts_changed)
         provider.on("chainChanged", self._chain_changed)
         # An extension announces a revoked site by sending an empty
@@ -140,7 +142,7 @@ class Wallet:
     @classmethod
     async def connect(
         cls, choose: Chooser | None = None, *, always_choose: bool = False
-    ) -> "Wallet":
+    ) -> Wallet:
         """Find a wallet, authorise an account, and return a live session.
 
         `choose` is consulted when a platform offers more than one wallet --
@@ -169,7 +171,7 @@ class Wallet:
         ]
         uuid = options[0].uuid if options else ""
         if len(options) > 1 or (always_choose and options and choose):
-            uuid = await choose(options) if choose else options[0].uuid
+            uuid = (await choose(options) if choose else options[0].uuid) or ""
             if not uuid:
                 await provider.close()
                 raise ConnectionCancelled()
@@ -221,7 +223,7 @@ class Wallet:
         await self.close()
 
     @classmethod
-    async def restore(cls) -> "Wallet | None":
+    async def restore(cls) -> Wallet | None:
         """Reconnect to the wallet used last time, or return None.
 
         Closing a tab should not mean starting over, but reconnecting must
@@ -260,7 +262,9 @@ class Wallet:
             return None
 
         try:
-            await provider.select_wallet(match["uuid"], silent=True)  # type: ignore[call-arg]
+            await provider.select_wallet(  # type: ignore[attr-defined]
+                match["uuid"], silent=True
+            )
             accounts = await provider.accounts()
         except WalletError:
             await provider.close()
@@ -300,20 +304,19 @@ class Wallet:
 
     # -- events -----------------------------------------------------------
 
-    def on_change(self, handler: Callable[[], None]) -> None:
+    def on_change(self, handler: Callable[[], Any]) -> None:
         """Called after the account or chain changed wallet-side."""
         self._change_handlers.append(handler)
 
-    def on_disconnect(self, handler: Callable[[], None]) -> None:
+    def on_disconnect(self, handler: Callable[[], Any]) -> None:
         """Called when the wallet drops the connection."""
         self._disconnect_handlers.append(handler)
 
-    def _fire(self, handlers: list[Callable[[], None]]) -> None:
+    def _fire(self, handlers: list[Callable[[], Any]]) -> None:
         for handler in handlers:
-            try:
+            # A bad handler must not kill the event stream.
+            with contextlib.suppress(Exception):
                 handler()
-            except Exception:  # a bad handler must not kill the event stream
-                pass
 
     def _accounts_changed(self, accounts: Any) -> None:
         if isinstance(accounts, list) and accounts:

@@ -105,7 +105,7 @@ class Coin:
     balance_usd: float = 0.0
 
     @classmethod
-    def from_v2(cls, raw: dict[str, Any]) -> "Coin":
+    def from_v2(cls, raw: dict[str, Any]) -> Coin:
         return cls(
             address=raw.get("address") or "",
             symbol=raw.get("symbol") or "?",
@@ -124,7 +124,7 @@ class Incentive:
     apr: float = 0.0
 
     @classmethod
-    def from_v2(cls, raw: dict[str, Any]) -> "Incentive":
+    def from_v2(cls, raw: dict[str, Any]) -> Incentive:
         return cls(
             symbol=raw.get("symbol") or "?",
             token_address=raw.get("address") or raw.get("token_address") or "",
@@ -132,7 +132,7 @@ class Incentive:
         )
 
     @classmethod
-    def from_lite(cls, raw: dict[str, Any]) -> "Incentive":
+    def from_lite(cls, raw: dict[str, Any]) -> Incentive:
         """Curve Lite's gauge reward entry.
 
         `apy` is null wherever the token has no price -- which on these
@@ -357,7 +357,7 @@ class Pool:
     # -- parsing ----------------------------------------------------------
 
     @classmethod
-    def from_v2(cls, raw: dict[str, Any], chain: str = "") -> "Pool":
+    def from_v2(cls, raw: dict[str, Any], chain: str = "") -> Pool:
         """Build from one entry of the v2 `/pools/` list."""
         return cls(
             address=raw.get("address") or "",
@@ -386,7 +386,7 @@ class Pool:
             base_pool=raw.get("base_pool") or "",
         )
 
-    def merge_detail(self, raw: dict[str, Any]) -> "Pool":
+    def merge_detail(self, raw: dict[str, Any]) -> Pool:
         """Fold in the extra fields only `/pools/{chain_id}/{address}` has.
 
         Mutates in place and returns self, so a cached list entry gains its
@@ -418,7 +418,7 @@ class Pool:
         return self
 
     @classmethod
-    def from_lite(cls, raw: dict[str, Any], chain: str = "") -> "Pool":
+    def from_lite(cls, raw: dict[str, Any], chain: str = "") -> Pool:
         """Build from one entry of Curve Lite's `get_pools/{chain_id}`.
 
         A different API for a different kind of deployment: Curve Lite runs

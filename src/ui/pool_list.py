@@ -14,7 +14,7 @@ whatever happened to be in memory.
 from __future__ import annotations
 
 import asyncio
-from typing import Callable
+from collections.abc import Callable
 
 import flet as ft
 
@@ -23,7 +23,7 @@ from curve.format import apr_range, compact_usd, percent
 from curve.models import Pool
 from curve.sort import DEFAULT_SORT, SORTS
 
-from . import safe_update
+from . import AnyEvent, safe_update
 from .logos import pool_stack
 from .responsive import Layout, layout_for
 from .typography import BODY, LABEL, ROW_TITLE, SMALL
@@ -102,7 +102,14 @@ def reward_lines(pool: Pool) -> list[ft.Control]:
         )
     if not lines:
         lines.append(
-            ft.Text("–", size=BODY, color=ft.Colors.OUTLINE, text_align=ft.TextAlign.RIGHT)
+            # An en dash, not a hyphen: it is standing in for a missing
+            # number in a column of numbers, which is what it is for.
+            ft.Text(
+                "–",  # noqa: RUF001 -- an en dash, standing in for a missing number
+                size=BODY,
+                color=ft.Colors.OUTLINE,
+                text_align=ft.TextAlign.RIGHT,
+            )
         )
     return lines
 
@@ -271,7 +278,7 @@ class PoolListView(ft.Column):
             width=140,
             dense=True,
             visible=False,
-            on_select=lambda _e: self._sort_by(self.sort_picker.value or DEFAULT_SORT),
+            on_select=self._sort_picked,
         )
         self.rows = ft.ListView(
             key="pool-rows",
@@ -418,6 +425,12 @@ class PoolListView(ft.Column):
         self.rows.controls = []
         self._sync_count()
 
+    def _sort_picked(self, _e: AnyEvent) -> None:
+        """The phone's dropdown. A named method rather than a lambda: the
+        lambda read `self.sort_picker` from inside the statement defining
+        it, which works but leaves its own type unknowable."""
+        self._sort_by(self.sort_picker.value or DEFAULT_SORT)
+
     def _sort_by(self, key: str) -> None:
         if self.feed is None or key == self._sort:
             return
@@ -431,7 +444,7 @@ class PoolListView(ft.Column):
         safe_update(self)
         self._run(self.load_more)
 
-    def _search_changed(self, e: ft.ControlEvent) -> None:
+    def _search_changed(self, e: AnyEvent) -> None:
         self._run(self._debounced_search, e.control.value or "")
 
     async def _debounced_search(self, query: str) -> None:

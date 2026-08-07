@@ -13,11 +13,11 @@ handlers in a dict and calling them on demand.
 
 from __future__ import annotations
 
-from typing import Any, Callable
-
-import pytest
+from collections.abc import Callable
+from typing import Any
 
 import flet as ft
+import pytest
 
 from wallet.base import RpcError, WalletProvider, WalletUnavailable
 from wallet.chains import get_chain
@@ -87,7 +87,7 @@ def test_a_lowercase_account_is_checksummed_on_the_way_in() -> None:
 
 def test_an_empty_account_list_is_a_disconnection() -> None:
     """How an extension says the site was revoked."""
-    provider, wallet, counts = make_wallet()
+    provider, _wallet, counts = make_wallet()
     provider.emit("accountsChanged", [])
     assert counts == {"change": 0, "gone": 1}
 
@@ -627,3 +627,19 @@ async def test_no_wallet_is_not_an_error() -> None:
     app = curve_app(SwitchingProvider(), chain="xdai")
     app.wallet = None
     await app.align_wallet_chain()  # must not raise
+
+
+async def test_forgetting_survives_a_bridge_that_is_already_gone() -> None:
+    """`forget` runs on an explicit disconnect, when the bridge may have
+    stopped answering -- and the `except WalletError` that covers that used
+    to name something the module had not imported, so the handler itself
+    raised `NameError`. Found by ruff, which is why it is now pinned."""
+    from wallet.browser import BrowserWalletProvider
+
+    provider = BrowserWalletProvider.__new__(BrowserWalletProvider)
+
+    async def refuse(method, params=None):
+        raise WalletUnavailable("the bridge is gone")
+
+    provider.request = refuse  # type: ignore[method-assign]
+    await provider.forget()   # must not raise

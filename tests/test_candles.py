@@ -18,9 +18,9 @@ from ui.candles import (
     DATE_LABELS,
     MAX_CANDLES,
     MIN_CANDLES,
+    PRICE_LABELS,
     TARGET_PITCH_PX,
     WICK_HEADROOM,
-    PRICE_LABELS,
     CandleChart,
     build_spots,
     crosshair_shapes,
@@ -30,7 +30,6 @@ from ui.candles import (
     interval_decimals,
     nice_interval,
     price_axis,
-    price_bounds,
     price_decimals,
     visible_slice,
 )

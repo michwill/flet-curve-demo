@@ -23,3 +23,105 @@ path = "src"
 # the manifest holds one value, so index.html carries the dark one too.
 pwa_theme_color = "#E4E1E8"
 pwa_background_color = "#FFFFFF"
+
+# -- checks ------------------------------------------------------------------
+#
+# Both tools are pinned here rather than left to defaults, so a run on this
+# machine and a run anywhere else agree. `python tools/check.py` runs them
+# together with the tests.
+
+[tool.ruff]
+line-length = 90
+target-version = "py312"
+extend-exclude = ["vendor", "dist", "build"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",     # pycodestyle
+    "F",          # pyflakes -- the one that found a `NameError` waiting to happen
+    "I",          # import order
+    "UP",         # pyupgrade: this targets 3.12+, so old spellings are noise
+    "B",          # bugbear
+    "SIM",        # simplify
+    "RUF",        # ruff's own
+    "C4",         # comprehensions
+    "PIE",
+    "RET",
+    "PLC", "PLE", "PLW",
+]
+ignore = [
+    # Long lines are the exception here, not the rule, and the ones that
+    # remain are URLs and tables in docstrings that read worse when wrapped.
+    "E501",
+    # A deliberate pattern in this codebase: browser-only imports
+    # (`pyodide`, `js`) and heavy ones are imported inside the function
+    # that needs them, because the desktop build must not import them at
+    # all. Every site says so in a comment.
+    "PLC0415",
+    # `zip()` without `strict=` is used where the lists are known to match
+    # -- coins against their amounts, built one from the other.
+    "B905",
+    # `__all__` in `wallet/__init__.py` is grouped by comment (app-facing
+    # API, then the transports); alphabetising it would lose that.
+    "RUF022",
+    # An empty method on the provider base class is an optional hook with
+    # a working default -- `on` and `close` mean "this transport has
+    # nothing to do here", which is different from "must implement".
+    "B027",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests import inside test bodies on purpose: it keeps each test's
+# dependencies visible at the point of use, and several import the same
+# module under different fakes.
+"tests/*" = ["PLC0415", "PLW2901"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["curve", "ui", "wallet", "tests"]
+
+[tool.mypy]
+python_version = "3.12"
+files = ["src", "tools", "tests"]
+mypy_path = "src"
+explicit_package_bases = true
+namespace_packages = true
+
+# The point of this repo's type hints is catching wiring mistakes, so the
+# checks that matter are the ones about *disagreements*: a `None` where a
+# value is expected, a call that cannot work. Full strictness is not the
+# goal -- `disallow_any_generics` and friends would mostly produce noise
+# against Flet's own signatures.
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_unused_configs = true
+no_implicit_optional = true
+strict_equality = true
+check_untyped_defs = true
+disallow_untyped_defs = false
+
+# flet_charts ships no `py.typed`, so its symbols are `Any` and there is
+# nothing to check against. Flet itself is typed and is checked.
+[[tool.mypy.overrides]]
+module = ["flet_charts.*", "pyodide.*", "js"]
+ignore_missing_imports = true
+
+# Tests are checked, but not for the things a test double *is*. A fake API
+# passed where `CurveApi` is declared, a stub that grows an attribute mid
+# test, a monkeypatched method -- those are the point of the file, not
+# mistakes in it. What stays switched on is the half that still catches
+# real errors here: undefined names, unreachable code, bad returns.
+[[tool.mypy.overrides]]
+module = ["tests.*"]
+disable_error_code = [
+    "arg-type",
+    "attr-defined",
+    "union-attr",
+    "assignment",
+    "method-assign",
+    "call-arg",
+    "misc",
+    "comparison-overlap",
+    "list-item",
+    "type-var",
+    "unused-ignore",
+]

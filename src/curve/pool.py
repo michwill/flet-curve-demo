@@ -25,11 +25,11 @@ from pathlib import Path
 if __package__ in (None, ""):  # pragma: no cover - direct-script import
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from wallet.base import RpcError, WalletError, WalletProvider  # noqa: E402
+from wallet.base import RpcError, WalletError, WalletProvider
 
-from . import abi  # noqa: E402
-from .models import Pool  # noqa: E402
-from .zaps import Zap, zap_for  # noqa: E402
+from . import abi
+from .models import Pool
+from .zaps import Zap, zap_for
 
 
 class PoolCallFailed(WalletError):
@@ -298,7 +298,7 @@ class PoolContract:
 
     async def balance_of(self, token: str, owner: str | None = None) -> int:
         """ERC-20 balance. Zero is a legitimate answer here, unlike a quote."""
-        from wallet.erc20 import encode_balance_of  # noqa: PLC0415
+        from wallet.erc20 import encode_balance_of
 
         try:
             result = await self.provider.call(

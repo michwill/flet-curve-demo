@@ -88,7 +88,8 @@ def _text(pointer) -> str:
     """A copy of an X-allocated string, leaving the pointer intact."""
     if not pointer:
         return ""
-    return ctypes.cast(pointer, ctypes.c_char_p).value.decode("latin-1", "replace")
+    value = ctypes.cast(pointer, ctypes.c_char_p).value
+    return value.decode("latin-1", "replace") if value else ""
 
 
 def _declare(xlib) -> None:

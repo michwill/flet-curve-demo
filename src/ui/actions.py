@@ -33,8 +33,9 @@ Two rules hold everywhere in this file:
 
 from __future__ import annotations
 
+import contextlib
+from collections.abc import Awaitable, Callable
 from decimal import ROUND_CEILING, Decimal
-from typing import Awaitable, Callable
 
 import flet as ft
 
@@ -45,11 +46,12 @@ from curve.models import Pool
 from curve.pool import PoolContract
 from curve.zaps import zap_for
 from wallet.base import WalletError
+from wallet.erc20 import format_units, parse_units
 
+from . import AnyEvent
 from .assets import chain_name
 from .logos import pool_stack, token_mark
 from .typography import BODY, LABEL, SMALL
-from wallet.erc20 import format_units, parse_units
 
 #: How often to ask whether a transaction has been mined. A module-level
 #: knob rather than a hidden default so a test can run the loop flat out.
@@ -177,7 +179,14 @@ class ActionTab:
     #: Label for the button that sends the main transaction.
     submit_label = "Confirm"
     #: Past tense, for the line shown once the transaction is mined.
-    done_verb = "Confirmed"
+    #: A property rather than a plain attribute because staking answers it
+    #: with a question -- which way the gauge went -- and a property
+    #: cannot override an attribute.
+    _done_verb = "Confirmed"
+
+    @property
+    def done_verb(self) -> str:
+        return self._done_verb
     #: Does this action have a price to protect? Staking does not -- it
     #: moves LP tokens into a gauge at no rate at all -- so showing a
     #: tolerance there invites someone to tune a number that does nothing.
@@ -371,7 +380,7 @@ class ActionTab:
             self.submit_button.disabled = True
         return matched
 
-    async def _switch_network(self, _e: ft.ControlEvent) -> None:
+    async def _switch_network(self, _e: AnyEvent) -> None:
         """Ask the wallet to move. It may refuse, or not know the chain."""
         contract = self.get_contract()
         if contract is None:
@@ -385,7 +394,7 @@ class ActionTab:
         # anyway in case it was already there and simply said nothing.
         await self.refresh()
 
-    def _slippage_edited(self, _e: ft.ControlEvent) -> None:
+    def _slippage_edited(self, _e: AnyEvent) -> None:
         self._slippage_is_theirs = True
 
     def slippage_pct(self) -> float:
@@ -458,7 +467,7 @@ class ActionTab:
         summary = self.summary()
         return f"{self.done_verb} {summary}." if summary else f"{self.done_verb}."
 
-    async def _approve_clicked(self, _e: ft.ControlEvent) -> None:
+    async def _approve_clicked(self, _e: AnyEvent) -> None:
         contract = self.get_contract()
         if contract is None or not contract.can_send:
             self._say("Connect a wallet first.", ft.Colors.ERROR)
@@ -481,7 +490,7 @@ class ActionTab:
             self._busy(False)
             await self.refresh()
 
-    async def _submit_clicked(self, _e: ft.ControlEvent) -> None:
+    async def _submit_clicked(self, _e: AnyEvent) -> None:
         contract = self.get_contract()
         if contract is None or not contract.can_send:
             self._say("Connect a wallet first.", ft.Colors.ERROR)
@@ -601,7 +610,7 @@ class _AmountRows:
         rows: list[ft.Control] = []
         for index, coin in enumerate(self.coins):
 
-            def fill(_e: ft.ControlEvent, index: int = index) -> None:
+            def fill(_e: AnyEvent, index: int = index) -> None:
                 on_max(self, index)
 
             field = _amount_field(
@@ -696,7 +705,7 @@ class DepositTab(ActionTab):
 
     title = "Deposit"
     submit_label = "Deposit"
-    done_verb = "Deposited"
+    _done_verb = "Deposited"
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
@@ -763,7 +772,7 @@ class DepositTab(ActionTab):
         for name, rows in self.routes.items():
             rows.control.visible = name == live
 
-    def _route_changed(self, _e: ft.ControlEvent) -> None:
+    def _route_changed(self, _e: AnyEvent | None) -> None:
         self._apply_route()
         self.page.run_task(self.refresh)
 
@@ -787,7 +796,7 @@ class DepositTab(ActionTab):
     def _amounts(self) -> list[int]:
         return self.rows.amounts()
 
-    def _changed(self, _e: ft.ControlEvent) -> None:
+    def _changed(self, _e: AnyEvent) -> None:
         self.page.run_task(self.refresh)
 
     def summary(self) -> str:
@@ -808,10 +817,10 @@ class DepositTab(ActionTab):
         """A zap deposit passes through both pools, so it pays both fees."""
         fee = await contract.fee()
         if self.underlying:
-            try:
+            # A base pool that will not answer leaves the metapool's own
+            # fee standing, which is the smaller of the two tolerances.
+            with contextlib.suppress(WalletError):
                 fee += await contract.base_fee()
-            except WalletError:
-                pass
         return fee
 
     def fee_key(self) -> object:
@@ -891,7 +900,7 @@ class WithdrawTab(ActionTab):
 
     title = "Withdraw"
     submit_label = "Withdraw"
-    done_verb = "Withdrew"
+    _done_verb = "Withdrew"
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
@@ -971,15 +980,15 @@ class WithdrawTab(ActionTab):
         if coins:
             self.coin_picker.leading_icon = token_mark(coins[0], self.pool.chain, 20)
 
-    def _route_changed(self, _e: ft.ControlEvent) -> None:
+    def _route_changed(self, _e: AnyEvent | None) -> None:
         self._apply_route()
         self._changed(None)
 
-    def _max(self, _e: ft.ControlEvent) -> None:
+    def _max(self, _e: AnyEvent) -> None:
         self.amount.value = format_units(self.lp_balance, 18, precision=18)
         self.page.run_task(self.refresh)
 
-    def _changed(self, _e: ft.ControlEvent) -> None:
+    def _changed(self, _e: AnyEvent | None) -> None:
         self.coin_picker.visible = self.mode.value == "one"
         coins = self.coins
         index = self._coin_index()
@@ -1019,10 +1028,10 @@ class WithdrawTab(ActionTab):
         """A zap withdrawal comes back out through both pools."""
         fee = await contract.fee()
         if self.underlying:
-            try:
+            # As on the deposit side: a base pool that will not answer
+            # leaves the metapool's own fee standing.
+            with contextlib.suppress(WalletError):
                 fee += await contract.base_fee()
-            except WalletError:
-                pass
         return fee
 
     def fee_key(self) -> object:
@@ -1130,7 +1139,7 @@ class SwapTab(ActionTab):
 
     title = "Swap"
     submit_label = "Swap"
-    done_verb = "Swapped"
+    _done_verb = "Swapped"
     #: `get_dy` is exact -- the same maths the swap itself runs, fee
     #: included -- so there is no estimator error to give back.
     fee_multiple = SLIPPAGE_OF_FEE
@@ -1202,7 +1211,7 @@ class SwapTab(ActionTab):
             return self.underlying_spender
         return self.pool.address
 
-    def _route_changed(self, _e: ft.ControlEvent) -> None:
+    def _route_changed(self, _e: AnyEvent | None) -> None:
         """Swap both coin lists, and start from the top of the new one."""
         options = _coin_options(self.coins, self.pool.chain)
         self.from_coin.options = options
@@ -1266,7 +1275,7 @@ class SwapTab(ActionTab):
         except (ValueError, IndexError):
             return 0
 
-    def _max(self, _e: ft.ControlEvent) -> None:
+    def _max(self, _e: AnyEvent) -> None:
         """Sell the whole balance of whichever coin is selected."""
         i, _ = self._indices()
         coin = self.coins[i]
@@ -1289,7 +1298,7 @@ class SwapTab(ActionTab):
                 return str(index)
         return str(taken)
 
-    def _from_selected(self, e: ft.ControlEvent) -> None:
+    def _from_selected(self, e: AnyEvent | None) -> None:
         """Picking the coin the other side already holds moves that side.
 
         Rather than leaving the pair equal and printing "pick two different
@@ -1301,13 +1310,13 @@ class SwapTab(ActionTab):
             self.to_coin.value = self._other_index(i)
         self._changed(e)
 
-    def _to_selected(self, e: ft.ControlEvent) -> None:
+    def _to_selected(self, e: AnyEvent | None) -> None:
         i, j = self._indices()
         if i == j:
             self.from_coin.value = self._other_index(j)
         self._changed(e)
 
-    def _flip(self, e: ft.ControlEvent) -> None:
+    def _flip(self, e: AnyEvent | None) -> None:
         """Sell what you were buying. The amount stays as typed.
 
         It is denominated in whichever coin is on the left, so leaving the
@@ -1320,7 +1329,7 @@ class SwapTab(ActionTab):
         )
         self._changed(e)
 
-    def _changed(self, _e: ft.ControlEvent) -> None:
+    def _changed(self, _e: AnyEvent | None) -> None:
         i, j = self._indices()
         # A control cannot be mounted twice, so each side gets its own mark.
         self.from_coin.leading_icon = self._mark(i)
@@ -1453,12 +1462,12 @@ class StakeTab(ActionTab):
             _stacked(self.amount, self.balances_label),
         ]
 
-    def _max(self, _e: ft.ControlEvent) -> None:
+    def _max(self, _e: AnyEvent) -> None:
         source = self.lp_balance if self.direction.value == "stake" else self.staked
         self.amount.value = format_units(source, 18, precision=18)
         self.page.run_task(self.refresh)
 
-    def _changed(self, _e: ft.ControlEvent) -> None:
+    def _changed(self, _e: AnyEvent) -> None:
         self.page.run_task(self.refresh)
 
     def clear_inputs(self) -> None:

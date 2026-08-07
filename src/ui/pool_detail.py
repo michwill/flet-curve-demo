@@ -8,7 +8,7 @@ an alternative UI at all.
 
 from __future__ import annotations
 
-from typing import Awaitable, Callable
+from collections.abc import Callable
 
 import flet as ft
 
@@ -25,12 +25,12 @@ from curve.http import ApiError
 from curve.models import Pool
 from curve.pool import PoolContract
 
+from . import AnyEvent, safe_update
 from .actions import DepositTab, StakeTab, SwapTab, WithdrawTab
-from .logos import pool_stack, token_mark
-from .typography import BODY, LABEL, METRIC, SMALL, TITLE
-from .responsive import Layout, layout_for
-from . import safe_update
 from .candles import CandleChart
+from .logos import pool_stack, token_mark
+from .responsive import Layout, layout_for
+from .typography import BODY, LABEL, METRIC, SMALL, TITLE
 
 LP_SERIES = "__lp__"
 
@@ -449,7 +449,7 @@ class PoolDetailView(ft.Column):
                 )
         return options
 
-    def _series_changed(self, _e: ft.ControlEvent) -> None:
+    def _series_changed(self, _e: AnyEvent) -> None:
         self._page.run_task(self.load_chart)
 
     def _chart_resized(self) -> None:
@@ -460,7 +460,7 @@ class PoolDetailView(ft.Column):
         """
         self._page.run_task(self.load_chart)
 
-    def _size_changed(self, _e: ft.ControlEvent) -> None:
+    def _size_changed(self, _e: AnyEvent) -> None:
         self._candle_size = self.size_picker.value or DEFAULT_CANDLE_SIZE
         self._page.run_task(self.load_chart)
 

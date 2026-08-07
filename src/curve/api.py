@@ -24,7 +24,15 @@ from dataclasses import dataclass
 from typing import Any
 
 from .http import ApiError, build_url, get_json
-from .lite import LITE_API, LITE_MIN_TVL, LiteChain, parse_hidden, parse_platforms, parse_pools, select
+from .lite import (
+    LITE_API,
+    LITE_MIN_TVL,
+    LiteChain,
+    parse_hidden,
+    parse_platforms,
+    parse_pools,
+    select,
+)
 from .models import Pool
 from .sort import get_sort
 
@@ -101,7 +109,7 @@ class Candle:
     close: float
 
     @classmethod
-    def from_api(cls, raw: dict[str, Any]) -> "Candle":
+    def from_api(cls, raw: dict[str, Any]) -> Candle:
         return cls(
             time=int(raw.get("time") or 0),
             open=float(raw.get("open") or 0.0),

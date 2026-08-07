@@ -197,7 +197,7 @@ async def test_the_survivor_is_where_the_next_read_starts(monkeypatch) -> None:
 async def test_something_that_is_not_json_rpc_is_a_failure_too(monkeypatch) -> None:
     """A captive portal answering HTML, or an endpoint that has become a
     web page. It parses as JSON and means nothing."""
-    node, transport = node_with(
+    node, _ = node_with(
         monkeypatch,
         {
             "https://one.example": ["not", "an", "object"],
@@ -285,6 +285,6 @@ async def test_the_node_knows_its_own_chain_without_asking(monkeypatch) -> None:
 )
 async def test_signing_needs_a_wallet(monkeypatch, call) -> None:
     """There is no key here. Saying so beats a transaction that vanishes."""
-    node, _transport = node_with(monkeypatch, {})
+    node, _ = node_with(monkeypatch, {})
     with pytest.raises(WalletError, match="Connect a wallet"):
         await call(node)

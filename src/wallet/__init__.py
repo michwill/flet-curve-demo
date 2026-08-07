@@ -67,11 +67,11 @@ async def connect_wallet() -> WalletProvider:
     Does not prompt for accounts -- that is `provider.request_accounts()`.
     """
     if is_browser():
-        from . import browser  # noqa: PLC0415 -- imports `js`, browser-only
+        from . import browser
 
         return await browser.discover()
 
-    from . import desktop  # noqa: PLC0415
+    from . import desktop
 
     return await desktop.discover()
 

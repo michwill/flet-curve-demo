@@ -15,13 +15,12 @@ is not the LP supply at all.
 
 from __future__ import annotations
 
+import flet as ft
 import pytest
 
 from curve import abi
 from curve.models import Pool
 from curve.pool import PoolContract
-import flet as ft
-
 from ui.actions import WithdrawTab
 from ui.typography import BODY
 from wallet.base import RpcError, WalletProvider
@@ -438,7 +437,7 @@ async def test_deposit_slippage_is_the_fee_plus_a_little() -> None:
 async def test_the_same_line_holds_whatever_the_implementation() -> None:
     """One rule, no per-registry branch: the modern pools mint exactly the
     quote, so a whole fee is margin they do not need but does not hurt."""
-    from ui.actions import DepositTab, ESTIMATE_FEE_SHARE, QUOTE_DRIFT, slippage_for
+    from ui.actions import ESTIMATE_FEE_SHARE, QUOTE_DRIFT, DepositTab, slippage_for
 
     for registry in ("main", "factory", "crvusd", "stableswapng", "twocryptong", "new-2027"):
         tab, _ = tab_with_fee(DepositTab, 1_000_000, registry=registry)
@@ -451,7 +450,7 @@ async def test_a_tiny_fee_still_gets_the_drift_allowance() -> None:
     """Strategic USD Reserves charges 0.001%, so the fee term is nothing
     and the constant is the whole allowance -- not a floor bolted on, just
     `a * fee + b` with a small fee."""
-    from ui.actions import DepositTab, QUOTE_DRIFT
+    from ui.actions import QUOTE_DRIFT, DepositTab
 
     tab, _ = tab_with_fee(DepositTab, 100_000, registry="stableswapng")
     await tab.refresh()
@@ -531,8 +530,7 @@ async def test_what_the_user_typed_is_never_overwritten() -> None:
 
 async def test_a_pool_that_will_not_answer_keeps_the_default() -> None:
     """Better a workable default than an empty box."""
-    from ui.actions import DepositTab
-    from ui.actions import DEFAULT_SLIPPAGE
+    from ui.actions import DEFAULT_SLIPPAGE, DepositTab
 
     tab, _ = tab_with_fee(DepositTab, 0)  # fee() answers zero
     await tab.refresh()
@@ -955,7 +953,6 @@ def status_of(tab):
 
 
 async def test_waiting_states_spin() -> None:
-    from ui.actions import DepositTab
 
     provider = MinedProvider(pending=2)
     tab = deposit_tab(provider)

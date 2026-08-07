@@ -74,7 +74,7 @@ async def post_json(url: str, payload: Any, timeout: float = DEFAULT_TIMEOUT) ->
 
 
 async def _post_json_browser(url: str, body: str, timeout: float) -> Any:
-    from pyodide.http import pyfetch  # noqa: PLC0415 -- browser-only
+    from pyodide.http import pyfetch
 
     try:
         response = await asyncio.wait_for(
@@ -86,7 +86,7 @@ async def _post_json_browser(url: str, body: str, timeout: float) -> Any:
             ),
             timeout,
         )
-    except asyncio.TimeoutError:
+    except TimeoutError:
         raise ApiError(f"Timed out after {timeout:.0f}s: {url}") from None
     except Exception as exc:
         raise ApiError(f"Network error: {exc}") from exc
@@ -100,8 +100,8 @@ async def _post_json_browser(url: str, body: str, timeout: float) -> Any:
 
 
 def _post_blocking(url: str, body: str, timeout: float) -> Any:
-    import urllib.error  # noqa: PLC0415
-    import urllib.request  # noqa: PLC0415
+    import urllib.error
+    import urllib.request
 
     request = urllib.request.Request(
         url,
@@ -124,13 +124,13 @@ def _post_blocking(url: str, body: str, timeout: float) -> Any:
 
 
 async def _get_json_browser(url: str, timeout: float) -> Any:
-    from pyodide.http import pyfetch  # noqa: PLC0415 -- browser-only
+    from pyodide.http import pyfetch
 
     try:
         response = await asyncio.wait_for(
             pyfetch(url, headers={"User-Agent": USER_AGENT}), timeout
         )
-    except asyncio.TimeoutError:
+    except TimeoutError:
         raise ApiError(f"Timed out after {timeout:.0f}s: {url}") from None
     except Exception as exc:  # pyfetch raises bare JsException on network fail
         raise ApiError(f"Network error: {exc}") from exc
@@ -150,8 +150,8 @@ async def _get_json_desktop(url: str, timeout: float) -> Any:
 
 
 def _fetch_blocking(url: str, timeout: float) -> Any:
-    import urllib.error  # noqa: PLC0415
-    import urllib.request  # noqa: PLC0415
+    import urllib.error
+    import urllib.request
 
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     try:

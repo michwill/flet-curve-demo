@@ -11,8 +11,8 @@ network round trip. It is not what the list view uses.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 from .models import Pool
 

@@ -19,6 +19,7 @@ page load is hostile.
 
 from __future__ import annotations
 
+import contextlib
 import os
 from pathlib import Path
 
@@ -47,19 +48,15 @@ def autoconnect_allowed() -> bool:
 
 def record_disconnect() -> None:
     """Remember that the user disconnected deliberately."""
-    try:
+    # Read-only home, or no home at all. The session still ends; only the
+    # memory of it is lost.
+    with contextlib.suppress(OSError):
         path = _marker()
         path.parent.mkdir(parents=True, exist_ok=True)
         path.touch()
-    except OSError:
-        # Read-only home, or no home at all. The session still ends; only
-        # the memory of it is lost.
-        pass
 
 
 def record_connect() -> None:
     """Forget it: connecting is the answer to the question it asked."""
-    try:
+    with contextlib.suppress(OSError):
         _marker().unlink()
-    except (OSError, FileNotFoundError):
-        pass

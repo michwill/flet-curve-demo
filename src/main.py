@@ -18,6 +18,7 @@ no Flet, and `ui/`, which imports no network code.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 
 import flet as ft
 
@@ -26,12 +27,12 @@ from curve.api import PoolFeed
 from curve.format import compact_usd
 from curve.rpc import ChainlistDirectory, PublicNode
 from curve.sort import DEFAULT_SORT
-from ui.pool_detail import PoolDetailView
-from ui.pool_list import PoolListView
+from ui import AnyEvent, routing
 from ui.assets import chain_name, curve_logo
 from ui.logos import chain_mark
+from ui.pool_detail import PoolDetailView
+from ui.pool_list import PoolListView
 from ui.responsive import layout_for
-from ui import routing
 from ui.typography import BODY, LABEL, SMALL, TITLE
 from wallet import Wallet, WalletChoice, WalletError, autoconnect, is_browser
 from wallet.base import RpcError
@@ -166,7 +167,7 @@ class CurveApp:
         starts, but "usually" is not "always", and there is nothing to set
         the property on until it is.
         """
-        from ui.window_icon import apply_window_icon  # noqa: PLC0415
+        from ui.window_icon import apply_window_icon
 
         for _attempt in range(6):
             try:
@@ -331,7 +332,7 @@ class CurveApp:
         if update:
             self.page.update()
 
-    def _toggle_theme(self, _e: ft.ControlEvent) -> None:
+    def _toggle_theme(self, _e: AnyEvent) -> None:
         dark = self.page.theme_mode == ft.ThemeMode.DARK or (
             self.page.theme_mode == ft.ThemeMode.SYSTEM
             and self.page.platform_brightness == ft.Brightness.DARK
@@ -342,7 +343,7 @@ class CurveApp:
 
     # -- data -------------------------------------------------------------
 
-    def _chain_changed(self, _e: ft.ControlEvent) -> None:
+    def _chain_changed(self, _e: AnyEvent) -> None:
         self.chain = self.chain_picker.value or DEFAULT_CHAIN
         # The closed field carries the selected network's mark too, not
         # just the name.
@@ -626,7 +627,7 @@ class CurveApp:
             self.page.show_dialog(self._wallet_dialog(self.wallet))
 
     async def connect(
-        self, _e: ft.ControlEvent | None, *, always_choose: bool = False
+        self, _e: AnyEvent | None, *, always_choose: bool = False
     ) -> None:
         self.connect_button.disabled = True
         self.connect_button.content = "Connecting…"
@@ -656,10 +657,8 @@ class CurveApp:
         if previous is not None and previous is not self.wallet:
             # Swapped, not disconnected: release the old transport without
             # recording an intent the user never expressed.
-            try:
+            with contextlib.suppress(WalletError):
                 await previous.close()
-            except WalletError:
-                pass
 
         self.wallet.on_change(lambda: self.page.run_task(self._wallet_changed))
         self.wallet.on_disconnect(lambda: self.page.run_task(self._wallet_gone))
@@ -763,16 +762,16 @@ class CurveApp:
         """
         note = ft.Text("", size=SMALL, color=ft.Colors.ON_SURFACE_VARIANT)
 
-        async def copy(_e: ft.ControlEvent) -> None:
+        async def copy(_e: AnyEvent) -> None:
             await self.page.clipboard.set(wallet.address)
             note.value = "Address copied."
             self.page.update()
 
-        def change(_e: ft.ControlEvent) -> None:
+        def change(_e: AnyEvent) -> None:
             self.page.pop_dialog()
             self.page.run_task(self._change_wallet)
 
-        def disconnect(_e: ft.ControlEvent) -> None:
+        def disconnect(_e: AnyEvent) -> None:
             self.page.pop_dialog()
             self.page.run_task(self._disconnect_wallet)
 
@@ -857,12 +856,10 @@ class CurveApp:
 
     async def _disconnect_wallet(self) -> None:
         if self.wallet is not None:
-            try:
+            # A wallet already gone on its own side is not a failure here:
+            # the app's own state is what matters from this point.
+            with contextlib.suppress(WalletError):
                 await self.wallet.disconnect()
-            except WalletError:
-                # Already gone wallet-side; the app's own state is what
-                # matters from here.
-                pass
         await self._wallet_gone()
         if self._detail is not None:
             await self._detail.refresh_actions()
@@ -876,6 +873,11 @@ class CurveApp:
             chosen["uuid"] = uuid
             finished.set()
             self.page.pop_dialog()
+
+        def _cancel() -> None:
+            """Dismissed without choosing -- the dialog is already closing."""
+            chosen["uuid"] = None
+            finished.set()
 
         dialog = ft.AlertDialog(
             title=ft.Text("Choose a wallet"),
@@ -892,7 +894,7 @@ class CurveApp:
                 spacing=4,
             ),
             actions=[ft.TextButton("Cancel", on_click=lambda _e: pick(None))],
-            on_dismiss=lambda _e: (chosen.update(uuid=None), finished.set()),
+            on_dismiss=lambda _e: _cancel(),
         )
         self.page.show_dialog(dialog)
         await finished.wait()

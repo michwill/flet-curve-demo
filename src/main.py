@@ -19,10 +19,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
+from typing import Any
 
 import flet as ft
 
-from curve import ApiError, CurveApi, Pool, PoolContract
+from curve import ApiError, CurveApi, Pool, PoolContract, portfolio
 from curve.api import PoolFeed
 from curve.format import compact_usd
 from curve.lite import LiteChain
@@ -34,6 +36,7 @@ from ui.assets import chad_mark, chain_name, curve_logo
 from ui.logos import chain_mark
 from ui.pool_detail import PoolDetailView
 from ui.pool_list import PoolListView
+from ui.portfolio import PortfolioView
 from ui.responsive import layout_for
 from ui.typography import BODY, LABEL, SMALL, TITLE
 from wallet import Wallet, WalletChoice, WalletError, autoconnect, is_browser
@@ -44,6 +47,10 @@ DEFAULT_CHAIN = "ethereum"
 #: v2 covers 12 chains against v1's 21 -- see docs/curve-api.md -- so the
 #: real list is read from `/pools/chains/` rather than hardcoded.
 PREFERRED_CHAINS = ("ethereum", "arbitrum", "base", "optimism", "polygon", "fraxtal")
+
+#: Where the last portfolio scan is remembered, so the page has something
+#: to show while the next one runs.
+PORTFOLIO_KEY = "flet-curve.portfolio"
 
 #: Where the chosen theme is remembered, per browser or per desktop
 #: install. Namespaced, because shared preferences are shared.
@@ -68,6 +75,20 @@ ADDRESS_FULL_WIDTH = 380
 #: Below this the header has no room to give, so hovering does nothing --
 #: a chip that grew here would push the chain picker off the row.
 ADDRESS_EXPAND_MIN_PAGE = 1100
+
+#: The two pages the app has, as they appear in the URL and the nav.
+PAGE_POOLS = "pools"
+PAGE_PORTFOLIO = "portfolio"
+
+#: How wide the nav slides open. Enough for both links; measured rather
+#: than guessed, because a Row inside a clipped Container has no width of
+#: its own to animate from.
+NAV_WIDTH = 168
+
+#: Below this the header has no room to slide anything open, so the mark
+#: becomes a menu button instead. Same threshold the address chip uses --
+#: they are competing for the same row.
+NAV_EXPAND_MIN_PAGE = 900
 
 #: The connect button's resting label. It is swapped rather than blanked
 #: while connecting: a `Button` with an `icon` and no `content` refuses to
@@ -142,6 +163,9 @@ class CurveApp:
         self._lite_chains: dict[str, LiteChain] = {}
         self.feed: PoolFeed | None = None
         self._detail: PoolDetailView | None = None
+        #: Which of the two pages is showing. The detail view is a state
+        #: of the pools page rather than a page of its own.
+        self._page_name = PAGE_POOLS
         self._address_expanded = False
 
         # Key-value storage: the browser's on web, a file on the desktop.
@@ -217,7 +241,16 @@ class CurveApp:
             on_select=self._chain_changed,
         )
         self.totals = ft.Text(
-            "", size=SMALL, color=ft.Colors.ON_SURFACE_VARIANT, no_wrap=True
+            "",
+            size=SMALL,
+            color=ft.Colors.ON_SURFACE_VARIANT,
+            no_wrap=True,
+            # Faded rather than removed when the nav slides over it: a
+            # control that vanishes takes the row's layout with it.
+            animate_opacity=ft.Animation(
+                duration=ft.Duration(milliseconds=160),
+                curve=ft.AnimationCurve.EASE_OUT,
+            ),
         )
         logo = curve_logo()
         self.brand = (
@@ -234,6 +267,37 @@ class CurveApp:
             if logo
             else ft.Text("CURVE", key="brand", size=TITLE, weight=ft.FontWeight.BOLD)
         )
+        # The pages, revealed by hovering the mark. See `_brand_hovered`.
+        self.nav = ft.Container(
+            ft.Row(
+                [
+                    self._nav_link("Pools", PAGE_POOLS),
+                    self._nav_link("Portfolio", PAGE_PORTFOLIO),
+                ],
+                spacing=4,
+                tight=True,
+            ),
+            width=0,
+            clip_behavior=ft.ClipBehavior.HARD_EDGE,
+            animate=ft.Animation(
+                duration=ft.Duration(milliseconds=160),
+                curve=ft.AnimationCurve.EASE_OUT,
+            ),
+        )
+        # On a narrow page the mark is a menu button instead: there is no
+        # room to slide anything open, and a tap has to be enough.
+        self.menu = ft.PopupMenuButton(
+            icon=ft.Icons.MENU,
+            visible=False,
+            tooltip="Pages",
+            items=[
+                ft.PopupMenuItem(content=ft.Text("Pools"),
+                                 on_click=lambda _e: self.go_page(PAGE_POOLS)),
+                ft.PopupMenuItem(content=ft.Text("Portfolio"),
+                                 on_click=lambda _e: self.go_page(PAGE_PORTFOLIO)),
+            ],
+        )
+
         # The wordmark sits beside the mark as if it were part of it. The
         # build kind is still worth knowing, but only when you go looking.
         self.build_label = ft.Text(
@@ -292,11 +356,22 @@ class CurveApp:
         # nobody measures anything for itself.
         page.on_resize = self._resized
 
+        # The mark and the wordmark are one hover target: sliding the nav
+        # open from either half of a lockup that reads as one thing.
+        brand = ft.Container(
+            ft.Row([self.brand, self.build_label], spacing=8, tight=True),
+            on_hover=self._brand_hovered,
+            on_click=lambda _e: self.go_page(PAGE_POOLS),
+            ink=True,
+            border_radius=8,
+            padding=ft.Padding.symmetric(horizontal=4, vertical=2),
+        )
         self.header = ft.Container(
             ft.Row(
                 [
-                    self.brand,
-                    self.build_label,
+                    self.menu,
+                    brand,
+                    self.nav,
                     ft.Container(self.totals, expand=True),
                     self.account_chip,
                     # On the right, where the connected wallet used to
@@ -315,6 +390,7 @@ class CurveApp:
         )
 
         self.list_view = PoolListView(page, on_open=self.open_pool)
+        self.portfolio_view = PortfolioView(page, on_open=self.open_holding)
         self.progress = ft.ProgressBar(visible=False)
         self.error = ft.Text("", size=SMALL, color=ft.Colors.ERROR, visible=False)
         # One slot that holds either the list or a detail page. Simpler than
@@ -346,7 +422,15 @@ class CurveApp:
         # room for the chain and the wallet, and nothing else.
         self.totals.visible = not layout.cards
         self.build_label.visible = not layout.cards
+        # Narrow: the mark becomes a menu button, because there is no room
+        # to slide a nav open over a header this full.
+        narrow = width < NAV_EXPAND_MIN_PAGE
+        self.menu.visible = narrow
+        if narrow:
+            self.nav.width = 0
+            self.totals.opacity = 1.0
         self.list_view.set_layout(layout)
+        self.portfolio_view.set_layout(layout.cards)
         if self._detail is not None:
             self._detail.set_layout(layout)
 
@@ -660,11 +744,121 @@ class CurveApp:
         self.page.update()
         self.page.run_task(self._detail.load)
 
+    def open_holding(self, holding: portfolio.Holding) -> None:
+        """A portfolio row names a pool; opening it needs the pool itself.
+
+        The row carries an address and little else -- it was built from a
+        balance, not from a listing -- so the pool page is reached the
+        same way a deep link reaches it.
+        """
+        self.page.run_task(self.open_pool_by_address, holding.address)
+
     def show_list(self) -> None:
         self._detail = None
+        self._page_name = PAGE_POOLS
         self.body.content = self.list_view
         self._go(routing.build(self.chain))
         self.page.update()
+
+    # -- portfolio --------------------------------------------------------
+
+    def show_portfolio(self) -> None:
+        """Open the portfolio page and start filling it in."""
+        self._detail = None
+        self._page_name = PAGE_PORTFOLIO
+        self.body.content = self.portfolio_view
+        if self.page.width:
+            self.portfolio_view.set_layout(layout_for(self.page.width).cards)
+        self.page.update()
+        self.page.run_task(self.load_portfolio)
+
+    def portfolio_provider(self) -> tuple[Any, str] | None:
+        """Who to ask, and about whom.
+
+        The wallet's own node when there is one -- it is the user's own
+        view of the chain. A public node otherwise, and also as the
+        fallback when the wallet's node will not answer a batch this
+        size: some injected providers rate-limit or time out on a
+        multicall of a thousand entries, and that is not a reason to have
+        no portfolio.
+        """
+        account = self.wallet.address if self.wallet is not None else ""
+        if not account:
+            return None
+        if self.wallet is not None:
+            return self.wallet.provider, account
+        return None
+
+    def public_node(self, chain_id: int) -> PublicNode:
+        node = self._public_nodes.get(chain_id)
+        if node is None:
+            node = PublicNode(chain_id, self._chainlist)
+            self._public_nodes[chain_id] = node
+        return node
+
+    async def load_portfolio(self) -> None:
+        """Remembered rows first, then those refreshed, then everything.
+
+        The order is the point: a scan is a second or two, and the answer
+        is nearly always the same as last time, so there is no reason to
+        show a blank page while proving it.
+        """
+        view = self.portfolio_view
+        wallet = self.wallet
+        if wallet is None or not wallet.address:
+            view.say("Connect a wallet to see what it holds.")
+            return
+        account = wallet.address
+        chain_id = self.chains.get(self.chain) or 0
+        view.set_account(account)
+
+        remembered = await self._remembered_portfolio(account)
+        if remembered:
+            view.show(remembered, note="Showing what was here last time…")
+
+        provider = wallet.provider
+        try:
+            if remembered:
+                # A handful of calls, so the numbers on screen stop being
+                # last week's before the pool list has even arrived.
+                view.show(
+                    await portfolio.scan(
+                        provider, portfolio.targets_for(remembered), account
+                    ),
+                    note="Checking every other pool…",
+                )
+            targets = await self.api.portfolio_targets(self.chain, chain_id)
+            holdings = await portfolio.scan(
+                provider, targets, account, on_progress=view.scanning
+            )
+        except (WalletError, ApiError) as exc:
+            if not remembered:
+                view.say(f"Could not read this chain: {exc}")
+            view.done_scanning()
+            return
+
+        view.done_scanning()
+        if holdings:
+            view.show(holdings)
+        else:
+            view.say(f"No deposits in any {chain_name(self.chain)} pool.")
+        self.page.run_task(self._remember_portfolio, holdings, account)
+
+    async def _remembered_portfolio(self, account: str) -> list[portfolio.Holding]:
+        with contextlib.suppress(Exception):
+            saved = await self.storage.get(PORTFOLIO_KEY)
+            if isinstance(saved, str) and saved:
+                return portfolio.from_json(json.loads(saved), account, self.chain)
+        return []
+
+    async def _remember_portfolio(
+        self, holdings: list[portfolio.Holding], account: str
+    ) -> None:
+        with contextlib.suppress(Exception):
+            await self.storage.set(
+                PORTFOLIO_KEY,
+                json.dumps(portfolio.to_json(holdings, account, self.chain)),
+            )
 
     # -- the address bar --------------------------------------------------
     #
@@ -695,8 +889,13 @@ class CurveApp:
             self.show_list()
             await self.load_pools()
 
+        if route.is_portfolio:
+            if self._page_name != PAGE_PORTFOLIO:
+                self.show_portfolio()
+            return
+
         if not route.is_pool:
-            if self._detail is not None:
+            if self._detail is not None or self._page_name != PAGE_POOLS:
                 self.show_list()
             return
 
@@ -774,6 +973,36 @@ class CurveApp:
             return
         self.account_label.value = wallet.address if expanded else wallet.short_address
         self.account_chip.tooltip = f"{wallet.name}  ·  {wallet.chain.name}"
+
+    def _nav_link(self, label: str, page: str) -> ft.Control:
+        return ft.TextButton(
+            content=ft.Text(label, size=SMALL),
+            on_click=lambda _e, target=page: self.go_page(target),
+            style=ft.ButtonStyle(padding=ft.Padding.symmetric(horizontal=10)),
+        )
+
+    def _brand_hovered(self, e: ft.Event[ft.Container]) -> None:
+        """Slide the pages out from under the mark, over the totals.
+
+        The same idea as the address chip: the header is full, so what is
+        rarely wanted is hidden and what is hovered takes the room. The
+        totals are the thing given up, which is why the nav overlays them
+        rather than pushing them along -- a header that reflows under the
+        cursor is hard to click.
+        """
+        if self.menu.visible:
+            return  # narrow: the menu button is the way in
+        self.nav.width = NAV_WIDTH if e.data else 0
+        self.totals.opacity = 0.0 if e.data else 1.0
+        self.page.update()
+
+    def go_page(self, page: str) -> None:
+        """Switch pages, through the URL so that Back works."""
+        if page == PAGE_PORTFOLIO:
+            self._go(routing.build(self.chain, page=PAGE_PORTFOLIO))
+            self.show_portfolio()
+        else:
+            self.show_list()
 
     def _account_hovered(self, e: ft.Event[ft.Container]) -> None:
         """Grow to the full address under the cursor, shrink on the way out.

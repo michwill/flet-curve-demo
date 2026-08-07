@@ -6,11 +6,16 @@ the *user* navigates -- the Back button included. So a pool page can have
 an address worth sending to somebody, and Back can mean what it looks
 like it means.
 
-Three shapes, and nothing else:
+Four shapes, and nothing else:
 
     /                       the list, on whatever chain is the default
     /ethereum               the list, on that chain
     /ethereum/0xC09e82…     that pool, on that chain
+    /ethereum/portfolio     what this address holds, on that chain
+
+`portfolio` is a reserved second segment. It cannot collide with a pool:
+the second segment is otherwise required to look like an address, and
+"portfolio" does not.
 
 Chain names are the API's own (`xdai` for Gnosis, `x-layer`), because they
 are what every other part of this app keys by; translating for the address
@@ -25,6 +30,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+#: The one second segment that is a page rather than a pool.
+PORTFOLIO = "portfolio"
+
 
 @dataclass(frozen=True, slots=True)
 class Route:
@@ -32,10 +40,15 @@ class Route:
 
     chain: str = ""
     pool: str = ""
+    page: str = ""
 
     @property
     def is_pool(self) -> bool:
         return bool(self.chain and self.pool)
+
+    @property
+    def is_portfolio(self) -> bool:
+        return self.page == PORTFOLIO
 
 
 def parse(route: str | None) -> Route:
@@ -51,18 +64,22 @@ def parse(route: str | None) -> Route:
     chain = parts[0].lower()
     if len(parts) == 1:
         return Route(chain)
-    address = parts[1]
+    second = parts[1]
+    if second.lower() == PORTFOLIO:
+        return Route(chain, page=PORTFOLIO)
     # A pool address, or nothing. Checking the shape here keeps every
     # caller from having to: `/ethereum/deposit` is not a pool page.
-    if not _looks_like_address(address):
+    if not _looks_like_address(second):
         return Route(chain)
-    return Route(chain, address)
+    return Route(chain, second)
 
 
-def build(chain: str = "", pool: str = "") -> str:
-    """The route for a chain, and optionally a pool on it."""
+def build(chain: str = "", pool: str = "", page: str = "") -> str:
+    """The route for a chain, and optionally a pool or a page on it."""
     if not chain:
         return "/"
+    if page:
+        return f"/{chain.lower()}/{page}"
     if not pool:
         return f"/{chain.lower()}"
     return f"/{chain.lower()}/{pool}"

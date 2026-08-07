@@ -19,6 +19,7 @@ See docs/curve-api.md for the full endpoint survey.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -33,7 +34,8 @@ from .lite import (
     parse_pools,
     select,
 )
-from .models import Pool
+from .models import Pool, _first_live_gauge
+from .portfolio import Target
 from .sort import get_sort
 
 PRICES_V2 = "https://prices.curve.finance/v2"
@@ -365,6 +367,98 @@ class CurveApi:
             )
         except (ApiError, KeyError, TypeError, ValueError):
             return {"tvl": 0.0, "volume": 0.0}
+
+    async def portfolio_targets(self, chain: str, chain_id: int) -> list[Target]:
+        """Every pool worth asking about, with its LP token and gauge.
+
+        This is the expensive half of a portfolio scan -- the chain part
+        is under a second, see `curve.portfolio` -- so it is worth knowing
+        where the requests go:
+
+          * `/v1/chains/{chain}` lists every pool on the chain with its LP
+            token and TVL, in one request. That is the only endpoint that
+            carries the LP token for *all* of them, and it matters because
+            an old-registry pool's LP token is a different contract from
+            the pool. Roughly 2.4MB on Ethereum;
+          * gauges come from v2, which pages at fifty, so that is twenty
+            or so requests -- issued together rather than in sequence.
+
+        A Lite chain needs neither: its own endpoint returns pools, LP
+        tokens and gauges in one answer.
+
+        Pools with no TVL at all are dropped. There are over a thousand of
+        them on Ethereum -- more than half of everything ever deployed --
+        and a balance in one is worth nothing by definition.
+        """
+        if await self.is_lite(chain_id):
+            return [
+                Target(
+                    address=pool.address,
+                    name=pool.display_name,
+                    chain=chain,
+                    lp_token=pool.lp_token or pool.address,
+                    gauge=pool.gauge,
+                    tvl=pool.tvl,
+                    symbols=tuple(pool.coin_symbols),
+                )
+                for pool in await self._lite_pools(chain_id, chain)
+                if pool.tvl > 0
+            ]
+
+        listing, gauges = await asyncio.gather(
+            get_json(build_url(PRICES_V1, f"/chains/{chain}"), timeout=120.0),
+            self._all_gauges(chain_id),
+        )
+        targets = []
+        for raw in (listing or {}).get("data") or []:
+            if float(raw.get("tvl_usd") or 0.0) <= 0:
+                continue
+            address = raw.get("address") or ""
+            targets.append(
+                Target(
+                    address=address,
+                    name=raw.get("name") or "",
+                    chain=chain,
+                    lp_token=raw.get("lp_token_address") or address,
+                    gauge=gauges.get(address.lower(), ""),
+                    tvl=float(raw.get("tvl_usd") or 0.0),
+                    symbols=tuple(
+                        coin.get("symbol") or "?" for coin in raw.get("coins") or []
+                    ),
+                )
+            )
+        return targets
+
+    async def _all_gauges(self, chain_id: int) -> dict[str, str]:
+        """Pool address -> live gauge, for every pool on the chain.
+
+        v2 is the only list that carries gauges and it pages at fifty, so
+        this is twenty-odd requests. They go out together: in sequence it
+        is the slowest thing on the page by a wide margin.
+        """
+        first = await self._v2(
+            "/pools/", {"chain_id": chain_id, "page": 1, "pagination": MAX_PAGE_SIZE}
+        )
+        count = int(first.get("count") or 0)
+        pages = await asyncio.gather(
+            *[
+                self._v2(
+                    "/pools/",
+                    {"chain_id": chain_id, "page": number, "pagination": MAX_PAGE_SIZE},
+                )
+                for number in range(2, count // MAX_PAGE_SIZE + 2)
+            ],
+            return_exceptions=True,
+        )
+        gauges: dict[str, str] = {}
+        for payload in [first, *pages]:
+            if not isinstance(payload, dict):
+                continue  # a page that failed; the rest are still worth having
+            for raw in payload.get("pools") or []:
+                gauge = _first_live_gauge(raw.get("gauges"))
+                if gauge:
+                    gauges[(raw.get("address") or "").lower()] = gauge
+        return gauges
 
     # -- v1: charts -------------------------------------------------------
     #

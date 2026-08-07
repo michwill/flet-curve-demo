@@ -146,6 +146,7 @@ def make_app(route: str = "/", *, pool=_DEFAULT, chain: str = "ethereum"):
     app.chains = {"ethereum": 1, "xdai": 100}
     app.chain = chain
     app._detail = None
+    app._page_name = "pools"
     app._route_applied = True
     app.body = ft.Container()
     app.list_view = ft.Container()
@@ -283,3 +284,25 @@ def test_picking_a_different_chain_does_switch() -> None:
     assert app.chain == "xdai"
     assert app._detail is None                    # back to the list
     assert app.page.tasks                          # and it reloads it
+
+
+# -- the portfolio page ----------------------------------------------------
+
+
+def test_portfolio_is_a_page_not_a_pool() -> None:
+    """It sits where a pool address goes, and cannot be mistaken for one:
+    every other second segment has to look like an address."""
+    route = routing.parse("/ethereum/portfolio")
+    assert route == routing.Route("ethereum", page="portfolio")
+    assert route.is_portfolio and not route.is_pool
+
+
+def test_the_portfolio_route_reads_back() -> None:
+    built = routing.build("xdai", page="portfolio")
+    assert built == "/xdai/portfolio"
+    assert routing.parse(built).is_portfolio
+
+
+def test_a_pool_route_is_not_a_portfolio() -> None:
+    assert not routing.parse(f"/ethereum/{WL}").is_portfolio
+    assert not routing.parse("/ethereum").is_portfolio

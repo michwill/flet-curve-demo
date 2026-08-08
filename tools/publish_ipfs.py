@@ -42,6 +42,7 @@ import base64
 import gzip
 import json
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -121,6 +122,22 @@ def token(values: dict | None = None) -> str:
 
 BASE_ABSOLUTE = '<base href="/">'
 BASE_RELATIVE = '<base href="./">'
+
+#: Routes must live in the fragment, or every deep link 404s at the gateway.
+#: See the README, and `publish()` for why this is a flag rather than the
+#: `pyproject.toml` key that looks like it should do the job.
+ROUTE_STRATEGY = "hash"
+
+#: index.html names the strategy twice: Flet's template default, and then
+#: the value `flet publish` patches in below it. Both are plain assignments
+#: in script tags that run in order, so the last one is the one that counts.
+_ROUTE_NAMED = re.compile(r'routeUrlStrategy\s*[:=]\s*"(path|hash)"')
+
+
+def route_strategy(index: Path) -> str:
+    """Which strategy the built page will actually use, or "" if unstated."""
+    named = _ROUTE_NAMED.findall(index.read_text(encoding="utf-8"))
+    return named[-1] if named else ""
 
 
 def make_relative(index: Path) -> bool:
@@ -460,10 +477,29 @@ SHORT_NAME = "Curve Finance"
 
 
 def publish() -> None:
-    """`flet publish`, so what goes up is what the source says now."""
+    """`flet publish`, so what goes up is what the source says now.
+
+    `--route-url-strategy` is passed even though `pyproject.toml` declares
+    it, because Flet does not read it there. The option is defined with
+    `default="path"` rather than `default=None`, so the value is always
+    truthy and the `or get_pyproject("tool.flet.web.route_url_strategy")`
+    beside it can never be reached -- a build that trusts the key comes out
+    on `path` and 404s every deep link at the gateway. Passing the flag is
+    the only thing that works, and `main` checks the result rather than
+    trusting this line either.
+    """
     print("flet publish ...")
     result = subprocess.run(
-        [flet_cli(), "publish", "--app-short-name", SHORT_NAME], cwd=ROOT, check=False
+        [
+            flet_cli(),
+            "publish",
+            "--app-short-name",
+            SHORT_NAME,
+            "--route-url-strategy",
+            ROUTE_STRATEGY,
+        ],
+        cwd=ROOT,
+        check=False,
     )
     if result.returncode != 0:
         raise SystemExit(f"flet publish failed ({result.returncode})")
@@ -491,6 +527,22 @@ def main() -> int:
     dist: Path = options.dist
     if not (dist / "index.html").is_file():
         raise SystemExit(f"{dist} holds no index.html -- run without --no-build")
+
+    # Before anything else about the build: a `path` build looks perfect
+    # on any local server -- `tools/serve.py` falls back to index.html --
+    # and 404s every deep link on the one thing it is about to be uploaded
+    # to. Checked rather than documented, like the leaked-key scan below,
+    # because the mistake is invisible until somebody pastes a link.
+    strategy = route_strategy(dist / "index.html")
+    if strategy != ROUTE_STRATEGY:
+        raise SystemExit(
+            f"index.html routes on {strategy or 'nothing'!r}, not "
+            f"{ROUTE_STRATEGY!r}: every /chain/0x… link would 404 at the "
+            "gateway. Rebuild without --no-build, or run `flet publish "
+            f"--route-url-strategy {ROUTE_STRATEGY}` -- the pyproject key "
+            "alone does not do it; see publish()."
+        )
+    print(f"index.html: routes on {strategy}, so a gateway can serve them")
 
     if make_relative(dist / "index.html"):
         print("index.html: base href is relative now, for a gateway sub-path")

@@ -42,6 +42,21 @@ path = "src"
 #
 # `ui/routing.py` is unaffected: Flet reports the same `page.route` either
 # way, so the app never learns which side of the `#` it is on.
+#
+# **Flet does not read this key, so setting it here is not enough.**
+# `flet publish` declares `--route-url-strategy` with `default="path"`
+# instead of `default=None`, so `options.route_url_strategy` is always
+# truthy and the `or get_pyproject("tool.flet.web.route_url_strategy")`
+# beside it is unreachable. Left here because it is the documented way to
+# say this and will start working if that default is fixed -- but the flag
+# is what does the job today:
+#
+#     flet publish --route-url-strategy hash
+#
+# `tools/publish_ipfs.py` passes it and then checks the built index.html,
+# so the deployed build cannot go out wrong. A plain `flet publish` for
+# local testing needs the flag by hand, or localhost will disagree with
+# production about what a link looks like.
 route_url_strategy = "hash"
 
 # What a browser paints around an installed PWA. The theme colour is the

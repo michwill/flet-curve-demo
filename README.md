@@ -15,9 +15,15 @@ python tools/build_assets.py         # compile the subset the app needs
 python tools/build_icons.py          # only when the mark changes: app icon + favicon
 
 .venv/bin/flet run src/main.py        # desktop -> Frame / qeth on 127.0.0.1:1248
-.venv/bin/flet publish                # browser -> ./dist  (run from the repo root)
+.venv/bin/flet publish --route-url-strategy hash   # browser -> ./dist (from the repo root)
 python tools/serve.py                # serve ./dist with caching off
 ```
+
+`--route-url-strategy hash` is not optional and `pyproject.toml` cannot carry
+it — see [Routes live in the fragment](#routes-live-in-the-fragment). Without
+it the build works on `tools/serve.py` and 404s every deep link on a gateway.
+`tools/publish_ipfs.py` passes it for you and refuses to upload a build that
+came out otherwise.
 
 To offer **WalletConnect** in the browser build, give it a projectId (free,
 from [dashboard.reown.com](https://dashboard.reown.com)):
@@ -140,6 +146,23 @@ path gateways. The two cannot both be satisfied; the fragment sidesteps both.
 way, so nothing in the app knows which side of the `#` it is on. Verified
 against a server that 404s everything but real files: `/ethereum/0x…` is a
 404 and `/#/ethereum/0x…` opens the pool with no failed requests at all.
+
+**It has to be passed as a flag; the `pyproject.toml` key does nothing.**
+`flet publish` declares `--route-url-strategy` with `default="path"` rather
+than `default=None`, so `options.route_url_strategy` is always truthy and the
+`or get_pyproject("tool.flet.web.route_url_strategy")` beside it is
+unreachable — unlike `--web-renderer`, which defaults to `None` and does read
+its key. A build that trusts the key comes out on `path`. The key is left in
+`pyproject.toml` because it is the documented way to say this and will start
+working if that default is fixed; `tools/publish_ipfs.py` passes the flag and
+then reads the built `index.html` back to check, the same way it checks for a
+leaked key rather than documenting that one either.
+
+**There is no IPFS detection, and there could not be** — the strategy is a
+literal in `index.html`, read before the app boots. So this changes every
+deployment: localhost shows `/#/ethereum/0x…` exactly as `eth.limo` does.
+That is the point rather than a cost. This bug survived because the dev
+server was the one host that hid it.
 
 **Pinata will not serve the result over its own gateways.** Both refuse HTML
 with `ERR_ID:00023` -- the public one says to use a dedicated gateway, and

@@ -377,9 +377,9 @@ def test_routes_live_in_the_fragment() -> None:
     needs nothing from the gateway, so it works the same on a path
     gateway, a subdomain gateway and an ENS name through eth.limo.
 
-    Pinned here rather than left to the CLI flag because it is a property
-    of *publishing this app*, and a build made without it looks perfect
-    everywhere except the one place it is deployed.
+    Declared in `pyproject.toml` because that is the documented way to say
+    it -- but Flet does not read it there, which is what the next two
+    tests are about, so nothing may rely on this key alone.
     """
     import tomllib
 
@@ -388,6 +388,36 @@ def test_routes_live_in_the_fragment() -> None:
     web = config["tool"]["flet"]["web"]
 
     assert web["route_url_strategy"] == "hash"
+
+
+def test_the_strategy_is_passed_as_a_flag_because_the_key_is_not_read() -> None:
+    """`flet publish` defines `--route-url-strategy` with `default="path"`,
+    so `options.route_url_strategy` is always truthy and the
+    `or get_pyproject(...)` beside it is unreachable. A build that trusts
+    `pyproject.toml` comes out on `path` and 404s every deep link."""
+    source = Path(ipfs.__file__).read_text()
+
+    assert "--route-url-strategy" in source
+    assert ipfs.ROUTE_STRATEGY == "hash"
+
+
+def test_the_effective_strategy_is_the_last_one_named(tmp_path) -> None:
+    """index.html names it twice -- Flet's template default, then the value
+    `flet publish` patches in below. Both are assignments in script tags
+    that run in order, so the later one is what the page uses. Reading the
+    first would pass a build that is about to 404 everywhere."""
+    index = tmp_path / "index.html"
+    index.write_text(
+        '<script>var flet = { routeUrlStrategy: "path" }</script>\n'
+        '<script>flet.routeUrlStrategy="hash";</script>\n'
+    )
+    assert ipfs.route_strategy(index) == "hash"
+
+    index.write_text('<script>var flet = { routeUrlStrategy: "path" }</script>')
+    assert ipfs.route_strategy(index) == "path"
+
+    index.write_text("<script>nothing to see</script>")
+    assert ipfs.route_strategy(index) == ""
 
 
 def test_the_base_href_stays_relative() -> None:

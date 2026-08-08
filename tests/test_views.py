@@ -173,11 +173,11 @@ async def test_scroll_near_the_end_is_what_triggers_a_page() -> None:
     assert len(view.rows.controls) == 3
 
     far = SimpleNamespace(pixels=0.0, max_scroll_extent=99_999.0)
-    view._scrolled(far)
+    view.page_scrolled(far)
     assert len(view.rows.controls) == 3  # nowhere near the end; no fetch
 
     near = SimpleNamespace(pixels=99_000.0, max_scroll_extent=99_100.0)
-    view._scrolled(near)
+    view.page_scrolled(near)
     await asyncio.sleep(0)
     assert len(view.rows.controls) == 6
 

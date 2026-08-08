@@ -131,6 +131,11 @@ ADDRESS_EXPAND_MIN_PAGE = 1100
 PAGE_POOLS = "pools"
 PAGE_PORTFOLIO = "portfolio"
 
+#: Room around a page, inside the scroller rather than around it: the
+#: scrollbar is drawn at the edge of the thing that scrolls, so padding
+#: the scroller itself would move the bar in off the window's edge.
+BODY_PADDING = 20
+
 #: Space between the wordmark and the chain totals. Wider than the gap
 #: *inside* the totals -- "TVL … · 24h volume …" separates its two halves
 #: with three spaces around an interpunct -- because otherwise the TVL
@@ -532,7 +537,37 @@ class CurveApp:
         self.error = ft.Text("", size=SMALL, color=ft.Colors.ERROR, visible=False)
         # One slot that holds either the list or a detail page. Simpler than
         # Flet's view stack and behaves the same on both platforms.
-        self.body = ft.Container(self.list_view, expand=True, padding=20)
+        #
+        # **This is what scrolls, and it is the whole width of the window.**
+        # A scrollbar is drawn by whatever scrolls, at that thing's own
+        # edge -- `ft.Scrollbar` only styles it, there is no way to draw one
+        # somewhere else -- so a list that scrolled inside its bordered card
+        # put the bar inside the card, twenty pixels in from the window and
+        # again on the pool page two thirds of the way across. One scroller,
+        # spanning the window, puts one bar where a bar belongs. The padding
+        # that used to be on this container moves inside it, so the content
+        # still stands clear of the edges and the bar has the margin to
+        # itself.
+        #
+        # The header above it does not scroll: it is the navigation, and on
+        # a phone it is the *only* navigation.
+        #: Which page the body is holding. Read by the scroll handler,
+        #: which is the window's and so belongs to no page in particular.
+        self._showing: ft.Control = self.list_view
+        # A `ListView` rather than a scrolling `Column`: a Column with
+        # `scroll` set and one very tall child does not scroll here at all
+        # -- it clips, silently, with no overflow reported -- while a
+        # ListView holding the same child scrolls the way the pool list's
+        # own used to.
+        self.body = ft.ListView(
+            controls=[ft.Container(self.list_view, padding=BODY_PADDING)],
+            expand=True,
+            on_scroll=self._body_scrolled,
+            # Throttled, as the list's own scroll handler was: without it
+            # the handler fires on every frame of a fling and queues a page
+            # request per frame.
+            scroll_interval=200,
+        )
 
         page.add(
             ft.Column(
@@ -541,6 +576,37 @@ class CurveApp:
                 expand=True,
             )
         )
+
+    def _show(self, view: ft.Control) -> None:
+        """Put a page in the body, at the top of it.
+
+        Scrolled back to the top, because the body is the scroller now:
+        opening a pool from row two hundred would otherwise open it two
+        hundred rows down its own page.
+
+        The padding is here rather than on the body so that the scrollbar
+        keeps to the window's edge: it is drawn at the edge of whatever
+        scrolls, and padding the scroller would push it inwards by exactly
+        as much.
+        """
+        self.body.controls = [ft.Container(view, padding=BODY_PADDING)]
+        self._showing = view
+        self.page.run_task(self._to_top)
+
+    async def _to_top(self) -> None:
+        """Back to the top of the page. Harmless before it is mounted."""
+        with contextlib.suppress(Exception):
+            await self.body.scroll_to(offset=0)
+
+    def _body_scrolled(self, e: ft.OnScrollEvent) -> None:
+        """The page scrolled. Only the pool list wants to know.
+
+        It pages as it goes, and the scroller it used to listen to was its
+        own; now there is one for the window and it belongs to nobody in
+        particular, so it is handed on.
+        """
+        if self._showing is self.list_view:
+            self.list_view.page_scrolled(e)
 
     def _menu_items(self) -> list[ft.PopupMenuItem]:
         """What the mark opens.
@@ -1002,7 +1068,7 @@ class CurveApp:
         )
         if self.page.width:
             self._detail.set_layout(layout_for(self.page.width))
-        self.body.content = self._detail
+        self._show(self._detail)
         self._go(routing.build(pool.chain or self.chain, pool.address))
         self.page.update()
         self.page.run_task(self._detail.load)
@@ -1027,7 +1093,7 @@ class CurveApp:
         self._detail = None
         self._page_name = PAGE_POOLS
         self._sync_nav()
-        self.body.content = self.list_view
+        self._show(self.list_view)
         self._go(routing.build(self.chain))
         self.page.update()
 
@@ -1043,7 +1109,7 @@ class CurveApp:
         self._detail = None
         self._page_name = PAGE_PORTFOLIO
         self._sync_nav()
-        self.body.content = self.portfolio_view
+        self._show(self.portfolio_view)
         if self.page.width:
             self.portfolio_view.set_layout(layout_for(self.page.width).cards)
         self._go(routing.build(self.chain, page=PAGE_PORTFOLIO))

@@ -203,7 +203,7 @@ class PoolDetailView(ft.Column):
         # Side by side on a wide window, stacked on a narrow one. Rebuilt by
         # `set_layout` rather than being two separate trees, so the chart and
         # the action panel keep their state across a resize.
-        self._body = ft.Container(expand=True)
+        self._body = ft.Container()
 
         self._on_back = on_back
         #: Rebuilt when the page crosses into card widths -- the name needs
@@ -213,7 +213,6 @@ class PoolDetailView(ft.Column):
         super().__init__(
             controls=[self._header_slot, self._body],
             spacing=14,
-            expand=True,
         )
         self._arrange()
 
@@ -241,36 +240,39 @@ class PoolDetailView(ft.Column):
     def _arrange(self) -> None:
         """Chart beside the actions, or above them when there is no room.
 
-        The two arrangements need opposite scrolling, which is why this
-        rebuilds rather than just reflowing. Side by side, the page is a
-        fixed frame and the left column scrolls inside it. Stacked, the
-        *page* scrolls -- and then nothing inside it may be `expand`, because
-        a flex child in unbounded height is a Flutter layout error, not a
-        cosmetic problem. That is what broke the pool page at phone widths.
+        Neither arrangement scrolls: the window does -- see `CurveApp.body`
+        -- and this page is laid out to whatever height it needs inside it.
+        That is also why nothing here may be `expand` on the vertical: a
+        flex child in unbounded height is a Flutter layout error rather
+        than a cosmetic problem, and it is what broke this page at phone
+        widths before it stopped scrolling for itself.
+
+        The action panel keeps a fixed height either way. `TabBarView`
+        cannot size to its content, so somebody has to say -- see
+        `actions_height`.
         """
+        self.scroll = None
+        self._left.scroll = None
+        self._left.expand = False
+        self._right.height = actions_height(self.pool)
+        self._body.expand = False
         if self._layout.stacked:
-            self.scroll = ft.ScrollMode.AUTO
-            self._left.scroll = None
-            self._left.expand = False
+            # In a Column `expand` is the *vertical* flex, and there is no
+            # vertical to divide: the page is as tall as it needs to be.
             self._right.expand = False
-            # Bounded, because the page around it is not.
-            self._right.height = actions_height(self.pool)
-            self._body.expand = False
             self._body.content = ft.Column(
                 [self._left, self._right], spacing=16, tight=True
             )
         else:
-            self.scroll = None
-            self._left.scroll = ft.ScrollMode.AUTO
-            self._left.expand = True
-            self._right.height = actions_height(self.pool)
+            # In a Row it is the horizontal one, and dropping it is what
+            # collapsed this page: the panel took its natural width, the
+            # chart column got what was left, which was nothing, and the
+            # composition set itself one letter per line.
             self._right.expand = 1
-            self._body.expand = True
             self._body.content = ft.Row(
                 [ft.Container(self._left, expand=2), self._right],
                 vertical_alignment=ft.CrossAxisAlignment.START,
                 spacing=20,
-                expand=True,
             )
 
     # -- header -----------------------------------------------------------

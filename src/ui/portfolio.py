@@ -193,16 +193,18 @@ class PortfolioView(ft.Column):
 
         self.total = ft.Text("", size=METRIC, weight=ft.FontWeight.BOLD)
 
-        self.rows = ft.ListView(expand=True, spacing=0, key="holding-rows")
+        # A Column, not a `ListView`: the window scrolls, and a list that
+        # scrolls inside it would be a second scrollbar in the middle of
+        # the page -- see `CurveApp.body`.
+        self.rows = ft.Column(spacing=0, key="holding-rows")
         self._header = self._build_header()
-        self._rows_box = ft.Container(self.rows, expand=True, theme=theme.rows_theme(page))
+        self._rows_box = ft.Container(self.rows, theme=theme.rows_theme(page))
         self._table = ft.Container(
-            ft.Column([self._header, self._rows_box], spacing=0, expand=True),
+            ft.Column([self._header, self._rows_box], spacing=0),
             bgcolor=ft.Colors.SURFACE,
             border=theme.panel_border(page),
             border_radius=10,
             clip_behavior=ft.ClipBehavior.HARD_EDGE,
-            expand=True,
             shadow=theme.panel_shadow(page),
         )
         self.empty = ft.Container(
@@ -231,7 +233,6 @@ class PortfolioView(ft.Column):
                 self._table,
             ],
             spacing=10,
-            expand=True,
         )
 
     # -- what the app calls ------------------------------------------------

@@ -247,7 +247,7 @@ class AppMachine(RuleBasedStateMachine):
     @rule()
     def scroll_to_end(self) -> None:
         view = self.app.list_view
-        view._scrolled(Event(pixels=99_000.0, max_scroll_extent=99_100.0))
+        view.page_scrolled(Event(pixels=99_000.0, max_scroll_extent=99_100.0))
         self.pump()
 
     @rule(chain=st.sampled_from(sorted(CHAINS)))

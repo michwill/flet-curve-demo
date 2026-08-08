@@ -306,15 +306,13 @@ class PoolListView(ft.Column):
             visible=False,
             on_select=self._sort_picked,
         )
-        self.rows = ft.ListView(
-            key="pool-rows",
-            expand=True,
-            spacing=0,
-            on_scroll=self._scrolled,
-            # Throttle: without this the handler fires on every frame of a
-            # fling and queues a page request per frame.
-            scroll_interval=200,
-        )
+        # A plain Column, not a `ListView`: the window is what scrolls
+        # now (see `CurveApp.body`), and a list that scrolls inside an
+        # unbounded parent is a Flutter layout error rather than a second
+        # scrollbar. The cost is that every loaded row is built rather than
+        # only the visible ones -- a page is 50 rows and the longest chain
+        # is a few hundred.
+        self.rows = ft.Column(key="pool-rows", spacing=0)
         self.footer = ft.Container(
             ft.Row(
                 [ft.ProgressRing(width=16, height=16), ft.Text("Loading…", size=SMALL)],
@@ -329,7 +327,7 @@ class PoolListView(ft.Column):
         # Wraps the rows so a theme can be scoped to them: `ListView` takes
         # none, and the headings above are not rows and should not take the
         # rows' hover colour.
-        self._rows_box = ft.Container(self.rows, expand=True, theme=theme.rows_theme(page))
+        self._rows_box = ft.Container(self.rows, theme=theme.rows_theme(page))
 
         # The table is a panel: white, with the rules between its rows.
         # Explicit rather than inherited, because the Chad theme puts a
@@ -337,7 +335,7 @@ class PoolListView(ft.Column):
         # Material themes `SURFACE` is the page colour anyway, so this
         # changes nothing there.
         self._table = ft.Container(
-            ft.Column([self._header, self._rows_box], spacing=0, expand=True),
+            ft.Column([self._header, self._rows_box], spacing=0),
             bgcolor=ft.Colors.SURFACE,
             # Outlined under Chad, which is a theme of bordered boxes and
             # needs an edge for its shadow to come from; left alone in
@@ -348,7 +346,6 @@ class PoolListView(ft.Column):
             border=theme.panel_border(page),
             border_radius=10,
             clip_behavior=ft.ClipBehavior.HARD_EDGE,
-            expand=True,
             shadow=theme.panel_shadow(page),
         )
         super().__init__(
@@ -366,7 +363,6 @@ class PoolListView(ft.Column):
                 self.footer,
             ],
             spacing=10,
-            expand=True,
         )
 
     # -- header -----------------------------------------------------------
@@ -537,8 +533,12 @@ class PoolListView(ft.Column):
         safe_update(self)
         await self.load_more()
 
-    def _scrolled(self, e: ft.OnScrollEvent) -> None:
-        """Pull the next page when the end comes into view."""
+    def page_scrolled(self, e: ft.OnScrollEvent) -> None:
+        """Pull the next page when the end comes into view.
+
+        Called by the app rather than by a scrollable of this view's own:
+        the scroller is the window, and it is shared with every other page.
+        """
         if self.feed is None or self.feed.loading or self.feed.exhausted:
             return
         if e.max_scroll_extent - e.pixels > SCROLL_THRESHOLD:

@@ -115,6 +115,14 @@ BAR_SHADOW = ft.BoxShadow(
     color=ft.Colors.with_opacity(0.20, TITLE),
 )
 
+#: The page's scrollbar, which is the only one there is: the window
+#: scrolls, not the widgets (see `CurveApp.body`). Always visible, because
+#: a page-level bar is also the page's position indicator -- Flutter's
+#: default fades it out a moment after the gesture, which on a list of 387
+#: pools leaves nothing at all saying how far down you are. Interactive,
+#: so it can be dragged like any other page's.
+SCROLLBAR = ft.ScrollbarTheme(thumb_visibility=True, interactive=True, thickness=8)
+
 #: Theme names as the app stores them, in the order the button cycles.
 NAMES = ("light", "dark", "chad")
 
@@ -126,7 +134,7 @@ def material() -> ft.Theme:
     `page.dark_theme` it is assigned to decides the brightness, so there
     is nothing to pass here.
     """
-    return ft.Theme(color_scheme_seed=SEED)
+    return ft.Theme(color_scheme_seed=SEED, scrollbar_theme=SCROLLBAR)
 
 
 def chad() -> ft.Theme:
@@ -136,6 +144,7 @@ def chad() -> ft.Theme:
     something that page has no equivalent of, and those are noted.
     """
     return ft.Theme(
+        scrollbar_theme=SCROLLBAR,
         color_scheme=ft.ColorScheme(
             # An active control, and the thing the eye should land on.
             primary=ACTIVE,

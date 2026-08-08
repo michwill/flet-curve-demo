@@ -66,6 +66,61 @@ the latter sends no cache headers, Chrome caches heuristically, and a reload
 happily keeps running the *previous* `app.tar.gz`. That is worth a script
 because the failure looks exactly like a fix that did not work.
 
+## Publishing it to IPFS
+
+The whole app is static, so it pins as a directory. `tools/publish_ipfs.py`
+publishes, makes the build portable, and uploads it to Pinata:
+
+```sh
+python tools/publish_ipfs.py               # flet publish, then pin ./dist
+python tools/publish_ipfs.py --no-build    # pin the dist/ already there
+python tools/publish_ipfs.py --dry-run     # everything up to the upload
+```
+
+**The key does not go in `src/local_config.toml`.** That file is under `src/`
+so that `flet publish` bundles it -- which is exactly why a real credential
+cannot live there: it would be served to every visitor, and pinning it puts
+it somewhere with no unpublish. It says as much in its own header. Put the
+Pinata JWT at the repo root instead, or in the environment:
+
+```sh
+cp local_secrets.example.toml local_secrets.toml   # gitignored; then fill in jwt
+export PINATA_JWT='...'                            # or this, which wins
+```
+
+The script greps the build for whatever key it is about to authenticate with
+and refuses to upload if it finds it -- in a loose file or inside
+`app.tar.gz`, which is where `src/local_config.toml` ends up. The difference
+between the safe file and the unsafe one is one path component and the
+mistake cannot be taken back, so it is checked rather than documented.
+
+Two more things it does, both because a gateway serves a site under a
+sub-path (`/ipfs/<cid>/`) rather than at a root:
+
+- **`<base href="/">` becomes `<base href="./">`.** Otherwise the bootstrap,
+  the wasm, canvaskit and `app.tar.gz` are all fetched from the gateway's
+  root, where none of them are: a blank page and a pile of 404s. Relative is
+  identical at a real root, so the local server is unaffected. The app's own
+  asset URLs need nothing -- `ui/assets.py` builds them from the worker's
+  `location`, which is already the right prefix.
+- **it asks for a CIDv1.** Base32 and case-insensitive, so it fits in a
+  hostname and `https://<cid>.ipfs.dweb.link/` works; a v0 hash is base58 and
+  only resolves on a path gateway.
+
+Pinata's current upload API (`uploads.pinata.cloud/v3/files`) takes one file
+and not a directory, and a website is a directory, so this posts to the older
+`pinFileToIPFS` -- which is what their own docs point to for folders. One
+request, one `file` part per file, each named `<folder>/<path>`; that naming
+is what rebuilds the tree on the other side, and why the CID that comes back
+is a directory you can open.
+
+The body is built by hand rather than handed to `httpx` as 1,800 open file
+handles, which hits the descriptor limit long before the network. It streams
+one file at a time with the length computed up front, so the request is not
+chunked -- and `tests/test_ipfs.py` asserts the computed length is exactly
+what the generator emits, because a body that disagrees with its own
+`Content-Length` either truncates at 100 MB or hangs.
+
 ---
 
 ## The shape of it

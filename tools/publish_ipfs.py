@@ -1,0 +1,373 @@
+#!/usr/bin/env python3
+"""Pin the web build to IPFS, through Pinata.
+
+    python tools/publish_ipfs.py                # publish, then pin dist/
+    python tools/publish_ipfs.py --no-build     # pin the dist/ already there
+    python tools/publish_ipfs.py --dry-run      # everything up to the upload
+
+**Where the key goes, and where it must not.** Not in
+`src/local_config.toml`. That file is deliberately inside the script
+directory because `flet publish` tars that directory into the app, which
+is what makes a plain publish come out configured -- and it means
+everything under `src/` is shipped to every visitor. Pinning it would then
+put it on IPFS, where nobody can offer you a delete button. That file says
+in its own header that nothing in it is a secret.
+
+So the Pinata JWT lives in `local_secrets.toml` at the repo *root*, which
+is gitignored and outside the tree that gets bundled, or in `PINATA_JWT`
+in the environment. The build is searched for it before anything is sent
+-- see `leaked` -- because the difference between the safe file and the
+unsafe one is a single path component, and the mistake is unrecoverable
+rather than embarrassing.
+
+**Why the old endpoint.** Pinata's current upload API,
+`uploads.pinata.cloud/v3/files`, does not take a directory, and a website
+is a directory. Their own answer to that is `pinFileToIPFS`, so that is
+what this posts to: one multipart request, one `file` part per file, each
+named `<folder>/<path>` -- which is how the folder is rebuilt on the other
+side, and why the CID that comes back is the directory rather than a file.
+
+**Why the body is hand-rolled.** 1,800 files. Handing them all to httpx as
+open handles hits the descriptor limit long before it hits the network, so
+the parts are streamed one at a time, with the length computed in advance
+so the request is not chunked -- and `test_ipfs.py` asserts that the
+computed length is exactly what the generator emits, which is the one bug
+this shape is prone to.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import secrets
+import subprocess
+import sys
+import tarfile
+import tomllib
+from collections.abc import Iterator
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+DIST = ROOT / "dist"
+
+#: Outside `src/`, and outside git. Both on purpose -- see the module note.
+SECRETS = ROOT / "local_secrets.toml"
+
+PIN_URL = "https://api.pinata.cloud/pinning/pinFileToIPFS"
+PUBLIC_GATEWAY = "https://gateway.pinata.cloud/ipfs/"
+
+#: CIDv1 rather than v0: it is case-insensitive base32, which is what a
+#: subdomain gateway (`https://<cid>.ipfs.dweb.link`) needs to put the CID
+#: in a hostname. v0 hashes only work on path gateways.
+CID_VERSION = 1
+
+#: Read size per file, and how often to report progress.
+CHUNK = 1 << 20
+REPORT_EVERY = 8 << 20
+
+HOW_TO_CONFIGURE = f"""\
+No Pinata credentials. Either:
+
+    export PINATA_JWT='...'
+
+or put them in {SECRETS.name} at the repo root (gitignored):
+
+    [pinata]
+    jwt = "..."
+
+An API key with `pinFileToIPFS` permission makes the JWT:
+https://app.pinata.cloud/developers/api-keys
+
+Do NOT put it in src/local_config.toml -- everything under src/ is bundled
+into the published app and would be pinned along with it."""
+
+
+# -- credentials -----------------------------------------------------------
+
+
+def config() -> dict:
+    """`local_secrets.toml`, or an empty dict if there is none."""
+    try:
+        return tomllib.loads(SECRETS.read_text(encoding="utf-8")).get("pinata", {})
+    except FileNotFoundError:
+        return {}
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise SystemExit(f"{SECRETS.name}: {exc}") from exc
+
+
+def token(values: dict | None = None) -> str:
+    """The JWT: environment first, so CI needs no file."""
+    from_env = os.environ.get("PINATA_JWT", "").strip()
+    if from_env:
+        return from_env
+    jwt = str((config() if values is None else values).get("jwt", "")).strip()
+    if not jwt:
+        raise SystemExit(HOW_TO_CONFIGURE)
+    return jwt
+
+
+# -- making the build work anywhere but a site root ------------------------
+
+BASE_ABSOLUTE = '<base href="/">'
+BASE_RELATIVE = '<base href="./">'
+
+
+def make_relative(index: Path) -> bool:
+    """Point the page at its own directory rather than at the site root.
+
+    A gateway serves a pinned site under `/ipfs/<cid>/`, so `href="/"`
+    sends the bootstrap, the wasm, canvaskit and the Python tarball to the
+    gateway's root, where none of them are -- a blank page and a handful of
+    404s. Relative resolves under any prefix, and is identical at a root,
+    which is what `tools/serve.py` is.
+
+    Returns whether it changed anything, so a second run is quiet rather
+    than wrong. The app's *own* asset URLs need nothing: `ui.assets` builds
+    them from the worker's `location`, which is already the right prefix.
+    """
+    html = index.read_text(encoding="utf-8")
+    if BASE_RELATIVE in html:
+        return False
+    if BASE_ABSOLUTE not in html:
+        raise SystemExit(
+            f"{index}: expected {BASE_ABSOLUTE} to make relative and found neither "
+            f"it nor {BASE_RELATIVE}. Flet's index patcher has changed shape."
+        )
+    index.write_text(html.replace(BASE_ABSOLUTE, BASE_RELATIVE), encoding="utf-8")
+    return True
+
+
+# -- the check that matters ------------------------------------------------
+
+#: Where a secret could plausibly be readable. The tarball is the app's own
+#: source, `local_config.toml` included; the rest is what the page loads.
+TEXT_SUFFIXES = {".html", ".js", ".json", ".toml", ".txt", ".mjs", ".py"}
+#: Past this a file is canvaskit or a source map, not somewhere a key ends
+#: up, and reading 37MB to prove it is time spent on nothing.
+MAX_SCAN = 4 << 20
+
+
+def leaked(root: Path, secret: str) -> list[str]:
+    """Files in the build containing `secret`. Empty is the only good answer.
+
+    IPFS has no unpublish. A key that goes up stays up for as long as
+    anyone finds it worth pinning, so this runs before the upload rather
+    than as a lint afterwards.
+    """
+    needle = secret.encode()
+    found = []
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        name = path.relative_to(root).as_posix()
+        if path.suffix == ".gz" and tarfile.is_tarfile(path):
+            found += [f"{name}:{member}" for member in _in_tarball(path, needle)]
+        elif path.suffix in TEXT_SUFFIXES and path.stat().st_size <= MAX_SCAN:
+            if needle in path.read_bytes():
+                found.append(name)
+    return found
+
+
+def _in_tarball(path: Path, needle: bytes) -> list[str]:
+    with tarfile.open(path) as archive:
+        names = []
+        for member in archive.getmembers():
+            if not member.isfile() or member.size > MAX_SCAN:
+                continue
+            handle = archive.extractfile(member)
+            if handle is not None and needle in handle.read():
+                names.append(member.name)
+        return names
+
+
+# -- the request body ------------------------------------------------------
+
+
+def uploads(root: Path, folder: str) -> list[tuple[str, Path]]:
+    """Every file in the build, named the way Pinata rebuilds a directory."""
+    return [
+        (f"{folder}/{path.relative_to(root).as_posix()}", path)
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    ]
+
+
+def _file_head(boundary: str, name: str) -> bytes:
+    return (
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="file"; filename="{name}"\r\n'
+        f"Content-Type: application/octet-stream\r\n\r\n"
+    ).encode()
+
+
+def _field(boundary: str, name: str, value: str) -> bytes:
+    return (
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="{name}"\r\n\r\n'
+        f"{value}\r\n"
+    ).encode()
+
+
+def _tail(boundary: str) -> bytes:
+    return f"--{boundary}--\r\n".encode()
+
+
+def content_length(
+    parts: list[tuple[str, Path]], fields: dict[str, str], boundary: str
+) -> int:
+    """How long the body will be, without building it.
+
+    Sent as `Content-Length` so the request is not chunked. It has to agree
+    with `body` to the byte: too short truncates the upload, too long hangs
+    it until the server gives up.
+    """
+    total = sum(len(_field(boundary, key, value)) for key, value in fields.items())
+    for name, path in parts:
+        total += len(_file_head(boundary, name)) + path.stat().st_size + len(b"\r\n")
+    return total + len(_tail(boundary))
+
+
+def body(
+    parts: list[tuple[str, Path]],
+    fields: dict[str, str],
+    boundary: str,
+    on_progress=None,
+) -> Iterator[bytes]:
+    """The multipart body, one file at a time."""
+    sent = 0
+    for key, value in fields.items():
+        chunk = _field(boundary, key, value)
+        sent += len(chunk)
+        yield chunk
+    for name, path in parts:
+        head = _file_head(boundary, name)
+        sent += len(head)
+        yield head
+        with path.open("rb") as handle:
+            while chunk := handle.read(CHUNK):
+                sent += len(chunk)
+                if on_progress is not None:
+                    on_progress(sent)
+                yield chunk
+        sent += 2
+        yield b"\r\n"
+    yield _tail(boundary)
+
+
+def fields_for(name: str) -> dict[str, str]:
+    return {
+        "pinataMetadata": json.dumps({"name": name}),
+        "pinataOptions": json.dumps({"cidVersion": CID_VERSION}),
+    }
+
+
+# -- the upload ------------------------------------------------------------
+
+
+def pin(
+    parts: list[tuple[str, Path]],
+    fields: dict[str, str],
+    jwt: str,
+    *,
+    timeout: float,
+    client=None,
+) -> dict:
+    """Post the directory. Returns Pinata's JSON."""
+    import httpx
+
+    boundary = secrets.token_hex(16)
+    total = content_length(parts, fields, boundary)
+    headers = {
+        "Authorization": f"Bearer {jwt}",
+        "Content-Type": f"multipart/form-data; boundary={boundary}",
+        # With this present httpx streams the generator as-is; without it
+        # the request goes out chunked, which this endpoint refuses.
+        "Content-Length": str(total),
+    }
+
+    def report(sent: int, _seen=[0]) -> None:  # noqa: B006 - a counter, not a default
+        if sent - _seen[0] >= REPORT_EVERY:
+            _seen[0] = sent
+            print(f"  {sent / total:5.1%}  {sent >> 20:5d} / {total >> 20} MB")
+
+    owned = client is None
+    client = client or httpx.Client(timeout=timeout)
+    try:
+        response = client.post(
+            PIN_URL, headers=headers, content=body(parts, fields, boundary, report)
+        )
+    finally:
+        if owned:
+            client.close()
+    if response.status_code >= 400:
+        raise SystemExit(f"Pinata refused it ({response.status_code}): {response.text}")
+    return response.json()
+
+
+# -- putting it together ---------------------------------------------------
+
+
+def publish() -> None:
+    """`flet publish`, so what goes up is what is on disk now."""
+    print("flet publish ...")
+    result = subprocess.run(
+        [sys.executable, "-m", "flet", "publish"], cwd=ROOT, check=False
+    )
+    if result.returncode != 0:
+        raise SystemExit(f"flet publish failed ({result.returncode})")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--no-build", action="store_true", help="pin dist/ as it is")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="everything except the upload"
+    )
+    parser.add_argument("--dist", type=Path, default=DIST, help="what to pin")
+    parser.add_argument("--name", default="flet-curve", help="the pin's name")
+    parser.add_argument("--timeout", type=float, default=1800.0, help="seconds")
+    options = parser.parse_args()
+
+    if not options.no_build:
+        publish()
+    dist: Path = options.dist
+    if not (dist / "index.html").is_file():
+        raise SystemExit(f"{dist} holds no index.html -- run without --no-build")
+
+    if make_relative(dist / "index.html"):
+        print("index.html: base href is relative now, for a gateway sub-path")
+
+    jwt = "" if options.dry_run else token()
+    if jwt and (found := leaked(dist, jwt)):
+        raise SystemExit(
+            "The build contains the Pinata key:\n  "
+            + "\n  ".join(found)
+            + f"\n\nNothing was uploaded. Move it to {SECRETS.name} at the repo root:"
+            f" anything under src/ is bundled into the app, and a pin is forever."
+        )
+
+    parts = uploads(dist, options.name)
+    total = sum(path.stat().st_size for _name, path in parts)
+    print(f"{len(parts)} files, {total / (1 << 20):.1f} MB from {dist}")
+    if options.dry_run:
+        print("--dry-run: stopping before the upload")
+        return 0
+
+    answer = pin(parts, fields_for(options.name), jwt, timeout=options.timeout)
+    cid = answer.get("IpfsHash", "")
+    if not cid:
+        raise SystemExit(f"No CID in Pinata's answer: {answer}")
+
+    gateway = str(config().get("gateway", "")).strip() or PUBLIC_GATEWAY
+    print(f"\n  CID  {cid}")
+    if answer.get("isDuplicate"):
+        print("       (already pinned -- identical to a previous build)")
+    print(f"       {gateway.rstrip('/')}/{cid}/")
+    print(f"       https://{cid}.ipfs.dweb.link/")
+    print(f"       ipfs://{cid}/")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

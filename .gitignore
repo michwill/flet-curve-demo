@@ -26,6 +26,10 @@ src/.flet/
 # Local wallet config (see flet-pay-example README)
 src/local_config.toml
 
+# Real credentials -- the Pinata key for tools/publish_ipfs.py. Kept out
+# of src/ so `flet publish` cannot bundle it into the app.
+local_secrets.toml
+
 # uv lockfile - the venv is reproducible from requirements.txt
 uv.lock
 

@@ -115,16 +115,12 @@ UNKNOWN_CHAIN = 4902
 #: The Curve mark, sized against the wordmark beside it rather than against
 #: the header's height -- the two read as one lockup.
 BRAND_LOGO = 34
-#: How wide the address sits when it shows `0x1234…abcd` and when it shows
-#: all 42 characters. Fixed so the hover can animate. The full width is
-#: measured rather than guessed -- a checksummed address is ~316px in the
-#: browser's Roboto at this size -- and then given a wide margin, because
-#: Flutter's own metrics run a little wider than the browser's and a
-#: clipped address is worse than a gap.
-ADDRESS_SHORT_WIDTH = 128
-ADDRESS_FULL_WIDTH = 380
 #: Below this the header has no room to give, so hovering does nothing --
 #: a chip that grew here would push the chain picker off the row.
+#:
+#: A question about the *window*, which the window can answer, rather than
+#: about text, which it cannot. The chip itself is given no width at all;
+#: see where it is built.
 ADDRESS_EXPAND_MIN_PAGE = 1100
 
 #: The two pages the app has, as they appear in the URL and the nav.
@@ -438,24 +434,38 @@ class CurveApp:
         )
         self.account_label = ft.Text("", size=SMALL, no_wrap=True)
         # The address is a control, not a caption: hovering it gives you all
-        # 42 characters, clicking it opens the wallet's own panel. Fixed
-        # widths rather than an intrinsic one so the growth can animate --
-        # a Row cannot animate a child that sizes itself.
+        # 42 characters, clicking it opens the wallet's own panel.
+        #
+        # **No width.** It had two, one per state, picked by measuring an
+        # address in the browser's Roboto and adding a margin. That is a
+        # guess about how wide text is, and a guess about text is wrong
+        # somewhere: the desktop app draws in a different font and clipped
+        # the tail of the address against the 42-character width -- half a
+        # character short, which reads as a rendering fault rather than a
+        # layout one. The same guess is what `ui.metrics` was deleted for.
+        #
+        # So the box takes its width from the address in it, and `…abcd`
+        # and the full 42 characters are simply two different widths of
+        # the same control. `animate_size` is what keeps the hover a
+        # growth rather than a jump: it animates *to* the content's size,
+        # which is the whole point -- nothing here has to know what that
+        # size is, on any platform, in any font.
         self.account_chip = ft.Container(
             self.account_label,
             visible=False,
-            width=ADDRESS_SHORT_WIDTH,
             padding=ft.Padding.symmetric(horizontal=10, vertical=6),
             # Outlined under Chad, like everything else there; in light
             # and dark it goes back to being separated by tone alone.
             border=themes.panel_border(page),
             border_radius=8,
             alignment=ft.Alignment.CENTER_LEFT,
-            clip_behavior=ft.ClipBehavior.HARD_EDGE,
             ink=True,
             on_click=self._wallet_clicked,
             on_hover=self._account_hovered,
-            animate=ft.Animation(
+            # Not `animate`: that animates properties this control is
+            # given, and it is no longer given a width. This animates the
+            # box to whatever its content turns out to measure.
+            animate_size=ft.Animation(
                 duration=ft.Duration(milliseconds=140),
                 curve=ft.AnimationCurve.EASE_OUT,
             ),
@@ -1352,16 +1362,15 @@ class CurveApp:
     def _show_account(self, *, expanded: bool = False) -> None:
         """Draw the connected address, short or in full.
 
-        The only place the chip's text and width are set, so the hover, a
-        wallet-side account change and a fresh connection cannot disagree
-        about what it says.
+        The only place the chip's text is set, so the hover, a wallet-side
+        account change and a fresh connection cannot disagree about what
+        it says. Setting the text is the whole of it: the width follows
+        from it rather than being chosen alongside it, which is what stops
+        the two from ever disagreeing.
         """
         wallet = self.wallet
         self._address_expanded = expanded and wallet is not None
         self.account_chip.visible = wallet is not None
-        self.account_chip.width = (
-            ADDRESS_FULL_WIDTH if self._address_expanded else ADDRESS_SHORT_WIDTH
-        )
         if wallet is None:
             self.account_label.value = ""
             self.account_chip.tooltip = None

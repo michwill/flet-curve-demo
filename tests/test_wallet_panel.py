@@ -280,3 +280,40 @@ async def test_a_failed_first_connection_still_offers_the_button(
     assert app.wallet is None
     assert app.connect_button.visible
     assert "no wallet here" in app.error.value
+
+
+# -- the chip's size --------------------------------------------------------
+
+
+def test_the_address_chip_is_never_told_how_wide_to_be() -> None:
+    """It used to be told, once per state, from widths measured against
+    one font at one text scale.
+
+    Anything that draws text wider than that measurement then cut the
+    address off mid-character: on the desktop app at a text scale of 1.2
+    -- HiDPI, GTK text scaling, an accessibility setting -- the last
+    character of the full address was sliced in half, which reads as a
+    rendering fault rather than a layout one. A width for text cannot be
+    calibrated into a right one, so there is no width; the box takes its
+    size from the address in it, in either state.
+    """
+    app = app_with(Recorder())
+
+    app._show_account(expanded=False)
+    assert app.account_chip.width is None
+    assert app.account_label.value == Recorder().short_address
+
+    app._show_account(expanded=True)
+    assert app.account_chip.width is None
+    assert app.account_label.value == ADDRESS
+
+
+def test_a_longer_address_does_not_change_how_the_chip_is_built() -> None:
+    """The point of having no width: nothing here has an opinion about
+    how wide any particular address is."""
+    wide = Recorder("0x" + "D" * 40)
+    app = app_with(wide)
+
+    app._show_account(expanded=True)
+    assert app.account_chip.width is None
+    assert app.account_label.value == wide.address

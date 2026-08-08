@@ -1552,6 +1552,19 @@ def _option_label(option: ft.DropdownOption) -> str:
     return content.value if isinstance(content, ft.Text) else ""
 
 
+def test_the_address_chip_is_built_without_a_width() -> None:
+    """And animates to its content instead of between two of them.
+
+    `animate_size` rather than `animate`: the latter animates properties
+    the control is given, and this one is deliberately not given a width,
+    so the hover would jump rather than grow. See `_show_account`.
+    """
+    app = header_app(LAPTOP)
+
+    assert app.account_chip.width is None
+    assert app.account_chip.animate_size is not None
+
+
 def test_the_open_menu_still_names_every_network_on_a_phone() -> None:
     """Dropping the label is about the closed field, not the menu.
 

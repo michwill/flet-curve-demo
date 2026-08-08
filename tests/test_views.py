@@ -150,7 +150,10 @@ async def test_pool_list_appends_pages_as_they_load() -> None:
 
     await view.load_more()
     assert len(view.rows.controls) == 3
-    assert "3 of 7 pools" in view.count_label.value
+    # What the chain has, not what has been fetched: the count is about
+    # the chain, and one that climbed as you scrolled was answering a
+    # question about the paging instead.
+    assert view.count_label.value == "7 pools"
 
     await view.load_more()
     await view.load_more()
@@ -203,6 +206,20 @@ def test_sorting_by_the_active_column_is_a_no_op() -> None:
 # -- responsive ------------------------------------------------------------
 
 PHONE, TABLET, LAPTOP = 390.0, 820.0, 1280.0
+
+
+async def test_the_count_is_not_shown_on_a_phone() -> None:
+    """That row already carries the search box and the sort picker, and
+    how many pools a chain has is not what anyone is there to read."""
+    view = PoolListView(StubPage(), on_open=lambda _p: None)
+    view.attach(FakeFeed([make_pool() for _ in range(7)], page_size=3))
+    await view.load_more()
+
+    view.set_layout(layout_for(LAPTOP))
+    assert view.count_label.visible and view.count_label.value == "7 pools"
+
+    view.set_layout(layout_for(PHONE))
+    assert not view.count_label.visible
 
 
 def test_the_list_swaps_headers_for_a_sort_dropdown_on_a_phone() -> None:

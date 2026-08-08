@@ -426,6 +426,10 @@ class PoolListView(ft.Column):
         self._layout = layout
         self._header.visible = layout.shows_column_headers
         self.sort_picker.visible = not layout.shows_column_headers
+        # The count is the first thing to go on a phone: that row already
+        # carries the search box and the sort picker, and how many pools a
+        # chain has is not what anybody is there to read.
+        self.count_label.visible = not layout.cards
         self.sort_picker.value = self._sort
         self._sync_header()
         self._rebuild_rows()
@@ -546,13 +550,13 @@ class PoolListView(ft.Column):
             return
         if feed.error:
             self.count_label.value = feed.error
-            return
-        if feed.total is None:
+        elif feed.total is None:
             self.count_label.value = "Loading…"
-        elif feed.exhausted:
-            self.count_label.value = f"{feed.total} pools"
         else:
-            self.count_label.value = f"{feed.loaded} of {feed.total} pools"
+            # How many there are, not how many have been fetched. "50 of
+            # 387" answered a question about the paging rather than about
+            # the chain, and it changed under you as you scrolled.
+            self.count_label.value = f"{feed.total} pools"
 
     def _run(self, handler, *args) -> None:
         """Schedule an async handler.

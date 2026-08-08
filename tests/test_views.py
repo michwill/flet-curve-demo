@@ -1086,6 +1086,123 @@ def test_a_phone_shortens_it() -> None:
     assert any("…" in value for value in shown)
 
 
+def widths_in(control) -> list[float]:
+    """Every fixed width in a subtree. A cell with one cannot flex down."""
+    found: list[float] = []
+
+    def walk(node, seen):
+        if id(node) in seen:
+            return
+        seen.add(id(node))
+        if isinstance(node, ft.Container) and node.width:
+            found.append(node.width)
+        if isinstance(node, ft.Control):
+            for name in node.__dataclass_fields__:
+                walk(getattr(node, name, None), seen)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item, seen)
+
+    walk(control, set())
+    return found
+
+
+def test_the_pool_name_gets_its_own_line_on_a_phone() -> None:
+    """The name was the only thing in that row without a width of its own,
+    so it took what the back button, the marks and the two figures left --
+    about ten pixels, which Flutter filled one letter at a time. Vertical
+    `DAI/USDC/USDT`."""
+    view = detail_view()
+    view.set_layout(layout_for(PHONE))
+
+    header = view._header_slot.content
+    assert isinstance(header, ft.Column)          # stacked, not one row
+    name_row = header.controls[0]
+    # The name shares its line with the back button and the marks, and
+    # nothing else: no figure competing for the width.
+    assert "TVL" not in texts(name_row)
+    assert make_pool().display_name in texts(name_row)
+    # And the figures are still there, below it.
+    assert "TVL" in texts(header)
+
+
+def test_a_wide_page_keeps_the_header_on_one_line() -> None:
+    view = detail_view()
+    view.set_layout(layout_for(LAPTOP))
+    assert isinstance(view._header_slot.content, ft.Row)
+
+
+def test_the_title_is_smaller_where_the_page_is_narrow() -> None:
+    from ui.typography import TITLE, TITLE_NARROW
+
+    wide, narrow = detail_view(), detail_view()
+    wide.set_layout(layout_for(LAPTOP))
+    narrow.set_layout(layout_for(PHONE))
+
+    def title_size(view) -> float:
+        name = make_pool().display_name
+        return next(
+            node.size
+            for node in _all_texts(view._header_slot)
+            if node.value == name
+        )
+
+    assert title_size(wide) == TITLE
+    assert title_size(narrow) == TITLE_NARROW < TITLE
+
+
+def _all_texts(control) -> list:
+    found: list = []
+
+    def walk(node, seen):
+        if id(node) in seen:
+            return
+        seen.add(id(node))
+        if isinstance(node, ft.Text):
+            found.append(node)
+        if isinstance(node, ft.Control):
+            for name in node.__dataclass_fields__:
+                walk(getattr(node, name, None), seen)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item, seen)
+
+    walk(control, set())
+    return found
+
+
+def test_the_composition_drops_its_columns_on_a_phone() -> None:
+    """Price, share and balance are 340px of fixed width between them,
+    which leaves the asset column setting its symbol vertically -- the same
+    fault as the title, in the same place."""
+    view = detail_view()
+    view.pool.merge_detail(
+        {
+            "n_coins": 2,
+            "balances": [1000.0, 2000.0],
+            "coins": [
+                {"symbol": "C0", "address": "0x" + "00" * 20, "decimals": 18,
+                 "usd_price": 1.0},
+                {"symbol": "C1", "address": "0x" + "01" * 20, "decimals": 18,
+                 "usd_price": 1.0},
+            ],
+        }
+    )
+    view._composition_slot.content = view._composition()
+    wide = widths_in(view._composition_slot)
+
+    view.set_layout(layout_for(PHONE))
+    view._composition_slot.content = view._composition()
+    narrow = widths_in(view._composition_slot)
+
+    # A column is 80px or more; anything smaller is a token mark, which is
+    # meant to have a size.
+    assert max(wide) >= 150                       # the balance column
+    assert [w for w in narrow if w >= 80] == []   # cards: no columns at all
+    # The numbers are still all there, just captioned rather than columned.
+    assert "Price" in texts(view._composition_slot)
+
+
 def test_the_gauge_is_listed_when_there_is_one() -> None:
     with_gauge = detail_view()
     assert "Gauge" in texts(with_gauge._parameters_slot)

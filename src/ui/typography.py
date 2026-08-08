@@ -36,3 +36,9 @@ METRIC = 20
 #: The pool page's title, and the wordmark in the header, which is sized to
 #: match it -- the app's name and the page's subject carry the same weight.
 TITLE = 24
+
+#: The same title where the page is a phone. 24 is not what wrapped
+#: `DAI/USDC/USDT` into a vertical column -- a one-character-wide box did
+#: that -- but once the name has its own line, a smaller one keeps a
+#: four-symbol pool to two lines instead of three.
+TITLE_NARROW = 20

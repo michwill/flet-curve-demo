@@ -33,9 +33,21 @@ from .actions import DepositTab, StakeTab, SwapTab, WithdrawTab
 from .candles import CandleChart
 from .logos import pool_stack, token_mark
 from .responsive import Layout, layout_for
-from .typography import BODY, LABEL, METRIC, SMALL, TITLE
+from .typography import BODY, LABEL, METRIC, SMALL, TITLE, TITLE_NARROW
 
 LP_SERIES = "__lp__"
+
+
+def _metric(label: str, value: str) -> ft.Control:
+    """A caption and its figure, side by side. As `ui.portfolio` draws them."""
+    return ft.Row(
+        [
+            ft.Text(label, size=LABEL, color=ft.Colors.ON_SURFACE_VARIANT),
+            ft.Text(value, size=SMALL),
+        ],
+        spacing=4,
+        tight=True,
+    )
 
 #: The parameter list is indented under its heading, not against the
 #: chart's left edge, so the fold reads as one block.
@@ -121,6 +133,10 @@ class PoolDetailView(ft.Column):
         self._composition_slot = ft.Container(
             ft.Text("Loading pool details…", size=SMALL, color=ft.Colors.ON_SURFACE_VARIANT)
         )
+        #: Whether that slot holds a table yet, rather than the line above
+        #: or an error. A width change re-lays the table out; it must not
+        #: turn "loading" into an empty one.
+        self._composition_ready = False
         self._yields_slot = ft.Container(self._yields())
         # Read from the pool itself, so it cannot be built until the
         # provider has answered. The rows are replaced in place -- this
@@ -189,8 +205,13 @@ class PoolDetailView(ft.Column):
         # the action panel keep their state across a resize.
         self._body = ft.Container(expand=True)
 
+        self._on_back = on_back
+        #: Rebuilt when the page crosses into card widths -- the name needs
+        #: its own line there, and a Row cannot be made into a Column.
+        self._header_slot = ft.Container(self._header())
+
         super().__init__(
-            controls=[self._header(on_back), self._body],
+            controls=[self._header_slot, self._body],
             spacing=14,
             expand=True,
         )
@@ -207,6 +228,10 @@ class PoolDetailView(ft.Column):
             # that re-makes them. The rows of values are the same object
             # either way and keep whatever has been read.
             self._parameters_slot.content = self._parameters()
+            # And the two that lay out by width rather than by content.
+            self._header_slot.content = self._header()
+            if self._composition_ready:
+                self._composition_slot.content = self._composition()
         if layout.stacked == was.stacked:
             safe_update(self)
             return
@@ -250,44 +275,74 @@ class PoolDetailView(ft.Column):
 
     # -- header -----------------------------------------------------------
 
-    def _header(self, on_back: Callable[[], None]) -> ft.Control:
-        return ft.Row(
+    def _header(self) -> ft.Control:
+        """Back, marks, name and the two figures -- on one line or three.
+
+        On a phone it has to be three. Everything here has a width of its
+        own except the name, so the name is what gives: back button, marks
+        and two figures come to about 370px, which on a 390px screen left
+        the title a column one character wide and Flutter did as it was
+        told -- `DAI/USDC/USDT` set vertically, one letter per line. That
+        is the whole bug, and no font size fixes it. The name gets its own
+        line instead, and the figures theirs.
+        """
+        title = ft.Column(
             [
-                ft.IconButton(ft.Icons.ARROW_BACK, on_click=lambda _e: on_back()),
-                pool_stack(self.pool, size=38),
-                ft.Column(
-                    [
-                        ft.Text(self.pool.display_name, size=TITLE, weight=ft.FontWeight.BOLD),
-                        ft.Text(
-                            " / ".join(self.pool.coin_symbols),
-                            size=SMALL,
-                            color=ft.Colors.ON_SURFACE_VARIANT,
-                        ),
-                    ],
-                    spacing=0,
-                    expand=True,
+                ft.Text(
+                    self.pool.display_name,
+                    size=TITLE if not self._layout.cards else TITLE_NARROW,
+                    weight=ft.FontWeight.BOLD,
                 ),
-                self._stat("TVL", compact_usd(self.pool.tvl)),
-                # Nothing counts trades on a Lite chain, so there is no
-                # volume to report -- and "$0" would read as a quiet day.
-                *(
-                    []
-                    if self.pool.lite
-                    else [self._stat("24h volume", compact_usd(self.pool.volume_24h))]
+                ft.Text(
+                    " / ".join(self.pool.coin_symbols),
+                    size=SMALL,
+                    color=ft.Colors.ON_SURFACE_VARIANT,
                 ),
             ],
-            vertical_alignment=ft.CrossAxisAlignment.CENTER,
-            spacing=18,
+            spacing=0,
+            expand=True,
+        )
+        back = ft.IconButton(ft.Icons.ARROW_BACK, on_click=lambda _e: self._on_back())
+        stats = [self._stat(label, value) for label, value in self._stat_pairs()]
+        if not self._layout.cards:
+            return ft.Row(
+                [back, pool_stack(self.pool, size=38), title, *stats],
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                spacing=18,
+            )
+        return ft.Column(
+            [
+                ft.Row(
+                    [back, pool_stack(self.pool, size=32), title],
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    spacing=10,
+                ),
+                # Under the name, and aligned with it rather than with the
+                # back button, which is furniture.
+                ft.Row(stats, spacing=24, wrap=True),
+            ],
+            spacing=8,
         )
 
+    def _stat_pairs(self) -> list[tuple[str, str]]:
+        pairs = [("TVL", compact_usd(self.pool.tvl))]
+        if not self.pool.lite:
+            pairs.append(("24h volume", compact_usd(self.pool.volume_24h)))
+        return pairs
+
     def _stat(self, label: str, value: str) -> ft.Control:
+        # Right-aligned at the end of a wide row, left-aligned when they
+        # have their own line under the name.
+        end = not self._layout.cards
         return ft.Column(
             [
                 ft.Text(label, size=LABEL, color=ft.Colors.ON_SURFACE_VARIANT),
                 ft.Text(value, size=METRIC, weight=ft.FontWeight.W_500),
             ],
             spacing=0,
-            horizontal_alignment=ft.CrossAxisAlignment.END,
+            horizontal_alignment=(
+                ft.CrossAxisAlignment.END if end else ft.CrossAxisAlignment.START
+            ),
         )
 
     # -- left column ------------------------------------------------------
@@ -325,10 +380,13 @@ class PoolDetailView(ft.Column):
             border=ft.Border(bottom=ft.BorderSide(1, ft.Colors.OUTLINE_VARIANT)),
         )
 
-        rows: list[ft.Control] = [header]
+        rows: list[ft.Control] = [] if self._layout.cards else [header]
         # The contract's coins: `balances` lines up with these, and a
         # metapool's decomposed extras have no balance of their own.
         for coin in self.pool.pool_coins:
+            if self._layout.cards:
+                rows.append(self._composition_card(coin, total))
+                continue
             rows.append(
                 ft.Container(
                     ft.Row(
@@ -387,6 +445,66 @@ class PoolDetailView(ft.Column):
         return ft.Column(
             [ft.Text("COMPOSITION", size=LABEL, weight=ft.FontWeight.BOLD), *rows],
             spacing=2,
+        )
+
+    def _composition_card(self, coin, total: float) -> ft.Control:
+        """One asset on two lines instead of four columns.
+
+        Price, share and balance come to 340px of fixed width, which on a
+        phone leaves the asset column about ten pixels -- so the symbol set
+        itself one letter per line, exactly as the title did. The pool list
+        and the portfolio already answer this with cards; this is the same
+        answer in the same shape.
+        """
+        return ft.Container(
+            ft.Column(
+                [
+                    ft.Row(
+                        [
+                            token_mark(coin, self.pool.chain, 26),
+                            ft.Column(
+                                [
+                                    ft.Text(coin.symbol, size=BODY),
+                                    ft.Text(
+                                        short_address(coin.address),
+                                        size=LABEL,
+                                        color=ft.Colors.ON_SURFACE_VARIANT,
+                                    ),
+                                ],
+                                spacing=0,
+                                expand=True,
+                            ),
+                            ft.Column(
+                                [
+                                    ft.Text(token_amount(coin.balance), size=BODY),
+                                    ft.Text(
+                                        compact_usd(coin.balance_usd),
+                                        size=LABEL,
+                                        color=ft.Colors.ON_SURFACE_VARIANT,
+                                    ),
+                                ],
+                                spacing=0,
+                                horizontal_alignment=ft.CrossAxisAlignment.END,
+                            ),
+                        ],
+                        spacing=8,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                    ft.Row(
+                        [
+                            _metric("Price", price(coin.usd_price)),
+                            _metric(
+                                "Share", f"{coin.balance_usd / total * 100:.2f}%"
+                            ),
+                        ],
+                        spacing=16,
+                        wrap=True,
+                    ),
+                ],
+                spacing=4,
+            ),
+            padding=ft.Padding.symmetric(vertical=8),
+            border=ft.Border(bottom=ft.BorderSide(1, ft.Colors.OUTLINE_VARIANT)),
         )
 
     def _yields(self) -> ft.Control:
@@ -693,6 +811,7 @@ class PoolDetailView(ft.Column):
         # all -- because that API has no list/detail split to fill in.
         if self.pool.detailed:
             self._composition_slot.content = self._composition()
+            self._composition_ready = True
             self._yields_slot.content = self._yields()
             return
         try:
@@ -705,6 +824,7 @@ class PoolDetailView(ft.Column):
             return
         self.pool.merge_detail(raw)
         self._composition_slot.content = self._composition()
+        self._composition_ready = True
         self._yields_slot.content = self._yields()
         # Both of these were built from the *decomposed* coin list, because
         # the contract's coin count only arrives with the detail. On a

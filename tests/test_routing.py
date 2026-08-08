@@ -165,6 +165,11 @@ def make_app(route: str = "/", *, pool=_DEFAULT, chain: str = "ethereum"):
     app.error = ft.Text("", visible=False)
     app.chain_picker = ft.Dropdown(options=[], value=chain)
     app.nav = ft.Container()          # the header's page links
+    # The same links as a menu, which is what a phone gets. `_sync_nav`
+    # fills both, so both have to exist.
+    app.menu = ft.PopupMenuButton()
+    app._icons = False
+    app._totals = []
     app.opened: list[Pool] = []
 
     def open_pool(pool_to_open):

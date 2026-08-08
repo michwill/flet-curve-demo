@@ -1405,6 +1405,10 @@ def nav_app(page=None, on: str = "pools"):
     app.nav = ft.Container(width=0)                # closed, as the app starts
     app.menu = ft.PopupMenuButton(visible=False)   # wide, as the app starts
     app.totals = ft.Text("")
+    # `_sync_nav` fills the menu as well as the links -- the two say the
+    # same thing at different widths.
+    app._icons = False
+    app._totals = []
     return app
 
 
@@ -1564,8 +1568,13 @@ def test_the_themes_move_into_the_menu_on_a_phone() -> None:
     assert "Pools" in labels and "Portfolio" in labels
     for name in themes.NAMES:
         assert f"{name.capitalize()} theme" in labels
-    ticked = [item for item in app.menu.items if item.checked]
-    assert len(ticked) == 1
+    # One tick per group: the theme you are in, and (below) the page you
+    # are on.
+    themed = [
+        item for item in app.menu.items
+        if item.content is not None and "theme" in item.content.value
+    ]
+    assert [item.checked for item in themed].count(True) == 1
 
 
 def test_the_chain_totals_move_into_the_menu_on_a_phone() -> None:
@@ -1579,9 +1588,10 @@ def test_the_chain_totals_move_into_the_menu_on_a_phone() -> None:
     labels = [
         item.content.value for item in app.menu.items if item.content is not None
     ]
-    assert labels[:2] == ["TVL $1.38b", "24h volume $89.61m"]
-    # Figures, not somewhere to go.
-    figures = [item for item in app.menu.items if item.content is not None][:2]
+    # Last, under everything that is somewhere to go.
+    assert labels[-2:] == ["TVL $1.38b", "24h volume $89.61m"]
+    # Figures, not destinations.
+    figures = [item for item in app.menu.items if item.content is not None][-2:]
     assert all(item.disabled and item.on_click is None for item in figures)
 
 
@@ -1595,8 +1605,8 @@ def test_the_figures_reach_the_menu_when_they_arrive() -> None:
     labels = [
         item.content.value for item in app.menu.items if item.content is not None
     ]
-    assert labels[0] == "TVL $1.38b"
-    assert labels[1] == "24h volume $89.61m"
+    assert labels[-2] == "TVL $1.38b"
+    assert labels[-1] == "24h volume $89.61m"
     # And the bar still says it the way it always did, for wider windows.
     assert app.totals.value.startswith("TVL $1.38b")
 
@@ -1610,7 +1620,7 @@ def test_a_lite_chain_reports_no_volume_in_the_menu_either() -> None:
     labels = [
         item.content.value for item in app.menu.items if item.content is not None
     ]
-    assert labels[0] == "TVL $1.00m"
+    assert labels[-1] == "TVL $1.00m"
     assert not any("volume" in label for label in labels)
 
 
@@ -1625,6 +1635,31 @@ def test_a_chain_with_no_totals_yet_lists_none() -> None:
         item.content.value for item in app.menu.items if item.content is not None
     ]
     assert labels[0] == "Pools"
+
+
+def test_the_menu_says_which_page_you_are_on() -> None:
+    """It is the only thing that does once the links are gone -- the wide
+    header underlines the current page, and a phone has no header to
+    underline."""
+    app = header_app(PHONE)
+
+    app._page_name = "pools"
+    app._sync_nav()
+    ticks = {
+        item.content.value: item.checked
+        for item in app.menu.items
+        if item.content is not None and item.content.value in ("Pools", "Portfolio")
+    }
+    assert ticks == {"Pools": True, "Portfolio": False}
+
+    app._page_name = "portfolio"
+    app._sync_nav()
+    ticks = {
+        item.content.value: item.checked
+        for item in app.menu.items
+        if item.content is not None and item.content.value in ("Pools", "Portfolio")
+    }
+    assert ticks == {"Pools": False, "Portfolio": True}
 
 
 def test_a_laptop_menu_is_pages_only() -> None:

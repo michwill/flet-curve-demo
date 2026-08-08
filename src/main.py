@@ -391,15 +391,16 @@ class CurveApp:
                 curve=ft.AnimationCurve.EASE_OUT,
             ),
         )
-        self._sync_nav()
         # On a narrow page the mark is a menu button instead: there is no
         # room to slide anything open, and a tap has to be enough.
         self.menu = ft.PopupMenuButton(
             icon=ft.Icons.MENU,
             visible=False,
             tooltip="Pages",
-            items=self._menu_items(),
         )
+        # After the menu, because it fills that too -- the two say the same
+        # thing at different widths.
+        self._sync_nav()
 
         # The wordmark sits beside the mark as if it were part of it. The
         # build kind is still worth knowing, but only when you go looking.
@@ -544,36 +545,30 @@ class CurveApp:
     def _menu_items(self) -> list[ft.PopupMenuItem]:
         """What the mark opens.
 
-        The pages always. On a phone, everything else the header has had to
-        give up as well: the chain's two figures at the top, and the themes
-        at the bottom.
+        The pages always, ticked to say which one you are on. On a phone,
+        everything else the header has had to give up as well: the themes
+        under them, and the chain's two figures at the bottom.
 
         The theme button cycles light -> dark -> Chad, which is fine when
         it is on screen showing you where you are. Folded into a menu it
         would be a mystery tap, so here the three are named and the one you
         are in is ticked.
         """
+        # Ticked where the wide header underlines: the menu is the only
+        # thing saying which page you are on once the links are gone.
         pages = [
             ft.PopupMenuItem(content=ft.Text("Pools"),
+                             checked=self._page_name == PAGE_POOLS,
                              on_click=lambda _e: self.go_page(PAGE_POOLS)),
             ft.PopupMenuItem(content=ft.Text("Portfolio"),
+                             checked=self._page_name == PAGE_PORTFOLIO,
                              on_click=lambda _e: self.go_page(PAGE_PORTFOLIO)),
         ]
         if not self._icons:
             return pages
-        # What the header says on a wider window, since there it does not
-        # fit beside a hamburger and a chain. Disabled: they are figures,
-        # not somewhere to go, and Material greys them to say so.
-        items: list[ft.PopupMenuItem] = [
-            ft.PopupMenuItem(content=ft.Text(f"{label} {value}"), disabled=True)
-            for label, value in self._totals
-        ]
-        if items:
-            items.append(ft.PopupMenuItem())
-        items += pages
         current = self._theme_name()
         # An item with no content is a divider.
-        items.append(ft.PopupMenuItem())
+        items: list[ft.PopupMenuItem] = [*pages, ft.PopupMenuItem()]
         items += [
             ft.PopupMenuItem(
                 # The same face the button shows, so the menu and the bar
@@ -587,6 +582,16 @@ class CurveApp:
             )
             for name in themes.NAMES
         ]
+        # Last, and disabled. They are what the header says on a wider
+        # window, and they are figures rather than somewhere to go -- so
+        # they sit under the things that are, where Material's greying
+        # reads as "not a destination" instead of as "not ready yet".
+        if self._totals:
+            items.append(ft.PopupMenuItem())
+            items += [
+                ft.PopupMenuItem(content=ft.Text(f"{label} {value}"), disabled=True)
+                for label, value in self._totals
+            ]
         return items
 
     def _sync_chain_picker(self) -> None:
@@ -1308,7 +1313,13 @@ class CurveApp:
         )
 
     def _sync_nav(self) -> None:
-        """Redraw the links, so the current page is marked as current."""
+        """Redraw the links -- and the menu, which is the links on a phone.
+
+        Both say which page you are on, and both are wrong the moment it
+        changes, so they are redrawn together rather than by whoever
+        happens to remember.
+        """
+        self.menu.items = self._menu_items()
         self.nav.content = ft.Row(
             [
                 self._nav_link("Pools", PAGE_POOLS),

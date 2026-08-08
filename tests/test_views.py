@@ -1385,11 +1385,28 @@ def test_a_metapool_gets_room_for_its_switch_and_its_underlying_rows() -> None:
     assert actions_height(meta) > actions_height(make_pool(2))
 
 
-def test_the_panel_never_runs_off_a_laptop_screen() -> None:
-    """Past the ceiling the tab body scrolls, which it is built to do."""
+def test_the_guess_comes_out_over_what_the_panel_holds() -> None:
+    """Under is what hurts. A panel shorter than its content becomes a
+    scrollable of its own, and on a phone that swallows the drag meant for
+    the page -- you pull at the Deposit fields and the page stays put.
+
+    Measured against the running app: 188px of chrome and a 71px pitch per
+    coin row. The margin on top of that is for a platform whose text
+    metrics run taller than this one's."""
+    from ui.pool_detail import actions_height
+
+    for coins in range(2, 9):
+        measured = 188 + coins * 71
+        assert actions_height(make_pool(coins)) > measured
+
+
+def test_a_many_coin_pool_is_not_cut_short_by_the_ceiling() -> None:
+    """The ceiling was there to keep a panel on a laptop screen, back when
+    the page did not scroll and anything past the fold was unreachable. It
+    scrolls now, so a cut-short guess buys nothing and costs the scroll."""
     from ui.pool_detail import ACTIONS_MAX, actions_height
 
-    assert actions_height(make_pool(8)) == ACTIONS_MAX
+    assert actions_height(make_pool(8)) < ACTIONS_MAX
 
 
 # -- the header nav --------------------------------------------------------

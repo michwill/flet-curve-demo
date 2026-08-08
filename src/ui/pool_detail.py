@@ -66,18 +66,34 @@ PARAMETER_PADDING = ft.Padding.only(left=6, bottom=4)
 # what a four-coin metapool does. Measured against the browser build, at
 # the sizes in `typography.py`:
 
+#
+# **The guess has to come out over, never under.** A panel shorter than
+# what is in it turns into a little scrollable of its own, and on a phone
+# that scrollable takes the drag meant for the page: you pull at the
+# Deposit fields and the page behind them stays put. Coming out over costs
+# a gap between the fields and the buttons, which is only a gap.
+
 #: Tab bar, padding, slippage field and the submit button -- everything
-#: that is there whatever the pool is.
-ACTIONS_CHROME = 250
-#: One amount row, of which there is one per coin.
-ACTIONS_ROW = 61
+#: that is there whatever the pool is. Measured at 188 against the running
+#: app; the rest is the margin described above, which covers a platform
+#: whose text metrics run taller than this one's.
+ACTIONS_CHROME = 230
+#: One amount row, of which there is one per coin. The field, its balance
+#: line and the column's spacing come to 71 here, and this is over that
+#: for the same reason.
+ACTIONS_ROW = 78
 #: The Pool tokens / Underlying switch, on metapools only.
-ACTIONS_SWITCH = 34
+ACTIONS_SWITCH = 40
 #: Floor and ceiling. The floor keeps a two-coin pool's panel from looking
-#: like a widget; the ceiling stops a many-coin pool from running off a
-#: laptop screen -- past it the tab body scrolls, which it is built to do.
+#: like a widget.
+#:
+#: The ceiling used to be 620, to stop a many-coin pool running off a
+#: laptop screen -- back when the page did not scroll and anything past the
+#: fold was unreachable. The window scrolls now, so a tall panel is merely
+#: tall, and a ceiling that cuts the guess short is the very thing that
+#: makes the panel scroll inside itself.
 ACTIONS_MIN = 340
-ACTIONS_MAX = 620
+ACTIONS_MAX = 1200
 
 
 def actions_height(pool: Pool) -> float:

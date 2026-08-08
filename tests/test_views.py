@@ -1513,6 +1513,23 @@ def test_a_laptop_menu_is_pages_only() -> None:
     assert labels == ["Pools", "Portfolio"]
 
 
+def test_crossing_the_breakpoint_repaints_the_header(monkeypatch) -> None:
+    """The views repaint themselves and the header does not. Until it was
+    told to, reaching 390px by resizing left the picker still spelling out
+    "Ethereum" and the theme button still on the row -- while the table
+    below reflowed into cards, because a list view updates itself. Opening
+    narrow looked right, which is what made it easy to miss."""
+    import main as app_module
+
+    app = header_app(LAPTOP)
+    painted: list = []
+    monkeypatch.setattr(app_module, "safe_update", painted.append)
+
+    app._apply_layout(PHONE)
+
+    assert app.header in painted
+
+
 def test_connect_shows_as_a_button_or_an_icon_but_never_both() -> None:
     """Two controls, one action: `ft.Button` will not render with an icon
     and no label, so the narrow one is a separate control that follows the

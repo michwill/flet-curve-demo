@@ -587,6 +587,7 @@ class CurveApp:
         # button was still on the row, because nothing had asked the bar to
         # redraw: opening narrow worked (the first paint takes everything)
         # and *reaching* narrow did not.
+        safe_update(self.header)
         self.list_view.set_layout(layout)
         self.portfolio_view.set_layout(layout.cards)
         if self._detail is not None:

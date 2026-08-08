@@ -188,6 +188,19 @@ CONNECT_LABEL = "Connect wallet"
 CHAIN_PICKER_WIDTH = 185
 CHAIN_PICKER_NARROW_WIDTH = 78
 
+#: How wide the *open* menu is, whatever the closed field has shrunk to.
+#:
+#: A `Dropdown`'s menu takes the field's width unless it is given one of
+#: its own, and on a phone the field is a bare mark 78px wide. So the menu
+#: was 78px too, and every name in it was cropped away: a column of
+#: unlabelled circles, which is no way to pick a network and not what
+#: `_chain_option` is written to draw. The field is the only thing short
+#: of room on that header -- the menu opens over the whole page.
+#:
+#: Sized for the longest name offered ("Polygon zkEVM") beside its mark,
+#: with room to spare for a chain the API names and this app does not.
+CHAIN_MENU_WIDTH = 200
+
 #: How big a theme's face is drawn on the button, and in the menu it moves
 #: into on a phone.
 BUTTON_MARK = 22
@@ -356,6 +369,9 @@ class CurveApp:
             # Replaced by the API's own list once `load_pools` has run.
             value=self.chain,
             width=CHAIN_PICKER_WIDTH,
+            # The one width that does not follow the header in and out of
+            # icons: you are reading names here whatever the field shows.
+            menu_width=CHAIN_MENU_WIDTH,
             dense=True,
             # Material's own default, said out loud because the narrow
             # header turns it off and "off" needs something to go back to.

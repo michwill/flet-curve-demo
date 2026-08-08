@@ -1543,6 +1543,38 @@ def test_a_phone_header_drops_every_label() -> None:
     assert app.menu.visible
 
 
+def _option_label(option: ft.DropdownOption) -> str:
+    """The name the open menu draws for one network."""
+    content = option.content
+    if isinstance(content, ft.Row):
+        texts = [c.value for c in content.controls if isinstance(c, ft.Text)]
+        return texts[0] if texts else ""
+    return content.value if isinstance(content, ft.Text) else ""
+
+
+def test_the_open_menu_still_names_every_network_on_a_phone() -> None:
+    """Dropping the label is about the closed field, not the menu.
+
+    A `Dropdown`'s menu takes the field's width unless it is given one of
+    its own, so on a phone the 78px field cropped every name in the menu
+    away and left a column of unlabelled circles -- nothing to choose
+    between, on the one screen whose whole job is choosing.
+    """
+    app = header_app(PHONE)
+
+    assert app.chain_picker.menu_width > app.chain_picker.width
+    assert all(_option_label(option) for option in app.chain_picker.options)
+    assert "Ethereum" in [_option_label(o) for o in app.chain_picker.options]
+
+
+def test_the_menu_is_the_same_width_whatever_the_header_does() -> None:
+    """The field follows the header in and out of icons; the menu does
+    not, because you are reading names in it either way."""
+    assert header_app(PHONE).chain_picker.menu_width == (
+        header_app(LAPTOP).chain_picker.menu_width
+    )
+
+
 def test_a_laptop_header_keeps_them() -> None:
     app = header_app(LAPTOP)
 

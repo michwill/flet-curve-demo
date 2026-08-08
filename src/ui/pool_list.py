@@ -70,6 +70,23 @@ SCROLL_THRESHOLD = 1200
 #: typing "steth" is one request rather than five.
 SEARCH_DEBOUNCE = 0.35
 
+#: The corner on the two controls above the list. Shared, because on a
+#: phone they are the only two things on that row and a text field rounded
+#: one way beside a dropdown rounded another reads as two kinds of thing
+#: rather than as a pair.
+FIELD_RADIUS = 8
+
+#: And the height, for the same reason. Dense means different things to
+#: the two -- the text field came out 40px against the dropdown's 48, and
+#: side by side on a phone that reads as a mistake rather than as a pair.
+#: The dropdown is the one that cannot be moved: it ignores `height`
+#: outright and will not go below Material's 48px minimum however small
+#: its padding. So the text field grows to meet it -- and it ignores
+#: `height` too, so the growing is done with padding, measured rather
+#: than derived: 14 gave 44px and each step is worth two.
+FIELD_HEIGHT = 48
+FIELD_INSET = 16
+
 
 def reward_lines(pool: Pool) -> list[ft.Control]:
     """CRV first, then each incentive token on its own line.
@@ -267,7 +284,10 @@ class PoolListView(ft.Column):
             prefix_icon=ft.Icons.SEARCH,
             on_change=self._search_changed,
             dense=True,
-            border_radius=8,
+            border_radius=FIELD_RADIUS,
+            # Height is set by the padding, not by `height`: neither of
+            # these two controls honours that at all. See FIELD_HEIGHT.
+            content_padding=ft.Padding.symmetric(horizontal=12, vertical=FIELD_INSET),
         )
         self.count_label = ft.Text(
             "", size=SMALL, color=ft.Colors.ON_SURFACE_VARIANT, key="pool-count"
@@ -280,6 +300,9 @@ class PoolListView(ft.Column):
             value=self._sort,
             width=140,
             dense=True,
+            # The same corners as the search box beside it. The height
+            # is matched from that side -- see FIELD_HEIGHT.
+            border_radius=FIELD_RADIUS,
             visible=False,
             on_select=self._sort_picked,
         )

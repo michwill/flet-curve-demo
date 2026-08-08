@@ -208,6 +208,24 @@ def test_sorting_by_the_active_column_is_a_no_op() -> None:
 PHONE, TABLET, LAPTOP = 390.0, 820.0, 1280.0
 
 
+def test_the_search_box_and_the_sort_picker_are_cut_the_same() -> None:
+    """On a phone they are the only two controls on that row, and two form
+    fields cut differently read as two kinds of thing.
+
+    The height cannot be asserted the way the corner can: neither control
+    honours `height`, the dropdown will not go under Material's 48px, and
+    the text field's own height comes out of its padding -- so the number
+    here is one measured against the running app (both 48px, tops and
+    bottoms level) and the padding is what holds it."""
+    from ui.pool_list import FIELD_INSET, FIELD_RADIUS
+
+    view = PoolListView(StubPage(), on_open=lambda _p: None)
+
+    assert view.search.border_radius == view.sort_picker.border_radius == FIELD_RADIUS
+    assert view.search.content_padding.top == FIELD_INSET
+    assert view.search.content_padding.bottom == FIELD_INSET
+
+
 async def test_the_count_is_not_shown_on_a_phone() -> None:
     """That row already carries the search box and the sort picker, and
     how many pools a chain has is not what anyone is there to read."""

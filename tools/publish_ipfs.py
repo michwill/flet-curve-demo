@@ -38,6 +38,8 @@ this shape is prone to.
 from __future__ import annotations
 
 import argparse
+import base64
+import gzip
 import json
 import os
 import secrets
@@ -146,33 +148,48 @@ def make_relative(index: Path) -> bool:
     return True
 
 
-# -- the app package, under a name a gateway will hand over ----------------
+# -- the app package, in something a gateway will hand over ----------------
 
-#: What `flet publish` calls the Python app, and what to call it instead.
+#: What `flet publish` calls the Python app, and what it is turned into.
 #:
-#: eth.limo and eth.link answer **404** for `app.tar.gz` and 200 for every
-#: other file in the same pin -- `main.dart.js` at 9.5 MB across 37 blocks
-#: included, so it is neither size nor retrievability. The app then loads
-#: its shell, cannot fetch its Python, and sits on "Working..." forever,
-#: which reads as a broken pin rather than as a filtered filename. Nothing
-#: else in the build is affected because nothing else is an archive.
+#: eth.limo and eth.link answer **404** for the archive and 200 for every
+#: other file in the same pin -- `main.dart.js`, 9.5 MB across 37 blocks,
+#: included. The shell loads, the Python never arrives, and the app sits on
+#: "Working..." forever with a single 404 to explain it.
 #:
-#: A rename is enough: `python-worker.js` picks the format from the URL's
-#: extension and takes `.zip`, `.tar.gz` and `.tgz` alike, so the bytes are
-#: untouched. Whether `.tgz` clears whatever rule catches `.tar.gz` is what
-#: `--probe` is for.
+#: Renaming does not get round it, and the measurements say why. A six-byte
+#: *text* file called `gateway-probe.tar.gz` is served -- and served
+#: labelled `application/gzip`, so the declared type is not what is
+#: refused. The real archive under that same name is refused. `.tgz` and
+#: `.zip` are refused whatever is inside them, and those are the only other
+#: suffixes `python-worker.js` accepts. So the bytes are what is caught, no
+#: filename avoids it, and the way out is to stop shipping archive bytes.
+#:
+#: Base64 inside JSON does that: a legitimate container for binary a script
+#: is going to read, text so that nothing can take it for an archive, and
+#: still same-origin -- where a gateway URL baked into the page would tie
+#: the build to one host, and this has to work on any of them.
+#:
+#: It costs a third more bytes on 400 KB. `--probe` pins real gzip under
+#: several suffixes so a later build can drop this if a cheaper one works.
 PACKAGE_FROM = "app.tar.gz"
-PACKAGE_TO = "app.tgz"
+PACKAGE_TO = "app-package.json"
+#: The JSON key, named for what it holds -- so the worker unpacking it as a
+#: gzipped tar is reading the file rather than assuming.
+PACKAGE_KEY = "gztar"
 
-#: One byte under each suffix a gateway might treat differently, so a
-#: single fetch after pinning says what its rule actually is -- otherwise
-#: each guess costs a repin, and an ENS update on top.
+#: Probes. `probe` under suffixes that differ only in name, and one real
+#: gzip archive under suffixes that differ in what a gateway makes of the
+#: *content*. Together they separate "this suffix is banned" from "these
+#: bytes are", which is the question a rename kept failing to answer.
 PROBE_SUFFIXES = (".tar.gz", ".tgz", ".zip", ".gz", ".bin", ".txt")
+PROBE_BINARY_SUFFIXES = (".tar.gz", ".wasm", ".png", ".bin")
 PROBE_STEM = "gateway-probe"
+PROBE_BINARY_STEM = "gateway-probe-binary"
 
 
-def rename_package(root: Path) -> bool:
-    """Rename the app package, and the one line that points at it."""
+def wrap_package(root: Path) -> bool:
+    """Turn the app archive into base64 in JSON, and repoint the page."""
     archive = root / PACKAGE_FROM
     if not archive.is_file():
         return False
@@ -180,12 +197,54 @@ def rename_package(root: Path) -> bool:
     html = index.read_text(encoding="utf-8")
     if f'"{PACKAGE_FROM}"' not in html:
         raise SystemExit(
-            f'{index}: no appPackageUrl: "{PACKAGE_FROM}" to repoint. Renaming the '
-            "file alone would leave the app fetching one that is not there."
+            f'{index}: no appPackageUrl: "{PACKAGE_FROM}" to repoint. Wrapping the '
+            "archive alone would leave the app fetching one that is not there."
         )
-    archive.rename(root / PACKAGE_TO)
+    payload = base64.b64encode(archive.read_bytes()).decode("ascii")
+    (root / PACKAGE_TO).write_text(json.dumps({PACKAGE_KEY: payload}), encoding="utf-8")
+    archive.unlink()
     index.write_text(
         html.replace(f'"{PACKAGE_FROM}"', f'"{PACKAGE_TO}"'), encoding="utf-8"
+    )
+    return True
+
+
+#: Where the worker decides what it fetched, and what goes in front of that
+#: decision. Anchored on its own source rather than a line number: if Flet
+#: rewrites this, the patch fails loudly instead of quietly producing a
+#: build whose app package nothing knows how to read.
+WORKER = "python-worker.js"
+WORKER_ANCHOR = '            if _archive_path.endswith(".zip"):'
+WORKER_PATCH = f'''            if _archive_path.endswith(".json"):
+                # Base64 in JSON. See tools/publish_ipfs.py for why the
+                # archive cannot be fetched as an archive.
+                import base64 as _b64, io as _io, json as _json, tarfile as _tf
+                _blob = _json.loads(await response.string())["{PACKAGE_KEY}"]
+                with _tf.open(fileobj=_io.BytesIO(_b64.b64decode(_blob))) as _archive:
+                    _archive.extractall(".")
+                _archive_format = ""
+            elif _archive_path.endswith(".zip"):'''
+WORKER_UNPACK = "            await response.unpack_archive(format=_archive_format)"
+WORKER_UNPACK_PATCHED = f"""            if _archive_format:
+    {WORKER_UNPACK}"""
+
+
+def patch_worker(root: Path) -> bool:
+    """Teach the worker to read the wrapped package."""
+    worker = root / WORKER
+    source = worker.read_text(encoding="utf-8")
+    if WORKER_PATCH.splitlines()[0] in source:
+        return False
+    if WORKER_ANCHOR not in source or WORKER_UNPACK not in source:
+        raise SystemExit(
+            f"{worker}: the archive branch is not where this expects it. Flet's "
+            "worker has changed shape; the app package would be fetched and dropped."
+        )
+    worker.write_text(
+        source.replace(WORKER_ANCHOR, WORKER_PATCH).replace(
+            WORKER_UNPACK, WORKER_UNPACK_PATCHED
+        ),
+        encoding="utf-8",
     )
     return True
 
@@ -195,6 +254,11 @@ def add_probes(root: Path) -> list[str]:
     names = [f"{PROBE_STEM}{suffix}" for suffix in PROBE_SUFFIXES]
     for name in names:
         (root / name).write_bytes(b"probe\n")
+    blob = gzip.compress(b"gateway probe payload\n" * 4096)
+    for suffix in PROBE_BINARY_SUFFIXES:
+        name = f"{PROBE_BINARY_STEM}{suffix}"
+        (root / name).write_bytes(blob)
+        names.append(name)
     return names
 
 
@@ -419,8 +483,10 @@ def main() -> int:
 
     if make_relative(dist / "index.html"):
         print("index.html: base href is relative now, for a gateway sub-path")
-    if rename_package(dist):
-        print(f"{PACKAGE_FROM} -> {PACKAGE_TO}, which eth.limo will serve")
+    if wrap_package(dist):
+        print(f"{PACKAGE_FROM} -> {PACKAGE_TO}: base64, so no gateway reads it as an archive")
+    if patch_worker(dist):
+        print(f"{WORKER}: taught to unwrap it")
     if options.probe:
         print("probes: " + ", ".join(add_probes(dist)))
 

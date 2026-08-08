@@ -60,9 +60,21 @@ def main() -> int:
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8000
     directory = ROOT / (sys.argv[2] if len(sys.argv) > 2 else "dist")
 
-    archive = directory / "app.tar.gz"
-    if not archive.is_file():
-        print(f"{directory} has no app.tar.gz -- run `flet publish` first.")
+    # Either name: `flet publish` writes the archive, and
+    # `tools/publish_ipfs.py` replaces it with the base64 wrapper an IPFS
+    # gateway will actually serve. Both are the app, and serving one build
+    # while checking for the other is a "run flet publish" for a build that
+    # is already there.
+    archive = next(
+        (
+            candidate
+            for candidate in (directory / "app.tar.gz", directory / "app-package.json")
+            if candidate.is_file()
+        ),
+        None,
+    )
+    if archive is None:
+        print(f"{directory} has no app package -- run `flet publish` first.")
         return 1
 
     stamp = archive.stat().st_mtime

@@ -15,9 +15,12 @@ the only reason the CID that comes back is a directory.
 
 from __future__ import annotations
 
+import base64
+import gzip
 import io
 import json
 import tarfile
+import textwrap
 from pathlib import Path
 
 import httpx
@@ -94,48 +97,139 @@ def test_the_build_runs_the_console_script_not_dash_m() -> None:
 # -- the app package --------------------------------------------------------
 
 
-def test_the_app_package_is_renamed_and_the_page_follows(tmp_path: Path) -> None:
-    """eth.limo answers 404 for `app.tar.gz` and 200 for everything else in
-    the same pin, so the app loads its shell, never gets its Python, and
-    sits on "Working..." forever. The worker takes `.tgz` just as happily."""
+def test_the_package_is_wrapped_as_text_and_the_page_follows(tmp_path: Path) -> None:
+    """eth.limo serves a six-byte text file named `.tar.gz` -- labelled
+    application/gzip, even -- and refuses the real archive under the same
+    name. The bytes are what is caught, so the bytes stop being an
+    archive."""
     root = build(
         tmp_path,
         {
             "index.html": '<head><base href="./"></head>'
             '<script>appPackageUrl: "app.tar.gz"</script>',
-            "app.tar.gz": "not really gzip, but a file",
         },
     )
+    (root / "app.tar.gz").write_bytes(b"\x1f\x8b pretend gzip")
 
-    assert ipfs.rename_package(root) is True
-    assert (root / "app.tgz").is_file()
+    assert ipfs.wrap_package(root) is True
     assert not (root / "app.tar.gz").exists()
-    assert '"app.tgz"' in (root / "index.html").read_text(encoding="utf-8")
+    assert '"app-package.json"' in (root / "index.html").read_text(encoding="utf-8")
+
+    payload = json.loads((root / ipfs.PACKAGE_TO).read_text(encoding="utf-8"))
+    assert base64.b64decode(payload[ipfs.PACKAGE_KEY]) == b"\x1f\x8b pretend gzip"
 
 
-def test_renaming_a_build_that_is_already_renamed_does_nothing(tmp_path: Path) -> None:
-    root = build(tmp_path, {"index.html": "x", "app.tgz": "already done"})
-    assert ipfs.rename_package(root) is False
+def test_the_worker_can_read_what_the_wrapper_writes(tmp_path: Path) -> None:
+    """The contract between the two halves, run end to end: a real gzipped
+    tar, wrapped here, unwrapped by the same three steps the patched worker
+    performs. A key or format that disagreed would otherwise surface as an
+    app that downloads its Python and cannot open it."""
+    root = tmp_path / "dist"
+    root.mkdir()
+    (root / "index.html").write_text('appPackageUrl: "app.tar.gz"', encoding="utf-8")
+    with tarfile.open(root / "app.tar.gz", "w:gz") as archive:
+        member = tarfile.TarInfo("main.py")
+        member.size = len(b"print('hi')\n")
+        archive.addfile(member, io.BytesIO(b"print('hi')\n"))
+
+    ipfs.wrap_package(root)
+
+    # Exactly what WORKER_PATCH does, in the same order.
+    blob = json.loads((root / ipfs.PACKAGE_TO).read_text())[ipfs.PACKAGE_KEY]
+    with tarfile.open(fileobj=io.BytesIO(base64.b64decode(blob))) as archive:
+        assert archive.getnames() == ["main.py"]
+        assert archive.extractfile("main.py").read() == b"print('hi')\n"
 
 
-def test_the_file_is_not_renamed_without_the_line_that_points_at_it(
+def test_wrapping_a_build_that_is_already_wrapped_does_nothing(tmp_path: Path) -> None:
+    root = build(tmp_path, {"index.html": "x", ipfs.PACKAGE_TO: "{}"})
+    assert ipfs.wrap_package(root) is False
+
+
+def test_the_archive_is_not_wrapped_without_the_line_that_points_at_it(
     tmp_path: Path,
 ) -> None:
-    """Renaming one and not the other is a build that fetches a file that
+    """Wrapping one and not the other is a build that fetches a file that
     is not there -- the same blank page, with no 404 to explain it."""
     root = build(tmp_path, {"index.html": "<head>nothing here</head>", "app.tar.gz": "x"})
     with pytest.raises(SystemExit, match="appPackageUrl"):
-        ipfs.rename_package(root)
+        ipfs.wrap_package(root)
     assert (root / "app.tar.gz").is_file()
 
 
-def test_probes_cover_the_suffixes_worth_asking_about(tmp_path: Path) -> None:
+# -- the worker patch -------------------------------------------------------
+
+
+def worker_source() -> str:
+    """The two lines of Flet's worker that the patch anchors on."""
+    return (
+        "            from urllib.parse import urlparse\n"
+        + ipfs.WORKER_ANCHOR
+        + '\n                _archive_format = "zip"\n'
+        + ipfs.WORKER_UNPACK
+        + "\n"
+    )
+
+
+def test_the_worker_learns_to_unwrap_and_skips_the_old_path(tmp_path: Path) -> None:
+    root = tmp_path / "dist"
+    root.mkdir()
+    (root / ipfs.WORKER).write_text(worker_source(), encoding="utf-8")
+
+    assert ipfs.patch_worker(root) is True
+    patched = (root / ipfs.WORKER).read_text(encoding="utf-8")
+
+    assert '.endswith(".json")' in patched
+    # The archive path is still there for a build served from anywhere
+    # else, but it no longer runs for the wrapped one.
+    assert "if _archive_format:" in patched
+    assert ipfs.WORKER_UNPACK.strip() in patched
+
+
+def test_patching_a_patched_worker_does_nothing(tmp_path: Path) -> None:
+    root = tmp_path / "dist"
+    root.mkdir()
+    (root / ipfs.WORKER).write_text(worker_source(), encoding="utf-8")
+    ipfs.patch_worker(root)
+    assert ipfs.patch_worker(root) is False
+
+
+def test_a_worker_that_has_changed_shape_stops_the_run(tmp_path: Path) -> None:
+    """Flet regenerates this file. Patching it blind would leave a build
+    that downloads its Python and quietly ignores it."""
+    root = tmp_path / "dist"
+    root.mkdir()
+    (root / ipfs.WORKER).write_text("something else entirely", encoding="utf-8")
+    with pytest.raises(SystemExit, match="changed shape"):
+        ipfs.patch_worker(root)
+
+
+def test_the_python_injected_into_the_worker_parses() -> None:
+    """It is Python inside a JavaScript string inside a generated file --
+    nothing type-checks it, and a syntax error there is a blank page after
+    a pin, an ENS update and a wait."""
+    branch = "\n".join(ipfs.WORKER_PATCH.splitlines()[:-1])  # drop the trailing elif
+    body = textwrap.indent(textwrap.dedent(branch), "    ")
+    compile(
+        f"async def _run(response, _archive_path, _archive_format):\n{body}\n    pass",
+        "<worker patch>",
+        "exec",
+    )
+
+
+def test_probes_ask_both_questions(tmp_path: Path) -> None:
+    """Text under each suffix says which *names* are refused; one real
+    archive under several suffixes says whether the *bytes* are."""
     root = build(tmp_path, {"index.html": "x"})
     names = ipfs.add_probes(root)
 
-    assert f"{ipfs.PROBE_STEM}.tar.gz" in names  # the one that is refused
-    assert f"{ipfs.PROBE_STEM}.txt" in names  # the control
+    assert f"{ipfs.PROBE_STEM}.tar.gz" in names
+    assert f"{ipfs.PROBE_BINARY_STEM}.wasm" in names
     assert all((root / name).is_file() for name in names)
+    # The binary ones are a real gzip member, or they answer nothing.
+    blob = (root / f"{ipfs.PROBE_BINARY_STEM}.wasm").read_bytes()
+    assert blob[:2] == b"\x1f\x8b"
+    assert gzip.decompress(blob).startswith(b"gateway probe payload")
 
 
 # -- the check before the upload -------------------------------------------

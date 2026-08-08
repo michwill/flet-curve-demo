@@ -12,6 +12,13 @@ Worker, and those two have no HTTP client in common.
 
 Both Curve APIs send `access-control-allow-origin: *`, so the browser half
 needs no proxy and no CORS workaround -- verified against both hosts.
+
+**The browser half sends no headers it does not have to**, which is not
+tidiness. A request carrying only CORS-safelisted headers is a "simple"
+one and goes straight out; add any header outside that list and the
+browser must first ask the host's permission with an `OPTIONS` preflight,
+which the host is then free to refuse. `User-Agent` is exactly such a
+header -- see `USER_AGENT` for the one that cost a day.
 """
 
 from __future__ import annotations
@@ -24,7 +31,30 @@ from urllib.parse import urlencode
 
 #: Curve's edge returns 403 to the default `Python-urllib/x.y` agent. Only
 #: that literal string is blocked, but a stdlib fallback would hit it, so
-#: every request this app makes carries a name of its own.
+#: every request the *desktop* build makes carries a name of its own.
+#:
+#: **The browser build must not send it**, and this is worth spelling out
+#: because sending it looked harmless for months. Setting `User-Agent` on
+#: a `fetch` is legal per the Fetch standard -- it was taken off the
+#: forbidden-header list -- so a browser that follows the standard puts it
+#: on the wire. That makes the request non-simple, so a cross-origin GET
+#: that used to go straight out now needs an `OPTIONS` preflight, and a
+#: host that answers the preflight without naming `user-agent` in
+#: `access-control-allow-headers` fails it. `chainlist.org` is such a host:
+#: it answers `OPTIONS` with `access-control-allow-origin: *` and no
+#: allow-headers at all.
+#:
+#: Chrome hid this. Chrome still strips `User-Agent` from `fetch` -- the
+#: old behaviour -- so the header never reached the wire and the request
+#: stayed simple. Every WebKit browser, which on iOS is *all* of them, and
+#: Firefox, send it. So the endpoint directory failed to load on a phone
+#: and nowhere else, and with no endpoints every read of every chain
+#: failed for the rest of the session: pool parameters came up empty on
+#: iOS while Chrome on a desktop was fine.
+#:
+#: Nothing is lost by dropping it. A browser sends its own `User-Agent`
+#: and will not let a page forge one anyway; the header only ever existed
+#: for `urllib`.
 USER_AGENT = "flet-curve/0.1"
 
 #: Cloudflare serves these with `s-maxage=300`; polling faster just returns
@@ -82,7 +112,12 @@ async def _post_json_browser(url: str, body: str, timeout: float) -> Any:
                 url,
                 method="POST",
                 body=body,
-                headers={"Content-Type": "application/json", "User-Agent": USER_AGENT},
+                # `Content-Type` and nothing else. JSON-RPC needs this one
+                # and it already costs a preflight -- every endpoint that
+                # serves browsers answers it -- but `User-Agent` on top
+                # would ask permission for a header many of them do not
+                # name, and be refused. See `USER_AGENT`.
+                headers={"Content-Type": "application/json"},
             ),
             timeout,
         )
@@ -127,9 +162,9 @@ async def _get_json_browser(url: str, timeout: float) -> Any:
     from pyodide.http import pyfetch
 
     try:
-        response = await asyncio.wait_for(
-            pyfetch(url, headers={"User-Agent": USER_AGENT}), timeout
-        )
+        # No headers at all, so this stays a "simple" cross-origin request
+        # and needs no preflight. See `USER_AGENT`.
+        response = await asyncio.wait_for(pyfetch(url), timeout)
     except TimeoutError:
         raise ApiError(f"Timed out after {timeout:.0f}s: {url}") from None
     except Exception as exc:  # pyfetch raises bare JsException on network fail

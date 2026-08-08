@@ -306,7 +306,52 @@ Public APIs, no keys. Pool data comes from the **Prices API v2**; charts from
   no proxy.
 - **The v1 main API 403s the default `Python-urllib/*` User-Agent.**
   `requests`/`aiohttp` are unaffected, but the desktop transport here *is*
-  urllib, so every request sets a name of its own.
+  urllib, so every desktop request sets a name of its own. **The browser half
+  must not send one** — see below.
+
+### The header that broke iOS
+
+Sending that same `User-Agent` from the browser build cost a day, so it is
+worth writing down. A cross-origin request carrying only CORS-safelisted
+headers is a *simple* request and goes straight out. Name any header outside
+that list and the browser must first ask the host's permission with an
+`OPTIONS` preflight, which the host is free to refuse.
+
+`User-Agent` is such a header. Setting it on a `fetch` is legal per the current
+Fetch standard — it was taken off the forbidden-header list — so a browser that
+follows the standard puts it on the wire and the request stops being simple.
+
+**Chrome hid this for months.** Chrome still strips `User-Agent` from `fetch`,
+so the header never reached the wire and the request stayed simple. Every
+WebKit browser sends it, and on iOS *every* browser is WebKit — Brave and
+Chrome included, because Apple requires it. Firefox sends it too, which is what
+makes this reproducible on a desktop.
+
+What it broke: `chainlist.org` answers `OPTIONS` with `access-control-allow-origin: *`
+and no `access-control-allow-headers` at all, so the preflight failed and
+`rpcs.json` would not load. With no endpoint directory there is no public node
+for any chain, so with no wallet connected *every* read failed — and because
+the directory was only ever fetched once, it stayed failed for the whole
+session. On a phone the pool panel came up with its addresses and
+"This pool answered none of them", which reads as a fact about the pool and
+sent the search in entirely the wrong direction.
+
+So the browser half now sends no header it does not have to: nothing at all on
+a GET, and `Content-Type` alone on a JSON-RPC POST, which already costs a
+preflight that every endpoint serving browsers answers. Nothing is lost — a
+browser sends its own `User-Agent` and will not let a page forge one.
+
+Two smaller things fell out of the same hunt, both of which helped it hide:
+
+- a failed directory fetch used to be **permanent**, so one blip cost the whole
+  session. It is retried after `curve.rpc.RETRY_AFTER` instead — still not on
+  every keystroke in an amount field, which is what the wait is for;
+- a pool read that never reached the chain was reported as a pool with no
+  parameters. `PoolContract._maybe` now swallows only `PoolCallFailed` — the
+  pool's own answer — and lets a transport failure through to be shown.
+
+**Firefox reproduces this and iOS-only bugs like it**, which is worth
+remembering the next time something works on a desktop and not on a phone.
 
 ### Paging, and why sorting is the server's job
 

@@ -241,10 +241,25 @@ class PoolContract:
         return [await self._maybe(data) for _key, data in plan]
 
     async def _maybe(self, data: str) -> int | None:
-        """One read, where not being implemented is an expected answer."""
+        """One read, where not being implemented is an expected answer.
+
+        `PoolCallFailed` only, deliberately. It is the pool's answer --
+        a revert, or the empty data a Vyper contract returns for a method
+        it does not have -- and "this pool has no `gamma`" is a fact worth
+        recording as absence.
+
+        Any other `WalletError` is not the pool talking, it is that we
+        never reached it: no node known for the chain, no node that
+        answered. Swallowing those to `None` made a dead provider
+        indistinguishable from a pool with no parameters, and the panel
+        said "This pool answered none of them" -- which reads as a fact
+        about the pool -- while the real trouble was that nothing had been
+        asked. That is how the iOS breakage in `USER_AGENT` stayed hidden.
+        So it propagates, and `load_parameters` prints the sentence.
+        """
         try:
             return await self._read(self.pool.address, data, "a pool parameter")
-        except (PoolCallFailed, WalletError):
+        except PoolCallFailed:
             return None
 
     async def pair_fee(self, i: int, j: int) -> int:

@@ -32,6 +32,7 @@ least likely to be a surprise.
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any
 
 from wallet.base import RpcError, WalletError, WalletProvider
@@ -57,6 +58,18 @@ MAX_ENDPOINTS = 8
 #: Preferred first: endpoints that say they keep nothing. `tracking` is
 #: self-reported, so this is a nudge rather than a guarantee.
 _TRACKING_RANK = {"none": 0, "limited": 1, "yes": 3}
+
+#: How long a failed directory fetch is allowed to stand before it is
+#: tried again.
+#:
+#: Both halves matter. A quote is typed a character at a time, so
+#: re-fetching two megabytes per keystroke would be worse than having no
+#: quote -- that is why there is a wait at all. But the wait used to be
+#: *forever*: one failed fetch left the session with no endpoints for any
+#: chain until the page was reloaded, and since every read then failed,
+#: the pool panel reported it as a pool with no parameters. A directory
+#: this app cannot do without should not be given up on after one try.
+RETRY_AFTER = 30.0
 
 
 def usable_endpoints(chain: dict[str, Any], limit: int = MAX_ENDPOINTS) -> list[str]:
@@ -94,26 +107,37 @@ class ChainlistDirectory:
         self.url = url
         self._by_chain: dict[int, list[str]] = {}
         self._loaded = False
+        #: When the last attempt failed, on the monotonic clock. `None`
+        #: means no attempt has failed since the last success.
+        self._failed_at: float | None = None
         self._lock = asyncio.Lock()
 
     async def endpoints(self, chain_id: int) -> list[str]:
         """Public endpoints for a chain, or an empty list if unknown."""
         async with self._lock:
-            if not self._loaded:
+            if not self._loaded and self._due():
                 await self._load()
         return list(self._by_chain.get(chain_id, ()))
 
+    def _due(self) -> bool:
+        """Whether a fetch is worth making now. See `RETRY_AFTER`."""
+        if self._failed_at is None:
+            return True
+        return time.monotonic() - self._failed_at >= RETRY_AFTER
+
     async def _load(self) -> None:
-        # Marked loaded either way: a directory that will not answer is
-        # not worth re-fetching on every keystroke in an amount field.
-        self._loaded = True
+        """Fetch the directory, and record whether it worked.
+
+        Held to the one thing the caller needs: a chain that answers with
+        endpoints. Anything short of that -- the request failing, or a
+        captive portal answering something that is not the list -- leaves
+        it to be tried again rather than settled.
+        """
         try:
             payload = await get_json(self.url, timeout=20.0)
         except ApiError:
-            return
-        if not isinstance(payload, list):
-            return
-        for chain in payload:
+            payload = None
+        for chain in payload if isinstance(payload, list) else ():
             if not isinstance(chain, dict) or chain.get("isTestnet"):
                 continue
             chain_id = chain.get("chainId")
@@ -122,6 +146,11 @@ class ChainlistDirectory:
             endpoints = usable_endpoints(chain)
             if endpoints:
                 self._by_chain[int(chain_id)] = endpoints
+        if self._by_chain:
+            self._loaded = True
+            self._failed_at = None
+            return
+        self._failed_at = time.monotonic()
 
 
 class PublicNode(WalletProvider):

@@ -112,7 +112,7 @@ async def test_an_unknown_chain_is_empty_not_an_error(directory) -> None:
     assert await directory.endpoints(31337) == []
 
 
-async def test_a_directory_that_will_not_load_is_not_retried(monkeypatch) -> None:
+async def test_a_directory_that_will_not_load_is_not_retried_at_once(monkeypatch) -> None:
     """A quote is typed a character at a time; re-fetching two megabytes
     per keystroke because the first attempt failed would be worse than
     having no quote."""
@@ -128,6 +128,61 @@ async def test_a_directory_that_will_not_load_is_not_retried(monkeypatch) -> Non
     assert await made.endpoints(1) == []
     assert await made.endpoints(1) == []
     assert calls == 1
+
+
+async def test_a_directory_that_failed_is_tried_again_later(monkeypatch) -> None:
+    """The wait is a wait, not a surrender.
+
+    It used to be permanent, and that made one failed fetch cost the
+    whole session: no endpoints for any chain until the page was
+    reloaded, every read failing, and the pool panel reporting it as a
+    pool with no parameters. Nothing here can work without this file, so
+    it gets asked again.
+    """
+    attempts = 0
+
+    async def failing_once(url, timeout=None):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise ApiError("no")
+        return CHAINLIST_PAYLOAD
+
+    clock = [1000.0]
+    monkeypatch.setattr(rpc, "get_json", failing_once)
+    monkeypatch.setattr(rpc.time, "monotonic", lambda: clock[0])
+
+    made = ChainlistDirectory()
+    assert await made.endpoints(100) == []
+
+    clock[0] += rpc.RETRY_AFTER - 1  # still inside the wait
+    assert await made.endpoints(100) == []
+    assert attempts == 1
+
+    clock[0] += 2  # past it
+    assert await made.endpoints(100) == ["https://clean.example",
+                                         "https://plain.example",
+                                         "https://tracked.example"]
+    assert attempts == 2
+
+
+async def test_a_directory_that_answers_junk_is_tried_again_too(monkeypatch) -> None:
+    """A captive portal, or a gateway serving its own error page. It
+    parses and it is not the list, which is a failed load like any
+    other rather than a directory with no chains in it."""
+    served: list[object] = [{"error": "nope"}, CHAINLIST_PAYLOAD]
+
+    async def answering(url, timeout=None):
+        return served.pop(0)
+
+    clock = [0.0]
+    monkeypatch.setattr(rpc, "get_json", answering)
+    monkeypatch.setattr(rpc.time, "monotonic", lambda: clock[0])
+
+    made = ChainlistDirectory()
+    assert await made.endpoints(100) == []
+    clock[0] += rpc.RETRY_AFTER
+    assert (await made.endpoints(100))[:1] == ["https://clean.example"]
 
 
 # -- the node --------------------------------------------------------------

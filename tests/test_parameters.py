@@ -199,15 +199,30 @@ async def test_a_chain_without_multicall_asks_one_at_a_time() -> None:
     assert len(asked) == 1 + len(PARAMETERS) + len(INDEXED_PARAMETERS)
 
 
-async def test_a_provider_that_cannot_read_at_all_is_not_fatal() -> None:
-    """No wallet and no public node for the chain. The page keeps its
-    addresses, which need no chain at all."""
+async def test_a_provider_that_cannot_read_at_all_says_so() -> None:
+    """Not reaching the chain is not the same as the pool having nothing.
+
+    This one hid a real bug for as long as it returned `{}`. On iOS every
+    read failed -- see `curve.http.USER_AGENT` -- and the panel reported
+    it as "This pool answered none of them", which reads as a fact about
+    the pool and sent the search in the wrong direction entirely. A
+    transport failure is the caller's to show, so it is raised; the page
+    keeps its addresses either way, because they need no chain at all.
+    """
 
     class Dead:
         async def call(self, to: str, data: str) -> str:
             raise WalletError("No public node is known for this network.")
 
-    assert await PoolContract(Dead(), make_pool(), "").parameters() == {}
+    with pytest.raises(WalletError, match="No public node is known"):
+        await PoolContract(Dead(), make_pool(), "").parameters()
+
+
+async def test_a_pool_that_implements_none_of_them_is_still_empty() -> None:
+    """The other half of the distinction above: the chain answered, and
+    what it said was that this contract has none of these methods. That
+    is absence, not failure, and stays a plain empty result."""
+    assert await contract_with({}).parameters() == {}
 
 
 async def test_a_reverting_read_does_not_stop_the_others() -> None:

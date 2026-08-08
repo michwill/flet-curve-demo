@@ -57,6 +57,11 @@ from .typography import BODY, LABEL, SMALL
 #: knob rather than a hidden default so a test can run the loop flat out.
 CONFIRM_INTERVAL = POLL_INTERVAL
 
+#: Between the fields and the buttons under them. The fields sit 12
+#: apart, and the button wants more than that or it reads as one more of
+#: them.
+BUTTON_GAP = 24
+
 #: Tolerance used until the pool says otherwise, and whenever it will not.
 #: Curve shows 0.03% on pegged stable pools, but one number has to cover
 #: every pool type here, so it errs toward the volatile end.
@@ -298,22 +303,20 @@ class ActionTab:
         # at its sides. Here the fields take the slack instead, because
         # they are the flexible part, and the buttons stay where a card's
         # buttons belong.
+        # Neither expanding nor scrolling. Both were for a panel of a
+        # guessed height: expanding pushed the buttons to the bottom of it
+        # and scrolling coped with the guess coming up short. The panel is
+        # as tall as its content now (`pool_detail._actions`), so the
+        # buttons follow the fields and there is nothing to scroll.
         self.control = ft.Column(
-            spacing=12,
-            horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
-            # Expanding, so the buttons stay at the bottom of the panel and
-            # the slack collects above them. **Not scrolling.** It was, for
-            # when the panel's guessed height came up short -- and that
-            # scrollable took the drag meant for the page on a phone, and
-            # drew its own thumb down the side of the amount fields. The
-            # guess is sized over its content now (see
-            # `pool_detail.ACTIONS_CHROME`), so there is nothing here to
-            # scroll: if it ever came up short again the fields would clip,
-            # which is at least visible, where a stolen drag is not.
-            expand=True,
+            spacing=12, horizontal_alignment=ft.CrossAxisAlignment.STRETCH
         )
         self.frame = ft.Column(
-            spacing=12, horizontal_alignment=ft.CrossAxisAlignment.STRETCH
+            #: Wider than the twelve between the fields, so the button
+            #: reads as the end of the panel rather than as another field.
+            #: A spacing, not a size: nothing here is told how tall it is.
+            spacing=BUTTON_GAP,
+            horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
         )
 
     # -- to implement -----------------------------------------------------

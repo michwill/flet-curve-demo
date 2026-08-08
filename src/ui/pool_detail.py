@@ -28,7 +28,7 @@ from curve.models import Pool
 from curve.pool import PoolContract
 from wallet.base import WalletError
 
-from . import AnyEvent, metrics, safe_update, theme
+from . import AnyEvent, safe_update, theme
 from .actions import DepositTab, StakeTab, SwapTab, WithdrawTab
 from .candles import CandleChart
 from .logos import pool_stack, token_mark
@@ -53,81 +53,6 @@ def _metric(label: str, value: str) -> ft.Control:
 #: The parameter list is indented under its heading, not against the
 #: chart's left edge, so the fold reads as one block.
 PARAMETER_PADDING = ft.Padding.only(left=6, bottom=4)
-
-# -- how tall the action panel is --------------------------------------
-#
-# It has to be told. `TabBarView` takes its height from the box around it
-# and cannot size to its content (see `_actions`), so the choice is
-# between a number and a panel that fills the window -- and filling the
-# window leaves the Deposit button floating in several hundred pixels of
-# empty card.
-#
-# The number is built from what the pool actually puts in the panel,
-# because the difference is large: a two-coin plain pool needs half of
-# what a four-coin metapool does.
-#
-# **The guess has to come out over, never under.** A panel shorter than
-# what is in it turns into a little scrollable of its own, and on a phone
-# that scrollable takes the drag meant for the page: you pull at the
-# Deposit fields and the page behind them stays put.
-#
-# But not far over. Whatever it comes out by shows up as a gap between the
-# last field and the button -- the buttons are pinned to the bottom, so
-# the slack collects above them -- and a hundred pixels of it reads as a
-# panel with something missing from the middle. Twenty or so, which is
-# more than the twelve between the fields and less than a paragraph.
-
-#: Tab bar, padding, slippage field and the submit button -- everything
-#: that is there whatever the pool is.
-#:
-#: Calibrated against the running app rather than reasoned about: a
-#: three-coin panel holds 356px of content, and each coin past that is
-#: worth 71 -- so what a panel needs is `143 + 71 * coins`, and what is
-#: here is that plus the gap wanted at the bottom.
-ACTIONS_CHROME = 167
-#: One amount row, of which there is one per coin: the field, its balance
-#: line and the column's spacing, measured at 71.
-#:
-#: **The slope is what mattered.** It was 61 against a real 71, so the
-#: guess fell further behind the more rows a panel had -- and a metapool's
-#: underlying route lists more rows than the pool has coins, which is why
-#: this went wrong on some pools and not others. Two over the measurement
-#: rather than a flat cushion, so the headroom grows with the rows, where
-#: the risk is: the gap comes out at 24 + 2 per coin, so 28px on a
-#: two-coin pool and 36 on a six.
-ACTIONS_ROW = 73
-#: The Pool tokens / Underlying switch, on metapools only.
-ACTIONS_SWITCH = 40
-#: Floor and ceiling. The floor keeps a two-coin pool's panel from looking
-#: like a widget -- and no higher than that, because a floor above what a
-#: panel needs is the same gap by another route.
-#:
-#: The ceiling used to be 620, to stop a many-coin pool running off a
-#: laptop screen -- back when the page did not scroll and anything past the
-#: fold was unreachable. The window scrolls now, so a tall panel is merely
-#: tall, and a ceiling that cuts the guess short is the very thing that
-#: makes the panel scroll inside itself.
-ACTIONS_MIN = 300
-ACTIONS_MAX = 1200
-
-
-def actions_height(pool: Pool) -> float:
-    """How tall the action panel needs to be for this pool.
-
-    Every number here was measured on one machine, and the panel no longer
-    scrolls when the guess comes up short -- it clips, and what clips is
-    the bottom, which is the button. So the whole thing is scaled by how
-    tall a line of text actually is on the platform it is running on: see
-    `ui.metrics`. On the machine these were measured on that is 1.
-    """
-    # The underlying route lists more rows than the pool has coins, and
-    # it is the default where it exists, so it is what to size for.
-    rows = max(len(pool.pool_coins), len(pool.coins) if pool.has_underlying else 0)
-    wanted = ACTIONS_CHROME + rows * ACTIONS_ROW + (ACTIONS_SWITCH if pool.has_underlying else 0)
-    return float(
-        metrics.scaled(min(ACTIONS_MAX, max(ACTIONS_MIN, wanted)))
-    )
-
 
 class PoolDetailView(ft.Column):
     """The detail page. Owns its own data loading."""
@@ -287,14 +212,13 @@ class PoolDetailView(ft.Column):
         than a cosmetic problem, and it is what broke this page at phone
         widths before it stopped scrolling for itself.
 
-        The action panel keeps a fixed height either way. `TabBarView`
-        cannot size to its content, so somebody has to say -- see
-        `actions_height`.
+        The action panel is as tall as what is in it, in both
+        arrangements: nothing on this page is given a height. See
+        `_actions` for why not.
         """
         self.scroll = None
         self._left.scroll = None
         self._left.expand = False
-        self._right.height = actions_height(self.pool)
         self._body.expand = False
         if self._layout.stacked:
             # In a Column `expand` is the *vertical* flex, and there is no
@@ -713,47 +637,42 @@ class PoolDetailView(ft.Column):
     # -- right column -----------------------------------------------------
 
     def _actions(self) -> ft.Control:
+        """The four panels, with a tab bar built by hand.
+
+        **Nothing here is given a height.** Flet's `Tabs`/`TabBar`/
+        `TabBarView` set needs one: `TabBarView` takes its height from the
+        box around it and cannot size to its content, so the panel had to
+        be told how tall it was -- a number worked out from how many coins
+        a pool has and how tall a row measures *here*. On a phone, with
+        another font and another OS, the content came out taller than the
+        number and Flutter drew the Deposit button straight over the
+        slippage box.
+
+        A guessed size cannot be made right by calibrating it; it can only
+        be removed. So the bar is a Row of containers, the body is one
+        container holding whichever tab is showing, and every height in the
+        panel comes from what is in it.
+
+        Containers rather than buttons for the same reason the nav links
+        and the sortable column headings are: a `TextButton` here hovers
+        correctly and never fires its handler in the published web build.
+        And the labels wrap rather than scroll, so a wider font takes a
+        second line instead of a scrollbar.
+        """
         self.tabs = [
             DepositTab(self._page, self.pool, self.get_contract, self.refresh_actions),
             WithdrawTab(self._page, self.pool, self.get_contract, self.refresh_actions),
             SwapTab(self._page, self.pool, self.get_contract, self.refresh_actions),
             StakeTab(self._page, self.pool, self.get_contract, self.refresh_actions),
         ]
-        # Flet 0.86 splits this into three controls: `Tabs` is the
-        # container and owns `length`, `TabBar` holds the labels, and
-        # `TabBarView` holds the bodies. A `Tab` is only the button -- it
-        # takes no content.
-        #
-        # `TabBarView` takes its height from the surrounding box rather than
-        # a fixed one: given `height=520` it raised a widget exception in a
-        # Flutter debug build, which passes unnoticed in a release web build
-        # but fails the integration tests outright.
+        self._tab = 0
+        self._tab_bar = ft.Container(
+            border=ft.Border(bottom=ft.BorderSide(1, ft.Colors.OUTLINE_VARIANT))
+        )
+        self._tab_body = ft.Container(padding=14)
+        self._sync_tabs()
         return ft.Container(
-            ft.Tabs(
-                length=len(self.tabs),
-                selected_index=0,
-                expand=True,
-                content=ft.Column(
-                    [
-                        ft.TabBar(tabs=[ft.Tab(label=ft.Text(tab.title, size=BODY)) for tab in self.tabs]),
-                        ft.TabBarView(
-                            expand=True,
-                            controls=[
-                                # A panel taller than the box scrolls rather
-                                # than overflowing. The scroll is inside the
-                                # tab, on its fields alone -- see
-                                # `ActionTab.__init__`: scrolling the buttons
-                                # too would leave them wherever the guessed
-                                # height put them.
-                                ft.Container(tab.mount(), padding=14)
-                                for tab in self.tabs
-                            ],
-                        ),
-                    ],
-                    spacing=0,
-                    expand=True,
-                ),
-            ),
+            ft.Column([self._tab_bar, self._tab_body], spacing=0),
             bgcolor=ft.Colors.SURFACE,
             border=ft.Border.all(1, ft.Colors.OUTLINE_VARIANT),
             border_radius=10,
@@ -762,6 +681,40 @@ class PoolDetailView(ft.Column):
             # else this is None and Material's own flatness stands.
             shadow=theme.panel_shadow(self._page),
         )
+
+    def _sync_tabs(self) -> None:
+        """Draw the bar for the tab that is showing, and its panel."""
+        self._tab_bar.content = ft.Row(
+            [self._tab_label(index, tab.title) for index, tab in enumerate(self.tabs)],
+            spacing=0,
+            wrap=True,
+        )
+        self._tab_body.content = self.tabs[self._tab].mount()
+
+    def _tab_label(self, index: int, title: str) -> ft.Control:
+        here = index == self._tab
+        return ft.Container(
+            ft.Text(
+                title,
+                size=BODY,
+                color=ft.Colors.PRIMARY if here else ft.Colors.ON_SURFACE_VARIANT,
+                weight=ft.FontWeight.W_500 if here else None,
+            ),
+            padding=ft.Padding.symmetric(horizontal=14, vertical=12),
+            # Underlined rather than merely coloured, as the page links in
+            # the header are: colour alone is a weak signal.
+            border=ft.Border(bottom=ft.BorderSide(2, ft.Colors.PRIMARY)) if here else None,
+            on_click=lambda _e, chosen=index: self._show_tab(chosen),
+            ink=True,
+        )
+
+    def _show_tab(self, index: int) -> None:
+        if index == self._tab:
+            return
+        self._tab = index
+        self._sync_tabs()
+        safe_update(self._tab_bar)
+        safe_update(self._tab_body)
 
     async def refresh_actions(self) -> None:
         for tab in self.tabs:

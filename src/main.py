@@ -31,7 +31,7 @@ from curve.format import compact_usd
 from curve.lite import LiteChain
 from curve.rpc import ChainlistDirectory, PublicNode
 from curve.sort import DEFAULT_SORT
-from ui import AnyEvent, buttons, metrics, routing, safe_update
+from ui import AnyEvent, buttons, routing, safe_update
 from ui import theme as themes
 from ui.assets import chad_mark, chain_name, curve_logo
 from ui.logos import chain_mark
@@ -521,10 +521,6 @@ class CurveApp:
                     self.connect_box,
                     self.connect_icon,
                     self.theme_button,
-                    # A line of text, measured. Invisible and one line
-                    # tall; the action panel is laid out by hand and needs
-                    # to know how tall text is here. See `ui.metrics`.
-                    metrics.probe(),
                 ],
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
                 spacing=14,

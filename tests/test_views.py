@@ -1357,62 +1357,62 @@ async def test_a_chain_that_cannot_be_read_says_so_rather_than_showing_nothing()
     assert any("No public node" in value for value in texts(view._parameter_rows))
 
 
-def test_the_action_panel_is_sized_to_what_the_pool_puts_in_it() -> None:
-    """`TabBarView` cannot size to its content, so the panel has to be
-    told -- and telling it one number for every pool is what left a
-    Deposit button floating in a few hundred pixels of empty card."""
-    from ui.pool_detail import ACTIONS_MAX, ACTIONS_MIN, ACTIONS_ROW, actions_height
+def test_nothing_in_the_action_panel_is_given_a_height() -> None:
+    """It used to be: `TabBarView` cannot size to its content, so the
+    panel was told how tall it was, from a number worked out from how many
+    coins a pool has and how tall a row measures on one machine. On a
+    phone, with another font and another OS, the content came out taller
+    and the Deposit button was drawn over the slippage box.
 
-    two, three = actions_height(make_pool(2)), actions_height(make_pool(3))
-    assert three - two == ACTIONS_ROW
-    assert ACTIONS_MIN <= two <= ACTIONS_MAX
+    A guessed size cannot be calibrated into a right one -- it can only be
+    removed. Every height in the panel now comes from what is in it."""
+    view = detail_view()
 
-
-def test_a_metapool_gets_room_for_its_switch_and_its_underlying_rows() -> None:
-    """The underlying route lists more rows than the pool has coins, and
-    it is the one that opens by default."""
-    from curve.models import Coin, Pool
-    from ui.pool_detail import actions_height
-
-    meta = Pool(
-        address="0x" + "11" * 20, name="Meta", chain="ethereum", chain_id=1,
-        registry="stableswapng", lp_token="0x" + "11" * 20, base_pool="0x" + "33" * 20,
-        coins=[Coin("0x" + f"{i:02x}" * 20, f"C{i}", 18, index=i) for i in range(4)],
-    )
-    meta.onchain_coins = 2
-
-    assert meta.has_underlying
-    assert actions_height(meta) > actions_height(make_pool(2))
+    assert view._right.height is None
+    assert view._tab_body.height is None
+    assert view._tab_bar.height is None
+    for tab in view.tabs:
+        assert tab.control.expand is None      # nothing to fill
+        assert tab.control.scroll is None      # and nothing to scroll
+        assert tab.frame.height is None
 
 
-def test_the_guess_comes_out_over_what_the_panel_holds() -> None:
-    """Under is what hurts. A panel shorter than its content becomes a
-    scrollable of its own, and on a phone that swallows the drag meant for
-    the page -- you pull at the Deposit fields and the page stays put.
+def test_the_tab_bar_is_containers_rather_than_flets_tabs() -> None:
+    """`TabBarView` is the only thing that renders a Flet tab body, and it
+    is the thing that needs the height -- so the bar is built by hand. And
+    from containers, not buttons: a `TextButton` in this app hovers
+    correctly and never fires its handler in a published web build."""
+    view = detail_view()
+    labels = view._tab_bar.content.controls
 
-    Calibrated against the running app: a three-coin panel holds 356px of
-    content and each further coin is worth 71, so a panel needs
-    `143 + 71 * coins`. The margin over that is the gap under the last
-    field, and it grows with the rows because that is where the risk of
-    coming up short is."""
-    from ui.pool_detail import actions_height
-
-    for coins in range(2, 9):
-        needed = 143 + coins * 71
-        gap = actions_height(make_pool(coins)) - needed
-        assert gap > 0, f"{coins} coins: {gap:+.0f}px -- the panel would scroll"
-        # And not so far over that the panel looks like it is missing
-        # something in the middle. This was 100px once.
-        assert gap < 50
+    assert len(labels) == len(view.tabs)
+    for label in labels:
+        assert isinstance(label, ft.Container)
+        assert label.on_click is not None
+    # And they wrap rather than scroll, so a wider font takes a second
+    # line instead of putting a scrollbar in the panel.
+    assert view._tab_bar.content.wrap is True
 
 
-def test_a_many_coin_pool_is_not_cut_short_by_the_ceiling() -> None:
-    """The ceiling was there to keep a panel on a laptop screen, back when
-    the page did not scroll and anything past the fold was unreachable. It
-    scrolls now, so a cut-short guess buys nothing and costs the scroll."""
-    from ui.pool_detail import ACTIONS_MAX, actions_height
+def test_tapping_a_label_shows_that_panel() -> None:
+    view = detail_view()
+    assert view._tab_body.content is view.tabs[0].frame
 
-    assert actions_height(make_pool(8)) < ACTIONS_MAX
+    view._show_tab(2)
+    assert view._tab_body.content is view.tabs[2].frame
+    assert view._tab == 2
+
+
+def test_the_tab_you_are_on_is_marked() -> None:
+    """Underlined as well as coloured, as the header's page links are:
+    colour alone is a weak signal."""
+    view = detail_view()
+    view._show_tab(1)
+    labels = view._tab_bar.content.controls
+
+    assert labels[1].border is not None
+    assert labels[0].border is None
+    assert labels[1].content.color != labels[0].content.color
 
 
 # -- the header nav --------------------------------------------------------

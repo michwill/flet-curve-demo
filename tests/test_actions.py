@@ -283,16 +283,18 @@ def test_slippage_is_small_and_out_of_the_way() -> None:
     assert row.alignment == ft.MainAxisAlignment.END
 
 
-def test_the_buttons_sit_against_the_bottom_of_the_panel() -> None:
-    """`TabBarView` cannot size to its content, so the panel's height is a
-    guess -- and whatever the guess runs over by has to land somewhere. In
-    one top-aligned column it landed under the button, which left a 46px
-    moat below it against 14px of padding at its sides. The fields are the
-    flexible part, so they take it."""
+def test_the_buttons_follow_the_fields_with_room_to_spare() -> None:
+    """No pinning, because there is no fixed height to pin against: the
+    panel is as tall as its content. The buttons come after the fields,
+    with a wider gap than the fields have between them so the button reads
+    as the end of the panel rather than as one more field."""
+    from ui.actions import BUTTON_GAP
+
     for tab in tabs():
         frame = tab.mount()
-        assert tab.control.expand is True
+        assert frame.controls[0] is tab.control
         assert frame.controls[-1] is tab.status_panel
+        assert tab.control.spacing < BUTTON_GAP
 
 
 def test_nothing_inside_the_panel_scrolls() -> None:

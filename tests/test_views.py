@@ -1431,6 +1431,116 @@ def test_a_narrow_page_uses_the_menu_button_instead() -> None:
     assert app.totals.opacity == 1.0
 
 
+# -- a header that fits a phone --------------------------------------------
+
+
+def header_app(width: float):
+    """`CurveApp` with the real header, laid out for a window this wide.
+
+    On the headless session rather than `StubPage`: `_build` sets a window
+    size, and a stub with no `window` is a stub that cannot hold a header.
+    """
+    import main as app_module
+    from tests.fake_session import Session
+
+    app_module.autoconnect = lambda: False
+    app = app_module.CurveApp.__new__(app_module.CurveApp)
+    app.page = Session(width=width)
+    app.chain = "ethereum"
+    app.chains = {}
+    app.wallet = None
+    app._page_name = "pools"
+    app._detail = None
+    app._address_expanded = False
+    app._route_applied = True
+    app.storage = None
+    app.api = None
+    app.feed = None
+    app._build()
+    app._apply_layout(width)
+    return app
+
+
+def test_a_phone_header_drops_every_label() -> None:
+    """It did not fit: at 390px the picker's network name and the connect
+    button's label ran off the right-hand edge, leaving "Conne" and then
+    nothing at all."""
+    app = header_app(PHONE)
+
+    assert app._icons is True
+    # The picker keeps its mark and loses the name -- `text` is what the
+    # closed field shows, `content` is what the open menu draws.
+    assert [option.text for option in app.chain_picker.options] == [""] * len(
+        app.chain_picker.options
+    )
+    assert app.chain_picker.width < 100
+    assert not app.theme_button.visible
+    assert app.menu.visible
+
+
+def test_a_laptop_header_keeps_them() -> None:
+    app = header_app(LAPTOP)
+
+    assert app._icons is False
+    assert all(option.text for option in app.chain_picker.options)
+    assert app.theme_button.visible
+    assert not app.menu.visible
+
+
+def test_the_themes_move_into_the_menu_on_a_phone() -> None:
+    """Cycling light -> dark -> Chad is fine while the button is on screen
+    saying where you are; folded away it would be a mystery tap. So the
+    menu names all three and ticks the one you are in."""
+    from ui import theme as themes
+
+    app = header_app(PHONE)
+    labels = [
+        item.content.value for item in app.menu.items if item.content is not None
+    ]
+
+    assert "Pools" in labels and "Portfolio" in labels
+    for name in themes.NAMES:
+        assert f"{name.capitalize()} theme" in labels
+    ticked = [item for item in app.menu.items if item.checked]
+    assert len(ticked) == 1
+
+
+def test_a_laptop_menu_is_pages_only() -> None:
+    app = header_app(LAPTOP)
+    labels = [
+        item.content.value for item in app.menu.items if item.content is not None
+    ]
+    assert labels == ["Pools", "Portfolio"]
+
+
+def test_connect_shows_as_a_button_or_an_icon_but_never_both() -> None:
+    """Two controls, one action: `ft.Button` will not render with an icon
+    and no label, so the narrow one is a separate control that follows the
+    wide one rather than being told."""
+    for width, wide_expected in ((LAPTOP, True), (PHONE, False)):
+        app = header_app(width)
+        app.connect_button.visible = True
+        app.connect_box.before_update()
+        app.connect_icon.before_update()
+
+        assert app.connect_box.visible is wide_expected
+        assert app.connect_icon.visible is (not wide_expected)
+
+
+def test_the_stand_in_disappears_with_the_button_it_stands_for() -> None:
+    """`visible` is set on the connect button from a dozen places that
+    know nothing about layout."""
+    app = header_app(PHONE)
+    app.connect_button.visible = False
+    app.connect_icon.before_update()
+    assert not app.connect_icon.visible
+
+    app.connect_button.visible = True
+    app.connect_button.disabled = True
+    app.connect_icon.before_update()
+    assert app.connect_icon.visible and app.connect_icon.disabled
+
+
 # -- the portfolio page ----------------------------------------------------
 
 

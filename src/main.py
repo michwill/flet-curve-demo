@@ -145,6 +145,23 @@ NAV_EXPAND_MIN_PAGE = 900
 #: render at all.
 CONNECT_LABEL = "Connect wallet"
 
+# -- a header that fits a phone -----------------------------------------
+#
+# It did not. At 390px the chain picker's name, the connect button's label
+# and the theme button add up to more than the bar has, so they ran off the
+# right-hand edge -- "Conne" and then nothing. Below the card breakpoint
+# every one of them loses its words:
+#
+#   * the picker keeps its network mark and drops the name (the menu it
+#     opens still spells them out, which is where you are choosing);
+#   * connect becomes the wallet icon -- `ui.buttons.StandIn`;
+#   * the theme moves into the menu the mark already opens, where it can
+#     name all three rather than cycling through them a tap at a time.
+#
+# Width when it is only marks: leading icon, its inset and the arrow.
+CHAIN_PICKER_WIDTH = 185
+CHAIN_PICKER_NARROW_WIDTH = 78
+
 #: The network mark inside the picker. Smaller than a token mark elsewhere:
 #: a dense dropdown's field is barely taller than its text.
 CHAIN_ICON = 14
@@ -346,12 +363,7 @@ class CurveApp:
             icon=ft.Icons.MENU,
             visible=False,
             tooltip="Pages",
-            items=[
-                ft.PopupMenuItem(content=ft.Text("Pools"),
-                                 on_click=lambda _e: self.go_page(PAGE_POOLS)),
-                ft.PopupMenuItem(content=ft.Text("Portfolio"),
-                                 on_click=lambda _e: self.go_page(PAGE_PORTFOLIO)),
-            ],
+            items=self._menu_items(),
         )
 
         # The wordmark sits beside the mark as if it were part of it. The
@@ -396,8 +408,20 @@ class CurveApp:
             style=buttons.style(page),
         )
         #: The same wrapper the Approve/Deposit buttons get, so this one
-        #: casts the same shadow as the panel it will sit above.
-        self.connect_box = buttons.shadowed(self.connect_button, page)
+        #: casts the same shadow as the panel it will sit above -- and it
+        #: is what hides the labelled button where there is no room for it.
+        self.connect_box = buttons.shadowed(
+            self.connect_button, page, lambda: not self._icons
+        )
+        #: The same action without the words. Follows the button rather
+        #: than being told: see `ui.buttons.StandIn`.
+        self.connect_icon = buttons.StandIn(
+            self.connect_button,
+            lambda: self._icons,
+            icon=ft.Icons.ACCOUNT_BALANCE_WALLET,
+            tooltip=CONNECT_LABEL,
+            on_click=self.connect,
+        )
         # A Container rather than an IconButton: one of the three states
         # is drawn with an image (the wireframe mark), and an IconButton
         # takes only an icon. The same reason the sortable column headings
@@ -454,6 +478,7 @@ class CurveApp:
                     # repeat the network name back at you.
                     self.chain_picker,
                     self.connect_box,
+                    self.connect_icon,
                     self.theme_button,
                 ],
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
@@ -481,6 +506,48 @@ class CurveApp:
             )
         )
 
+    def _menu_items(self) -> list[ft.PopupMenuItem]:
+        """What the mark opens: the pages, and on a phone the themes too.
+
+        The theme button cycles light -> dark -> Chad, which is fine when
+        it is on screen showing you where you are. Folded into a menu it
+        would be a mystery tap, so here the three are named and the one you
+        are in is ticked.
+        """
+        items = [
+            ft.PopupMenuItem(content=ft.Text("Pools"),
+                             on_click=lambda _e: self.go_page(PAGE_POOLS)),
+            ft.PopupMenuItem(content=ft.Text("Portfolio"),
+                             on_click=lambda _e: self.go_page(PAGE_PORTFOLIO)),
+        ]
+        if not self._icons:
+            return items
+        current = self._theme_name()
+        # An item with no content is a divider.
+        items.append(ft.PopupMenuItem())
+        items += [
+            ft.PopupMenuItem(
+                content=ft.Text(f"{name.capitalize()} theme"),
+                checked=name == current,
+                on_click=lambda _e, chosen=name: self._set_theme(chosen),
+            )
+            for name in themes.NAMES
+        ]
+        return items
+
+    def _sync_chain_picker(self) -> None:
+        """Draw the picker for the width there is: named, or a mark alone."""
+        labelled = not self._icons
+        self.chain_picker.options = [
+            self._chain_option(chain, labelled) for chain in self._chain_order
+        ]
+        # Options are rebuilt, so the selection is set again after them.
+        self.chain_picker.value = self.chain
+        self.chain_picker.width = (
+            CHAIN_PICKER_WIDTH if labelled else CHAIN_PICKER_NARROW_WIDTH
+        )
+        self.chain_picker.leading_icon = chain_icon(self.chain)
+
     def _resized(self, e: ft.PageResizeEvent) -> None:
         self._apply_layout(e.width)
 
@@ -498,6 +565,15 @@ class CurveApp:
         # room for the chain and the wallet, and nothing else.
         self.totals.visible = not layout.cards
         self.build_label.visible = not layout.cards
+        # And then the words go too. `_icons` is read by the connect
+        # button's wrapper and its stand-in, so setting it is all that
+        # swaps them.
+        icons = layout.cards
+        if icons != self._icons:
+            self._icons = icons
+            self._sync_chain_picker()
+        self.theme_button.visible = not icons
+        self.menu.items = self._menu_items()
         # Narrow: the mark becomes a menu button, because there is no room
         # to slide a nav open over a header this full.
         narrow = width < NAV_EXPAND_MIN_PAGE
@@ -505,19 +581,31 @@ class CurveApp:
         if narrow:
             self.nav.width = 0
             self.totals.opacity = 1.0
+        # The views repaint themselves -- `set_layout` ends in an update --
+        # and the header does not, so it has to be told. Without this the
+        # picker was still spelling out "Ethereum" at 390px, and the theme
+        # button was still on the row, because nothing had asked the bar to
+        # redraw: opening narrow worked (the first paint takes everything)
+        # and *reaching* narrow did not.
         self.list_view.set_layout(layout)
         self.portfolio_view.set_layout(layout.cards)
         if self._detail is not None:
             self._detail.set_layout(layout)
 
-    def _chain_option(self, chain: str) -> ft.DropdownOption:
-        """A network's mark beside its proper name, not its API slug."""
+    def _chain_option(self, chain: str, labelled: bool = True) -> ft.DropdownOption:
+        """A network's mark beside its proper name, not its API slug.
+
+        `content` is what the open menu draws and `text` is what the closed
+        field shows, which is the whole trick on a phone: dropping `text`
+        leaves the field showing its mark alone, while the menu still names
+        every network.
+        """
         mark = chain_mark(chain)
         label = ft.Text(chain_name(chain), size=BODY)
         return ft.DropdownOption(
             key=chain,
             content=ft.Row([mark, label], spacing=8, tight=True) if mark else label,
-            text=chain_name(chain),
+            text=chain_name(chain) if labelled else "",
         )
 
     def _sync_theme_button(self, update: bool = False) -> None:
@@ -803,11 +891,10 @@ class CurveApp:
         ordered = [c for c in PREFERRED_CHAINS if c in known] + sorted(
             c for c in known if c not in PREFERRED_CHAINS
         )
-        self.chain_picker.options = [self._chain_option(c) for c in ordered]
+        self._chain_order = ordered
         if self.chain not in known and ordered:
             self.chain = ordered[0]
-            self.chain_picker.value = self.chain
-        self.chain_picker.leading_icon = chain_icon(self.chain)
+        self._sync_chain_picker()
 
     # -- navigation -------------------------------------------------------
 

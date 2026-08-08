@@ -14,6 +14,9 @@ there was contrast already.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import Any
+
 import flet as ft
 
 from . import theme
@@ -112,21 +115,63 @@ class Shadowed(ft.Container):
         why holding the page is enough.
     """
 
-    def __init__(self, button: ft.Control, page: ft.Page) -> None:
+    def __init__(
+        self,
+        button: ft.Control,
+        page: ft.Page,
+        when: Callable[[], bool] | None = None,
+    ) -> None:
         self._page = page
+        #: An extra condition on top of the button's own -- "and there is
+        #: room for its label". Kept here rather than in the caller so the
+        #: wrapper stays the single answer to "is this button showing":
+        #: a container that is visible around a button that is not still
+        #: takes its share of the row's spacing.
+        self._when = when
         super().__init__(button, border_radius=RADIUS)
 
     def before_update(self) -> None:
         super().before_update()
-        self.visible = self.content is not None and self.content.visible
+        showing = self.content is not None and self.content.visible
+        self.visible = showing and (self._when is None or self._when())
         self.shadow = theme.panel_shadow(self._page, inset=True)
 
 
-def shadowed(button: ft.Control, page: ft.Page) -> ft.Control:
+def shadowed(
+    button: ft.Control, page: ft.Page, when: Callable[[], bool] | None = None
+) -> ft.Control:
     """`button`, with room for Chad's shadow under it.
 
     Always wrapped, even outside Chad -- a container with no shadow and
     no fill is exactly the size of what it holds -- so that switching
     theme has something to put a shadow on without rebuilding the tree.
     """
-    return Shadowed(button, page)
+    return Shadowed(button, page, when)
+
+
+class StandIn(ft.IconButton):
+    """The same action as `button`, with the label dropped.
+
+    A phone header has room for about two words in total, so the labelled
+    buttons give way to their icons. This is a second control rather than
+    the same one with its text removed because `ft.Button` will not render
+    with an `icon` and no `content` at all -- which is also why the connect
+    button says "Connecting..." rather than going quiet.
+
+    It follows the button it stands for instead of being told: `visible`
+    and `disabled` are set on that one from a dozen places that know
+    nothing about layout, and two things to keep in step is one thing to
+    forget.
+    """
+
+    def __init__(
+        self, button: ft.Control, when: Callable[[], bool], **kwargs: Any
+    ) -> None:
+        self._button = button
+        self._when = when
+        super().__init__(**kwargs)
+
+    def before_update(self) -> None:
+        super().before_update()
+        self.visible = bool(self._button.visible and self._when())
+        self.disabled = bool(self._button.disabled)

@@ -28,7 +28,7 @@ from curve.models import Pool
 from curve.pool import PoolContract
 from wallet.base import WalletError
 
-from . import AnyEvent, safe_update, theme
+from . import AnyEvent, metrics, safe_update, theme
 from .actions import DepositTab, StakeTab, SwapTab, WithdrawTab
 from .candles import CandleChart
 from .logos import pool_stack, token_mark
@@ -112,12 +112,21 @@ ACTIONS_MAX = 1200
 
 
 def actions_height(pool: Pool) -> float:
-    """How tall the action panel needs to be for this pool."""
+    """How tall the action panel needs to be for this pool.
+
+    Every number here was measured on one machine, and the panel no longer
+    scrolls when the guess comes up short -- it clips, and what clips is
+    the bottom, which is the button. So the whole thing is scaled by how
+    tall a line of text actually is on the platform it is running on: see
+    `ui.metrics`. On the machine these were measured on that is 1.
+    """
     # The underlying route lists more rows than the pool has coins, and
     # it is the default where it exists, so it is what to size for.
     rows = max(len(pool.pool_coins), len(pool.coins) if pool.has_underlying else 0)
     wanted = ACTIONS_CHROME + rows * ACTIONS_ROW + (ACTIONS_SWITCH if pool.has_underlying else 0)
-    return float(min(ACTIONS_MAX, max(ACTIONS_MIN, wanted)))
+    return float(
+        metrics.scaled(min(ACTIONS_MAX, max(ACTIONS_MIN, wanted)))
+    )
 
 
 class PoolDetailView(ft.Column):

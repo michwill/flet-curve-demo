@@ -69,6 +69,11 @@ PORTFOLIO_DISCOVERY_SHARE = 0.5
 # Both are ignored when unset, so a normal launch is unchanged.
 ROUTE_ENV = "CURVE_ROUTE"
 THEME_ENV = "CURVE_THEME"
+#: And how big to open the window, as WIDTHxHEIGHT. Resizing an open
+#: window to a phone's width is not the same test: the app then lays out
+#: twice and what is on screen depends on which half of the startup the
+#: resize lands in. `CURVE_WINDOW=390x844` opens narrow to begin with.
+WINDOW_ENV = "CURVE_WINDOW"
 
 
 def startup_route() -> str:
@@ -81,6 +86,17 @@ def startup_theme() -> str:
     """The theme to open in, or empty to use the remembered one."""
     wanted = os.environ.get(THEME_ENV, "").strip().lower()
     return wanted if wanted in themes.NAMES else ""
+
+
+def startup_window() -> tuple[float, float] | None:
+    """The window size to open at, or None for the default."""
+    raw = os.environ.get(WINDOW_ENV, "").strip().lower()
+    width, _, height = raw.partition("x")
+    try:
+        size = (float(width), float(height))
+    except ValueError:
+        return None
+    return size if size[0] > 0 and size[1] > 0 else None
 
 
 #: Where the last portfolio scan is remembered, so the page has something
@@ -306,14 +322,21 @@ class CurveApp:
         page.theme_mode = ft.ThemeMode.SYSTEM
         page.theme = themes.material()
         page.dark_theme = themes.material()
-        page.window.width = 1280
-        page.window.height = 900
+        page.window.width, page.window.height = startup_window() or (1280.0, 900.0)
+
+        #: Is the header down to icons? Read by the connect button's
+        #: wrapper, its stand-in and the menu, so setting it in
+        #: `_apply_layout` is the whole of the switch.
+        self._icons = False
+        #: The picker's networks, in the order it offers them. Kept so its
+        #: options can be rebuilt when the names have to go.
+        self._chain_order: list[str] = list(PREFERRED_CHAINS)
 
         self.chain_picker = ft.Dropdown(
             options=[self._chain_option(c) for c in PREFERRED_CHAINS],
             # Replaced by the API's own list once `load_pools` has run.
             value=self.chain,
-            width=185,
+            width=CHAIN_PICKER_WIDTH,
             dense=True,
             leading_icon=chain_icon(self.chain),
             on_select=self._chain_changed,

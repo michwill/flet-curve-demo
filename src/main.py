@@ -991,14 +991,19 @@ class CurveApp:
     #
     # On web this is the browser's URL: a pool page has an address worth
     # sending to someone, and Back means what it looks like it means.
-    # `page.go` pushes a history entry and fires `on_route_change`, which
-    # the browser also fires on Back -- so one handler serves both, and it
-    # is written to be idempotent rather than to guess who called it.
+    # `page.push_route` pushes a history entry and fires `on_route_change`,
+    # which the browser also fires on Back -- so one handler serves both,
+    # and it is written to be idempotent rather than to guess who called it.
 
     def _go(self, route: str) -> None:
-        """Push a route, unless the browser is already showing it."""
+        """Push a route, unless the browser is already showing it.
+
+        Queued rather than awaited: `push_route` is a coroutine and every
+        caller here is a click handler. That is what `page.go` did for
+        itself before it was deprecated -- it is gone in Flet 0.90.
+        """
         if (self.page.route or "") != route:
-            self.page.go(route)
+            self.page.run_task(self.page.push_route, route)
 
     async def apply_route(self, raw: str | None) -> None:
         """Show whatever the address bar says. Safe to call repeatedly.

@@ -108,14 +108,25 @@ class StubPage:
         self.pushed: list[str] = []
         self.tasks: list = []
 
-    def go(self, route: str) -> None:
+    def push(self, route: str) -> None:
+        """What a push amounts to here: a history entry and a new route."""
         self.pushed.append(route)
         self.route = route
+
+    async def push_route(self, route: str) -> None:
+        """Flet's own, which the app reaches through `run_task`."""
+        self.push(route)
 
     def update(self) -> None:
         pass
 
     def run_task(self, handler, *args):
+        # Navigation is applied rather than queued. A stub that only
+        # recorded it would make every "pushed no history entry" assertion
+        # below pass whether or not the app pushed one.
+        if getattr(handler, "__name__", "") == "push_route":
+            self.push(*args)
+            return
         self.tasks.append((handler, args))
         return
 
@@ -159,7 +170,7 @@ def make_app(route: str = "/", *, pool=_DEFAULT, chain: str = "ethereum"):
     def open_pool(pool_to_open):
         app.opened.append(pool_to_open)
         app._detail = type("Detail", (), {"pool": pool_to_open})()
-        app.page.go(routing.build(pool_to_open.chain or app.chain, pool_to_open.address))
+        app.page.push(routing.build(pool_to_open.chain or app.chain, pool_to_open.address))
 
     app.open_pool = open_pool  # type: ignore[method-assign]
     return app

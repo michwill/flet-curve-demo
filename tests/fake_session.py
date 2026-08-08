@@ -114,13 +114,25 @@ class Session:
     def update(self, *_controls: Any) -> None:
         self.updates += 1
 
-    def go(self, route: str) -> None:
+    def push(self, route: str) -> None:
+        """A history entry, a new route, and the event the browser fires."""
         self.pushed.append(route)
         self.route = route
         if self.on_route_change is not None:
             self.on_route_change(RouteEvent(route))
 
+    async def push_route(self, route: str) -> None:
+        """Flet's own, which the app reaches through `run_task`."""
+        self.push(route)
+
     def run_task(self, handler: Any, *args: Any) -> None:
+        # Navigation happens here rather than at the next `pump()`: the
+        # state machine's transitions are written around a route change
+        # landing before the next one is asked for, which is what the
+        # sync `page.go` used to give them.
+        if getattr(handler, "__name__", "") == "push_route":
+            self.push(*args)
+            return
         self.tasks.append((handler, args))
 
     # -- the part a real client causes -------------------------------------

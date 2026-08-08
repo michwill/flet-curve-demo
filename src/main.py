@@ -178,6 +178,11 @@ CONNECT_LABEL = "Connect wallet"
 CHAIN_PICKER_WIDTH = 185
 CHAIN_PICKER_NARROW_WIDTH = 78
 
+#: How big a theme's face is drawn on the button, and in the menu it moves
+#: into on a phone.
+BUTTON_MARK = 22
+MENU_MARK = 20
+
 #: The network mark inside the picker. Smaller than a token mark elsewhere:
 #: a dense dropdown's field is barely taller than its text.
 CHAIN_ICON = 14
@@ -338,6 +343,9 @@ class CurveApp:
             value=self.chain,
             width=CHAIN_PICKER_WIDTH,
             dense=True,
+            # Material's own default, said out loud because the narrow
+            # header turns it off and "off" needs something to go back to.
+            border=ft.InputBorder.OUTLINE,
             leading_icon=chain_icon(self.chain),
             on_select=self._chain_changed,
         )
@@ -550,6 +558,11 @@ class CurveApp:
         items.append(ft.PopupMenuItem())
         items += [
             ft.PopupMenuItem(
+                # The same face the button shows, so the menu and the bar
+                # are recognisably about the same thing. `icon` takes a
+                # control as well as an icon name, which is what lets Chad
+                # be himself rather than a stand-in glyph.
+                icon=self._theme_mark(name, MENU_MARK),
                 content=ft.Text(f"{name.capitalize()} theme"),
                 checked=name == current,
                 on_click=lambda _e, chosen=name: self._set_theme(chosen),
@@ -568,6 +581,14 @@ class CurveApp:
         self.chain_picker.value = self.chain
         self.chain_picker.width = (
             CHAIN_PICKER_WIDTH if labelled else CHAIN_PICKER_NARROW_WIDTH
+        )
+        # No outline once it is a mark and an arrow. A form field's border
+        # is there to say "there is a value in here to change"; around a
+        # bare icon it says nothing and only draws a box on a bar that has
+        # no room for boxes -- the wallet beside it is an icon with no
+        # frame either.
+        self.chain_picker.border = (
+            ft.InputBorder.OUTLINE if labelled else ft.InputBorder.NONE
         )
         self.chain_picker.leading_icon = chain_icon(self.chain)
 
@@ -643,17 +664,23 @@ class CurveApp:
         say it in words.
         """
         current = self._theme_name()
-        mark: ft.Control
-        if current == "chad":
-            mark = ft.Image(src=chad_mark(), width=22, height=22, fit=ft.BoxFit.CONTAIN)
-        elif current == "dark":
-            mark = ft.Icon(ft.Icons.DARK_MODE)
-        else:
-            mark = ft.Icon(ft.Icons.LIGHT_MODE)
+        mark = self._theme_mark(current)
         following = themes.NAMES[(themes.NAMES.index(current) + 1) % len(themes.NAMES)]
         self._set_theme_button(mark, f"{current.capitalize()} theme — click for {following}")
         if update:
             self.page.update()
+
+    def _theme_mark(self, name: str, size: float = BUTTON_MARK) -> ft.Control:
+        """A theme's face: a sun, a moon, or the Chad himself.
+
+        Shared by the button and the menu so the two cannot drift -- the
+        menu is where the button goes on a phone, and a different picture
+        for the same theme in the two places would read as two settings.
+        """
+        if name == "chad":
+            return ft.Image(src=chad_mark(), width=size, height=size,
+                            fit=ft.BoxFit.CONTAIN)
+        return ft.Icon(ft.Icons.DARK_MODE if name == "dark" else ft.Icons.LIGHT_MODE)
 
     def _theme_name(self) -> str:
         """Which of the three is on screen.

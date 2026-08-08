@@ -1474,6 +1474,9 @@ def test_a_phone_header_drops_every_label() -> None:
         app.chain_picker.options
     )
     assert app.chain_picker.width < 100
+    # And no box drawn round it: a form field's outline says "there is a
+    # value in here", which a bare mark does not need saying about.
+    assert app.chain_picker.border == ft.InputBorder.NONE
     assert not app.theme_button.visible
     assert app.menu.visible
 
@@ -1483,8 +1486,33 @@ def test_a_laptop_header_keeps_them() -> None:
 
     assert app._icons is False
     assert all(option.text for option in app.chain_picker.options)
+    assert app.chain_picker.border == ft.InputBorder.OUTLINE
     assert app.theme_button.visible
     assert not app.menu.visible
+
+
+def test_every_theme_in_the_menu_carries_its_own_face() -> None:
+    """The button it replaces on a phone shows one; a list of three words
+    with nothing beside them would not read as the same setting."""
+    from ui import theme as themes
+
+    app = header_app(PHONE)
+    themed = [item for item in app.menu.items if item.icon is not None]
+
+    assert len(themed) == len(themes.NAMES)
+    # Chad is a picture and the other two are glyphs, which is why the
+    # item takes a control rather than an icon name.
+    kinds = {type(item.icon) for item in themed}
+    assert ft.Image in kinds and ft.Icon in kinds
+
+
+def test_the_menu_and_the_button_draw_a_theme_the_same_way() -> None:
+    """Two pictures for one setting would read as two settings."""
+    app = header_app(LAPTOP)
+    for name in ("light", "dark", "chad"):
+        on_button = app._theme_mark(name)
+        in_menu = app._theme_mark(name, 20)
+        assert type(on_button) is type(in_menu)
 
 
 def test_the_themes_move_into_the_menu_on_a_phone() -> None:

@@ -55,7 +55,15 @@ DIST = ROOT / "dist"
 SECRETS = ROOT / "local_secrets.toml"
 
 PIN_URL = "https://api.pinata.cloud/pinning/pinFileToIPFS"
-PUBLIC_GATEWAY = "https://gateway.pinata.cloud/ipfs/"
+
+#: Where to send someone once it is pinned. Not `gateway.pinata.cloud`:
+#: that one answers 403 for anything that is HTML ("cannot be served
+#: through the pinata public gateway ... utilize a dedicated gateway",
+#: ERR_ID:00023), which for a website is every page of it. It serves the
+#: js, the wasm and the images quite happily, so the failure looks like a
+#: broken pin rather than a policy. A dedicated gateway is the answer, and
+#: goes in `local_secrets.toml`; until then this one works.
+PUBLIC_GATEWAY = "https://dweb.link/ipfs/"
 
 #: CIDv1 rather than v0: it is case-insensitive base32, which is what a
 #: subdomain gateway (`https://<cid>.ipfs.dweb.link`) needs to put the CID
@@ -368,12 +376,15 @@ def main() -> int:
     if not cid:
         raise SystemExit(f"No CID in Pinata's answer: {answer}")
 
-    gateway = str(config().get("gateway", "")).strip() or PUBLIC_GATEWAY
     print(f"\n  CID  {cid}")
     if answer.get("isDuplicate"):
         print("       (already pinned -- identical to a previous build)")
-    print(f"       {gateway.rstrip('/')}/{cid}/")
+    # Yours first, if you have one. A dedicated gateway is the only Pinata
+    # host that will serve the HTML.
+    if gateway := str(config().get("gateway", "")).strip():
+        print(f"       {gateway.rstrip('/')}/{cid}/")
     print(f"       https://{cid}.ipfs.dweb.link/")
+    print(f"       {PUBLIC_GATEWAY}{cid}/")
     print(f"       ipfs://{cid}/")
     return 0
 

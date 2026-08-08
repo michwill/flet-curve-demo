@@ -107,6 +107,18 @@ sub-path (`/ipfs/<cid>/`) rather than at a root:
   hostname and `https://<cid>.ipfs.dweb.link/` works; a v0 hash is base58 and
   only resolves on a path gateway.
 
+**Pinata will not serve the result over its own gateways.** Both refuse HTML
+with `ERR_ID:00023` -- the public one says to use a dedicated gateway, and
+the dedicated one says to put a custom domain on it. Everything that is not
+HTML (the js, the wasm, `app.tar.gz`, the images) is served happily by both,
+so the failure looks like a broken pin rather than a policy. Three things
+that do work:
+
+- any third-party gateway: `https://<cid>.ipfs.dweb.link/`;
+- a custom domain attached to the dedicated gateway;
+- an ENS name whose contenthash is `ipfs://<cid>`, through `eth.limo` -- the
+  CID is v1 for this reason among others.
+
 Pinata's current upload API (`uploads.pinata.cloud/v3/files`) takes one file
 and not a directory, and a website is a directory, so this posts to the older
 `pinFileToIPFS` -- which is what their own docs point to for folders. One

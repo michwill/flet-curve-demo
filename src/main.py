@@ -336,6 +336,10 @@ class CurveApp:
         #: The picker's networks, in the order it offers them. Kept so its
         #: options can be rebuilt when the names have to go.
         self._chain_order: list[str] = list(PREFERRED_CHAINS)
+        #: The chain's headline figures, as (label, value) pairs. Kept
+        #: apart from the line they are written on because the phone puts
+        #: them somewhere else entirely -- see `_menu_items`.
+        self._totals: list[tuple[str, str]] = []
 
         self.chain_picker = ft.Dropdown(
             options=[self._chain_option(c) for c in PREFERRED_CHAINS],
@@ -538,21 +542,35 @@ class CurveApp:
         )
 
     def _menu_items(self) -> list[ft.PopupMenuItem]:
-        """What the mark opens: the pages, and on a phone the themes too.
+        """What the mark opens.
+
+        The pages always. On a phone, everything else the header has had to
+        give up as well: the chain's two figures at the top, and the themes
+        at the bottom.
 
         The theme button cycles light -> dark -> Chad, which is fine when
         it is on screen showing you where you are. Folded into a menu it
         would be a mystery tap, so here the three are named and the one you
         are in is ticked.
         """
-        items = [
+        pages = [
             ft.PopupMenuItem(content=ft.Text("Pools"),
                              on_click=lambda _e: self.go_page(PAGE_POOLS)),
             ft.PopupMenuItem(content=ft.Text("Portfolio"),
                              on_click=lambda _e: self.go_page(PAGE_PORTFOLIO)),
         ]
         if not self._icons:
-            return items
+            return pages
+        # What the header says on a wider window, since there it does not
+        # fit beside a hamburger and a chain. Disabled: they are figures,
+        # not somewhere to go, and Material greys them to say so.
+        items: list[ft.PopupMenuItem] = [
+            ft.PopupMenuItem(content=ft.Text(f"{label} {value}"), disabled=True)
+            for label, value in self._totals
+        ]
+        if items:
+            items.append(ft.PopupMenuItem())
+        items += pages
         current = self._theme_name()
         # An item with no content is a divider.
         items.append(ft.PopupMenuItem())
@@ -926,15 +944,30 @@ class CurveApp:
             self.page.update()
             return
 
-        # No volume clause on a Lite chain: nothing there counts trades,
-        # and "24h volume $0.00" would read as a quiet day rather than as
-        # an absent measurement.
-        volume = totals.get("volume")
-        self.totals.value = f"TVL {compact_usd(totals['tvl'] or 0.0)}" + (
-            f"   ·   24h volume {compact_usd(volume)}" if volume is not None else ""
-        )
+        self._show_totals(totals)
         self.progress.visible = False
         self.page.update()
+
+    def _show_totals(self, totals: dict) -> None:
+        """The chain's two figures, on the bar and in the menu.
+
+        Both, because the header gives them up at card widths and the menu
+        is where the rest of it went. They arrive a request after the menu
+        was built, so setting them rebuilds it -- otherwise a phone's menu
+        would carry the two lines it was built with, which is none.
+
+        No volume clause on a Lite chain: nothing there counts trades, and
+        "24h volume $0.00" would read as a quiet day rather than as a
+        measurement nobody takes.
+        """
+        volume = totals.get("volume")
+        self._totals = [("TVL", compact_usd(totals["tvl"] or 0.0))]
+        if volume is not None:
+            self._totals.append(("24h volume", compact_usd(volume)))
+        self.totals.value = "   ·   ".join(
+            f"{label} {value}" for label, value in self._totals
+        )
+        self.menu.items = self._menu_items()
 
     def _sync_chain_options(self) -> None:
         """Offer every chain the API reports, preferred ones first."""

@@ -1568,6 +1568,65 @@ def test_the_themes_move_into_the_menu_on_a_phone() -> None:
     assert len(ticked) == 1
 
 
+def test_the_chain_totals_move_into_the_menu_on_a_phone() -> None:
+    """The header drops them at card widths -- there is no room beside a
+    hamburger and a chain -- and they are the whole of what that line
+    said, so they go where the rest of the header went."""
+    app = header_app(PHONE)
+    app._totals = [("TVL", "$1.38b"), ("24h volume", "$89.61m")]
+    app.menu.items = app._menu_items()
+
+    labels = [
+        item.content.value for item in app.menu.items if item.content is not None
+    ]
+    assert labels[:2] == ["TVL $1.38b", "24h volume $89.61m"]
+    # Figures, not somewhere to go.
+    figures = [item for item in app.menu.items if item.content is not None][:2]
+    assert all(item.disabled and item.on_click is None for item in figures)
+
+
+def test_the_figures_reach_the_menu_when_they_arrive() -> None:
+    """They land a request after the menu was built, so setting them has
+    to rebuild it -- otherwise the phone's menu keeps the two lines it was
+    built with, which is none."""
+    app = header_app(PHONE)
+    app._show_totals({"tvl": 1.38e9, "volume": 8.961e7})
+
+    labels = [
+        item.content.value for item in app.menu.items if item.content is not None
+    ]
+    assert labels[0] == "TVL $1.38b"
+    assert labels[1] == "24h volume $89.61m"
+    # And the bar still says it the way it always did, for wider windows.
+    assert app.totals.value.startswith("TVL $1.38b")
+
+
+def test_a_lite_chain_reports_no_volume_in_the_menu_either() -> None:
+    """Nothing counts trades there, and "24h volume $0.00" would read as a
+    quiet day rather than as a measurement nobody takes."""
+    app = header_app(PHONE)
+    app._show_totals({"tvl": 1.0e6, "volume": None})
+
+    labels = [
+        item.content.value for item in app.menu.items if item.content is not None
+    ]
+    assert labels[0] == "TVL $1.00m"
+    assert not any("volume" in label for label in labels)
+
+
+def test_a_chain_with_no_totals_yet_lists_none() -> None:
+    """They arrive a request after the menu is first built, and an empty
+    "TVL" with nothing after it is worse than no line."""
+    app = header_app(PHONE)
+    app._totals = []
+    app.menu.items = app._menu_items()
+
+    labels = [
+        item.content.value for item in app.menu.items if item.content is not None
+    ]
+    assert labels[0] == "Pools"
+
+
 def test_a_laptop_menu_is_pages_only() -> None:
     app = header_app(LAPTOP)
     labels = [

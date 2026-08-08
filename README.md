@@ -77,6 +77,10 @@ python tools/publish_ipfs.py --no-build    # pin the dist/ already there
 python tools/publish_ipfs.py --dry-run     # everything up to the upload
 ```
 
+It builds with `--app-short-name`, which a plain `flet publish` does not:
+the manifest's short name otherwise falls back to the *project's* name, so
+an installed shortcut is labelled "flet-curve" on an Android home screen.
+
 **The key does not go in `src/local_config.toml`.** That file is under `src/`
 so that `flet publish` bundles it -- which is exactly why a real credential
 cannot live there: it would be served to every visitor, and pinning it puts

@@ -450,10 +450,21 @@ def flet_cli() -> str:
     return str(beside) if beside.is_file() else "flet"
 
 
+#: What an installed shortcut is called. `tool.flet.product` names the
+#: app in the manifest, but the *short* name falls back to the project's
+#: own -- "flet-curve" -- and only a flag overrides it. That is the label
+#: under the icon on an Android home screen, where "flet-curve" is the
+#: repository showing through to somebody who never asked what it was
+#: built with.
+SHORT_NAME = "Curve Finance"
+
+
 def publish() -> None:
     """`flet publish`, so what goes up is what the source says now."""
     print("flet publish ...")
-    result = subprocess.run([flet_cli(), "publish"], cwd=ROOT, check=False)
+    result = subprocess.run(
+        [flet_cli(), "publish", "--app-short-name", SHORT_NAME], cwd=ROOT, check=False
+    )
     if result.returncode != 0:
         raise SystemExit(f"flet publish failed ({result.returncode})")
 

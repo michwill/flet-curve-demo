@@ -100,6 +100,18 @@ def test_the_icon_url_is_versioned(head: HeadReader) -> None:
             assert "?v=" in attrs.get("href", ""), attrs
 
 
+def test_the_page_is_named_for_what_it_is() -> None:
+    """"Flet" is how it is built, which interests whoever is reading the
+    source and nobody looking at the page. The tab and the window agree,
+    so a bookmark and an installed shortcut say the same thing."""
+    import re
+
+    import main
+
+    shown = re.search(r"<title>(.*?)</title>", INDEX.read_text(encoding="utf-8"))
+    assert shown and shown.group(1) == main.APP_TITLE == "Curve Finance"
+
+
 def test_the_title_and_base_are_in_the_head(head: HeadReader) -> None:
     """Both were casualties of the same bug -- and an empty
     `document.title` was the first visible symptom."""

@@ -161,6 +161,11 @@ NAV_WIDTH = NAV_GAP + NAV_SPACING + 210
 #: they are competing for the same row.
 NAV_EXPAND_MIN_PAGE = 900
 
+#: What the browser tab and the desktop window are called. Not "Flet"
+#: anywhere: that is how it is built, which is of interest to whoever is
+#: reading the source and to nobody looking at the page.
+APP_TITLE = "Curve Finance"
+
 #: The connect button's resting label. It is swapped rather than blanked
 #: while connecting: a `Button` with an `icon` and no `content` refuses to
 #: render at all.
@@ -324,7 +329,7 @@ class CurveApp:
 
     def _build(self) -> None:
         page = self.page
-        page.title = "Curve — Flet"
+        page.title = APP_TITLE
         page.padding = 0
         # Light and dark are Material's, seeded; Chad is a hand-set
         # palette -- see `ui/theme.py`. Which one is on decides more than

@@ -11,7 +11,7 @@ dependencies = ["flet==0.86.5", "flet-charts==0.86.5"]
 
 [tool.flet]
 org = "com.example"
-product = "Curve Flet"
+product = "Curve Finance"
 company = "Example"
 
 [tool.flet.app]

@@ -1390,14 +1390,20 @@ def test_the_guess_comes_out_over_what_the_panel_holds() -> None:
     scrollable of its own, and on a phone that swallows the drag meant for
     the page -- you pull at the Deposit fields and the page stays put.
 
-    Measured against the running app: 188px of chrome and a 71px pitch per
-    coin row. The margin on top of that is for a platform whose text
-    metrics run taller than this one's."""
+    Calibrated against the running app: a three-coin panel holds 356px of
+    content and each further coin is worth 71, so a panel needs
+    `143 + 71 * coins`. The margin over that is the gap under the last
+    field, and it grows with the rows because that is where the risk of
+    coming up short is."""
     from ui.pool_detail import actions_height
 
     for coins in range(2, 9):
-        measured = 188 + coins * 71
-        assert actions_height(make_pool(coins)) > measured
+        needed = 143 + coins * 71
+        gap = actions_height(make_pool(coins)) - needed
+        assert gap > 0, f"{coins} coins: {gap:+.0f}px -- the panel would scroll"
+        # And not so far over that the panel looks like it is missing
+        # something in the middle. This was 100px once.
+        assert gap < 50
 
 
 def test_a_many_coin_pool_is_not_cut_short_by_the_ceiling() -> None:

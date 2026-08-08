@@ -292,11 +292,19 @@ def test_the_buttons_sit_against_the_bottom_of_the_panel() -> None:
     for tab in tabs():
         frame = tab.mount()
         assert tab.control.expand is True
-        assert tab.control.scroll == ft.ScrollMode.AUTO
-        # And the frame does not scroll: a scrolling column has no bottom
-        # to pin anything against.
-        assert frame.scroll is None
         assert frame.controls[-1] is tab.status_panel
+
+
+def test_nothing_inside_the_panel_scrolls() -> None:
+    """The fields used to, for when the guessed height came up short. On a
+    phone that scrollable took the drag meant for the page -- you pulled at
+    the Deposit fields and the page behind them stayed put -- and it drew
+    its own thumb down the side of the amount fields. The guess is sized
+    over its content now, so there is nothing to scroll."""
+    for tab in tabs():
+        frame = tab.mount()
+        assert tab.control.scroll is None
+        assert frame.scroll is None
 
 
 def test_slippage_sits_with_the_amounts_not_with_the_button() -> None:

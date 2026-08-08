@@ -301,10 +301,15 @@ class ActionTab:
         self.control = ft.Column(
             spacing=12,
             horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
-            # The scroll lives here now, on the part that can be too tall.
-            # A flexible child inside a scrolling column is a Flutter
-            # layout error, so these two cannot be the same column.
-            scroll=ft.ScrollMode.AUTO,
+            # Expanding, so the buttons stay at the bottom of the panel and
+            # the slack collects above them. **Not scrolling.** It was, for
+            # when the panel's guessed height came up short -- and that
+            # scrollable took the drag meant for the page on a phone, and
+            # drew its own thumb down the side of the amount fields. The
+            # guess is sized over its content now (see
+            # `pool_detail.ACTIONS_CHROME`), so there is nothing here to
+            # scroll: if it ever came up short again the fields would clip,
+            # which is at least visible, where a stolen drag is not.
             expand=True,
         )
         self.frame = ft.Column(

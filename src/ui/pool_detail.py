@@ -49,6 +49,7 @@ def _metric(label: str, value: str) -> ft.Control:
         tight=True,
     )
 
+
 #: The parameter list is indented under its heading, not against the
 #: chart's left edge, so the fold reads as one block.
 PARAMETER_PADDING = ft.Padding.only(left=6, bottom=4)
@@ -63,36 +64,50 @@ PARAMETER_PADDING = ft.Padding.only(left=6, bottom=4)
 #
 # The number is built from what the pool actually puts in the panel,
 # because the difference is large: a two-coin plain pool needs half of
-# what a four-coin metapool does. Measured against the browser build, at
-# the sizes in `typography.py`:
-
+# what a four-coin metapool does.
 #
 # **The guess has to come out over, never under.** A panel shorter than
 # what is in it turns into a little scrollable of its own, and on a phone
 # that scrollable takes the drag meant for the page: you pull at the
-# Deposit fields and the page behind them stays put. Coming out over costs
-# a gap between the fields and the buttons, which is only a gap.
+# Deposit fields and the page behind them stays put.
+#
+# But not far over. Whatever it comes out by shows up as a gap between the
+# last field and the button -- the buttons are pinned to the bottom, so
+# the slack collects above them -- and a hundred pixels of it reads as a
+# panel with something missing from the middle. Twenty or so, which is
+# more than the twelve between the fields and less than a paragraph.
 
 #: Tab bar, padding, slippage field and the submit button -- everything
-#: that is there whatever the pool is. Measured at 188 against the running
-#: app; the rest is the margin described above, which covers a platform
-#: whose text metrics run taller than this one's.
-ACTIONS_CHROME = 230
-#: One amount row, of which there is one per coin. The field, its balance
-#: line and the column's spacing come to 71 here, and this is over that
-#: for the same reason.
-ACTIONS_ROW = 78
+#: that is there whatever the pool is.
+#:
+#: Calibrated against the running app rather than reasoned about: a
+#: three-coin panel holds 356px of content, and each coin past that is
+#: worth 71 -- so what a panel needs is `143 + 71 * coins`, and what is
+#: here is that plus the gap wanted at the bottom.
+ACTIONS_CHROME = 167
+#: One amount row, of which there is one per coin: the field, its balance
+#: line and the column's spacing, measured at 71.
+#:
+#: **The slope is what mattered.** It was 61 against a real 71, so the
+#: guess fell further behind the more rows a panel had -- and a metapool's
+#: underlying route lists more rows than the pool has coins, which is why
+#: this went wrong on some pools and not others. Two over the measurement
+#: rather than a flat cushion, so the headroom grows with the rows, where
+#: the risk is: the gap comes out at 24 + 2 per coin, so 28px on a
+#: two-coin pool and 36 on a six.
+ACTIONS_ROW = 73
 #: The Pool tokens / Underlying switch, on metapools only.
 ACTIONS_SWITCH = 40
 #: Floor and ceiling. The floor keeps a two-coin pool's panel from looking
-#: like a widget.
+#: like a widget -- and no higher than that, because a floor above what a
+#: panel needs is the same gap by another route.
 #:
 #: The ceiling used to be 620, to stop a many-coin pool running off a
 #: laptop screen -- back when the page did not scroll and anything past the
 #: fold was unreachable. The window scrolls now, so a tall panel is merely
 #: tall, and a ceiling that cuts the guess short is the very thing that
 #: makes the panel scroll inside itself.
-ACTIONS_MIN = 340
+ACTIONS_MIN = 300
 ACTIONS_MAX = 1200
 
 

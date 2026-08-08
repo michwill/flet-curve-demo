@@ -25,6 +25,29 @@ COMPACT_BREAKPOINT = 1000.0
 #: roughly this much before the chart stops being a sliver.
 STACK_BREAKPOINT = 900.0
 
+#: How wide the page is allowed to get before it stops growing and starts
+#: centring instead.
+#:
+#: A pool row is a name on the left and four numbers on the right. Stretched
+#: across a 2560px monitor it puts a hand's width of empty paper between the
+#: two halves, and the row stops reading as one row -- which is the only
+#: thing a table is for. Picked against the table itself rather than from a
+#: list of standard breakpoints: at 1440 the space between a pool's name and
+#: its APY is a column gap, and by 2000 it is a gulf.
+#:
+#: This is a cap on the *window*, which is a thing that can be asked how big
+#: it is. Nothing inside is given a size by it.
+MAX_CONTENT_WIDTH = 1440.0
+
+
+def content_width(page_width: float) -> float | None:
+    """How wide the page's content should be, or None to fill the window.
+
+    None below the cap, so an ordinary window is laid out exactly as it was
+    and only a window wider than the content wants is changed at all.
+    """
+    return MAX_CONTENT_WIDTH if page_width > MAX_CONTENT_WIDTH else None
+
 
 @dataclass(slots=True, frozen=True)
 class Layout:

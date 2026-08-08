@@ -15,7 +15,9 @@ from ui.responsive import (
     CARD_BREAKPOINT,
     COMPACT_BREAKPOINT,
     COMPACT_COLUMNS,
+    MAX_CONTENT_WIDTH,
     STACK_BREAKPOINT,
+    content_width,
     layout_for,
 )
 
@@ -86,3 +88,30 @@ def test_the_breakpoints_are_exact() -> None:
     assert layout_for(COMPACT_BREAKPOINT).columns == ALL_COLUMNS
     assert layout_for(STACK_BREAKPOINT - 0.1).stacked
     assert not layout_for(STACK_BREAKPOINT).stacked
+
+
+# -- how wide the page is allowed to get ------------------------------------
+
+
+def test_an_ordinary_window_is_not_capped() -> None:
+    """None means "fill it", so every window narrower than the cap is laid
+    out exactly as it was before there was a cap at all."""
+    assert content_width(390.0) is None
+    assert content_width(1280.0) is None
+    assert content_width(MAX_CONTENT_WIDTH) is None
+
+
+def test_a_very_wide_window_stops_the_page_growing() -> None:
+    """A pool row is a name and four numbers. Across 2560px the two halves
+    stop reading as one row, which is the only thing a table is for."""
+    assert content_width(1441.0) == MAX_CONTENT_WIDTH
+    assert content_width(2560.0) == MAX_CONTENT_WIDTH
+    assert content_width(5120.0) == MAX_CONTENT_WIDTH
+
+
+def test_the_cap_never_makes_the_page_wider_than_the_window() -> None:
+    """The one thing that would be worse than a stretched table: a page
+    that needs sideways scrolling to read."""
+    for width in (320.0, 760.0, 1000.0, 1439.0, 1440.0, 1441.0, 3840.0):
+        capped = content_width(width)
+        assert capped is None or capped <= width

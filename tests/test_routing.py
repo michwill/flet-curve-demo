@@ -160,6 +160,9 @@ def make_app(route: str = "/", *, pool=_DEFAULT, chain: str = "ethereum"):
     app._page_name = "pools"
     app._route_applied = True
     app.body = ft.Container()
+    # The page sits in a box that survives every `_show`, because that box
+    # is what carries the width cap on a wide window. See `_apply_width`.
+    app._page_box = ft.Container()
     app.list_view = ft.Container()
     app.progress = ft.ProgressBar(visible=False)
     app.error = ft.Text("", visible=False)

@@ -38,7 +38,7 @@ from ui.logos import chain_mark
 from ui.pool_detail import PoolDetailView
 from ui.pool_list import PoolListView
 from ui.portfolio import PortfolioView
-from ui.responsive import layout_for
+from ui.responsive import content_width, layout_for
 from ui.typography import BODY, LABEL, ROW_TITLE, SMALL, TITLE
 from wallet import Wallet, WalletChoice, WalletError, autoconnect, is_browser
 from wallet.base import RpcError
@@ -540,7 +540,12 @@ class CurveApp:
             on_hover=self._brand_hovered,
             expand=True,
         )
-        self.header = ft.Container(
+        # The bar spans the window; what is written on it does not. Past
+        # `MAX_CONTENT_WIDTH` this box stops growing and centres, so the
+        # brand stays over the first column of the table and the wallet
+        # over the last, instead of the two drifting to opposite edges of
+        # a monitor while the table sits in the middle. See `_apply_width`.
+        self._header_box = ft.Container(
             ft.Row(
                 [
                     self.menu,
@@ -556,6 +561,10 @@ class CurveApp:
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
                 spacing=14,
             ),
+            expand=True,
+        )
+        self.header = ft.Container(
+            ft.Row([self._header_box], alignment=ft.MainAxisAlignment.CENTER, spacing=0),
             padding=ft.Padding.symmetric(horizontal=20, vertical=10),
             bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
             # Chad only, and hard-edged, like the panels below it.
@@ -590,8 +599,14 @@ class CurveApp:
         # -- it clips, silently, with no overflow reported -- while a
         # ListView holding the same child scrolls the way the pool list's
         # own used to.
+        # The page itself, and the box that decides how wide it is allowed
+        # to be. One box that outlives every page rather than a fresh one
+        # per `_show`, so the width set on a resize survives opening a pool.
+        self._page_box = ft.Container(self.list_view, padding=BODY_PADDING, expand=True)
         self.body = ft.ListView(
-            controls=[ft.Container(self.list_view, padding=BODY_PADDING)],
+            controls=[
+                ft.Row([self._page_box], alignment=ft.MainAxisAlignment.CENTER, spacing=0)
+            ],
             expand=True,
             on_scroll=self._body_scrolled,
             # Throttled, as the list's own scroll handler was: without it
@@ -615,12 +630,13 @@ class CurveApp:
         opening a pool from row two hundred would otherwise open it two
         hundred rows down its own page.
 
-        The padding is here rather than on the body so that the scrollbar
-        keeps to the window's edge: it is drawn at the edge of whatever
-        scrolls, and padding the scroller would push it inwards by exactly
-        as much.
+        The padding is on `_page_box` rather than on the body so that the
+        scrollbar keeps to the window's edge: it is drawn at the edge of
+        whatever scrolls, and padding the scroller would push it inwards by
+        exactly as much. Swapping the box's content rather than replacing
+        the box keeps the width `_apply_width` gave it.
         """
-        self.body.controls = [ft.Container(view, padding=BODY_PADDING)]
+        self._page_box.content = view
         self._showing = view
         self.page.run_task(self._to_top)
 
@@ -715,6 +731,26 @@ class CurveApp:
     def _resized(self, e: ft.PageResizeEvent) -> None:
         self._apply_layout(e.width)
 
+    def _apply_width(self, width: float) -> None:
+        """Stop the page growing once it is wider than it wants to be.
+
+        Two boxes -- the header's contents and the page below it -- either
+        fill the window or take `MAX_CONTENT_WIDTH` and centre. `expand`
+        and `width` are the same switch and are set together: a box that
+        expands ignores a width, and one given a width must stop expanding
+        or it will fill the row again.
+
+        Only the outer boxes are told anything. What is inside them still
+        lays itself out from its own content, at whatever width it is
+        handed -- which is why this does not need to know about tables,
+        charts or action panels, and why it is the same two lines whatever
+        page is open.
+        """
+        capped = content_width(width)
+        for box in (self._header_box, self._page_box):
+            box.width = capped
+            box.expand = capped is None
+
     def _apply_layout(self, width: float | None = None) -> None:
         """Push the current layout at every view.
 
@@ -724,6 +760,7 @@ class CurveApp:
         width = width or self.page.width or 0
         if not width:
             return
+        self._apply_width(width)
         layout = layout_for(width)
         # The chain totals are the first thing to go: a phone header has
         # room for the chain and the wallet, and nothing else.
@@ -752,6 +789,12 @@ class CurveApp:
         # redraw: opening narrow worked (the first paint takes everything)
         # and *reaching* narrow did not.
         safe_update(self.header)
+        # And the body for the same reason: the page's own view redraws
+        # itself below, but the box holding it is not part of any view, so
+        # a width set on it stays on the Python side until something asks
+        # the scroller to repaint. Without this the header centred on a
+        # wide window and the table under it stayed stretched.
+        safe_update(self.body)
         self.list_view.set_layout(layout)
         self.portfolio_view.set_layout(layout.cards)
         if self._detail is not None:

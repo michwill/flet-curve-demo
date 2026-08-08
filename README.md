@@ -111,6 +111,36 @@ sub-path (`/ipfs/<cid>/`) rather than at a root:
   hostname and `https://<cid>.ipfs.dweb.link/` works; a v0 hash is base58 and
   only resolves on a path gateway.
 
+### Routes live in the fragment
+
+`/#/ethereum/0xC09e…`, not `/ethereum/0xC09e…`, set by
+`route_url_strategy = "hash"` in `pyproject.toml`.
+
+**A gateway is a filesystem, not a server.** It resolves the request path
+inside the published directory and 404s when there is no such file, and there
+is no file called `ethereum`. So every deep link this app exists to hand out
+— the kind you paste to somebody — died on arrival at the gateway, while
+working perfectly against `tools/serve.py`, which falls back to `index.html`
+the way a normal SPA host does. That gap is why it survived: the dev server
+is the one host that hides the bug.
+
+A fragment is never sent to the server at all. The gateway is asked for `/`,
+serves `index.html`, and the app reads the route from the fragment. It asks
+nothing of the gateway, so it behaves the same on a path gateway, a subdomain
+gateway and an ENS name through `eth.limo`.
+
+**`_redirects` is the IPFS-native answer and it does not work here.** A
+gateway will serve `index.html` for `/*` if you ship that file, but then the
+document URL *is* `/ethereum/0xC09e…`, and the relative `<base href="./">`
+above resolves `main.dart.js` against it — `/ethereum/main.dart.js`, which is
+not there. Fixing that needs an absolute base, which is exactly what breaks
+path gateways. The two cannot both be satisfied; the fragment sidesteps both.
+
+`ui/routing.py` is unaffected — Flet reports the same `page.route` either
+way, so nothing in the app knows which side of the `#` it is on. Verified
+against a server that 404s everything but real files: `/ethereum/0x…` is a
+404 and `/#/ethereum/0x…` opens the pool with no failed requests at all.
+
 **Pinata will not serve the result over its own gateways.** Both refuse HTML
 with `ERR_ID:00023` -- the public one says to use a dedicated gateway, and
 the dedicated one says to put a custom domain on it. Everything that is not

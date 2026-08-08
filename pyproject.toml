@@ -18,6 +18,32 @@ company = "Example"
 path = "src"
 
 [tool.flet.web]
+# Routes live in the fragment: /#/ethereum/0xC09e… rather than
+# /ethereum/0xC09e….
+#
+# Because an IPFS gateway is a filesystem, not a server. It resolves the
+# request path inside the published directory and 404s when there is no
+# such file, and there is no file called `ethereum` -- so every deep link
+# this app hands out, the kind you paste to somebody, died on arrival at
+# the gateway while working perfectly against the local dev server, which
+# falls back to index.html the way a normal SPA host does.
+#
+# A fragment is never sent to the server at all. The gateway is asked for
+# `/`, serves index.html, and the app reads the route from the fragment --
+# so this needs nothing from the gateway and works the same on a path
+# gateway, a subdomain gateway and an ENS name through eth.limo.
+#
+# The IPFS-native alternative is a `_redirects` file, and it does not work
+# here: it would serve index.html *at* /ethereum/0x…, where the relative
+# `<base href="./">` that `tools/publish_ipfs.py` writes for gateway
+# sub-paths then resolves main.dart.js to /ethereum/main.dart.js. Fixing
+# that means an absolute base, which breaks path gateways -- the problem
+# the relative base exists to solve.
+#
+# `ui/routing.py` is unaffected: Flet reports the same `page.route` either
+# way, so the app never learns which side of the `#` it is on.
+route_url_strategy = "hash"
+
 # What a browser paints around an installed PWA. The theme colour is the
 # app bar's own surface in the light theme, sampled from the running app;
 # the manifest holds one value, so index.html carries the dark one too.

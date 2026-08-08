@@ -358,3 +358,42 @@ def test_a_refusal_is_reported_rather_than_returned(tmp_path: Path) -> None:
     client = httpx.Client(transport=httpx.MockTransport(handler))
     with pytest.raises(SystemExit, match=r"401.*UNAUTHORIZED"):
         ipfs.pin(ipfs.uploads(root, "s"), {}, "bad", timeout=5, client=client)
+
+
+# -- routes that survive a gateway ------------------------------------------
+
+
+def test_routes_live_in_the_fragment() -> None:
+    """A gateway is a filesystem, not a server.
+
+    It resolves the request path inside the published directory and 404s
+    when there is no such file, and there is no file called `ethereum`.
+    So `/ethereum/0xC09e…` -- the kind of link this app exists to hand out
+    -- died at the gateway while working against any local server, which
+    falls back to index.html the way a normal SPA host does.
+
+    A fragment is never sent to the server: the gateway is asked for `/`,
+    serves index.html, and the app reads the route from the fragment. It
+    needs nothing from the gateway, so it works the same on a path
+    gateway, a subdomain gateway and an ENS name through eth.limo.
+
+    Pinned here rather than left to the CLI flag because it is a property
+    of *publishing this app*, and a build made without it looks perfect
+    everywhere except the one place it is deployed.
+    """
+    import tomllib
+
+    root = Path(ipfs.__file__).resolve().parent.parent
+    config = tomllib.loads((root / "pyproject.toml").read_text())
+    web = config["tool"]["flet"]["web"]
+
+    assert web["route_url_strategy"] == "hash"
+
+
+def test_the_base_href_stays_relative() -> None:
+    """The other half of the same problem, and the reason `_redirects` is
+    not the answer: a gateway serves this under `/ipfs/<cid>/`, so the
+    assets are found relatively. Serving index.html at a deep path instead
+    would resolve them against that path and 404 every one."""
+    assert ipfs.BASE_RELATIVE == '<base href="./">'
+    assert ipfs.BASE_ABSOLUTE == '<base href="/">'

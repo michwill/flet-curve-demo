@@ -78,6 +78,19 @@ def test_the_options_ask_for_a_cid_a_subdomain_gateway_can_hold() -> None:
     assert options["cidVersion"] == 1
 
 
+# -- building first ---------------------------------------------------------
+
+
+def test_the_build_runs_the_console_script_not_dash_m() -> None:
+    """`python -m flet` raises "cannot be directly executed" -- the package
+    has no `__main__`. The build then fails and the next step would pin
+    whatever `dist/` was already holding."""
+    command = ipfs.flet_cli()
+
+    assert command.endswith("flet")
+    assert "-m" not in command
+
+
 # -- the check before the upload -------------------------------------------
 
 

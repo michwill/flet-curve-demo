@@ -308,12 +308,21 @@ def pin(
 # -- putting it together ---------------------------------------------------
 
 
+def flet_cli() -> str:
+    """The `flet` console script belonging to this interpreter.
+
+    Not `python -m flet`: the package has no `__main__`, so that spelling
+    fails with "cannot be directly executed" -- and the next thing that
+    happens is a pin of whatever `dist/` happened to be holding.
+    """
+    beside = Path(sys.executable).with_name("flet")
+    return str(beside) if beside.is_file() else "flet"
+
+
 def publish() -> None:
-    """`flet publish`, so what goes up is what is on disk now."""
+    """`flet publish`, so what goes up is what the source says now."""
     print("flet publish ...")
-    result = subprocess.run(
-        [sys.executable, "-m", "flet", "publish"], cwd=ROOT, check=False
-    )
+    result = subprocess.run([flet_cli(), "publish"], cwd=ROOT, check=False)
     if result.returncode != 0:
         raise SystemExit(f"flet publish failed ({result.returncode})")
 

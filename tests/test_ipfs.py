@@ -91,6 +91,53 @@ def test_the_build_runs_the_console_script_not_dash_m() -> None:
     assert "-m" not in command
 
 
+# -- the app package --------------------------------------------------------
+
+
+def test_the_app_package_is_renamed_and_the_page_follows(tmp_path: Path) -> None:
+    """eth.limo answers 404 for `app.tar.gz` and 200 for everything else in
+    the same pin, so the app loads its shell, never gets its Python, and
+    sits on "Working..." forever. The worker takes `.tgz` just as happily."""
+    root = build(
+        tmp_path,
+        {
+            "index.html": '<head><base href="./"></head>'
+            '<script>appPackageUrl: "app.tar.gz"</script>',
+            "app.tar.gz": "not really gzip, but a file",
+        },
+    )
+
+    assert ipfs.rename_package(root) is True
+    assert (root / "app.tgz").is_file()
+    assert not (root / "app.tar.gz").exists()
+    assert '"app.tgz"' in (root / "index.html").read_text(encoding="utf-8")
+
+
+def test_renaming_a_build_that_is_already_renamed_does_nothing(tmp_path: Path) -> None:
+    root = build(tmp_path, {"index.html": "x", "app.tgz": "already done"})
+    assert ipfs.rename_package(root) is False
+
+
+def test_the_file_is_not_renamed_without_the_line_that_points_at_it(
+    tmp_path: Path,
+) -> None:
+    """Renaming one and not the other is a build that fetches a file that
+    is not there -- the same blank page, with no 404 to explain it."""
+    root = build(tmp_path, {"index.html": "<head>nothing here</head>", "app.tar.gz": "x"})
+    with pytest.raises(SystemExit, match="appPackageUrl"):
+        ipfs.rename_package(root)
+    assert (root / "app.tar.gz").is_file()
+
+
+def test_probes_cover_the_suffixes_worth_asking_about(tmp_path: Path) -> None:
+    root = build(tmp_path, {"index.html": "x"})
+    names = ipfs.add_probes(root)
+
+    assert f"{ipfs.PROBE_STEM}.tar.gz" in names  # the one that is refused
+    assert f"{ipfs.PROBE_STEM}.txt" in names  # the control
+    assert all((root / name).is_file() for name in names)
+
+
 # -- the check before the upload -------------------------------------------
 
 
@@ -110,6 +157,20 @@ def test_a_key_inside_the_python_tarball_is_found_too(tmp_path: Path) -> None:
         archive.addfile(info, buffer)
 
     assert ipfs.leaked(root, "SEKRIT") == ["app.tar.gz:src/local_config.toml"]
+
+
+def test_the_renamed_package_is_still_searched(tmp_path: Path) -> None:
+    """The rename to `.tgz` happens before the scan, and `app.tgz` is the
+    one archive in the build that holds `src/` -- looking only for `.gz`
+    would leave the check passing over the file it exists for."""
+    root = build(tmp_path, {"index.html": "<html>"})
+    buffer = io.BytesIO(b'jwt = "SEKRIT"\n')
+    with tarfile.open(root / "app.tgz", "w:gz") as archive:
+        info = tarfile.TarInfo("src/local_config.toml")
+        info.size = len(buffer.getvalue())
+        archive.addfile(info, buffer)
+
+    assert ipfs.leaked(root, "SEKRIT") == ["app.tgz:src/local_config.toml"]
 
 
 def test_a_clean_build_reports_nothing(tmp_path: Path) -> None:
@@ -161,7 +222,7 @@ def test_the_file_is_used_when_the_environment_is_empty(monkeypatch) -> None:
 
 def test_no_key_anywhere_says_where_to_put_one(monkeypatch) -> None:
     monkeypatch.delenv("PINATA_JWT", raising=False)
-    with pytest.raises(SystemExit, match="local_secrets.toml"):
+    with pytest.raises(SystemExit, match=r"local_secrets\.toml"):
         ipfs.token({})
 
 
@@ -201,5 +262,5 @@ def test_a_refusal_is_reported_rather_than_returned(tmp_path: Path) -> None:
         return httpx.Response(401, text="UNAUTHORIZED")
 
     client = httpx.Client(transport=httpx.MockTransport(handler))
-    with pytest.raises(SystemExit, match="401.*UNAUTHORIZED"):
+    with pytest.raises(SystemExit, match=r"401.*UNAUTHORIZED"):
         ipfs.pin(ipfs.uploads(root, "s"), {}, "bad", timeout=5, client=client)

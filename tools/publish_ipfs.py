@@ -146,11 +146,67 @@ def make_relative(index: Path) -> bool:
     return True
 
 
+# -- the app package, under a name a gateway will hand over ----------------
+
+#: What `flet publish` calls the Python app, and what to call it instead.
+#:
+#: eth.limo and eth.link answer **404** for `app.tar.gz` and 200 for every
+#: other file in the same pin -- `main.dart.js` at 9.5 MB across 37 blocks
+#: included, so it is neither size nor retrievability. The app then loads
+#: its shell, cannot fetch its Python, and sits on "Working..." forever,
+#: which reads as a broken pin rather than as a filtered filename. Nothing
+#: else in the build is affected because nothing else is an archive.
+#:
+#: A rename is enough: `python-worker.js` picks the format from the URL's
+#: extension and takes `.zip`, `.tar.gz` and `.tgz` alike, so the bytes are
+#: untouched. Whether `.tgz` clears whatever rule catches `.tar.gz` is what
+#: `--probe` is for.
+PACKAGE_FROM = "app.tar.gz"
+PACKAGE_TO = "app.tgz"
+
+#: One byte under each suffix a gateway might treat differently, so a
+#: single fetch after pinning says what its rule actually is -- otherwise
+#: each guess costs a repin, and an ENS update on top.
+PROBE_SUFFIXES = (".tar.gz", ".tgz", ".zip", ".gz", ".bin", ".txt")
+PROBE_STEM = "gateway-probe"
+
+
+def rename_package(root: Path) -> bool:
+    """Rename the app package, and the one line that points at it."""
+    archive = root / PACKAGE_FROM
+    if not archive.is_file():
+        return False
+    index = root / "index.html"
+    html = index.read_text(encoding="utf-8")
+    if f'"{PACKAGE_FROM}"' not in html:
+        raise SystemExit(
+            f'{index}: no appPackageUrl: "{PACKAGE_FROM}" to repoint. Renaming the '
+            "file alone would leave the app fetching one that is not there."
+        )
+    archive.rename(root / PACKAGE_TO)
+    index.write_text(
+        html.replace(f'"{PACKAGE_FROM}"', f'"{PACKAGE_TO}"'), encoding="utf-8"
+    )
+    return True
+
+
+def add_probes(root: Path) -> list[str]:
+    """Drop the probe files into the build. Returns their names."""
+    names = [f"{PROBE_STEM}{suffix}" for suffix in PROBE_SUFFIXES]
+    for name in names:
+        (root / name).write_bytes(b"probe\n")
+    return names
+
+
 # -- the check that matters ------------------------------------------------
 
 #: Where a secret could plausibly be readable. The tarball is the app's own
 #: source, `local_config.toml` included; the rest is what the page loads.
 TEXT_SUFFIXES = {".html", ".js", ".json", ".toml", ".txt", ".mjs", ".py"}
+#: `.tgz` as well as `.gz`, because the app package is renamed to `.tgz`
+#: before it is pinned -- and it is the one archive in the build that
+#: actually contains `src/`, so missing it would gut the check.
+ARCHIVE_SUFFIXES = {".gz", ".tgz", ".tar"}
 #: Past this a file is canvaskit or a source map, not somewhere a key ends
 #: up, and reading 37MB to prove it is time spent on nothing.
 MAX_SCAN = 4 << 20
@@ -169,11 +225,14 @@ def leaked(root: Path, secret: str) -> list[str]:
         if not path.is_file():
             continue
         name = path.relative_to(root).as_posix()
-        if path.suffix == ".gz" and tarfile.is_tarfile(path):
+        if path.suffix in ARCHIVE_SUFFIXES and tarfile.is_tarfile(path):
             found += [f"{name}:{member}" for member in _in_tarball(path, needle)]
-        elif path.suffix in TEXT_SUFFIXES and path.stat().st_size <= MAX_SCAN:
-            if needle in path.read_bytes():
-                found.append(name)
+        elif (
+            path.suffix in TEXT_SUFFIXES
+            and path.stat().st_size <= MAX_SCAN
+            and needle in path.read_bytes()
+        ):
+            found.append(name)
     return found
 
 
@@ -344,6 +403,12 @@ def main() -> int:
     parser.add_argument("--dist", type=Path, default=DIST, help="what to pin")
     parser.add_argument("--name", default="flet-curve", help="the pin's name")
     parser.add_argument("--timeout", type=float, default=1800.0, help="seconds")
+    parser.add_argument(
+        "--probe",
+        action="store_true",
+        help="include tiny files under archive-ish suffixes, to find out what "
+        "a gateway will not serve",
+    )
     options = parser.parse_args()
 
     if not options.no_build:
@@ -354,6 +419,10 @@ def main() -> int:
 
     if make_relative(dist / "index.html"):
         print("index.html: base href is relative now, for a gateway sub-path")
+    if rename_package(dist):
+        print(f"{PACKAGE_FROM} -> {PACKAGE_TO}, which eth.limo will serve")
+    if options.probe:
+        print("probes: " + ", ".join(add_probes(dist)))
 
     jwt = "" if options.dry_run else token()
     if jwt and (found := leaked(dist, jwt)):

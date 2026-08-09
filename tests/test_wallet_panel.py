@@ -245,7 +245,31 @@ async def test_cancelling_a_change_keeps_the_wallet_you_had(monkeypatch) -> None
     assert app.wallet is previous, "the old session was dropped"
     assert not previous.closed and not previous.disconnected
     assert not app.connect_button.visible, "still connected, so no Connect button"
-    assert app.error.visible, "but say why nothing changed"
+    assert not app.error.visible, "and nothing to report: backing out is an answer"
+
+
+async def test_backing_out_of_the_picker_says_nothing(monkeypatch) -> None:
+    """Cancelling is a choice, not a failure.
+
+    It used to print "Wallet selection cancelled." in the error colour,
+    which tells the user only what they just did and looks like a fault.
+    The button comes back; the line under it stays empty.
+    """
+    from wallet.session import ConnectionCancelled
+
+    async def refuse(**kwargs):
+        raise ConnectionCancelled()
+
+    monkeypatch.setattr(main.Wallet, "connect", refuse)
+    app = app_with(None)
+    app.error.value = "something earlier"
+    await app.connect(None)
+
+    assert app.wallet is None
+    assert not app.error.visible, "cancelling is not an error"
+    assert app.connect_button.visible, "and the button has to come back"
+    assert not app.connect_button.disabled
+    assert app.connect_button.content == main.CONNECT_LABEL
 
 
 async def test_a_successful_change_releases_the_old_one(monkeypatch) -> None:

@@ -40,7 +40,14 @@ from ui.pool_list import PoolListView
 from ui.portfolio import PortfolioView
 from ui.responsive import content_width, layout_for
 from ui.typography import BODY, LABEL, ROW_TITLE, SMALL, TITLE
-from wallet import Wallet, WalletChoice, WalletError, autoconnect, is_browser
+from wallet import (
+    ConnectionCancelled,
+    Wallet,
+    WalletChoice,
+    WalletError,
+    autoconnect,
+    is_browser,
+)
 from wallet.base import RpcError
 
 DEFAULT_CHAIN = "ethereum"
@@ -1521,6 +1528,17 @@ class CurveApp:
         if self.wallet is not None:
             self.page.show_dialog(self._wallet_dialog(self.wallet))
 
+    def _connect_ended(self, previous: Wallet | None) -> None:
+        """Put the header back after a connect that did not happen."""
+        self.connect_button.content = CONNECT_LABEL
+        self.connect_button.disabled = False
+        # Cancelling a "change wallet" leaves the session that was already
+        # there: nothing was torn down to offer the picker, and the picker
+        # changes what the bridge points at only once something is picked.
+        self.connect_button.visible = previous is None
+        self._show_account(expanded=self._address_expanded)
+        self.page.update()
+
     async def connect(
         self, _e: AnyEvent | None, *, always_choose: bool = False
     ) -> None:
@@ -1533,20 +1551,18 @@ class CurveApp:
             self.wallet = await Wallet.connect(
                 choose=self._choose_wallet, always_choose=always_choose
             )
+        except ConnectionCancelled:
+            # Dismissing the picker is an answer, not a failure. Reporting
+            # it back tells the user only what they just did, and in red it
+            # reads as though something broke.
+            self._connect_ended(previous)
+            return
         except WalletError as exc:
             # In the header a failure would be clipped by the chip's fixed
             # width; the error line under it has the whole page.
             self.error.value = str(exc)
             self.error.visible = True
-            self.connect_button.content = CONNECT_LABEL
-            self.connect_button.disabled = False
-            # Cancelling a "change wallet" leaves the session that was
-            # already there: nothing was torn down to offer the picker, and
-            # the picker changes what the bridge points at only once
-            # something is picked.
-            self.connect_button.visible = previous is None
-            self._show_account(expanded=self._address_expanded)
-            self.page.update()
+            self._connect_ended(previous)
             return
 
         if previous is not None and previous is not self.wallet:

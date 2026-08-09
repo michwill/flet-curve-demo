@@ -353,12 +353,13 @@ The file is a couple of megabytes and there is no per-chain endpoint, so it is
 fetched once, lazily, on the first read that needs it — a session with a wallet
 connected never asks for it at all. Which is the other half of the rule:
 
-**a connected wallet is always preferred.** It is the node that will execute the
-transaction, so a quote read through it is the quote least likely to surprise.
-And reads go through the wallet's provider, so they land on whatever network the
-*wallet* is on. Browsing Gnosis with a wallet on Ethereum quotes Gnosis
-addresses against Ethereum, where they hold no code: every estimate comes back
-"the pool did not answer", which reads as a pool this app cannot handle.
+**a connected wallet is preferred, but it is not the only thing asked.** It is
+the node that will execute the transaction, so a quote read through it is the
+quote least likely to surprise. And a read through the wallet's provider lands
+on whatever network the *wallet* is on. Browsing Gnosis with a wallet on
+Ethereum quotes Gnosis addresses against Ethereum, where they hold no code:
+every estimate comes back "the pool did not answer", which reads as a pool this
+app cannot handle.
 
 So picking a network in the header now takes the wallet with it —
 `wallet_switchEthereumChain`, which the wallet prompts for and may refuse. A
@@ -372,6 +373,46 @@ When they still disagree — a refusal, or a wallet moved by hand — each actio
 panel says which network to be on and offers the switch, with its estimate
 cleared and its buttons greyed, since nothing can be read or sent across that
 boundary.
+
+### Where a read actually goes
+
+`FallbackProvider` (`curve/rpc.py`) holds the wallet and the public endpoints in
+one object and walks them in order. Which order depends on the connector:
+
+| connector | reads | signs |
+|---|---|---|
+| injected (MetaMask, Rabby extension) | wallet, then public nodes | wallet |
+| WalletConnect | public nodes, then wallet | wallet |
+| none | public nodes | nobody |
+
+An injected wallet is a node in the same browser, so it goes first. A
+WalletConnect "wallet" is a phone on the far end of a relay built to carry
+signing prompts — and a portfolio scan is six Multicall3 batches of three
+hundred entries, tens of kilobytes each. Pushing one through that link is how a
+scan came back `Load failed` (WebKit's fetch error) on DuckDuckGo/iOS talking to
+Rabby, with the portfolio showing only "Could not read this chain". So the
+batches do not go there any more. The wallet stays *last* in the list rather
+than being dropped: on a chain chainlist has never heard of, it is the only
+thing that can answer at all.
+
+Two rules hold whichever way the reads go:
+
+- **Only reads fail over.** `eth_sendTransaction`, `personal_sign` and the chain
+  switches go to the wallet or they fail. A public node has no key, and
+  reordering reads is not a licence to reorder anything else.
+- **`eth_chainId` never fails over**, and it is the one that would have done
+  damage. It does not read the chain — it asks a *source* which chain **it** is
+  on, and every source here has a different honest answer. `network_ok` above
+  uses it to decide whether the wallet must switch networks before it can act;
+  answered by a public node pinned to the chain already on screen, that check
+  passes every time and the panel in the previous paragraph never appears
+  again. `tests/test_rpc.py` pins this with a wallet on chain 10 behind a node
+  on chain 1.
+
+A JSON-RPC error still ends the walk instead of continuing it, for the reason
+`PublicNode` does not retry one either: a revert is a *reply*, another endpoint
+gives the same reply more slowly, and a rejected request asked twice is a second
+prompt.
 
 A zap that will not answer costs nothing, since the route is gated on a working
 quote — no approve step appears and the pool-token route stays. One family is

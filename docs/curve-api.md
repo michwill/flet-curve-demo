@@ -56,6 +56,30 @@ and adds `merkle_apr`, which v1 had no equivalent for. It is also ~4× smaller
 - **12 chains, against v1's 21.** Missing: aurora, avalanche, celo, harmony,
   kava, mantle, moonbeam, x-layer, zkevm, zksync. Gained: taiko. If you need a
   chain outside the twelve, v1 is still the only source.
+- **Reward APRs inherit stale token prices, and nothing marks them.**
+  `extra_rewards_apr[].apr` is computed server-side from the Prices API's own
+  `usd_price` for the reward token — and that price can simply stop updating.
+  WFRAX on Ethereum (`0x04ACaF8D…977f`) sat at `2.8790155877118` with
+  `last_updated: 2025-06-02` more than a year later, ~9.5× its real price, so
+  every pool paying WFRAX advertised an APR 9.5× too high: **699%** on the
+  ZARP/frxUSD pool where the truth was **74%**.
+
+  Not a one-off — 240 of the 533 tokens in `GET /v1/usd_price/{chain}` were over
+  a week stale when this was measured. WFRAX was not in that bulk list at all,
+  yet the per-token endpoint still served its last record, which is the shape to
+  watch for: dropped from the update set, still readable.
+
+  **Cross-check against the main API**, which had it right — its prices match
+  DefiLlama to the digit:
+
+  ```
+  GET api.curve.finance/api/getPools/big/{chain}   gaugeRewards[].tokenPrice, .apy
+  GET prices.curve.finance/v1/usd_price/{chain}/{token}   carries last_updated
+  ```
+
+  `last_updated` is the cheapest freshness signal available. If a reward APR
+  looks impossible, compare the two before believing either — this app shows
+  v2's number as-is.
 - **v2 has no OHLC at all** — charts stay on v1.
 - Addressing is by numeric `chain_id`, not the chain *name* v1 used. Read
   `/v2/pools/chains/` rather than hardcoding.

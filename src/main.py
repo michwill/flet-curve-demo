@@ -29,7 +29,7 @@ from curve import ApiError, CurveApi, Pool, PoolContract, portfolio
 from curve.api import PoolFeed
 from curve.format import compact_usd
 from curve.lite import LiteChain
-from curve.rpc import ChainlistDirectory, PublicNode
+from curve.rpc import ChainlistDirectory, FallbackProvider, PublicNode
 from curve.sort import DEFAULT_SORT
 from ui import AnyEvent, buttons, routing, safe_update
 from ui import theme as themes
@@ -1215,22 +1215,22 @@ class CurveApp:
         if reload:
             self.page.run_task(self.load_portfolio)
 
-    def portfolio_provider(self) -> tuple[Any, str] | None:
-        """Who to ask, and about whom.
+    def reader(self, chain_id: int, provider: Any) -> Any:
+        """A wallet's provider with the public endpoints behind it.
 
-        The wallet's own node when there is one -- it is the user's own
-        view of the chain. A public node otherwise, and also as the
-        fallback when the wallet's node will not answer a batch this
-        size: some injected providers rate-limit or time out on a
-        multicall of a thousand entries, and that is not a reason to have
-        no portfolio.
+        The wallet is still asked first -- it is the user's own view of
+        the chain, and the place their transaction will run. What changed
+        is what happens when it does not answer: a multicall of three
+        hundred entries is a lot to push through a WalletConnect relay to
+        a phone, and one that will not go through used to leave the page
+        with nothing at all. Now it costs a retry against a public node.
+
+        Without a chain id there is no public node to name, so the wallet
+        is all there is and is returned unwrapped.
         """
-        account = self.wallet.address if self.wallet is not None else ""
-        if not account:
-            return None
-        if self.wallet is not None:
-            return self.wallet.provider, account
-        return None
+        if not chain_id:
+            return provider
+        return FallbackProvider(provider, self.public_node(chain_id))
 
     def public_node(self, chain_id: int) -> PublicNode:
         node = self._public_nodes.get(chain_id)
@@ -1258,7 +1258,7 @@ class CurveApp:
         if remembered:
             view.show(remembered)
 
-        provider = wallet.provider
+        provider = self.reader(chain_id, wallet.provider)
         self.loading(0.0)
         try:
             if remembered:
@@ -1415,14 +1415,14 @@ class CurveApp:
             return None
         pool = self._detail.pool
         if self.wallet is not None:
-            return PoolContract(self.wallet.provider, pool, self.wallet.address)
+            return PoolContract(
+                self.reader(pool.chain_id, self.wallet.provider),
+                pool,
+                self.wallet.address,
+            )
         if not pool.chain_id:
             return None
-        node = self._public_nodes.get(pool.chain_id)
-        if node is None:
-            node = PublicNode(pool.chain_id, self._chainlist)
-            self._public_nodes[pool.chain_id] = node
-        return PoolContract(node, pool, "")
+        return PoolContract(self.public_node(pool.chain_id), pool, "")
 
     # -- wallet -----------------------------------------------------------
 

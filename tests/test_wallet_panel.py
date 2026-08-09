@@ -18,6 +18,7 @@ import flet as ft
 import pytest
 
 import main
+from curve.rpc import ChainlistDirectory, FallbackProvider, PublicNode
 from wallet import chains
 from wallet.session import Wallet
 
@@ -330,6 +331,46 @@ def test_the_address_chip_is_never_told_how_wide_to_be() -> None:
     app._show_account(expanded=True)
     assert app.account_chip.width is None
     assert app.account_label.value == ADDRESS
+
+
+# -- who the chain gets read through ---------------------------------------
+
+
+def app_that_reads() -> main.CurveApp:
+    app = app_with(Recorder())
+    app._chainlist = ChainlistDirectory()
+    app._public_nodes = {}
+    return app
+
+
+def test_a_connected_wallet_gets_the_public_endpoints_behind_it() -> None:
+    """The reported failure: a portfolio scan over WalletConnect came back
+    "Load failed" and the page gave up, because the wallet was the only
+    thing that could be asked."""
+    app, provider = app_that_reads(), StubProvider()
+    reader = app.reader(1, provider)
+
+    assert isinstance(reader, FallbackProvider)
+    assert reader.primary is provider, "the wallet is still asked first"
+    assert isinstance(reader.sources[1], PublicNode)
+    assert reader.sources[1].network_id == 1
+
+
+def test_the_public_node_behind_a_wallet_is_the_cached_one() -> None:
+    """One node per chain, so the endpoint that just worked is the one the
+    next read starts from rather than walking the list again."""
+    app, provider = app_that_reads(), StubProvider()
+    first = app.reader(1, provider).sources[1]
+
+    assert app.reader(1, provider).sources[1] is first
+    assert app.public_node(1) is first
+
+
+def test_a_chain_we_cannot_name_is_read_through_the_wallet_alone() -> None:
+    """No chain id, no public node to put behind it. Wrapping it in a
+    fallback with nothing to fall back to would only add a layer."""
+    app, provider = app_that_reads(), StubProvider()
+    assert app.reader(0, provider) is provider
 
 
 def test_a_longer_address_does_not_change_how_the_chip_is_built() -> None:

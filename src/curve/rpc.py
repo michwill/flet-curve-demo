@@ -27,6 +27,12 @@ A wallet, when there is one, is still preferred: it is the user's own node
 or their provider's, it is what will actually execute the transaction, and
 a quote read from the same place the transaction will run is the quote
 least likely to be a surprise.
+
+Preferred, but no longer trusted to be the only one asked. A wallet is a
+transport as much as a node -- over WalletConnect it is a relay and a
+phone -- and it can fail to carry a read that any public endpoint would
+have answered. `FallbackProvider` puts this list behind it, so a wallet
+that will not answer costs a retry rather than the page.
 """
 
 from __future__ import annotations
@@ -239,3 +245,75 @@ class PublicNode(WalletProvider):
         """What this node is for. Known without asking -- and asking a
         stranger's endpoint would only be a chance to disagree."""
         return self.network_id
+
+
+#: Methods that only ever read. Everything else -- a signature, a send, a
+#: chain switch -- belongs to the user's own wallet and to nothing else,
+#: however badly that wallet is behaving. There is no "fallback" for a
+#: signature, and a public node could not provide one if there were.
+READ_METHODS = frozenset(
+    {
+        "eth_blockNumber",
+        "eth_call",
+        "eth_chainId",
+        "eth_estimateGas",
+        "eth_gasPrice",
+        "eth_getBalance",
+        "eth_getBlockByNumber",
+        "eth_getCode",
+        "eth_getTransactionCount",
+        "eth_getTransactionReceipt",
+    }
+)
+
+
+class FallbackProvider(WalletProvider):
+    """Reads that survive their source falling over.
+
+    A connected wallet is asked first, because it is the user's own view
+    of the chain and the place their transaction will actually run. But
+    "the user's wallet" is not always a node: over WalletConnect a read
+    goes out to a relay and into a phone, and a portfolio scan is a
+    Multicall3 batch of three hundred entries -- tens of kilobytes, six
+    batches at a time. That is a lot to ask of a link built for passing
+    signing requests, and when it will not carry it the answer came back
+    `Load failed` and the whole page said it could not read the chain.
+
+    So each read walks a list: the wallet, then the public endpoints from
+    `PublicNode`, which walks its own list in turn. A source that cannot
+    answer is stepped over.
+
+    What is *not* retried is a node that answered. An `RpcError` is a
+    reply -- a reverted call, a rejected request -- and asking a different
+    endpoint the same question gets the same reply, more slowly. Only a
+    failure to be answered at all moves on. Same rule as `PublicNode`,
+    for the same reason.
+    """
+
+    def __init__(self, primary: WalletProvider, *spares: WalletProvider) -> None:
+        self.primary = primary
+        #: In order of preference. The primary is also the only one asked
+        #: to sign anything.
+        self.sources: list[WalletProvider] = [primary, *spares]
+        self.name = getattr(primary, "name", "wallet")
+        self.kind = getattr(primary, "kind", "unknown")
+        self.connector = getattr(primary, "connector", "")
+
+    async def request(self, method: str, params: list[Any] | None = None) -> Any:
+        if method not in READ_METHODS:
+            return await self.primary.request(method, params)
+        last: WalletError | None = None
+        for source in self.sources:
+            try:
+                return await source.request(method, params)
+            except RpcError:
+                # An answer, not a failure. See the class docstring.
+                raise
+            except WalletError as exc:
+                last = exc
+        raise last or WalletError("Nothing could be asked about this network.")
+
+    async def close(self) -> None:
+        """Only the spares. The wallet's session is not this object's to end."""
+        for source in self.sources[1:]:
+            await source.close()

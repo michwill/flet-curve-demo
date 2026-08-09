@@ -18,8 +18,13 @@ import pytest
 
 from curve import rpc
 from curve.http import ApiError
-from curve.rpc import ChainlistDirectory, PublicNode, usable_endpoints
-from wallet.base import RpcError, WalletError
+from curve.rpc import (
+    ChainlistDirectory,
+    FallbackProvider,
+    PublicNode,
+    usable_endpoints,
+)
+from wallet.base import RpcError, WalletError, WalletProvider
 
 CHAINLIST_PAYLOAD = [
     {
@@ -343,3 +348,122 @@ async def test_signing_needs_a_wallet(monkeypatch, call) -> None:
     node, _ = node_with(monkeypatch, {})
     with pytest.raises(WalletError, match="Connect a wallet"):
         await call(node)
+
+
+# -- a wallet with the public endpoints behind it --------------------------
+#
+# The bug: a portfolio scan is a Multicall3 batch of three hundred entries,
+# and pushing that through a WalletConnect relay into a phone failed with
+# WebKit's "Load failed". The wallet was the only thing asked, so the page
+# said it could not read the chain and stopped. It should have asked
+# somebody else.
+
+
+class Scripted(WalletProvider):
+    """A provider that answers, or fails, exactly as told."""
+
+    def __init__(self, *answers: object, name: str = "scripted") -> None:
+        self.answers = list(answers)
+        self.calls: list[tuple[str, object]] = []
+        self.name = name
+        self.closed = False
+
+    async def request(self, method: str, params=None):
+        self.calls.append((method, params))
+        answer = self.answers.pop(0) if self.answers else "0x"
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+def test_a_reader_presents_itself_as_the_wallet_it_wraps() -> None:
+    """The UI names the transport from the provider, so wrapping one for
+    failover must not rename the user's wallet to something else."""
+    wallet = Scripted(name="Rabby")
+    wallet.kind, wallet.connector = "browser", "walletconnect"
+    reader = FallbackProvider(wallet, Scripted())
+
+    assert (reader.name, reader.kind, reader.connector) == (
+        "Rabby",
+        "browser",
+        "walletconnect",
+    )
+
+
+async def test_a_read_the_wallet_cannot_carry_goes_to_a_public_node() -> None:
+    """The reported failure, in one test: the relay would not carry the
+    batch, so the answer has to come from somewhere else."""
+    wallet = Scripted(WalletError("Load failed"))
+    public = Scripted("0xbeef")
+    reader = FallbackProvider(wallet, public)
+
+    assert await reader.call("0x" + "ca11" * 10, "0xdata") == "0xbeef"
+    assert wallet.calls and public.calls, "both were asked, in that order"
+
+
+async def test_the_wallet_is_asked_first_and_alone_when_it_answers() -> None:
+    """Its node is the one the transaction will run on, so nothing else
+    is troubled when it works."""
+    wallet = Scripted("0xf00d")
+    public = Scripted("0xbeef")
+    reader = FallbackProvider(wallet, public)
+
+    assert await reader.call("0x" + "ca11" * 10, "0xdata") == "0xf00d"
+    assert public.calls == [], "the spare was not needed"
+
+
+async def test_a_node_that_answered_no_is_not_asked_again_elsewhere() -> None:
+    """A reverted call is a reply. Asking a different endpoint the same
+    question gets the same reply, more slowly -- and a user rejection
+    asked twice is a second prompt."""
+    wallet = Scripted(RpcError(3, "execution reverted"))
+    public = Scripted("0xbeef")
+    reader = FallbackProvider(wallet, public)
+
+    with pytest.raises(RpcError):
+        await reader.call("0x" + "ca11" * 10, "0xdata")
+    assert public.calls == [], "a revert is not a transport failure"
+
+
+@pytest.mark.parametrize(
+    "method, params",
+    [
+        ("eth_sendTransaction", [{"to": "0x" + "11" * 20}]),
+        ("personal_sign", ["0xdead", "0x" + "11" * 20]),
+        ("wallet_switchEthereumChain", [{"chainId": "0x1"}]),
+    ],
+)
+async def test_only_reads_ever_leave_the_wallet(method, params) -> None:
+    """There is no fallback for a signature, and a public node could not
+    provide one. A write goes to the user's wallet or it fails."""
+    wallet = Scripted(WalletError("wallet is being difficult"))
+    public = Scripted("0xbeef")
+    reader = FallbackProvider(wallet, public)
+
+    with pytest.raises(WalletError, match="difficult"):
+        await reader.request(method, params)
+    assert public.calls == [], "a public node must never be asked to sign"
+
+
+async def test_the_last_failure_is_what_the_user_is_told() -> None:
+    """When nothing answers, the message has to come from somewhere, and
+    the final attempt is the most recent thing that actually happened."""
+    reader = FallbackProvider(
+        Scripted(WalletError("Load failed")),
+        Scripted(WalletError("no public node answered")),
+    )
+    with pytest.raises(WalletError, match="no public node answered"):
+        await reader.call("0x" + "ca11" * 10, "0xdata")
+
+
+async def test_closing_a_reader_leaves_the_wallet_session_alone() -> None:
+    """The wallet outlives any one page's reads, and its session is the
+    user's, not this object's, to end."""
+    wallet, public = Scripted(), Scripted()
+    await FallbackProvider(wallet, public).close()
+
+    assert not wallet.closed, "disconnecting the user's wallet is not our call"
+    assert public.closed

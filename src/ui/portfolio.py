@@ -291,19 +291,30 @@ class PortfolioView(ft.Column):
             ft.Row(
                 [
                     self.accrued,
-                    # A spacer, *not* a wrapping row. `Wrap` cannot lay out
-                    # a flex child, so `expand=True` inside `wrap=True` is a
-                    # layout assertion rather than a stretchy gap -- and one
-                    # that fails silently: Flutter drops the subtree, taking
-                    # the table and its header with it, while Python logs
-                    # nothing at all. The page went blank for exactly as
-                    # long as this bar was visible.
-                    ft.Container(expand=True),
+                    # Wrapping, and with **no flex child**. Both halves of
+                    # that matter and they pull against each other:
+                    #
+                    #   * `Wrap` cannot lay out a flex child, so an
+                    #     `expand=True` spacer in here is a layout assertion
+                    #     rather than a stretchy gap -- and it fails
+                    #     silently, dropping the subtree and taking the
+                    #     table and its header with it while Python logs
+                    #     nothing. The page went blank for exactly as long
+                    #     as this bar was visible;
+                    #   * but dropping `wrap` to get rid of the spacer just
+                    #     moves the problem to the other end: a label and
+                    #     two buttons in a fixed row overflow a phone.
+                    #
+                    # So it wraps and the buttons sit next to the label
+                    # rather than against the right edge. A gap that costs
+                    # the whole page is not worth the alignment.
                     buttons.shadowed(self.claim_crv, page),
                     buttons.shadowed(self.claim_rewards, page),
                 ],
                 spacing=8,
+                run_spacing=8,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                wrap=True,
             ),
             visible=False,
         )

@@ -329,7 +329,10 @@ def test_tabs_length_matches_the_number_of_panels() -> None:
     view = PoolDetailView(
         StubPage(), api=None, pool=make_pool(), get_contract=lambda: None, on_back=lambda: None
     )
-    assert len(view.tabs) == 4
+    # Deposit, Withdraw, Swap, Stake, Claim. Two of those are conditional
+    # on what the wallet holds; `tabs` is the full set either way, and
+    # what the bar draws is `_sync_tabs`' business.
+    assert len(view.tabs) == 5
 
 
 # -- action tabs -----------------------------------------------------------

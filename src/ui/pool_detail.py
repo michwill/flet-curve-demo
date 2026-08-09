@@ -29,7 +29,7 @@ from curve.pool import PoolContract
 from wallet.base import WalletError
 
 from . import AnyEvent, safe_update, theme
-from .actions import DepositTab, StakeTab, SwapTab, WithdrawTab
+from .actions import ClaimTab, DepositTab, StakeTab, SwapTab, WithdrawTab
 from .candles import CandleChart
 from .logos import pool_stack, token_mark
 from .responsive import Layout, layout_for
@@ -664,6 +664,10 @@ class PoolDetailView(ft.Column):
             WithdrawTab(self._page, self.pool, self.get_contract, self.refresh_actions),
             SwapTab(self._page, self.pool, self.get_contract, self.refresh_actions),
             StakeTab(self._page, self.pool, self.get_contract, self.refresh_actions),
+            # Last, and conditional like Stake: a claim is the tail of a
+            # position rather than a way into one, and the tab is only
+            # there when something is actually owed.
+            ClaimTab(self._page, self.pool, self.get_contract, self.refresh_actions),
         ]
         self._tab = 0
         self._tab_bar = ft.Container(

@@ -38,10 +38,16 @@ __all__ = [
     "encode_approve",
     "encode_calc_token_amount",
     "encode_calc_withdraw_one_coin",
+    "encode_claim_rewards",
+    "encode_claimable_reward",
+    "encode_claimable_tokens",
     "encode_deposit_and_stake",
     "encode_exchange",
     "encode_gauge_deposit",
     "encode_gauge_withdraw",
+    "encode_minter_mint",
+    "encode_reward_count",
+    "encode_reward_tokens",
     "encode_get_dy",
     "encode_remove_liquidity",
     "encode_remove_liquidity_one_coin",
@@ -525,6 +531,50 @@ def encode_gauge_deposit(amount: int) -> str:
 
 def encode_gauge_withdraw(amount: int) -> str:
     return _call("withdraw(uint256)", _uint(amount))
+
+
+# -- claiming --------------------------------------------------------------
+#
+# Two halves, because a gauge pays two kinds of reward -- see
+# `curve.rewards`. The one thing to know here is that
+# `claimable_tokens(address)` is `nonpayable` in the ABI while
+# `claimable_reward(address,address)` is `view`: the CRV figure
+# checkpoints before it answers, so a typed client tries to *send* it.
+# Both are read with `eth_call` here, which is what makes the difference
+# invisible to the caller -- the checkpoint happens in a simulated state
+# and is discarded, and the return value is the number to display.
+
+
+def encode_claimable_tokens(owner: str) -> str:
+    """CRV owed. `nonpayable` in the ABI, an `eth_call` in practice."""
+    return _call("claimable_tokens(address)", _address(owner))
+
+
+def encode_claimable_reward(owner: str, token: str) -> str:
+    """One incentive token's outstanding amount. A genuine view."""
+    return _call("claimable_reward(address,address)", _address(owner), _address(token))
+
+
+def encode_reward_count() -> str:
+    return _call("reward_count()")
+
+
+def encode_reward_tokens(index: int) -> str:
+    return _call("reward_tokens(uint256)", _uint(index))
+
+
+def encode_claim_rewards() -> str:
+    """Every incentive token at once. CRV is not among them."""
+    return _call("claim_rewards()")
+
+
+def encode_minter_mint(gauge: str) -> str:
+    """Mint the CRV this gauge has recorded for the caller.
+
+    Sent to the Minter on Ethereum and to the child gauge factory
+    elsewhere; the signature is the same on both.
+    """
+    return _call("mint(address)", _address(gauge))
 
 
 # -- depositing and staking in one call ------------------------------------

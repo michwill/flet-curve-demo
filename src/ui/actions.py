@@ -42,8 +42,9 @@ import flet as ft
 from curve.abi import FEE_DENOMINATOR, apply_slippage
 from curve.confirm import POLL_INTERVAL, wait_for_confirmation
 from curve.format import token_amount, units_to_float
-from curve.models import Pool
+from curve.models import Coin, Pool
 from curve.pool import PoolContract
+from curve.rewards import CRV_DECIMALS, crv_token
 from curve.stake_zaps import stake_zap_for
 from curve.zaps import zap_for
 from wallet.base import WalletError
@@ -1693,6 +1694,163 @@ class SwapTab(ActionTab):
             )
         expected = await contract.get_dy(i, j, dx)
         return await contract.exchange(i, j, dx, self.with_slippage(expected))
+
+
+class ClaimTab(ActionTab):
+    """What the gauge owes you, and the one or two transactions to get it.
+
+    Two kinds of reward, claimed by two different contracts -- CRV is
+    *minted* by the Minter (or the chain's child gauge factory) while
+    incentive tokens are already sitting in the gauge and come out with
+    `claim_rewards()`. See `curve.rewards`. On screen they are one list,
+    which is the point: nobody thinks of their rewards as two categories
+    because of how the emission is implemented.
+
+    So the button sends whichever halves are non-zero, in sequence when
+    both are. Two wallet prompts for one apparent action is worth saying
+    out loud, which is what the status line does between them.
+    """
+
+    title = "Claim"
+    submit_label = "Claim"
+    uses_slippage = False
+    _done_verb = "Claimed"
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.crv_claimable = 0
+        #: `(address, symbol, decimals, amount)` per incentive token.
+        self.extras: list[tuple[str, str, int, int]] = []
+        #: Symbol and decimals per token, kept because they cannot change
+        #: and the panel refreshes after every transaction on the page.
+        self._meta: dict[str, tuple[str, int]] = {}
+        self.rows = ft.Column(spacing=10)
+        self.empty_note = ft.Text(
+            "Nothing to claim yet.", size=SMALL, color=ft.Colors.ON_SURFACE_VARIANT
+        )
+
+    @property
+    def available(self) -> bool:
+        """Anything owed, of either kind?"""
+        return self.crv_claimable > 0 or any(amount > 0 for *_, amount in self.extras)
+
+    def build(self) -> list[ft.Control]:
+        if not self.pool.has_gauge:
+            return [
+                ft.Text(
+                    "This pool has no gauge, so it pays no rewards.",
+                    size=SMALL,
+                    color=ft.Colors.ON_SURFACE_VARIANT,
+                )
+            ]
+        return [self.rows, self.empty_note]
+
+    def _line(self, address: str, symbol: str, decimals: int, amount: int) -> ft.Control:
+        """One reward: its mark, its symbol, and what is owed.
+
+        The mark comes from the same compiled subset as every other token
+        logo, so a reward token upstream has no image for draws its
+        initials rather than a hole -- see `ui.logos.token_mark`.
+        """
+        coin = Coin(address=address, symbol=symbol, decimals=decimals)
+        return ft.Row(
+            [
+                token_mark(coin, self.pool.chain, 20),
+                ft.Text(symbol, size=BODY, expand=True),
+                ft.Text(
+                    token_amount(units_to_float(amount, decimals)),
+                    size=BODY,
+                    weight=ft.FontWeight.W_500,
+                ),
+            ],
+            spacing=10,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        )
+
+    def _render(self) -> None:
+        lines: list[ft.Control] = []
+        if self.crv_claimable > 0:
+            lines.append(
+                self._line(crv_token(self.pool), "CRV", CRV_DECIMALS, self.crv_claimable)
+            )
+        for address, symbol, decimals, amount in self.extras:
+            if amount > 0:
+                lines.append(self._line(address, symbol, decimals, amount))
+        self.rows.controls = lines
+        self.empty_note.visible = not lines
+
+    async def _meta_for(self, contract: PoolContract, token: str) -> tuple[str, int]:
+        key = token.lower()
+        if key not in self._meta:
+            self._meta[key] = await contract.token_meta(token)
+        return self._meta[key]
+
+    def summary(self) -> str:
+        parts = []
+        if self.crv_claimable > 0:
+            parts.append(
+                f"{token_amount(units_to_float(self.crv_claimable, CRV_DECIMALS))} CRV"
+            )
+        parts += [
+            f"{token_amount(units_to_float(amount, decimals))} {symbol}"
+            for _address, symbol, decimals, amount in self.extras
+            if amount > 0
+        ]
+        return " + ".join(parts)
+
+    async def refresh(self) -> None:
+        contract = self.get_contract()
+        if not self.pool.has_gauge:
+            self.submit_button.visible = False
+            self.approve_button.visible = False
+            self.page.update()
+            return
+        if not await self.network_ok(contract):
+            self.page.update()
+            return
+
+        if contract is not None and contract.can_send:
+            try:
+                self.crv_claimable = await contract.claimable_crv()
+            except WalletError:
+                self.crv_claimable = 0
+            extras: list[tuple[str, str, int, int]] = []
+            try:
+                for token in await contract.reward_tokens():
+                    amount = await contract.claimable_reward(token)
+                    symbol, decimals = await self._meta_for(contract, token)
+                    extras.append((token, symbol, decimals, amount))
+            except WalletError:
+                pass
+            self.extras = extras
+        else:
+            # No account, nothing accrues to it. Clearing rather than
+            # keeping the last wallet's numbers is what takes the tab out
+            # of the bar on disconnect -- see `ActionTab.available`.
+            self.crv_claimable = 0
+            self.extras = []
+
+        self._render()
+        # Nothing to approve: both claims move tokens the gauge already
+        # owes, and neither is a `transferFrom` of the user's own balance.
+        self.approve_button.visible = False
+        self.submit_button.disabled = contract is None or not self.available
+        self.page.update()
+
+    async def submit(self, contract: PoolContract) -> str:
+        crv = self.crv_claimable
+        extras = any(amount > 0 for *_, amount in self.extras)
+        if not crv and not extras:
+            raise WalletError("Nothing to claim.")
+        if crv and extras:
+            tx = await contract.claim_crv()
+            await self._step(
+                contract,
+                tx,
+                f"Claimed {token_amount(units_to_float(crv, CRV_DECIMALS))} CRV.",
+            )
+            return await contract.claim_rewards()
+        return await (contract.claim_crv() if crv else contract.claim_rewards())
 
 
 class StakeTab(ActionTab):

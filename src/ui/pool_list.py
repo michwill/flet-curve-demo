@@ -20,11 +20,12 @@ import flet as ft
 
 from curve.api import PoolFeed
 from curve.format import apr_range, compact_usd, percent
-from curve.models import Pool
+from curve.models import Coin, Pool
+from curve.rewards import crv_token
 from curve.sort import DEFAULT_SORT, SORTS
 
 from . import AnyEvent, safe_update, theme
-from .logos import pool_stack
+from .logos import pool_stack, token_mark
 from .responsive import Layout, layout_for
 from .typography import BODY, LABEL, ROW_TITLE, SMALL
 
@@ -88,6 +89,42 @@ FIELD_HEIGHT = 48
 FIELD_INSET = 16
 
 
+#: Reward marks in the list. Smaller than the pool stack beside the name:
+#: this is which token, not which pool, and at list density a mark that
+#: matches the text's own height reads as punctuation rather than as
+#: another logo competing with the one on the left.
+REWARD_MARK = 14
+
+
+def _reward_line(
+    text: str, address: str, symbol: str, chain: str, *, muted: bool
+) -> ft.Control:
+    """One reward, marked with its token where the address is known.
+
+    The row stays right-aligned like the rest of the column, so the mark
+    sits between the numbers and the symbol rather than at a ragged left
+    edge. A reward whose address the API did not carry -- merkle
+    campaigns have none, and Lite chains sometimes omit them -- falls
+    back to text alone rather than to an empty box.
+    """
+    label = ft.Text(
+        text,
+        size=SMALL,
+        color=ft.Colors.ON_SURFACE_VARIANT if muted else None,
+        text_align=ft.TextAlign.RIGHT,
+    )
+    if not address:
+        return label
+    coin = Coin(address=address, symbol=symbol, decimals=18)
+    return ft.Row(
+        [token_mark(coin, chain, REWARD_MARK), label],
+        spacing=5,
+        tight=True,
+        alignment=ft.MainAxisAlignment.END,
+        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+    )
+
+
 def reward_lines(pool: Pool) -> list[ft.Control]:
     """CRV first, then each incentive token on its own line.
 
@@ -97,15 +134,22 @@ def reward_lines(pool: Pool) -> list[ft.Control]:
     lines: list[ft.Control] = []
     if pool.crv_apr[1] > 0:
         lines.append(
-            ft.Text(f"{apr_range(*pool.crv_apr)} CRV", size=SMALL, text_align=ft.TextAlign.RIGHT)
+            _reward_line(
+                f"{apr_range(*pool.crv_apr)} CRV",
+                crv_token(pool),
+                "CRV",
+                pool.chain,
+                muted=False,
+            )
         )
     for incentive in pool.incentives:
         lines.append(
-            ft.Text(
+            _reward_line(
                 f"{percent(incentive.apr)} {incentive.symbol}",
-                size=SMALL,
-                color=ft.Colors.ON_SURFACE_VARIANT,
-                text_align=ft.TextAlign.RIGHT,
+                incentive.token_address,
+                incentive.symbol,
+                pool.chain,
+                muted=True,
             )
         )
     if pool.merkle_apr > 0:

@@ -33,6 +33,7 @@ from . import abi
 from .models import Pool
 from .multicall import MULTICALL3, decode_uints, encode_aggregate3
 from .parameters import PARAMETERS
+from .rewards import rewards_for
 from .stake_zaps import ZERO_ADDRESS, StakeZap, stake_zap_for
 from .zaps import Zap, zap_for
 
@@ -42,6 +43,11 @@ from .zaps import Zap, zap_for
 #: asked -- which costs nothing now that they go in one batch. Index 0 is
 #: the first priced coin, the one a single line of a summary should show.
 INDEXED_PARAMETERS = ("price_oracle", "price_scale")
+
+#: How many `reward_tokens(i)` to walk before giving up. Gauges cap this
+#: at eight themselves; the bound is here so a gauge answering nonsense
+#: for `reward_count` costs one panel refresh rather than a hang.
+MAX_REWARD_TOKENS = 8
 
 
 def _parameter_plan() -> list[tuple[str, str]]:
@@ -551,3 +557,117 @@ class PoolContract:
         if not self.pool.has_gauge:
             raise PoolCallFailed("This pool has no gauge to unstake from.")
         return await self._send(self.pool.gauge, abi.encode_gauge_withdraw(amount))
+
+    # -- claiming ---------------------------------------------------------
+    #
+    # Two halves that look alike on screen and are nothing alike on chain.
+    # See `curve.rewards`.
+
+    async def claimable_crv(self, owner: str | None = None) -> int:
+        """CRV the gauge has recorded for this account.
+
+        Zero for a pool with no gauge, or on a chain with no CRV -- both
+        are ordinary answers, not failures, so this returns 0 rather than
+        raising and letting a panel show an error where the honest answer
+        is "nothing".
+
+        `claimable_tokens` is `nonpayable`, and this calls it anyway: an
+        `eth_call` runs the checkpoint against a simulated state and
+        throws it away. That is the trap the module docstring in
+        `curve.rewards` is about.
+        """
+        if not self.pool.has_gauge or rewards_for(self.pool) is None:
+            return 0
+        account = owner or self.account
+        if not account:
+            return 0
+        try:
+            result = await self.provider.call(
+                self.pool.gauge, abi.encode_claimable_tokens(account)
+            )
+        except RpcError as exc:
+            raise PoolCallFailed(f"Could not read claimable CRV: {exc.message}") from exc
+        return abi.decode_uint(result)
+
+    async def reward_tokens(self) -> list[str]:
+        """The incentive tokens this gauge streams, in its own order.
+
+        A gauge that does not implement `reward_count` is an old one with
+        no incentive tokens at all, which is the same outcome as a count
+        of zero -- so the failure is swallowed rather than reported.
+        """
+        if not self.pool.has_gauge:
+            return []
+        try:
+            raw = await self.provider.call(self.pool.gauge, abi.encode_reward_count())
+        except RpcError:
+            return []
+        count = abi.decode_uint(raw) if raw and raw != "0x" else 0
+        tokens: list[str] = []
+        for index in range(min(count, MAX_REWARD_TOKENS)):
+            try:
+                answer = await self.provider.call(
+                    self.pool.gauge, abi.encode_reward_tokens(index)
+                )
+            except RpcError:
+                break
+            address = "0x" + answer[-40:] if answer and len(answer) >= 42 else ""
+            if address and int(address, 16) != 0:
+                tokens.append(address)
+        return tokens
+
+    async def claimable_reward(self, token: str, owner: str | None = None) -> int:
+        """One incentive token's outstanding amount. A genuine view."""
+        account = owner or self.account
+        if not self.pool.has_gauge or not account:
+            return 0
+        try:
+            result = await self.provider.call(
+                self.pool.gauge, abi.encode_claimable_reward(account, token)
+            )
+        except RpcError as exc:
+            raise PoolCallFailed(
+                f"Could not read claimable rewards: {exc.message}"
+            ) from exc
+        return abi.decode_uint(result)
+
+    async def token_meta(self, token: str) -> tuple[str, int]:
+        """`(symbol, decimals)` for a token this app has no entry for.
+
+        Incentive tokens arrive from the gauge as bare addresses, and an
+        amount rendered with the wrong decimals is not slightly wrong, it
+        is wrong by orders of magnitude. Both reads fall back rather than
+        raise -- a token that will not say its symbol is still worth
+        showing -- but the decimals fall back to 18, which is what almost
+        everything is, and the clamp is there because a garbage answer to
+        `decimals()` would otherwise divide by 10**(a very large number).
+        """
+        from wallet.erc20 import decode_string, encode_decimals, encode_symbol
+
+        symbol = "?"
+        decimals = 18
+        with contextlib.suppress(Exception):
+            raw = await self.provider.call(token, encode_symbol())
+            symbol = decode_string(raw) or "?"
+        with contextlib.suppress(Exception):
+            raw = await self.provider.call(token, encode_decimals())
+            if raw and raw not in ("0x", "0x0"):
+                value = abi.decode_uint(raw)
+                if 0 <= value <= 36:
+                    decimals = value
+        return symbol, decimals
+
+    async def claim_crv(self) -> str:
+        """Mint the CRV. Goes to the minter, not to the gauge."""
+        entry = rewards_for(self.pool)
+        if entry is None:
+            raise PoolCallFailed(
+                "CRV is not minted on this network, so there is nothing to claim."
+            )
+        return await self._send(entry.minter, abi.encode_minter_mint(self.pool.gauge))
+
+    async def claim_rewards(self) -> str:
+        """Claim every incentive token at once. Goes to the gauge."""
+        if not self.pool.has_gauge:
+            raise PoolCallFailed("This pool has no gauge, so nothing accrues.")
+        return await self._send(self.pool.gauge, abi.encode_claim_rewards())

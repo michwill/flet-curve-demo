@@ -285,38 +285,53 @@
             deliberate: true,
           },
           resolve: async ({ silent } = {}) => {
-            if (wcProvider) return wcProvider;
+            // Only the *initialisation* is cached. This used to return
+            // `wcProvider` here and be done with it, which was wrong twice
+            // over on a second connect: it handed back the bare provider
+            // instead of the wrapper below -- so `eth_chainId` stopped
+            // being intercepted and answered with a JavaScript number,
+            // which reaches Python as `int(1, 16)` and "int() can't convert
+            // non-string with explicit base" -- and it skipped the session
+            // check, so a wallet that had been disconnected was never
+            // offered a QR code to pair again. Disconnect, reconnect, and
+            // the app fell over on an error naming neither the wallet nor
+            // the call.
+            if (!wcProvider) {
+              const moduleUrl = wcModuleUrl();
+              log("loading WalletConnect from", moduleUrl);
+              const { EthereumProvider } = await import(
+                /* @vite-ignore */ moduleUrl
+              );
 
-            const moduleUrl = wcModuleUrl();
-            log("loading WalletConnect from", moduleUrl);
-            const { EthereumProvider } = await import(
-              /* @vite-ignore */ moduleUrl
-            );
-
-            wcProvider = await EthereumProvider.init({
-              projectId: config.walletConnectProjectId,
-              // metadata.url must match the serving origin or wallets
-              // will show a domain-mismatch warning.
-              metadata: {
-                name: document.title || "Flet Pay",
-                description: "Send tokens from a Flet app written in Python",
-                url: window.location.origin,
-                icons: [`${window.location.origin}/icons/apple-touch-icon-192.png`],
-              },
-              optionalChains: wcChains(),
-              optionalMethods: [
-                "eth_sendTransaction",
-                "personal_sign",
-                "eth_signTypedData_v4",
-              ],
-              optionalEvents: ["accountsChanged", "chainChanged"],
-              showQrModal: true,
-            });
+              wcProvider = await EthereumProvider.init({
+                projectId: config.walletConnectProjectId,
+                // metadata.url must match the serving origin or wallets
+                // will show a domain-mismatch warning.
+                metadata: {
+                  name: document.title || "Flet Pay",
+                  description: "Send tokens from a Flet app written in Python",
+                  url: window.location.origin,
+                  icons: [
+                    `${window.location.origin}/icons/apple-touch-icon-192.png`,
+                  ],
+                },
+                optionalChains: wcChains(),
+                optionalMethods: [
+                  "eth_sendTransaction",
+                  "personal_sign",
+                  "eth_signTypedData_v4",
+                ],
+                optionalEvents: ["accountsChanged", "chainChanged"],
+                showQrModal: true,
+              });
+            }
 
             // enable() is the EIP-1193-compatible connect: it opens the QR
             // modal and resolves once the phone has approved. Doing it here
             // means the modal appears when the user picks WalletConnect,
-            // which is the UX people expect.
+            // which is the UX people expect. Reached on every resolve, not
+            // just the first: a reconnect after a disconnect has an
+            // initialised provider and no session.
             if (!wcProvider.session) {
               // init() restores a session from WalletConnect's own storage
               // if the phone is still paired. Without one there is nothing

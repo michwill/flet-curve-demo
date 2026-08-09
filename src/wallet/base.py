@@ -41,6 +41,31 @@ class WalletError(Exception):
     """
 
 
+def quantity(value: Any, what: str) -> int:
+    """A number from a wallet, whatever shape it arrived in.
+
+    JSON-RPC calls these QUANTITY and says they are hex strings, and most
+    wallets send hex strings. Not all of them: a provider answering from
+    its own state -- WalletConnect's `eth_chainId` is the one that bit --
+    hands back a plain JavaScript number, which arrives here as an `int`.
+    `int(1, 16)` then raises "int() can't convert non-string with explicit
+    base", an error that names neither the wallet nor the call and reads
+    like a bug in the parsing rather than a wallet being loose with the
+    spec. It cost an afternoon.
+
+    So the shape is accepted and the *absence* of an answer is what gets a
+    sentence. `wallet/session.py` and `curve/confirm.py` each grew their
+    own copy of the first half of this; this is the one they should have
+    shared.
+    """
+    if isinstance(value, str):
+        return int(value, 16) if value[:2].lower() == "0x" else int(value)
+    # `bool` is an `int` in Python and never a quantity in JSON-RPC.
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return int(value)
+    raise WalletError(f"The wallet did not say what {what} is.")
+
+
 class RpcError(WalletError):
     """An error the wallet (or the node behind it) returned."""
 
@@ -135,11 +160,13 @@ class WalletProvider(ABC):
         return await self.request("eth_accounts") or []
 
     async def chain_id(self) -> int:
-        return int(await self.request("eth_chainId"), 16)
+        return quantity(await self.request("eth_chainId"), "the network")
 
     async def get_balance(self, address: str) -> int:
         """Native-token balance in wei."""
-        return int(await self.request("eth_getBalance", [address, "latest"]), 16)
+        return quantity(
+            await self.request("eth_getBalance", [address, "latest"]), "a balance"
+        )
 
     async def call(self, to: str, data: str) -> str:
         """`eth_call` against the latest block. Returns hex-encoded return data."""
@@ -147,7 +174,7 @@ class WalletProvider(ABC):
 
     async def block_number(self) -> int:
         """The chain head, as this endpoint currently sees it."""
-        return int(await self.request("eth_blockNumber"), 16)
+        return quantity(await self.request("eth_blockNumber"), "the block number")
 
     async def transaction_receipt(self, tx_hash: str) -> dict[str, Any] | None:
         """The receipt, or None while the transaction is still pending."""

@@ -19,7 +19,13 @@ from typing import Any
 import flet as ft
 import pytest
 
-from wallet.base import RpcError, WalletProvider, WalletUnavailable
+from wallet.base import (
+    RpcError,
+    WalletError,
+    WalletProvider,
+    WalletUnavailable,
+    quantity,
+)
 from wallet.chains import get_chain
 from wallet.desktop import DesktopWalletProvider
 from wallet.session import Wallet
@@ -643,3 +649,51 @@ async def test_forgetting_survives_a_bridge_that_is_already_gone() -> None:
 
     provider.request = refuse  # type: ignore[method-assign]
     await provider.forget()   # must not raise
+
+
+# -- quantities, in whatever shape a wallet sends them -----------------------
+
+
+class Answering(WalletProvider):
+    """A provider that returns exactly what it is told to."""
+
+    def __init__(self, answer: Any) -> None:
+        self.answer = answer
+
+    async def request(self, method: str, params: list[Any] | None = None) -> Any:
+        return self.answer
+
+
+async def test_a_chain_id_that_arrives_as_a_number() -> None:
+    """The bug a user hit: disconnect, reconnect with WalletConnect, and
+    "int() can't convert non-string with explicit base".
+
+    WalletConnect answers `eth_chainId` from its own state rather than the
+    wire, so it hands back a JavaScript number -- and the bridge's wrapper,
+    which turns that back into hex, was being skipped on a second connect.
+    The wrapper is fixed; this makes the Python side stop caring.
+    """
+    assert await Answering(1).chain_id() == 1
+    assert await Answering(100).chain_id() == 100
+
+
+async def test_a_chain_id_in_the_shape_the_spec_asks_for() -> None:
+    assert await Answering("0x1").chain_id() == 1
+    assert await Answering("0x64").chain_id() == 100
+    assert await Answering("0xA4B1").chain_id() == 42161
+
+
+async def test_no_answer_at_all_is_a_sentence_not_a_TypeError() -> None:
+    """`int(None, 16)` raises the same inscrutable message. What reaches
+    the user should say which wallet call came back empty."""
+    with pytest.raises(WalletError, match="did not say what the network is"):
+        await Answering(None).chain_id()
+
+    with pytest.raises(WalletError, match="did not say what a balance is"):
+        await Answering(None).get_balance("0x" + "11" * 20)
+
+
+def test_a_boolean_is_not_a_quantity() -> None:
+    """`True` is an `int` in Python and would silently become chain 1."""
+    with pytest.raises(WalletError):
+        quantity(True, "the network")

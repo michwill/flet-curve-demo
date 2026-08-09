@@ -143,7 +143,9 @@ disallow_untyped_defs = false
 # flet_charts ships no `py.typed`, so its symbols are `Any` and there is
 # nothing to check against. Flet itself is typed and is checked.
 [[tool.mypy.overrides]]
-module = ["flet_charts.*", "pyodide.*", "js"]
+# `fontTools` and `flet_web` are build-time only -- neither ships a
+# py.typed marker, and neither is imported by anything the app runs.
+module = ["flet_charts.*", "pyodide.*", "js", "fontTools.*", "flet_web"]
 ignore_missing_imports = true
 
 # Tests are checked, but not for the things a test double *is*. A fake API

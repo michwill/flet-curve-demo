@@ -546,6 +546,18 @@ def main() -> int:
 
     if make_relative(dist / "index.html"):
         print("index.html: base href is relative now, for a gateway sub-path")
+
+    # 1.26 MB of icon font to draw ten glyphs, and the one file the
+    # gateway will not compress. See tools/subset_icons.py.
+    from tools import subset_icons
+
+    icon_font = dist / subset_icons.FONT_RELATIVE
+    if icon_font.is_file():
+        glyphs, was, now = subset_icons.subset(icon_font, icon_font)
+        print(
+            f"{subset_icons.FONT_RELATIVE}: {was / 1024:,.0f} KB -> "
+            f"{now / 1024:,.0f} KB, {glyphs} glyphs actually drawn"
+        )
     if wrap_package(dist):
         print(f"{PACKAGE_FROM} -> {PACKAGE_TO}: base64, so no gateway reads it as an archive")
     if patch_worker(dist):

@@ -146,6 +146,21 @@ sub-path (`/ipfs/<cid>/`) rather than at a root:
 - **it asks for a CIDv1.** Base32 and case-insensitive, so it fits in a
   hostname and `https://<cid>.ipfs.dweb.link/` works; a v0 hash is base58 and
   only resolves on a path gateway.
+- **it cuts the icon font down to the icons this app draws** —
+  `tools/subset_icons.py`, 1.26 MB to 4 KB. That font was the largest single
+  thing a visitor downloaded from the pin, bigger than everything else put
+  together, and it carried 8,624 glyphs to draw ten. It is also the one file
+  the gateway will not compress, because it types `.otf` as an OpenDocument
+  formula template — so subsetting fixes twice what gzip would have.
+
+  The keep-list is *read out of `src/`* rather than written down, so adding
+  an icon to a view adds it to the font with nothing to remember. What
+  cannot be read that way is the handful Flutter's own widgets draw — the
+  picker's chevron, the expansion tile's arrows — and those are named in
+  `WIDGET_GLYPHS`. `tests/test_icons.py` holds the whole arrangement up:
+  every icon named in the source must survive the cut, the scan must still
+  match the way this app writes an icon, and no file may reach for one
+  dynamically, which is the one usage the scan could not see.
 
 ### Routes live in the fragment
 

@@ -247,15 +247,23 @@ class PublicNode(WalletProvider):
         return self.network_id
 
 
-#: Methods that only ever read. Everything else -- a signature, a send, a
-#: chain switch -- belongs to the user's own wallet and to nothing else,
-#: however badly that wallet is behaving. There is no "fallback" for a
-#: signature, and a public node could not provide one if there were.
+#: Methods that only ever read *the chain*. Everything else -- a
+#: signature, a send, a chain switch -- belongs to the user's own wallet
+#: and to nothing else, however badly that wallet is behaving. There is no
+#: "fallback" for a signature, and a public node could not provide one if
+#: there were.
+#:
+#: `eth_chainId` is deliberately absent, and it is the one that would have
+#: done damage. It does not read the chain; it asks a *source* which chain
+#: it is on, and every source here has a different honest answer. The
+#: action panel asks it to decide whether the wallet needs switching
+#: networks before it can act (`ui.actions.network_ok`) -- answered by a
+#: public node, that check would pass every time, and the "switch your
+#: wallet to Ethereum" prompt would never appear again.
 READ_METHODS = frozenset(
     {
         "eth_blockNumber",
         "eth_call",
-        "eth_chainId",
         "eth_estimateGas",
         "eth_gasPrice",
         "eth_getBalance",
@@ -265,6 +273,28 @@ READ_METHODS = frozenset(
         "eth_getTransactionReceipt",
     }
 )
+
+#: Connectors that do not have a node of their own: the wallet is on
+#: another device and every read is a round trip through a relay to reach
+#: it. See `prefers_public_reads`.
+RELAYED_CONNECTORS = frozenset({"walletconnect"})
+
+
+def prefers_public_reads(provider: WalletProvider) -> bool:
+    """Should the chain be read past this wallet rather than through it?
+
+    Yes for WalletConnect, and only for WalletConnect. An injected wallet
+    talks to a node over HTTP from the same browser; WalletConnect talks
+    to a phone, over a relay built to carry signing prompts. A portfolio
+    scan is not a signing prompt -- it is six Multicall3 batches of three
+    hundred entries -- and pushing one through that link is how the
+    portfolio came back `Load failed` instead of a list of positions.
+
+    Reading past it is also *more* correct, not merely more reliable: the
+    public node is pinned to the chain the app is showing, while the
+    wallet answers for whatever chain it happens to be on.
+    """
+    return getattr(provider, "connector", "") in RELAYED_CONNECTORS
 
 
 class FallbackProvider(WalletProvider):
@@ -283,6 +313,16 @@ class FallbackProvider(WalletProvider):
     `PublicNode`, which walks its own list in turn. A source that cannot
     answer is stepped over.
 
+    With `spares_first`, that order is reversed for reads and the wallet
+    becomes the last resort rather than the first choice -- which is what
+    a relayed connector wants (see `prefers_public_reads`). It stays in
+    the list either way: on a chain chainlist has never heard of, the
+    wallet is the only thing that can answer at all.
+
+    Whichever way the reads go, *only* the primary is ever asked to sign,
+    to send, or to switch networks. That is not a preference, it is the
+    whole distinction: a public node has no key.
+
     What is *not* retried is a node that answered. An `RpcError` is a
     reply -- a reverted call, a rejected request -- and asking a different
     endpoint the same question gets the same reply, more slowly. Only a
@@ -290,11 +330,20 @@ class FallbackProvider(WalletProvider):
     for the same reason.
     """
 
-    def __init__(self, primary: WalletProvider, *spares: WalletProvider) -> None:
+    def __init__(
+        self,
+        primary: WalletProvider,
+        *spares: WalletProvider,
+        spares_first: bool = False,
+    ) -> None:
+        #: The wallet. Signs, sends, switches -- and names the transport
+        #: in the UI, whatever order the reads go in.
         self.primary = primary
-        #: In order of preference. The primary is also the only one asked
-        #: to sign anything.
-        self.sources: list[WalletProvider] = [primary, *spares]
+        self.spares: list[WalletProvider] = list(spares)
+        #: Read order.
+        self.sources: list[WalletProvider] = (
+            [*spares, primary] if spares_first else [primary, *spares]
+        )
         self.name = getattr(primary, "name", "wallet")
         self.kind = getattr(primary, "kind", "unknown")
         self.connector = getattr(primary, "connector", "")
@@ -315,5 +364,5 @@ class FallbackProvider(WalletProvider):
 
     async def close(self) -> None:
         """Only the spares. The wallet's session is not this object's to end."""
-        for source in self.sources[1:]:
-            await source.close()
+        for spare in self.spares:
+            await spare.close()

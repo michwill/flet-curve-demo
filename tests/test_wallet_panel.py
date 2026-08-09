@@ -373,6 +373,30 @@ def test_a_chain_we_cannot_name_is_read_through_the_wallet_alone() -> None:
     assert app.reader(0, provider) is provider
 
 
+def test_walletconnect_is_read_past_rather_than_through() -> None:
+    """A portfolio scan is six Multicall3 batches of three hundred
+    entries. Over a relay into a phone that came back "Load failed"; the
+    fix is not to send it there in the first place."""
+    app, provider = app_that_reads(), StubProvider()
+    provider.connector = "walletconnect"
+    reader = app.reader(1, provider)
+
+    assert isinstance(reader.sources[0], PublicNode), "public node reads first"
+    assert reader.sources[-1] is provider, "the wallet is still the last resort"
+    assert reader.primary is provider, "and still the only thing that signs"
+
+
+def test_an_injected_wallet_keeps_being_read_first() -> None:
+    """It is a node in the same browser -- there is no relay to route
+    around, and its own view of the chain is the better one."""
+    app, provider = app_that_reads(), StubProvider()
+    provider.connector = "injected"
+    reader = app.reader(1, provider)
+
+    assert reader.sources[0] is provider
+    assert isinstance(reader.sources[1], PublicNode)
+
+
 def test_a_longer_address_does_not_change_how_the_chip_is_built() -> None:
     """The point of having no width: nothing here has an opinion about
     how wide any particular address is."""

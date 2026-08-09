@@ -29,7 +29,12 @@ from curve import ApiError, CurveApi, Pool, PoolContract, portfolio
 from curve.api import PoolFeed
 from curve.format import compact_usd
 from curve.lite import LiteChain
-from curve.rpc import ChainlistDirectory, FallbackProvider, PublicNode
+from curve.rpc import (
+    ChainlistDirectory,
+    FallbackProvider,
+    PublicNode,
+    prefers_public_reads,
+)
 from curve.sort import DEFAULT_SORT
 from ui import AnyEvent, buttons, routing, safe_update
 from ui import theme as themes
@@ -1216,21 +1221,29 @@ class CurveApp:
             self.page.run_task(self.load_portfolio)
 
     def reader(self, chain_id: int, provider: Any) -> Any:
-        """A wallet's provider with the public endpoints behind it.
+        """A wallet's provider with the public endpoints beside it.
 
-        The wallet is still asked first -- it is the user's own view of
-        the chain, and the place their transaction will run. What changed
-        is what happens when it does not answer: a multicall of three
-        hundred entries is a lot to push through a WalletConnect relay to
-        a phone, and one that will not go through used to leave the page
-        with nothing at all. Now it costs a retry against a public node.
+        An injected wallet is asked first: it is the user's own view of
+        the chain and the place their transaction will run, and it is a
+        node in the same browser. The public endpoints sit behind it, so
+        a read it cannot carry costs a retry rather than the page.
+
+        Over WalletConnect the order is the other way round, because
+        there the "wallet" is a relay to a phone -- see
+        `rpc.prefers_public_reads`. It is still in the list, still asked
+        when nothing public answers, and still the only thing asked to
+        sign.
 
         Without a chain id there is no public node to name, so the wallet
         is all there is and is returned unwrapped.
         """
         if not chain_id:
             return provider
-        return FallbackProvider(provider, self.public_node(chain_id))
+        return FallbackProvider(
+            provider,
+            self.public_node(chain_id),
+            spares_first=prefers_public_reads(provider),
+        )
 
     def public_node(self, chain_id: int) -> PublicNode:
         node = self._public_nodes.get(chain_id)

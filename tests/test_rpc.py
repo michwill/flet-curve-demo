@@ -22,6 +22,7 @@ from curve.rpc import (
     ChainlistDirectory,
     FallbackProvider,
     PublicNode,
+    prefers_public_reads,
     usable_endpoints,
 )
 from wallet.base import RpcError, WalletError, WalletProvider
@@ -467,3 +468,96 @@ async def test_closing_a_reader_leaves_the_wallet_session_alone() -> None:
 
     assert not wallet.closed, "disconnecting the user's wallet is not our call"
     assert public.closed
+
+
+async def test_closing_still_spares_a_wallet_read_last() -> None:
+    """The wallet is not identified by its position in the read order."""
+    wallet, public = Scripted(), Scripted()
+    await FallbackProvider(wallet, public, spares_first=True).close()
+
+    assert not wallet.closed
+    assert public.closed
+
+
+# -- reading past a relay rather than through it ----------------------------
+
+
+def test_only_walletconnect_wants_its_reads_taken_elsewhere() -> None:
+    """An injected wallet is a node in the same browser; there is no
+    relay to route around and its own view is the better one."""
+    relayed = Scripted()
+    relayed.connector = "walletconnect"
+    injected = Scripted()
+    injected.connector = ""
+
+    assert prefers_public_reads(relayed)
+    assert not prefers_public_reads(injected)
+    assert not prefers_public_reads(Scripted())
+
+
+async def test_a_relayed_wallet_is_read_past_not_through() -> None:
+    """The sharper half of the fix: do not send six Multicall3 batches
+    into a phone at all, rather than sending them and recovering."""
+    wallet = Scripted("0xf00d")
+    public = Scripted("0xbeef")
+    reader = FallbackProvider(wallet, public, spares_first=True)
+
+    assert await reader.call("0x" + "ca11" * 10, "0xdata") == "0xbeef"
+    assert wallet.calls == [], "the phone was not disturbed"
+
+
+async def test_a_relayed_wallet_is_still_asked_when_nothing_public_answers() -> None:
+    """On a chain chainlist has never heard of, the wallet is the only
+    thing that can answer at all. Preferring the public nodes must not
+    mean refusing to fall back to the wallet."""
+    wallet = Scripted("0xf00d")
+    public = Scripted(WalletError("No public node is known for this network"))
+    reader = FallbackProvider(wallet, public, spares_first=True)
+
+    assert await reader.call("0x" + "ca11" * 10, "0xdata") == "0xf00d"
+
+
+async def test_a_relayed_wallet_is_still_the_only_thing_that_signs() -> None:
+    """Reading past the wallet must not become sending past it: a public
+    node has no key, and reordering reads is not a licence to reorder
+    anything else."""
+    wallet = Scripted("0xhash")
+    public = Scripted("0xbeef")
+    reader = FallbackProvider(wallet, public, spares_first=True)
+
+    assert await reader.request("eth_sendTransaction", [{"to": "0x0"}]) == "0xhash"
+    assert public.calls == []
+
+
+# -- the question that is about the source, not the chain -------------------
+
+
+@pytest.mark.parametrize("spares_first", [False, True])
+async def test_which_chain_the_wallet_is_on_is_asked_of_the_wallet(
+    spares_first,
+) -> None:
+    """`eth_chainId` does not read the chain -- it asks a source which
+    chain it is on, and each source here has a different honest answer.
+
+    The action panel uses it to decide whether the wallet needs switching
+    networks before it can act. Answered by a public node, pinned to the
+    chain the app is showing, that check would pass every time and the
+    "switch your wallet" prompt would never appear again.
+    """
+    wallet = Scripted("0xa")  # the wallet is on Optimism
+    public = Scripted("0x1")  # the public node is Ethereum's
+    reader = FallbackProvider(wallet, public, spares_first=spares_first)
+
+    assert await reader.chain_id() == 10
+    assert public.calls == [], "a public node cannot answer this for a wallet"
+
+
+async def test_a_wallet_that_cannot_say_which_chain_is_not_guessed_for() -> None:
+    """Failing over here would invent an answer: the public node would
+    happily report the chain it is pinned to, which says nothing about
+    where the user's wallet is pointed."""
+    reader = FallbackProvider(
+        Scripted(WalletError("Load failed")), Scripted("0x1")
+    )
+    with pytest.raises(WalletError, match="Load failed"):
+        await reader.chain_id()

@@ -487,3 +487,20 @@ def test_the_script_runs_as_a_script(tmp_path) -> None:
     # And it did the work rather than merely starting: the font is cut.
     cut = (dist / "assets/fonts/MaterialIcons-Regular.otf").stat().st_size
     assert cut < 50_000, f"the font was not subset ({cut} bytes)"
+
+
+def test_publishing_compiles_the_marks_first() -> None:
+    """The assets are generated and gitignored, which is right -- and
+    means a stale `src/assets/curve` shows up in no `git status` and no
+    diff. Nobody should have to remember it.
+
+    Order matters too: `flet publish` tars `src/` into the app package,
+    so marks compiled after it would not be in the build.
+    """
+    source = Path(ipfs.__file__).read_text(encoding="utf-8")
+
+    assert "build_assets.py" in source, "publishing must compile the marks"
+    body = source[source.index("if not options.no_build:") :]
+    assert body.index("compile_assets()") < body.index("publish()"), (
+        "the marks have to be compiled before `flet publish` packs src/"
+    )

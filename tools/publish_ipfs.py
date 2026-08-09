@@ -484,6 +484,30 @@ def flet_cli() -> str:
 SHORT_NAME = "Curve Finance"
 
 
+def compile_assets() -> None:
+    """`build_assets.py`, so the marks that go up are the marks in the
+    submodule as it is pinned right now.
+
+    Run here rather than left to whoever is publishing, because its
+    output is gitignored -- correctly, it is generated -- and so a stale
+    `src/assets/curve` is invisible in `git status`. It cannot be
+    forgotten if nobody has to remember it. Every asset change this
+    session needed a manual rebuild before it meant anything, and there
+    was a window each time where a pin could have carried the old art.
+    """
+    print("build_assets ...")
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "tools" / "build_assets.py")],
+        cwd=ROOT,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise SystemExit(
+            "build_assets failed -- is the submodule checked out? "
+            "`git submodule update --init`"
+        )
+
+
 def publish() -> None:
     """`flet publish`, so what goes up is what the source says now.
 
@@ -531,6 +555,9 @@ def main() -> int:
     options = parser.parse_args()
 
     if not options.no_build:
+        # The marks first: `flet publish` tars `src/` into the app, so
+        # anything compiled after it would not be in the build.
+        compile_assets()
         publish()
     dist: Path = options.dist
     if not (dist / "index.html").is_file():

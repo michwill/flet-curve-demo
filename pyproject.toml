@@ -9,6 +9,51 @@ requires-python = ">=3.12"
 # curve/abi.py precisely so no wheel has to exist for wasm32.
 dependencies = ["flet==0.86.5", "flet-charts==0.86.5"]
 
+# Everything needed to build the assets, run the tests and check the types.
+# None of it ships: `flet publish` reads `project.dependencies` above and
+# writes its own requirements.txt into the archive micropip installs from,
+# and a dependency *group* is not part of the package's metadata at all --
+# which is why these are a group rather than an optional-dependencies
+# extra. An extra would need a build backend to install, and this project
+# has none: it is an app, not a package.
+#
+# `uv pip install --group dev`
+#
+# The one that bites if it is missing is Pillow. `tools/build_assets.py`
+# catches its ImportError and copies the art through verbatim, so the build
+# *succeeds* and quietly ships 200px marks where the app draws 38 -- the
+# tenfold reduction `ui.assets.MARK_PIXELS` exists to avoid, and 29 MB of
+# assets instead of 19. Only `tests/test_assets.py` notices.
+[dependency-groups]
+dev = [
+    # `flet` on its own is the library. The CLI that runs and publishes the
+    # app, the desktop client and the web bundle are *extras*, so a plain
+    # `flet==0.86.5` gives you an app you cannot start -- and the icon-font
+    # tests, which read the Material font out of the web bundle, cannot run
+    # either. They belong here rather than in `project.dependencies`
+    # because that list is installed inside Pyodide, where a CLI and a
+    # desktop binary are nonsense.
+    "flet[all]==0.86.5",
+    # tools/build_assets.py resamples every mark and cuts the disc into its
+    # alpha: Pillow for both, numpy for the resampler's averaging.
+    "pillow==12.3.0",
+    "numpy==2.5.2",
+    # tools/subset_icons.py, exercised by tests/test_ipfs.py.
+    "fonttools==4.63.0",
+    # pytest.ini sets asyncio_mode=auto, so pytest-asyncio is not optional.
+    "pytest==9.1.1",
+    "pytest-asyncio==1.4.0",
+    # tests/test_stateful.py
+    "hypothesis==6.165.2",
+    # `flet.testing`, which tests/integration/conftest.py imports at
+    # collection time -- so without it a plain `pytest` cannot even collect,
+    # though those tests are deselected by the `flet_ui` marker. Pulls scipy.
+    "scikit-image==0.26.0",
+    # Both configured further down this file.
+    "ruff==0.16.2",
+    "mypy==2.3.0",
+]
+
 [tool.flet]
 org = "com.example"
 product = "Curve Finance"

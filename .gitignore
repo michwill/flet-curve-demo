@@ -30,7 +30,8 @@ src/local_config.toml
 # of src/ so `flet publish` cannot bundle it into the app.
 local_secrets.toml
 
-# uv lockfile - the venv is reproducible from requirements.txt
+# uv lockfile - the venv is reproducible from pyproject.toml, whose
+# runtime pins and dev group are both exact
 uv.lock
 
 # Compiled from vendor/curve-assets by tools/build_assets.py

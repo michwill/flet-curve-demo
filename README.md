@@ -10,9 +10,9 @@ withdraw, swap and stake — all in-pool, no router.
 
 ```bash
 git submodule update --init          # curve-assets: logos and token images
-uv venv && uv pip install -r requirements.txt
-python tools/build_assets.py         # compile the subset the app needs
-python tools/build_icons.py          # only when the mark changes: app icon + favicon
+uv venv && uv pip install -r pyproject.toml --group dev
+.venv/bin/python tools/build_assets.py   # compile the subset the app needs
+.venv/bin/python tools/build_icons.py    # only when the mark changes: app icon + favicon
 
 .venv/bin/flet run src/main.py        # desktop -> Frame / qeth on 127.0.0.1:1248
 .venv/bin/flet publish --route-url-strategy hash   # browser -> ./dist (from the repo root)

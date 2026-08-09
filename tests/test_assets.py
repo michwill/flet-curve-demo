@@ -463,3 +463,39 @@ def test_a_compiled_mark_has_no_pale_rim() -> None:
         f"rim reaches {edge.max()} where the artwork peaks at "
         f"{brightest_solid} -- that is a halo"
     )
+
+
+def test_every_mark_fades_out_rather_than_stopping() -> None:
+    """The outline has to live in the alpha channel.
+
+    Upstream ships discs inscribed exactly in their square, so the edge
+    was a *cut*: on one chain mark 140 fully opaque pixels sat on the
+    bitmap border with no alpha between the colour and the end of the
+    file. That reads as cropped because it is, and it leaves anything
+    sampling across the boundary with nothing sensible to average.
+
+    So the disc is cut into the alpha at build time, sampled 8x8 per
+    pixel, and inset far enough that nothing touches the border.
+    """
+    import numpy as np
+    from PIL import Image
+
+    root = Path(__file__).resolve().parent.parent / "src/assets/curve"
+    marks = [*(root / "chains").glob("*.png")][:20]
+    marks += sorted((root / "tokens/ethereum").glob("*.png"))[:40]
+    assert marks, "assets are not compiled -- run tools/build_assets.py"
+
+    for mark in marks:
+        alpha = np.asarray(Image.open(mark).convert("RGBA")).astype(int)[..., 3]
+        border = np.concatenate(
+            [alpha[0], alpha[-1], alpha[:, 0], alpha[:, -1]]
+        )
+        assert border.max() < 250, (
+            f"{mark.name} is opaque against the bitmap border -- that edge "
+            "is a crop, not an outline"
+        )
+        partial = ((alpha > 8) & (alpha < 248)).sum()
+        assert partial > alpha.shape[0], (
+            f"{mark.name} has {partial} part-transparent pixels, too few for "
+            "an antialiased outline of that circumference"
+        )

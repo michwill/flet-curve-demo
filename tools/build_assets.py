@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import shutil
 import sys
+from functools import lru_cache
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -151,6 +152,79 @@ def shrink(image, target: int = MARK_PIXELS):
     return Image.fromarray(out.round().clip(0, 255).astype("uint8"), "RGBA")
 
 
+#: How much transparent room a mark keeps around its disc, as a fraction
+#: of its width.
+#:
+#: Without it the artwork runs into the bitmap border and there is nowhere
+#: for the outline to fade: upstream ships discs inscribed exactly in the
+#: square, so at the four mid-sides the edge is a *cut* -- 140 fully
+#: opaque pixels sitting on the border of one chain mark, with no alpha
+#: between the colour and the end of the file. That reads as cropped,
+#: because it is, and it leaves any filter sampling across the boundary
+#: with nothing sensible to average.
+DISC_MARGIN = 0.02
+
+#: How finely the outline is sampled before being averaged down into the
+#: alpha channel. 8x8 per pixel, so a pixel the circle half covers gets an
+#: alpha near 128 rather than 0 or 255 -- which is what antialiasing *is*,
+#: and what a 1-pixel ramp was not.
+DISC_SUPERSAMPLE = 8
+
+
+@lru_cache(maxsize=4)
+def disc_alpha(size: int):
+    """A circular coverage mask, 0.0 to 1.0, antialiased at its edge.
+
+    Coverage rather than a threshold: each pixel is the fraction of it
+    that falls inside the circle, computed by sampling and averaging.
+    Cached because it depends on nothing but the size, and every mark in
+    the build shares it.
+    """
+    import numpy as np
+
+    s = DISC_SUPERSAMPLE
+    fine = size * s
+    # Pixel centres in the fine grid, in units of the output pixel.
+    axis = (np.arange(fine) + 0.5) / s
+    dx = axis - size / 2
+    inside = (dx[None, :] ** 2 + dx[:, None] ** 2) <= (
+        size / 2 * (1 - DISC_MARGIN)
+    ) ** 2
+    return inside.reshape(size, s, size, s).mean(axis=(1, 3))
+
+
+def round_off(image):
+    """Cut the mark to a disc *in the alpha channel*, with a soft edge.
+
+    The app draws every one of these as a circle. Doing that at the point
+    of drawing means the renderer's clip decides how the outline looks,
+    and on WebKit at a high pixel ratio it decided badly. Doing it here
+    means the outline is alpha, in the file, identical everywhere -- and
+    a renderer that samples across it finds a gradient rather than a
+    cliff.
+
+    Multiplied into whatever alpha the artwork already has, so a logo
+    that was already round keeps its own edge and a square one gains one.
+    """
+    import numpy as np
+    from PIL import Image
+
+    square = image.convert("RGBA")
+    width, height = square.size
+    if width != height:
+        # A couple of dozen of these arrive a pixel off square -- 160x159,
+        # 49x50. Centred on a transparent square rather than skipped,
+        # because skipping them is what left marks with a cut edge.
+        side = max(width, height)
+        canvas = Image.new("RGBA", (side, side), (0, 0, 0, 0))
+        canvas.paste(square, ((side - width) // 2, (side - height) // 2))
+        square = canvas
+
+    rgba = np.asarray(square).astype(np.float64)
+    rgba[..., 3] *= disc_alpha(rgba.shape[0])
+    return Image.fromarray(rgba.round().clip(0, 255).astype("uint8"), "RGBA")
+
+
 def pad_full_bleed(path: Path, target: Path) -> bool:
     """Copy a token image, giving a full-bleed one room to be a circle.
 
@@ -171,7 +245,7 @@ def pad_full_bleed(path: Path, target: Path) -> bool:
         spots = ((0, 0), (width - 1, 0), (0, height - 1), (width - 1, height - 1))
         corners = [rgba.getpixel(spot) for spot in spots]
         if any(not isinstance(pixel, tuple) or pixel[3] == 0 for pixel in corners):
-            shrink(rgba).save(target, optimize=True)
+            round_off(shrink(rgba)).save(target, optimize=True)
             return False
 
         pad = round(width * BLEED_PAD)
@@ -181,7 +255,7 @@ def pad_full_bleed(path: Path, target: Path) -> bool:
         # the artwork rather than added at a size it was not measured for.
         canvas = Image.new("RGBA", (width + pad * 2, height + pad * 2), corners[0])
         canvas.paste(rgba, (pad, pad), rgba)
-        shrink(canvas).save(target, optimize=True)
+        round_off(shrink(canvas)).save(target, optimize=True)
     return True
 
 
@@ -193,7 +267,7 @@ def shrink_file(path: Path, target: Path) -> None:
         shutil.copy2(path, target)
         return
     with Image.open(path) as image:
-        shrink(image.convert("RGBA")).save(target, optimize=True)
+        round_off(shrink(image.convert("RGBA"))).save(target, optimize=True)
 
 
 def copy_tree(source: Path, target: Path, *, tokens: bool = False) -> tuple[int, int]:

@@ -24,6 +24,26 @@ each. Run them with
 Set `FORK_RPC_URL` to fork from a node you trust; without it the fixture
 picks a public endpoint from the same chainlist directory `curve.rpc` uses,
 which is fine but slower and occasionally rate-limited.
+
+**The fork is taken at head, not at a pinned block**, and that is a
+deliberate default rather than an oversight. Pinning needs an archive node:
+public endpoints keep roughly the last 128 blocks of state and refuse
+anything older, so a block number committed here would work for a few
+minutes and then skip every run for everyone.
+
+The cost is that mainnet moves under the tests -- which is not theoretical,
+it is what made the claim tests pass twice and then fail, because the
+account they act as claims its rewards every few blocks. So the suite is
+built not to care: `Fork.advance` manufactures the accrual it needs rather
+than hoping to find it, and nothing asserts on an absolute amount.
+
+When a run does fail and the state mattered, the block it forked at is
+printed at session start:
+
+    FORK_BLOCK=25719208 pytest -m fork
+
+That reproduces it exactly, given an endpoint with the history -- which is
+what `FORK_RPC_URL` is for.
 """
 
 from __future__ import annotations
@@ -101,6 +121,7 @@ def anvil() -> str:
     source = asyncio.run(_fork_source())
     port = _free_port()
     url = f"http://127.0.0.1:{port}"
+    pinned = os.environ.get("FORK_BLOCK")
     process = subprocess.Popen(
         [
             binary,
@@ -108,6 +129,7 @@ def anvil() -> str:
             "--port", str(port),
             "--auto-impersonate",   # sign as anybody: that is the whole trick
             "--silent",
+            *(("--fork-block-number", pinned) if pinned else ()),
         ],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
@@ -125,6 +147,14 @@ def anvil() -> str:
     else:
         process.terminate()
         pytest.skip(f"anvil did not start within {STARTUP_TIMEOUT}s")
+
+    # Printed, always, because without it a failure is not reproducible: the
+    # fork is taken at head unless FORK_BLOCK says otherwise, and mainnet
+    # will have moved on by the time anybody reads the traceback. pytest
+    # shows this under "Captured stdout setup" for the first failing test,
+    # which is exactly when it is wanted.
+    at = int(_rpc(url, "eth_blockNumber"), 16)
+    print(f"\nforked mainnet at block {at} -- reproduce with FORK_BLOCK={at}")
 
     yield url
 

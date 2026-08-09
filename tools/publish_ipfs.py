@@ -54,6 +54,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 DIST = ROOT / "dist"
 
+# Run as `python tools/publish_ipfs.py`, the interpreter puts `tools/` on
+# the path and not the repo root, so `from tools import ...` cannot
+# resolve -- while the tests, which import this as `tools.publish_ipfs`,
+# resolve it fine. That asymmetry shipped a publish script that crashed on
+# the one way anybody actually runs it. Same guard as `curve/pool.py`.
+if __package__ in (None, ""):  # pragma: no cover - direct-script import
+    sys.path.insert(0, str(ROOT))
+
 #: Outside `src/`, and outside git. Both on purpose -- see the module note.
 SECRETS = ROOT / "local_secrets.toml"
 

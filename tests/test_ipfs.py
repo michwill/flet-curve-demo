@@ -427,3 +427,63 @@ def test_the_base_href_stays_relative() -> None:
     would resolve them against that path and 404 every one."""
     assert ipfs.BASE_RELATIVE == '<base href="./">'
     assert ipfs.BASE_ABSOLUTE == '<base href="/">'
+
+
+# -- running it the way anybody runs it -------------------------------------
+
+
+def test_the_script_runs_as_a_script(tmp_path) -> None:
+    """`python tools/publish_ipfs.py`, not `import tools.publish_ipfs`.
+
+    Those two put different things on `sys.path`: as a script the
+    interpreter contributes `tools/` and not the repo root, so a
+    `from tools import ...` inside resolves under pytest and crashes for
+    the person publishing. It did, with `ModuleNotFoundError: No module
+    named 'tools'`, and every test in this file passed while it did --
+    because every test in this file imports the module rather than running
+    it. So this one runs it.
+    """
+    import io
+    import shutil
+    import subprocess
+    import sys
+    import tarfile
+
+    import flet_web
+
+    root = Path(ipfs.__file__).resolve().parent.parent
+    web = Path(flet_web.__file__).parent / "web"
+
+    # Enough of a build for the script to walk the whole way through: the
+    # page it rewrites, the font it cuts, the worker it patches, and the
+    # archive it wraps.
+    dist = tmp_path / "dist"
+    (dist / "assets/fonts").mkdir(parents=True)
+    (dist / "index.html").write_text(
+        '<html><head><base href="/">'
+        '<script>flet.routeUrlStrategy="hash";'
+        'appPackageUrl: "app.tar.gz"</script></head></html>',
+        encoding="utf-8",
+    )
+    shutil.copy(web / "assets/fonts/MaterialIcons-Regular.otf",
+                dist / "assets/fonts/MaterialIcons-Regular.otf")
+    shutil.copy(web / "python-worker.js", dist / "python-worker.js")
+    with tarfile.open(dist / "app.tar.gz", "w:gz") as archive:
+        member = tarfile.TarInfo("main.py")
+        member.size = 0
+        archive.addfile(member, io.BytesIO(b""))
+
+    done = subprocess.run(
+        [sys.executable, str(root / "tools/publish_ipfs.py"),
+         "--dry-run", "--no-build", "--dist", str(dist)],
+        capture_output=True, text=True, cwd=root, timeout=120,
+        # The return code is asserted below, with the output to explain it.
+        check=False,
+    )
+
+    assert "ModuleNotFoundError" not in done.stderr, done.stderr
+    assert "Traceback" not in done.stderr, done.stderr
+    assert done.returncode == 0, done.stderr
+    # And it did the work rather than merely starting: the font is cut.
+    cut = (dist / "assets/fonts/MaterialIcons-Regular.otf").stat().st_size
+    assert cut < 50_000, f"the font was not subset ({cut} bytes)"

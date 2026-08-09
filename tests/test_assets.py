@@ -499,3 +499,55 @@ def test_every_mark_fades_out_rather_than_stopping() -> None:
             f"{mark.name} has {partial} part-transparent pixels, too few for "
             "an antialiased outline of that circumference"
         )
+
+
+# -- the build refuses rather than degrades ---------------------------------
+#
+# The two tests above are what caught a silent half-build: run without
+# Pillow, `build_assets.py` used to fall through to `shutil.copy2` and ship
+# upstream's 200px art. The build printed its usual summary and exited 0, so
+# nothing short of running the suite would tell you. These pin the fix --
+# and the point is the *ordering*: it has to refuse before it deletes the
+# assets it is about to fail to rebuild.
+
+
+def test_missing_requirements_names_the_package_not_the_module() -> None:
+    """"PIL" is not something you can install; "Pillow" is."""
+    import importlib.util
+
+    from tools import build_assets
+
+    real = importlib.util.find_spec
+    try:
+        importlib.util.find_spec = lambda name: None  # type: ignore[assignment]
+        assert build_assets.missing_requirements() == ["Pillow", "numpy"]
+    finally:
+        importlib.util.find_spec = real  # type: ignore[assignment]
+
+
+def test_a_dev_environment_is_missing_nothing() -> None:
+    """The dev group in pyproject.toml covers what the build actually needs."""
+    from tools import build_assets
+
+    assert build_assets.missing_requirements() == []
+
+
+def test_the_build_refuses_before_it_deletes_anything(monkeypatch, capsys) -> None:
+    """Exit 1 and say so, the way `build_icons.py` already does.
+
+    `rmtree` is booby-trapped rather than merely observed: refusing *after*
+    clearing `src/assets/curve` would leave no assets at all, which is a
+    worse failure than the one being fixed.
+    """
+    from tools import build_assets
+
+    def never(*_args, **_kwargs):
+        raise AssertionError("the build started before checking its tools")
+
+    monkeypatch.setattr(build_assets, "missing_requirements", lambda: ["Pillow"])
+    monkeypatch.setattr(build_assets.shutil, "rmtree", never)
+
+    assert build_assets.main() == 1
+    message = capsys.readouterr().err
+    assert "Pillow" in message
+    assert "--group dev" in message, "say how to fix it, not just what broke"

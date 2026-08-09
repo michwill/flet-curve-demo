@@ -20,6 +20,7 @@ build step being skipped: plenty of real tokens have no logo upstream.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import shutil
 import sys
 from functools import lru_cache
@@ -233,11 +234,7 @@ def pad_full_bleed(path: Path, target: Path) -> bool:
     corners are *opaque* was drawn as a square, and that is the one that
     needs the padding.
     """
-    try:
-        from PIL import Image
-    except ImportError:  # pragma: no cover - Pillow is a build-time tool
-        shutil.copy2(path, target)
-        return False
+    from PIL import Image
 
     with Image.open(path) as image:
         rgba = image.convert("RGBA")
@@ -261,11 +258,8 @@ def pad_full_bleed(path: Path, target: Path) -> bool:
 
 def shrink_file(path: Path, target: Path) -> None:
     """Copy one image, no larger than a compiled mark needs to be."""
-    try:
-        from PIL import Image
-    except ImportError:  # pragma: no cover - Pillow is a build-time tool
-        shutil.copy2(path, target)
-        return
+    from PIL import Image
+
     with Image.open(path) as image:
         round_off(shrink(image.convert("RGBA"))).save(target, optimize=True)
 
@@ -295,7 +289,50 @@ def copy_tree(source: Path, target: Path, *, tokens: bool = False) -> tuple[int,
     return files, size
 
 
+#: What this script cannot run without, as `(module, what to install)`.
+#: Both do the actual work -- Pillow opens and writes every mark, numpy
+#: averages the resampling -- so neither has a degraded mode worth having.
+BUILD_REQUIREMENTS = (("PIL", "Pillow"), ("numpy", "numpy"))
+
+
+def missing_requirements() -> list[str]:
+    """Which build-time libraries are not installed.
+
+    `find_spec` rather than an import, so asking the question costs nothing
+    when the answer is yes.
+    """
+    return [
+        package
+        for module, package in BUILD_REQUIREMENTS
+        if importlib.util.find_spec(module) is None
+    ]
+
+
 def main() -> int:
+    # Before anything else, and fatal -- which it was not, and that is the
+    # whole reason this check exists.
+    #
+    # These used to be optional: a missing Pillow fell through to
+    # `shutil.copy2` and the art was copied at whatever size upstream drew
+    # it. The build then *succeeded*, printed its usual summary, and left
+    # 200px marks where the app draws 38 -- the tenfold reduction
+    # `ui.assets.MARK_PIXELS` exists to prevent, and 29 MB of assets rather
+    # than 19. Nothing said so; the only thing that noticed was
+    # `tests/test_assets.py`, and only if somebody ran it.
+    #
+    # A build tool that quietly produces the wrong output is worse than one
+    # that refuses, because the wrong output gets published. `build_icons.py`
+    # already refuses when Pillow or librsvg is missing; this now matches it.
+    missing = missing_requirements()
+    if missing:
+        print(
+            f"{', '.join(missing)} not installed -- the marks would be copied "
+            "at upstream's size rather than compiled.\n"
+            "Install the build tools: uv pip install -r pyproject.toml --group dev",
+            file=sys.stderr,
+        )
+        return 1
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--chains",

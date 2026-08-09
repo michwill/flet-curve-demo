@@ -550,12 +550,18 @@ class CurveApp:
                 [
                     self.menu,
                     lockup,
+                    # The wallet, in one place whether or not there is one.
+                    # These three are one slot in three states -- the
+                    # address, the button that gets you an address, and
+                    # that button with no room for its label -- so they sit
+                    # together, left of the network. They used to straddle
+                    # it: connect on the right, and the address it produced
+                    # on the left, so the one thing that moved when you
+                    # connected was the thing you had just clicked.
                     self.account_chip,
-                    # On the right, where the connected wallet used to
-                    # repeat the network name back at you.
-                    self.chain_picker,
                     self.connect_box,
                     self.connect_icon,
+                    self.chain_picker,
                     self.theme_button,
                 ],
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,

@@ -77,6 +77,17 @@ class HoldingRow(ft.Container):
         #: read yet" and "earns nothing" are different answers.
         self.earning = earning
         quiet = holding.value < DUST_USD
+        colour = ft.Colors.ON_SURFACE_VARIANT if quiet else None
+        # Held rather than built inline, because the earnings pass arrives
+        # after this row is on screen and must *edit* it. Rebuilding the
+        # table instead is what the note below warns about: Flet matches a
+        # keyed control to its predecessor and freezes it, and a frozen row
+        # keeps its old text and never paints its token images. That is
+        # exactly what a fourth `show()` did -- the table went blank.
+        self._apr = ft.Text(self._apr_text(), size=BODY, color=colour,
+                            text_align=ft.TextAlign.RIGHT)
+        self._rewards = ft.Text(self._rewards_text(), size=BODY, color=colour,
+                                text_align=ft.TextAlign.RIGHT)
         super().__init__(
             content=self._card(holding, quiet) if narrow else self._row(holding, quiet),
             padding=ft.Padding.symmetric(horizontal=16, vertical=10),
@@ -121,6 +132,12 @@ class HoldingRow(ft.Container):
             return "\u2013" if not self.earning.rewards else "< $0.01"
         return compact_usd(value)
 
+    def apply(self, earning: Earning | None) -> None:
+        """Fill in the two columns on a row that is already drawn."""
+        self.earning = earning
+        self._apr.value = self._apr_text()
+        self._rewards.value = self._rewards_text()
+
     def _name(self, holding: Holding) -> ft.Control:
         # Real token images, overlapped exactly as the pool list overlaps
         # them: `coin_stack` wants coins, which is why a holding carries
@@ -153,8 +170,8 @@ class HoldingRow(ft.Container):
                 self._name(holding),
                 _cell(_lp(holding.wallet), W_WALLET, colour),
                 _cell(_lp(holding.staked) if holding.gauge else "-", W_STAKED, colour),
-                _cell(self._apr_text(), W_APR, colour),
-                _cell(self._rewards_text(), W_REWARDS, colour),
+                _wrap(self._apr, W_APR),
+                _wrap(self._rewards, W_REWARDS),
                 _cell(compact_usd(holding.value), W_VALUE, colour, weight=ft.FontWeight.W_500),
             ],
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
@@ -176,8 +193,8 @@ class HoldingRow(ft.Container):
                     [
                         _metric("In wallet", _lp(holding.wallet)),
                         _metric("Staked", _lp(holding.staked)) if holding.gauge else ft.Container(),
-                        _metric("APR", self._apr_text()),
-                        _metric("Rewards", self._rewards_text()),
+                        _metric_control("APR", self._apr),
+                        _metric_control("Rewards", self._rewards),
                     ],
                     spacing=14,
                     wrap=True,
@@ -201,6 +218,19 @@ def _lp(amount: int) -> str:
     if 0 < whole < DUST_LP:
         return f"< {DUST_LP:g}"
     return token_amount(whole)
+
+
+def _wrap(control: ft.Control, width: float) -> ft.Control:
+    """A fixed-width, right-aligned cell around a control somebody kept."""
+    return ft.Container(control, width=width, alignment=ft.Alignment.CENTER_RIGHT)
+
+
+def _metric_control(label: str, control: ft.Control) -> ft.Control:
+    return ft.Row(
+        [ft.Text(label, size=LABEL, color=ft.Colors.ON_SURFACE_VARIANT), control],
+        spacing=4,
+        tight=True,
+    )
 
 
 def _cell(value: str, width: float, colour: str | None, weight=None) -> ft.Control:
@@ -261,13 +291,19 @@ class PortfolioView(ft.Column):
             ft.Row(
                 [
                     self.accrued,
+                    # A spacer, *not* a wrapping row. `Wrap` cannot lay out
+                    # a flex child, so `expand=True` inside `wrap=True` is a
+                    # layout assertion rather than a stretchy gap -- and one
+                    # that fails silently: Flutter drops the subtree, taking
+                    # the table and its header with it, while Python logs
+                    # nothing at all. The page went blank for exactly as
+                    # long as this bar was visible.
                     ft.Container(expand=True),
                     buttons.shadowed(self.claim_crv, page),
                     buttons.shadowed(self.claim_rewards, page),
                 ],
                 spacing=8,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                wrap=True,
             ),
             visible=False,
         )
@@ -364,7 +400,10 @@ class PortfolioView(ft.Column):
             else ""
         )
         self._claim_bar.visible = crv or extras
-        self.show(self._holdings)
+        for row in self.rows.controls:
+            if isinstance(row, HoldingRow):
+                row.apply(self._earnings.get(row.holding.address.lower()))
+        safe_update(self)
 
     def claiming(self, message: str, colour: str | None = None) -> None:
         """Say what a claim is doing, and stop it being pressed twice."""

@@ -374,23 +374,82 @@ def test_the_desktop_decodes_the_file_as_it_is(monkeypatch) -> None:
     assert logos.decode_width(34) is None
 
 
-def test_the_browser_decodes_at_twice_the_drawn_size(monkeypatch) -> None:
+@pytest.fixture
+def at_ratio(monkeypatch):
+    """Pretend to be a browser at a given device pixel ratio."""
+    monkeypatch.setattr(logos, "is_browser", lambda: True)
+
+    was = logos.pixel_ratio()
+    monkeypatch.setattr(logos, "_pixel_ratio", [was])
+
+    def use(ratio: float):
+        logos.set_pixel_ratio(ratio)
+
+    return use
+
+
+def test_the_browser_decodes_at_twice_what_it_draws(at_ratio) -> None:
     """CanvasKit does not build the mipmap chain `medium` asks for, so
     every quality renders the same aliased result and the desktop's
-    reasoning buys nothing there. Decoding at 2x leaves an exact 2:1
-    minification, where a bilinear tap averages four pixels -- the box
-    filter the mipmap would have given. Measured at 18/24/27/34px against
-    the real assets: 1x and 3x were as ragged as shipping nothing."""
-    monkeypatch.setattr(logos, "is_browser", lambda: True)
+    reasoning buys nothing there. Decoding at twice the drawn size leaves
+    an exact 2:1 minification, where a bilinear tap averages four pixels
+    -- the box filter the mipmap would have given."""
+    at_ratio(1)
     assert logos.decode_width(24) == 48
     assert logos.decode_width(18) == 36
     assert logos.decode_width(27) == 54
 
 
-def test_a_browser_mark_carries_the_decode_size(monkeypatch) -> None:
+def test_the_drawn_size_includes_the_pixel_ratio(at_ratio) -> None:
+    """The bug this file did not catch the first time.
+
+    Every measurement behind `BROWSER_DECODE` was taken at a ratio of 1,
+    where twice the *logical* size and twice the *physical* size are the
+    same number and nothing distinguishes them. A phone is 2 or 3, and at
+    3 a 14px mark has 42 device pixels to fill -- so a 28px decode was
+    being blown up to fit, soft, with the artwork's antialiased edge
+    smeared into a pale rim. Reported as the network mark looking cropped
+    and badly scaled on a phone while every desktop window looked right,
+    because every desktop window is a ratio of 1.
+    """
+    at_ratio(2)
+    assert logos.decode_width(14) == 56
+    at_ratio(3)
+    assert logos.decode_width(14) == 84
+
+    # Never less than the pixels it has to fill, at any ratio.
+    for ratio in (1, 1.5, 2, 2.625, 3, 4):
+        at_ratio(ratio)
+        for size in (14, 18, 24, 27, 34):
+            decoded = logos.decode_width(size)
+            assert decoded is not None
+            physical = size * ratio
+            assert decoded >= physical, (
+                f"{size}px at ratio {ratio} needs {physical} pixels, "
+                f"decoding {decoded}"
+            )
+
+
+def test_the_decode_stops_at_the_art(at_ratio) -> None:
+    """There is no more resolution in the file past 200px, and asking for
+    it only costs memory."""
+    at_ratio(4)
+    assert logos.decode_width(200) == logos.MAX_DECODE
+
+
+def test_a_ratio_the_platform_has_not_answered_yet_is_ignored() -> None:
+    """`page.media` is not always there by the first paint. Better to keep
+    the standing guess than to divide a mark by None."""
+    before = logos.pixel_ratio()
+    logos.set_pixel_ratio(None)
+    logos.set_pixel_ratio(0)
+    assert logos.pixel_ratio() == before
+
+
+def test_a_browser_mark_carries_the_decode_size(at_ratio) -> None:
     """End of the wiring: the number has to reach the Image, or the whole
     thing is a constant nobody reads."""
-    monkeypatch.setattr(logos, "is_browser", lambda: True)
+    at_ratio(1)
     mark = logos.chain_mark("ethereum", 18)
     assert isinstance(mark, ft.Image)
     assert mark.cache_width == 36
@@ -400,5 +459,15 @@ def test_a_browser_mark_carries_the_decode_size(monkeypatch) -> None:
 def test_a_desktop_mark_carries_none(monkeypatch) -> None:
     monkeypatch.setattr(logos, "is_browser", lambda: False)
     mark = logos.chain_mark("ethereum", 18)
-    assert isinstance(mark, ft.Image)
     assert mark.cache_width is None
+
+
+def test_a_chain_mark_keeps_its_shape_wherever_it_is_put() -> None:
+    """It is the picker's `leading_icon`, and that decoration box
+    stretches what it is given to the field's height. Wrapping this in a
+    clipping `Container` was tried: it came out as a 14-wide, 24-tall
+    pill cropped from a round mark. Both sides set, and `CONTAIN`."""
+    mark = logos.chain_mark("ethereum", 18)
+    assert isinstance(mark, ft.Image)
+    assert mark.width == 18 and mark.height == 18
+    assert mark.fit is ft.BoxFit.CONTAIN

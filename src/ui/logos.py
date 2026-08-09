@@ -42,32 +42,70 @@ SAMPLING = ft.FilterQuality.MEDIUM
 #: What the browser needs on top, because it does not honour the above.
 #:
 #: All of the reasoning in `SAMPLING` was measured on the desktop app, and
-#: on the desktop app it holds: `medium` is visibly cleaner than `none`,
-#: `low` or `high`. In a browser it buys nothing. CanvasKit does not build
-#: the mipmap chain `medium` asks for, so every quality renders the same
-#: aliased result -- a broken ring and unreadable letters at 24px, next to
-#: a desktop build drawing the same asset cleanly from the same file.
+#: on the desktop app it holds. In a browser it buys nothing: CanvasKit
+#: does not build the mipmap chain `medium` asks for, so every quality
+#: renders the same aliased result -- a broken ring and unreadable letters
+#: at 24px, from the file the desktop build draws cleanly.
 #:
-#: What does work there is decoding smaller, so there is less minification
-#: left to do. Twice the drawn size, specifically, and not three times or
-#: once: at exactly 2:1 a bilinear tap is an average of four pixels, which
-#: is the box filter the mipmap would have provided. Measured against the
-#: real assets at 18, 24, 27 and 34px, `1x` and `3x` were as ragged as
-#: shipping nothing and `2x` was the only one that matched the desktop.
-#:
-#: On a 2x display it lands differently and just as well: Flutter draws at
-#: twice the logical size there, so this decodes at exactly the physical
-#: size and nothing is resampled at all.
-#:
-#: Desktop is left alone. It has mipmaps, and `SAMPLING` records that
-#: decoding smaller made things *worse* there -- a cache size throws away
-#: the resolution the chain is built from.
+#: What works there is decoding smaller, so there is less minification
+#: left for a filter that cannot do it well. Twice the size it will be
+#: *drawn* at, so the remaining step is exactly 2:1 -- where a bilinear
+#: tap averages four pixels, which is the box filter the mipmap would have
+#: given. Measured against the real assets: 1:1 and 3:1 were as ragged as
+#: shipping nothing, and 2:1 was the only one that matched the desktop.
 BROWSER_DECODE = 2
+
+#: How many device pixels the platform draws per logical one, which is the
+#: other half of "the size it will be drawn at".
+#:
+#: This was missed the first time and the mistake is worth keeping: the
+#: measurements above were all taken at a ratio of 1, where twice the
+#: logical size *is* twice the physical size and the two cannot be told
+#: apart. A phone is 2 or 3. At 3, a 14px mark has 42 device pixels to
+#: fill and a 28px decode was being blown up to fit -- soft, with the
+#: antialiased edge of the artwork smeared into a pale halo. Which is
+#: exactly how it was reported: the network mark on a phone looked cropped
+#: and badly scaled while the same build looked right on every desktop
+#: window size, because every desktop window is a ratio of 1.
+#:
+#: Asking the platform, not assuming. `page.media` carries it, and
+#: `CurveApp` hands it over at startup -- see `set_pixel_ratio`. The
+#: default is 2 rather than 1 so that a mark built before the page has
+#: answered errs towards too much resolution rather than too little.
+#: Held in a list rather than rebound, so nothing here needs `global` --
+#: and so a reader can see there is exactly one of it.
+_pixel_ratio = [2.0]
+
+#: Beyond this there is no more art to decode -- the compiled marks are
+#: 200px -- and asking for more only costs memory.
+MAX_DECODE = 256
+
+
+def set_pixel_ratio(ratio: float | None) -> None:
+    """Tell the marks how many device pixels a logical one is worth.
+
+    Ignores nothing-yet: `page.media` is not always answered by the first
+    paint, and the standing guess is better than dividing by None.
+    """
+    if ratio and ratio > 0:
+        _pixel_ratio[0] = float(ratio)
+
+
+def pixel_ratio() -> float:
+    """What the platform last said, or the standing guess."""
+    return _pixel_ratio[0]
 
 
 def decode_width(size: float) -> int | None:
-    """What to decode a mark at, or None to leave the file alone."""
-    return round(size * BROWSER_DECODE) if is_browser() else None
+    """What to decode a mark at, or None to leave the file alone.
+
+    None on the desktop: it has mipmaps, and `SAMPLING` records that
+    decoding smaller made things *worse* there, because a cache size
+    throws away the resolution the chain is built from.
+    """
+    if not is_browser():
+        return None
+    return min(round(size * pixel_ratio() * BROWSER_DECODE), MAX_DECODE)
 
 
 #: How much of each logo the next one covers. Enough to read as a group,
@@ -239,7 +277,16 @@ def pool_stack(pool: Pool, size: float = 24, limit: int = 5) -> ft.Control:
 
 
 def chain_mark(chain: str, size: float = 18) -> ft.Control | None:
-    """A network's logo, or None when there is no image for it."""
+    """A network's logo, or None when there is no image for it.
+
+    A bare `Image`, deliberately, where `token_mark` is a clipped
+    `Container`. Wrapping this one to clip the disc was tried and made it
+    worse: as the picker's `leading_icon` it goes into a decoration box
+    that stretches it to the field's height, and a `Container` told to
+    clip then cropped a 14-wide, 24-tall pill out of a round mark. An
+    `Image` with both sides set and `CONTAIN` keeps its shape wherever it
+    is put, which is the property that matters more here than the clip.
+    """
     source = chain_logo(chain)
     if not source:
         return None

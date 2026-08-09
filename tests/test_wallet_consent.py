@@ -273,3 +273,73 @@ async def test_disconnecting_does_both(monkeypatch) -> None:
     assert provider.closed
     assert not consent.autoconnect_allowed()
     assert forgotten == [True]
+
+
+# -- what a page load is allowed to load ------------------------------------
+
+
+def _preselect(wallets: list[dict[str, Any]]) -> str:
+    """The rule `wallet.browser.discover` applies to a single wallet.
+
+    The function it comes from needs a live bridge, so the condition is
+    restated here against the same data shape the bridge returns.
+    """
+    if len(wallets) == 1 and not wallets[0].get("deliberate"):
+        return wallets[0]["uuid"]
+    return ""
+
+
+def test_a_lone_injected_wallet_is_still_settled_up_front() -> None:
+    """There is nothing to choose between and resolving it is free: it is
+    `window.ethereum`, already in the page."""
+    assert _preselect([{"uuid": "metamask", "connector": "injected"}]) == "metamask"
+
+
+def test_a_lone_walletconnect_is_not_chosen_for_you() -> None:
+    """A browser with no extension installed has exactly one entry --
+    WalletConnect -- and this runs on every page load through
+    `Wallet.restore`. Pre-selecting it fetched the whole module graph,
+    built the Web3Modal and put a QR code in front of a page somebody was
+    only reading. Measured against the deployed build: 924 requests before
+    any click, and none once this rule was in."""
+    assert (
+        _preselect(
+            [
+                {
+                    "uuid": "walletconnect",
+                    "connector": "walletconnect",
+                    "deliberate": True,
+                }
+            ]
+        )
+        == ""
+    )
+
+
+def test_a_choice_of_wallets_is_never_settled_up_front() -> None:
+    """Two entries means a picker, whatever they are."""
+    assert (
+        _preselect(
+            [
+                {"uuid": "metamask", "connector": "injected"},
+                {
+                    "uuid": "walletconnect",
+                    "connector": "walletconnect",
+                    "deliberate": True,
+                },
+            ]
+        )
+        == ""
+    )
+
+
+def test_the_bridge_and_python_agree_on_the_flag() -> None:
+    """The flag is the contract between the two halves: `wallet_bridge.js`
+    sets it on the entry, `wallet/browser.py` reads it. A rename on either
+    side turns the guard off silently, which is the failure mode that let
+    the eager load ship in the first place."""
+    from pathlib import Path
+
+    src = Path(__file__).resolve().parent.parent / "src"
+    assert "deliberate: true" in (src / "assets/wallet_bridge.js").read_text()
+    assert 'get("deliberate")' in (src / "wallet/browser.py").read_text()

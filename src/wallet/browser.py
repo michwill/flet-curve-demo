@@ -306,6 +306,20 @@ async def discover() -> BrowserWalletProvider:
             "Install MetaMask, Rabby, Frame's extension, or any wallet that "
             "announces itself via EIP-6963, then reload."
         )
-    if len(provider.wallets) == 1:
+    # One wallet, so there is nothing to choose between: settle it now and
+    # a later connect needs no picker for a list of one.
+    #
+    # **Unless choosing it costs something.** This runs on every page load,
+    # through `Wallet.restore`, and a browser with no extension installed
+    # has exactly one entry -- WalletConnect. So the shortcut fired for
+    # precisely the people who had not asked for a wallet: resolving it
+    # fetched its whole module graph, around nine hundred requests, built
+    # the Web3Modal and put a QR code in front of a page somebody was
+    # only reading. A wallet extension made two entries and hid all of it.
+    #
+    # Left unselected, nothing is loaded until a real request arrives, and
+    # the bridge picks it up then (see `handle` in wallet_bridge.js) --
+    # which is the moment someone has clicked Connect.
+    if len(provider.wallets) == 1 and not provider.wallets[0].get("deliberate"):
         await provider.select_wallet(provider.wallets[0]["uuid"])
     return provider

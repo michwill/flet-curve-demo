@@ -275,6 +275,14 @@
             // not resolve on Flutter web. `walletConnectIcon` still wins.
             icon: config.walletConnectIcon || null,
             connector: "walletconnect",
+            // Resolving this one is not free. `resolve()` below fetches the
+            // module graph -- some nine hundred requests through esm.sh --
+            // constructs the Web3Modal, and then opens a QR code. So it
+            // must never be chosen on anybody's behalf: it is a wallet you
+            // ask for, not one that happens to be here. `browser.py` reads
+            // this before pre-selecting a lone wallet, which is exactly the
+            // case a browser with no extension installed lands in.
+            deliberate: true,
           },
           resolve: async ({ silent } = {}) => {
             if (wcProvider) return wcProvider;

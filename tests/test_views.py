@@ -1755,18 +1755,38 @@ def test_crossing_the_breakpoint_repaints_the_header(monkeypatch) -> None:
     assert app.header in painted
 
 
-def test_connect_shows_as_a_button_or_an_icon_but_never_both() -> None:
-    """Two controls, one action: `ft.Button` will not render with an icon
-    and no label, so the narrow one is a separate control that follows the
-    wide one rather than being told."""
-    for width, wide_expected in ((LAPTOP, True), (PHONE, False)):
+def test_connect_is_an_icon_at_every_width() -> None:
+    """It used to be a labelled button on a wide window, and that button
+    never matched the height of the network picker beside it -- 33px of
+    pill against a 46px field, with no way to reconcile them that was not
+    a guessed number. An icon has no frame to disagree about, and it is
+    what the theme button next to it was already doing."""
+    for width in (LAPTOP, PHONE):
         app = header_app(width)
         app.connect_button.visible = True
-        app.connect_box.before_update()
         app.connect_icon.before_update()
 
-        assert app.connect_box.visible is wide_expected
-        assert app.connect_icon.visible is (not wide_expected)
+        assert app.connect_icon.visible, f"missing at {width}px"
+
+    # And the labelled button is not on the bar at all any more.
+    assert not hasattr(header_app(LAPTOP), "connect_box")
+
+
+def test_the_icon_says_what_the_button_would_have_said() -> None:
+    """The label is where the action reports itself -- "Connecting..."
+    rather than "Connect wallet" -- and with no labelled button drawn, the
+    tooltip is the only place left for that sentence."""
+    import main as app_module
+
+    app = header_app(LAPTOP)
+    app.connect_button.visible = True
+
+    app.connect_icon.before_update()
+    assert app.connect_icon.tooltip == app_module.CONNECT_LABEL
+
+    app.connect_button.content = "Connecting…"
+    app.connect_icon.before_update()
+    assert app.connect_icon.tooltip == "Connecting…"
 
 
 def test_the_stand_in_disappears_with_the_button_it_stands_for() -> None:

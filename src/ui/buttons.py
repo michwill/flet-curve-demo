@@ -175,3 +175,11 @@ class StandIn(ft.IconButton):
         super().before_update()
         self.visible = bool(self._button.visible and self._when())
         self.disabled = bool(self._button.disabled)
+        # And its words, where it has any. The label is where the action
+        # says what it is doing -- "Connecting..." rather than "Connect
+        # wallet" -- and once the labelled button is not drawn at all,
+        # that sentence has nowhere else to go. On the icon it becomes the
+        # tooltip, which is the only place an icon can say anything.
+        label = getattr(self._button, "content", None)
+        if isinstance(label, str) and label:
+            self.tooltip = label

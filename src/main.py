@@ -479,17 +479,29 @@ class CurveApp:
             # the same as not passing a style at all.
             style=buttons.style(page),
         )
-        #: The same wrapper the Approve/Deposit buttons get, so this one
-        #: casts the same shadow as the panel it will sit above -- and it
-        #: is what hides the labelled button where there is no room for it.
-        self.connect_box = buttons.shadowed(
-            self.connect_button, page, lambda: not self._icons
-        )
-        #: The same action without the words. Follows the button rather
-        #: than being told: see `ui.buttons.StandIn`.
+        #: What is actually on the bar: the wallet mark, at every width.
+        #:
+        #: There was a labelled button here on a wide window, and it never
+        #: sat right beside the network picker -- a 33px pill against a
+        #: 46px field. Material will not be talked out of that: a `padding`
+        #: given as a `Padding` is ignored, an integer moves the width once
+        #: the minimum height binds, and a Row cannot stretch a child with
+        #: no bounded height to stretch into. Every way of matching the two
+        #: came down to picking a number and hoping, which is the thing
+        #: this app does not do with sizes.
+        #:
+        #: So there is no frame to match. An icon has no height to disagree
+        #: about, and it is what the theme button and the phone header were
+        #: already doing -- the bar now reads as marks either side of the
+        #: one framed control on it, which is the network you are browsing.
+        #:
+        #: `connect_button` stays as the thing this follows: `visible` and
+        #: `disabled` are set on it from a dozen places that know nothing
+        #: about layout, and `ft.Button` will not render with an icon and
+        #: no label anyway. It is simply no longer drawn.
         self.connect_icon = buttons.StandIn(
             self.connect_button,
-            lambda: self._icons,
+            lambda: True,
             icon=ft.Icons.ACCOUNT_BALANCE_WALLET,
             tooltip=CONNECT_LABEL,
             on_click=self.connect,
@@ -559,7 +571,6 @@ class CurveApp:
                     # on the left, so the one thing that moved when you
                     # connected was the thing you had just clicked.
                     self.account_chip,
-                    self.connect_box,
                     self.connect_icon,
                     self.chain_picker,
                     self.theme_button,

@@ -17,7 +17,7 @@ import flet as ft
 
 from curve.models import Coin, Pool
 
-from .assets import chain_logo, token_logo
+from .assets import chain_logo, is_browser, token_logo
 
 #: How a logo gets from 200-280px of source art down to the 22-34px it is
 #: drawn at. Two knobs, and the answer is not the intuitive one.
@@ -38,6 +38,36 @@ from .assets import chain_logo, token_logo
 #: against the real assets, full-resolution decode with `medium` was the
 #: only combination that looked right.
 SAMPLING = ft.FilterQuality.MEDIUM
+
+#: What the browser needs on top, because it does not honour the above.
+#:
+#: All of the reasoning in `SAMPLING` was measured on the desktop app, and
+#: on the desktop app it holds: `medium` is visibly cleaner than `none`,
+#: `low` or `high`. In a browser it buys nothing. CanvasKit does not build
+#: the mipmap chain `medium` asks for, so every quality renders the same
+#: aliased result -- a broken ring and unreadable letters at 24px, next to
+#: a desktop build drawing the same asset cleanly from the same file.
+#:
+#: What does work there is decoding smaller, so there is less minification
+#: left to do. Twice the drawn size, specifically, and not three times or
+#: once: at exactly 2:1 a bilinear tap is an average of four pixels, which
+#: is the box filter the mipmap would have provided. Measured against the
+#: real assets at 18, 24, 27 and 34px, `1x` and `3x` were as ragged as
+#: shipping nothing and `2x` was the only one that matched the desktop.
+#:
+#: On a 2x display it lands differently and just as well: Flutter draws at
+#: twice the logical size there, so this decodes at exactly the physical
+#: size and nothing is resampled at all.
+#:
+#: Desktop is left alone. It has mipmaps, and `SAMPLING` records that
+#: decoding smaller made things *worse* there -- a cache size throws away
+#: the resolution the chain is built from.
+BROWSER_DECODE = 2
+
+
+def decode_width(size: float) -> int | None:
+    """What to decode a mark at, or None to leave the file alone."""
+    return round(size * BROWSER_DECODE) if is_browser() else None
 
 
 #: How much of each logo the next one covers. Enough to read as a group,
@@ -118,6 +148,7 @@ def token_mark(coin: Coin, chain: str, size: float = 24) -> ft.Container:
             height=size,
             fit=ft.BoxFit.COVER,
             filter_quality=SAMPLING,
+            cache_width=decode_width(size),
             # A logo that 404s falls back rather than leaving a hole. The
             # compiled subset can lag the API, and plenty of long-tail
             # tokens have no image upstream at all.
@@ -218,4 +249,5 @@ def chain_mark(chain: str, size: float = 18) -> ft.Control | None:
         height=size,
         fit=ft.BoxFit.CONTAIN,
         filter_quality=SAMPLING,
+        cache_width=decode_width(size),
     )

@@ -15,6 +15,7 @@ import flet as ft
 import pytest
 
 from curve.models import Coin, Pool
+from ui import logos
 from ui.assets import ASSET_ROOT, chain_logo, chain_name, curve_logo, token_logo
 from ui.logos import (
     OVERLAP,
@@ -359,3 +360,45 @@ def test_the_favicon_is_not_flets_default() -> None:
     if not stock.is_file():  # pragma: no cover - depends on the install
         pytest.skip("flet_web is not installed")
     assert (ICONS / "favicon.png").read_bytes() != stock.read_bytes()
+
+
+# -- how a mark is decoded, which differs by platform ------------------------
+
+
+def test_the_desktop_decodes_the_file_as_it_is(monkeypatch) -> None:
+    """It has mipmaps, and `SAMPLING` records that decoding smaller made
+    things worse there -- a cache size throws away the resolution the
+    mipmap chain is built from."""
+    monkeypatch.setattr(logos, "is_browser", lambda: False)
+    assert logos.decode_width(24) is None
+    assert logos.decode_width(34) is None
+
+
+def test_the_browser_decodes_at_twice_the_drawn_size(monkeypatch) -> None:
+    """CanvasKit does not build the mipmap chain `medium` asks for, so
+    every quality renders the same aliased result and the desktop's
+    reasoning buys nothing there. Decoding at 2x leaves an exact 2:1
+    minification, where a bilinear tap averages four pixels -- the box
+    filter the mipmap would have given. Measured at 18/24/27/34px against
+    the real assets: 1x and 3x were as ragged as shipping nothing."""
+    monkeypatch.setattr(logos, "is_browser", lambda: True)
+    assert logos.decode_width(24) == 48
+    assert logos.decode_width(18) == 36
+    assert logos.decode_width(27) == 54
+
+
+def test_a_browser_mark_carries_the_decode_size(monkeypatch) -> None:
+    """End of the wiring: the number has to reach the Image, or the whole
+    thing is a constant nobody reads."""
+    monkeypatch.setattr(logos, "is_browser", lambda: True)
+    mark = logos.chain_mark("ethereum", 18)
+    assert isinstance(mark, ft.Image)
+    assert mark.cache_width == 36
+    assert mark.filter_quality is logos.SAMPLING
+
+
+def test_a_desktop_mark_carries_none(monkeypatch) -> None:
+    monkeypatch.setattr(logos, "is_browser", lambda: False)
+    mark = logos.chain_mark("ethereum", 18)
+    assert isinstance(mark, ft.Image)
+    assert mark.cache_width is None

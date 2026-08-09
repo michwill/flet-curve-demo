@@ -31,7 +31,7 @@ from curve.format import compact_usd
 from curve.lite import LiteChain
 from curve.rpc import ChainlistDirectory, PublicNode
 from curve.sort import DEFAULT_SORT
-from ui import AnyEvent, buttons, logos, routing, safe_update
+from ui import AnyEvent, buttons, routing, safe_update
 from ui import theme as themes
 from ui.assets import chad_mark, chain_name, curve_logo
 from ui.logos import chain_mark
@@ -777,13 +777,6 @@ class CurveApp:
         width = width or self.page.width or 0
         if not width:
             return
-        # How many device pixels a logical one is worth, which is half of
-        # what a browser needs to decode a mark at. Read here rather than
-        # once at startup because `page.media` is not always answered by
-        # the first paint, and a window moved between displays changes it.
-        # See `ui.logos.set_pixel_ratio`.
-        media = getattr(self.page, "media", None)
-        logos.set_pixel_ratio(getattr(media, "device_pixel_ratio", None))
         self._apply_width(width)
         layout = layout_for(width)
         # The chain totals are the first thing to go: a phone header has

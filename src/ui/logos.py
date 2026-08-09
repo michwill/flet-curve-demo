@@ -17,7 +17,7 @@ import flet as ft
 
 from curve.models import Coin, Pool
 
-from .assets import MARK_PIXELS, chain_logo, is_browser, token_logo
+from .assets import chain_logo, token_logo
 
 #: How a logo gets from 200-280px of source art down to the 22-34px it is
 #: drawn at. Two knobs, and the answer is not the intuitive one.
@@ -39,75 +39,28 @@ from .assets import MARK_PIXELS, chain_logo, is_browser, token_logo
 #: only combination that looked right.
 SAMPLING = ft.FilterQuality.MEDIUM
 
-#: What the browser needs on top, because it does not honour the above.
+#: What the browser needed on top, and no longer does.
 #:
-#: All of the reasoning in `SAMPLING` was measured on the desktop app, and
-#: on the desktop app it holds. In a browser it buys nothing: CanvasKit
-#: does not build the mipmap chain `medium` asks for, so every quality
-#: renders the same aliased result -- a broken ring and unreadable letters
-#: at 24px, from the file the desktop build draws cleanly.
+#: `cache_width` used to be set here, to twice the size a mark is drawn
+#: at. It was worth having when the art was 200-280px: CanvasKit builds
+#: no mipmap chain, so a tenfold reduction aliased whatever filter it was
+#: given, and decoding smaller left less for the filter to do.
 #:
-#: What works there is decoding smaller, so there is less minification
-#: left for a filter that cannot do it well. Twice the size it will be
-#: *drawn* at, so the remaining step is exactly 2:1 -- where a bilinear
-#: tap averages four pixels, which is the box filter the mipmap would have
-#: given. Measured against the real assets: 1:1 and 3:1 were as ragged as
-#: shipping nothing, and 2:1 was the only one that matched the desktop.
-BROWSER_DECODE = 2
-
-#: How many device pixels the platform draws per logical one, which is the
-#: other half of "the size it will be drawn at".
+#: It is gone for two reasons, in that order:
 #:
-#: This was missed the first time and the mistake is worth keeping: the
-#: measurements above were all taken at a ratio of 1, where twice the
-#: logical size *is* twice the physical size and the two cannot be told
-#: apart. A phone is 2 or 3. At 3, a 14px mark has 42 device pixels to
-#: fill and a 28px decode was being blown up to fit -- soft, with the
-#: antialiased edge of the artwork smeared into a pale halo. Which is
-#: exactly how it was reported: the network mark on a phone looked cropped
-#: and badly scaled while the same build looked right on every desktop
-#: window size, because every desktop window is a ratio of 1.
+#:   * `build_assets.py` now compiles every mark to `MARK_PIXELS`, so the
+#:     reduction left at runtime is small and the filter copes;
+#:   * **on WebKit it was the bug.** Decoding to a size goes through the
+#:     browser, and WebKit's resize path gets premultiplication wrong: it
+#:     put a pale rim around every mark that had one, on iOS only, because
+#:     Chrome and Firefox decode by other routes. Reproduced in WebKitGTK
+#:     at a device pixel ratio of 3 -- the rim measures 21 levels brighter
+#:     than the header behind it with the hint, and exactly the background
+#:     without it. A ratio of 1 shows nothing either way, which is why
+#:     every desktop window looked right.
 #:
-#: Asking the platform, not assuming. `page.media` carries it, and
-#: `CurveApp` hands it over at startup -- see `set_pixel_ratio`. The
-#: default is 2 rather than 1 so that a mark built before the page has
-#: answered errs towards too much resolution rather than too little.
-#: Held in a list rather than rebound, so nothing here needs `global` --
-#: and so a reader can see there is exactly one of it.
-_pixel_ratio = [2.0]
-
-#: Beyond this there is no more art to decode. `build_assets.py` compiles
-#: every mark down to this, so asking for more would have the decoder
-#: blow a 128px file up to 204 only for the GPU to shrink it again --
-#: slower, softer, and inventing detail that is not in the file.
-MAX_DECODE = MARK_PIXELS
-
-
-def set_pixel_ratio(ratio: float | None) -> None:
-    """Tell the marks how many device pixels a logical one is worth.
-
-    Ignores nothing-yet: `page.media` is not always answered by the first
-    paint, and the standing guess is better than dividing by None.
-    """
-    if ratio and ratio > 0:
-        _pixel_ratio[0] = float(ratio)
-
-
-def pixel_ratio() -> float:
-    """What the platform last said, or the standing guess."""
-    return _pixel_ratio[0]
-
-
-def decode_width(size: float) -> int | None:
-    """What to decode a mark at, or None to leave the file alone.
-
-    None on the desktop: it has mipmaps, and `SAMPLING` records that
-    decoding smaller made things *worse* there, because a cache size
-    throws away the resolution the chain is built from.
-    """
-    if not is_browser():
-        return None
-    return min(round(size * pixel_ratio() * BROWSER_DECODE), MAX_DECODE)
+#: So nothing here asks the browser to resize anything. The file arrives
+#: at very nearly the size it is drawn, and `SAMPLING` handles the rest.
 
 
 #: How much of each logo the next one covers. Enough to read as a group,
@@ -188,7 +141,6 @@ def token_mark(coin: Coin, chain: str, size: float = 24) -> ft.Container:
             height=size,
             fit=ft.BoxFit.COVER,
             filter_quality=SAMPLING,
-            cache_width=decode_width(size),
             # A logo that 404s falls back rather than leaving a hole. The
             # compiled subset can lag the API, and plenty of long-tail
             # tokens have no image upstream at all.
@@ -298,5 +250,4 @@ def chain_mark(chain: str, size: float = 18) -> ft.Control | None:
         height=size,
         fit=ft.BoxFit.CONTAIN,
         filter_quality=SAMPLING,
-        cache_width=decode_width(size),
     )

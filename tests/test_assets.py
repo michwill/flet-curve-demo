@@ -362,115 +362,31 @@ def test_the_favicon_is_not_flets_default() -> None:
     assert (ICONS / "favicon.png").read_bytes() != stock.read_bytes()
 
 
-# -- how a mark is decoded, which differs by platform ------------------------
+# -- how a mark is drawn ----------------------------------------------------
 
 
-def test_the_desktop_decodes_the_file_as_it_is(monkeypatch) -> None:
-    """It has mipmaps, and `SAMPLING` records that decoding smaller made
-    things worse there -- a cache size throws away the resolution the
-    mipmap chain is built from."""
-    monkeypatch.setattr(logos, "is_browser", lambda: False)
-    assert logos.decode_width(24) is None
-    assert logos.decode_width(34) is None
+def test_a_mark_asks_the_browser_to_resize_nothing() -> None:
+    """`cache_width` used to be set, and on WebKit it was the bug.
 
+    Decoding to a size goes through the browser, and WebKit's resize path
+    gets premultiplication wrong: it drew a pale rim around every mark
+    that had one, on iOS only, because Chrome and Firefox decode by other
+    routes. Reproduced in WebKitGTK at a device pixel ratio of 3 -- 21
+    levels brighter than the header with the hint, exactly the background
+    without it.
 
-@pytest.fixture
-def at_ratio(monkeypatch):
-    """Pretend to be a browser at a given device pixel ratio."""
-    monkeypatch.setattr(logos, "is_browser", lambda: True)
-
-    was = logos.pixel_ratio()
-    monkeypatch.setattr(logos, "_pixel_ratio", [was])
-
-    def use(ratio: float):
-        logos.set_pixel_ratio(ratio)
-
-    return use
-
-
-def test_the_browser_decodes_at_twice_what_it_draws(at_ratio) -> None:
-    """CanvasKit does not build the mipmap chain `medium` asks for, so
-    every quality renders the same aliased result and the desktop's
-    reasoning buys nothing there. Decoding at twice the drawn size leaves
-    an exact 2:1 minification, where a bilinear tap averages four pixels
-    -- the box filter the mipmap would have given."""
-    at_ratio(1)
-    assert logos.decode_width(24) == 48
-    assert logos.decode_width(18) == 36
-    assert logos.decode_width(27) == 54
-
-
-def test_the_drawn_size_includes_the_pixel_ratio(at_ratio) -> None:
-    """The bug this file did not catch the first time.
-
-    Every measurement behind `BROWSER_DECODE` was taken at a ratio of 1,
-    where twice the *logical* size and twice the *physical* size are the
-    same number and nothing distinguishes them. A phone is 2 or 3, and at
-    3 a 14px mark has 42 device pixels to fill -- so a 28px decode was
-    being blown up to fit, soft, with the artwork's antialiased edge
-    smeared into a pale rim. Reported as the network mark looking cropped
-    and badly scaled on a phone while every desktop window looked right,
-    because every desktop window is a ratio of 1.
+    It earned its place when the art was 200-280px. `build_assets.py`
+    compiles to `MARK_PIXELS` now, so there is little left to resize and
+    nothing to gain by asking.
     """
-    at_ratio(2)
-    assert logos.decode_width(14) == 56
-    at_ratio(3)
-    assert logos.decode_width(14) == 84
-
-    # Never less than the pixels it has to fill, at any ratio.
-    for ratio in (1, 1.5, 2, 2.625, 3, 4):
-        at_ratio(ratio)
-        for size in (14, 18, 24, 27, 34):
-            decoded = logos.decode_width(size)
-            assert decoded is not None
-            physical = size * ratio
-            assert decoded >= physical, (
-                f"{size}px at ratio {ratio} needs {physical} pixels, "
-                f"decoding {decoded}"
-            )
-
-
-def test_the_decode_stops_at_the_art(at_ratio) -> None:
-    """There is no more resolution in the file past 200px, and asking for
-    it only costs memory."""
-    at_ratio(4)
-    assert logos.decode_width(200) == logos.MAX_DECODE
-
-
-def test_a_ratio_the_platform_has_not_answered_yet_is_ignored() -> None:
-    """`page.media` is not always there by the first paint. Better to keep
-    the standing guess than to divide a mark by None."""
-    before = logos.pixel_ratio()
-    logos.set_pixel_ratio(None)
-    logos.set_pixel_ratio(0)
-    assert logos.pixel_ratio() == before
-
-
-def test_a_browser_mark_carries_the_decode_size(at_ratio) -> None:
-    """End of the wiring: the number has to reach the Image, or the whole
-    thing is a constant nobody reads."""
-    at_ratio(1)
-    mark = logos.chain_mark("ethereum", 18)
-    assert isinstance(mark, ft.Image)
-    assert mark.cache_width == 36
-    assert mark.filter_quality is logos.SAMPLING
-
-
-def test_a_desktop_mark_carries_none(monkeypatch) -> None:
-    monkeypatch.setattr(logos, "is_browser", lambda: False)
-    mark = logos.chain_mark("ethereum", 18)
-    assert mark.cache_width is None
-
-
-def test_a_chain_mark_keeps_its_shape_wherever_it_is_put() -> None:
-    """It is the picker's `leading_icon`, and that decoration box
-    stretches what it is given to the field's height. Wrapping this in a
-    clipping `Container` was tried: it came out as a 14-wide, 24-tall
-    pill cropped from a round mark. Both sides set, and `CONTAIN`."""
-    mark = logos.chain_mark("ethereum", 18)
-    assert isinstance(mark, ft.Image)
-    assert mark.width == 18 and mark.height == 18
-    assert mark.fit is ft.BoxFit.CONTAIN
+    marks = [
+        logos.chain_mark("ethereum", 18),
+        logos.token_mark(coin("USDC", USDC), "ethereum", 24).content,
+    ]
+    for mark in marks:
+        assert isinstance(mark, ft.Image)
+        assert mark.cache_width is None, "no mark may ask the browser to resize"
+        assert mark.filter_quality is logos.SAMPLING
 
 
 # -- what build_assets compiles them down to --------------------------------
@@ -502,23 +418,14 @@ def test_no_compiled_mark_is_larger_than_it_is_drawn(monkeypatch) -> None:
             )
 
 
-def test_the_decode_never_asks_for_more_than_was_compiled() -> None:
-    """A cache size above what the file holds makes the decoder blow it
-    up only for the GPU to shrink it again -- slower, softer, and
-    inventing detail that is not there."""
-    from ui.assets import MARK_PIXELS
-
-    assert logos.MAX_DECODE == MARK_PIXELS
-
-
 def test_the_biggest_mark_still_has_pixels_for_a_dense_screen() -> None:
     """38px is the largest thing drawn -- the stack on a detail page --
-    and a phone puts three device pixels on each logical one. If that
-    ever exceeds what is compiled, the marks start being upscaled and
-    every argument above stops holding."""
+    and the densest screens put four device pixels on each logical one.
+    Nothing asks the browser to resize any more, so this is the only
+    thing standing between a mark and being drawn from too few pixels."""
     from ui.assets import MARK_PIXELS
 
-    assert MARK_PIXELS >= 38 * 3
+    assert MARK_PIXELS >= 38 * 4
 
 
 def test_a_compiled_mark_has_no_pale_rim() -> None:

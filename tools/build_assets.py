@@ -75,6 +75,65 @@ def available_chains(source: Path) -> list[str]:
 #: survives, the mark still fills its circle.
 BLEED_PAD = 0.20
 
+#: The size marks are compiled down to. Defined next to the code that
+#: reads them back, so the decoder cannot be told to ask for resolution
+#: this step did not produce -- see `ui.assets.MARK_PIXELS`.
+sys.path.insert(0, str(ROOT / "src"))
+from ui.assets import MARK_PIXELS  # noqa: E402
+
+
+def shrink(image, target: int = MARK_PIXELS):
+    """`image` at `target` pixels on the long side, or unchanged if smaller.
+
+    **Premultiplied**, which is the whole reason this is more than one
+    call. A resampler averages each channel on its own, so it happily
+    mixes the colour of pixels that are entirely transparent into the
+    edge -- and in these files those pixels are white. Averaged with the
+    rim of a coloured disc, that lightens it: a pale halo, worst where the
+    reduction is largest, which is exactly how the network mark looked on
+    a phone.
+
+    Multiplying colour by alpha first means a transparent pixel
+    contributes nothing at all, which is what "transparent" should mean.
+    The division afterwards puts the colour back for the pixels that
+    survived, leaving the ones that did not as they were -- their colour
+    is unused, and dividing by zero to invent one would be worse than
+    leaving it.
+
+    `BOX` rather than `LANCZOS`, which is the filter you would reach for
+    first and the wrong one here. Box *is* the area average -- every
+    source pixel counted once, in proportion to how much of the output
+    pixel it covers -- which is precisely the mipmap level this whole
+    exercise is about not having. Lanczos sharpens, and sharpening a
+    reduction means ringing: on one chain mark it invented 501 distinct
+    colours where box produced 230, and the PNG came out at 9,755 bytes
+    against 5,488. Worse looking and nearly twice the size.
+    """
+    import numpy as np
+    from PIL import Image
+
+    if max(image.size) <= target:
+        return image
+
+    rgba = np.asarray(image.convert("RGBA"), dtype=np.float64)
+    alpha = rgba[..., 3:4] / 255.0
+    rgba[..., :3] *= alpha
+
+    width, height = image.size
+    scale = target / max(width, height)
+    size = (max(1, round(width * scale)), max(1, round(height * scale)))
+    small = np.asarray(
+        Image.fromarray(rgba.round().clip(0, 255).astype("uint8"), "RGBA").resize(
+            size, Image.Resampling.BOX
+        ),
+        dtype=np.float64,
+    )
+
+    out_alpha = small[..., 3:4] / 255.0
+    lit = out_alpha[..., 0] > 0
+    small[lit, :3] /= out_alpha[lit]
+    return Image.fromarray(small.round().clip(0, 255).astype("uint8"), "RGBA")
+
 
 def pad_full_bleed(path: Path, target: Path) -> bool:
     """Copy a token image, giving a full-bleed one room to be a circle.
@@ -96,17 +155,29 @@ def pad_full_bleed(path: Path, target: Path) -> bool:
         spots = ((0, 0), (width - 1, 0), (0, height - 1), (width - 1, height - 1))
         corners = [rgba.getpixel(spot) for spot in spots]
         if any(not isinstance(pixel, tuple) or pixel[3] == 0 for pixel in corners):
-            shutil.copy2(path, target)
+            shrink(rgba).save(target, optimize=True)
             return False
 
         pad = round(width * BLEED_PAD)
         # The background to extend is whatever the corner is -- these are
         # flat-backed logos, which is why they are square in the first
-        # place.
+        # place. Padded before shrinking, so the padding is resampled with
+        # the artwork rather than added at a size it was not measured for.
         canvas = Image.new("RGBA", (width + pad * 2, height + pad * 2), corners[0])
         canvas.paste(rgba, (pad, pad), rgba)
-        canvas.save(target)
+        shrink(canvas).save(target, optimize=True)
     return True
+
+
+def shrink_file(path: Path, target: Path) -> None:
+    """Copy one image, no larger than a compiled mark needs to be."""
+    try:
+        from PIL import Image
+    except ImportError:  # pragma: no cover - Pillow is a build-time tool
+        shutil.copy2(path, target)
+        return
+    with Image.open(path) as image:
+        shrink(image.convert("RGBA")).save(target, optimize=True)
 
 
 def copy_tree(source: Path, target: Path, *, tokens: bool = False) -> tuple[int, int]:
@@ -120,6 +191,11 @@ def copy_tree(source: Path, target: Path, *, tokens: bool = False) -> tuple[int,
         destination = target / item.name
         if tokens and item.suffix.lower() == ".png":
             padded += pad_full_bleed(item, destination)
+        elif item.suffix.lower() == ".png":
+            # Chain marks. Drawn smallest of anything here -- 14px in the
+            # picker -- so they had the furthest to fall and looked the
+            # worst for it.
+            shrink_file(item, destination)
         else:
             shutil.copy2(item, destination)
         files += 1

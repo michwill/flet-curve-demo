@@ -29,6 +29,31 @@ from pathlib import Path
 #: Where `build_assets.py` writes, relative to the Flet assets directory.
 ASSET_ROOT = "curve"
 
+#: How large a compiled mark is, in pixels, on the long side.
+#:
+#: Upstream art is 200 to 280px and every mark here is drawn between 14
+#: and 38, so the renderer was being handed a tenfold reduction and asked
+#: to make it look good. It cannot: minification wants an average over
+#: every contributing pixel, which is what a mipmap is, and CanvasKit does
+#: not build one -- so in a browser every filter quality produced the same
+#: aliased result, worst on the smallest mark on the page.
+#:
+#: A resampler that *does* average over everything is easy to run once, at
+#: build time, where nothing is in a hurry. So the art arrives close to
+#: the size it is drawn at and the runtime step is small enough that any
+#: filter can do it.
+#:
+#: 160 because the largest mark drawn is 38px -- the pool stack on a
+#: detail page -- and the densest screens put four device pixels on each
+#: logical one: 152, rounded up. 128 was the first answer and covers a
+#: ratio of 3 but not 3.5, which real phones report; the test that asks
+#: for every ratio up to 4 is what caught it, and 25% more art is a
+#: cheaper mistake than a mark being upscaled on the newest handsets.
+#:
+#: A *ceiling*: art that arrives smaller is left alone rather than blown
+#: up to meet it.
+MARK_PIXELS = 160
+
 #: The same directory on the Python filesystem, for existence checks. On
 #: web this path does not exist -- `flet publish` deliberately leaves the
 #: assets out of the archive Pyodide unpacks -- so checks are skipped there

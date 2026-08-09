@@ -17,7 +17,7 @@ import flet as ft
 
 from curve.models import Coin, Pool
 
-from .assets import chain_logo, is_browser, token_logo
+from .assets import MARK_PIXELS, chain_logo, is_browser, token_logo
 
 #: How a logo gets from 200-280px of source art down to the 22-34px it is
 #: drawn at. Two knobs, and the answer is not the intuitive one.
@@ -76,9 +76,11 @@ BROWSER_DECODE = 2
 #: and so a reader can see there is exactly one of it.
 _pixel_ratio = [2.0]
 
-#: Beyond this there is no more art to decode -- the compiled marks are
-#: 200px -- and asking for more only costs memory.
-MAX_DECODE = 256
+#: Beyond this there is no more art to decode. `build_assets.py` compiles
+#: every mark down to this, so asking for more would have the decoder
+#: blow a 128px file up to 204 only for the GPU to shrink it again --
+#: slower, softer, and inventing detail that is not in the file.
+MAX_DECODE = MARK_PIXELS
 
 
 def set_pixel_ratio(ratio: float | None) -> None:

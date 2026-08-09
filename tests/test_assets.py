@@ -471,3 +471,51 @@ def test_a_chain_mark_keeps_its_shape_wherever_it_is_put() -> None:
     assert isinstance(mark, ft.Image)
     assert mark.width == 18 and mark.height == 18
     assert mark.fit is ft.BoxFit.CONTAIN
+
+
+# -- what build_assets compiles them down to --------------------------------
+
+
+def test_no_compiled_mark_is_larger_than_it_is_drawn(monkeypatch) -> None:
+    """The point of shrinking them at build time.
+
+    Upstream art is 200-280px and nothing here is drawn above 38, so the
+    renderer was being handed a tenfold reduction and asked to make it
+    look good. It cannot -- minification wants an average over every
+    contributing pixel, which is a mipmap, and CanvasKit builds none. So
+    the averaging happens once, offline, and what ships is close to the
+    size it is used at.
+    """
+    from PIL import Image
+
+    from ui.assets import MARK_PIXELS
+
+    root = Path(__file__).resolve().parent.parent / "src/assets/curve"
+    marks = [*(root / "chains").glob("*.png")]
+    marks += sorted((root / "tokens/ethereum").glob("*.png"))[:120]
+    assert marks, "assets are not compiled -- run tools/build_assets.py"
+
+    for mark in marks:
+        with Image.open(mark) as image:
+            assert max(image.size) <= MARK_PIXELS, (
+                f"{mark.name} is {image.size}, larger than MARK_PIXELS"
+            )
+
+
+def test_the_decode_never_asks_for_more_than_was_compiled() -> None:
+    """A cache size above what the file holds makes the decoder blow it
+    up only for the GPU to shrink it again -- slower, softer, and
+    inventing detail that is not there."""
+    from ui.assets import MARK_PIXELS
+
+    assert logos.MAX_DECODE == MARK_PIXELS
+
+
+def test_the_biggest_mark_still_has_pixels_for_a_dense_screen() -> None:
+    """38px is the largest thing drawn -- the stack on a detail page --
+    and a phone puts three device pixels on each logical one. If that
+    ever exceeds what is compiled, the marks start being upscaled and
+    every argument above stops holding."""
+    from ui.assets import MARK_PIXELS
+
+    assert MARK_PIXELS >= 38 * 3

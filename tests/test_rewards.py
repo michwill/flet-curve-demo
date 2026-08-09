@@ -24,7 +24,7 @@ from curve.pool import PoolContract
 from curve.rewards import CRV_DECIMALS, REWARDS, crv_token, rewards_for
 from ui import actions
 from ui.actions import ClaimTab
-from wallet.base import WalletProvider
+from wallet.base import RpcError, WalletProvider
 
 ACCOUNT = "0x1111111111111111111111111111111111111111"
 POOL_ADDRESS = "0x390f3595bCa2df7D23783DFd126427CCeb997BF4"
@@ -297,3 +297,82 @@ async def test_claiming_nothing_is_refused_rather_than_sent() -> None:
 
 def test_crv_decimals_is_eighteen() -> None:
     assert CRV_DECIMALS == 18
+
+
+# -- a read that fails is not a gauge that owes nothing ---------------------
+
+
+class FailingProvider(FakeProvider):
+    """Answers normally until `broken` is set, then refuses every read."""
+
+    def __init__(self, answers=None) -> None:
+        super().__init__(answers)
+        self.broken = False
+
+    async def request(self, method: str, params=None):
+        if self.broken and method == "eth_call":
+            raise RpcError(-32000, "endpoint went away")
+        return await super().request(method, params)
+
+
+async def test_a_failed_read_keeps_the_last_known_figures() -> None:
+    """Zeroing here is what made a flaky node hide the whole panel.
+
+    The tab is shown only when something is owed, so reporting a failed
+    read as nothing owed did not surface an error -- it removed the place
+    an error could have been shown.
+    """
+    provider = FailingProvider({"0x33134583": word(3 * 10**18)})
+    tab = claim_tab(provider)
+    await tab.refresh()
+    assert tab.crv_claimable == 3 * 10**18
+    assert tab.read_error == ""
+
+    provider.broken = True
+    await tab.refresh()
+
+    assert tab.crv_claimable == 3 * 10**18, "the last known figure survives"
+    assert tab.available is True, "the tab does not vanish on a hiccup"
+    assert "endpoint went away" in tab.read_error
+
+
+async def test_the_reason_is_shown_rather_than_implied() -> None:
+    provider = FailingProvider({"0x33134583": word(3 * 10**18)})
+    tab = claim_tab(provider)
+    await tab.refresh()
+    provider.broken = True
+    await tab.refresh()
+
+    assert "endpoint went away" in (tab.estimate.value or "")
+    assert tab.empty_note.visible is False, "never say 'nothing to claim' on a failure"
+
+
+async def test_a_recovered_read_clears_the_message() -> None:
+    provider = FailingProvider({"0x33134583": word(3 * 10**18)})
+    tab = claim_tab(provider)
+    provider.broken = True
+    await tab.refresh()
+    assert tab.read_error
+
+    provider.broken = False
+    await tab.refresh()
+
+    assert tab.read_error == ""
+    assert tab.estimate.value == ""
+
+
+async def test_disconnecting_still_clears_everything() -> None:
+    """A wallet going away is not a failure -- there is genuinely nothing."""
+    provider = FailingProvider({"0x33134583": word(3 * 10**18)})
+    pool = make_pool()
+    contract = PoolContract(provider, pool, ACCOUNT)
+    tab = ClaimTab(StubPage(), pool, lambda: contract, _noop)
+    await tab.refresh()
+    assert tab.available is True
+
+    contract.account = ""  # what a disconnect looks like to the panel
+    await tab.refresh()
+
+    assert tab.crv_claimable == 0
+    assert tab.available is False
+    assert tab.read_error == ""

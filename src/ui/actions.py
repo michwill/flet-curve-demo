@@ -1728,6 +1728,21 @@ class ClaimTab(ActionTab):
         self.empty_note = ft.Text(
             "Nothing to claim yet.", size=SMALL, color=ft.Colors.ON_SURFACE_VARIANT
         )
+        #: Why the last read failed, or "" if it did not.
+        #:
+        #: These two numbers used to be set to zero whenever the node would
+        #: not answer, which made "the read failed" and "you are owed
+        #: nothing" the same state -- and since the tab is shown only when
+        #: something is owed, a flaky endpoint made the whole panel vanish
+        #: rather than say anything. It cost four runs of the fork suite to
+        #: find, because a timeout there looked exactly like an account with
+        #: no rewards.
+        #:
+        #: So a failed read now keeps whatever was last known and records
+        #: the reason. A position that was visible stays visible through a
+        #: hiccup, and the reason is on screen instead of implied by an
+        #: absence.
+        self.read_error = ""
 
     @property
     def available(self) -> bool:
@@ -1777,7 +1792,15 @@ class ClaimTab(ActionTab):
             if amount > 0:
                 lines.append(self._line(address, symbol, decimals, amount))
         self.rows.controls = lines
-        self.empty_note.visible = not lines
+        # The reason goes where every other panel puts one. "Nothing to
+        # claim yet" is only said when that is actually known -- saying it
+        # after a failed read is the lie this whole attribute exists to
+        # stop.
+        self.estimate.value = self.read_error
+        self.estimate.color = (
+            ft.Colors.ERROR if self.read_error else ft.Colors.ON_SURFACE_VARIANT
+        )
+        self.empty_note.visible = not lines and not self.read_error
 
     async def _meta_for(self, contract: PoolContract, token: str) -> tuple[str, int]:
         key = token.lower()
@@ -1810,25 +1833,33 @@ class ClaimTab(ActionTab):
             return
 
         if contract is not None and contract.can_send:
+            # Each half keeps its last known figure when the read fails --
+            # see `read_error`. Zeroing here is what made a node that would
+            # not answer look like a gauge that owes nothing.
+            self.read_error = ""
             try:
                 self.crv_claimable = await contract.claimable_crv()
-            except WalletError:
-                self.crv_claimable = 0
-            extras: list[tuple[str, str, int, int]] = []
+            except WalletError as exc:
+                self.read_error = str(exc)
             try:
+                extras: list[tuple[str, str, int, int]] = []
                 for token in await contract.reward_tokens():
                     amount = await contract.claimable_reward(token)
                     symbol, decimals = await self._meta_for(contract, token)
                     extras.append((token, symbol, decimals, amount))
-            except WalletError:
-                pass
-            self.extras = extras
+                self.extras = extras
+            except WalletError as exc:
+                # The partial list is discarded rather than shown: a token
+                # missing from it is indistinguishable from one paying
+                # nothing, and claiming is all-or-nothing anyway.
+                self.read_error = self.read_error or str(exc)
         else:
             # No account, nothing accrues to it. Clearing rather than
             # keeping the last wallet's numbers is what takes the tab out
             # of the bar on disconnect -- see `ActionTab.available`.
             self.crv_claimable = 0
             self.extras = []
+            self.read_error = ""
 
         self._render()
         # Nothing to approve: both claims move tokens the gauge already

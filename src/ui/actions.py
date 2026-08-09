@@ -44,6 +44,7 @@ from curve.confirm import POLL_INTERVAL, wait_for_confirmation
 from curve.format import token_amount, units_to_float
 from curve.models import Pool
 from curve.pool import PoolContract
+from curve.stake_zaps import stake_zap_for
 from curve.zaps import zap_for
 from wallet.base import WalletError
 from wallet.erc20 import format_units, parse_units
@@ -200,6 +201,18 @@ class ActionTab:
     #: `calc_token_amount`, which some implementations compute fee-free.
     fee_multiple = ESTIMATE_FEE_SHARE
     slippage_constant = QUOTE_DRIFT
+
+    @property
+    def available(self) -> bool:
+        """Is there anything this panel can act on?
+
+        False takes the tab out of the bar entirely rather than showing an
+        empty one -- see `pool_detail._sync_tabs`. Only staking answers
+        this with anything but True: three of the four panels are useful
+        with nothing in the wallet at all, because a quote is worth reading
+        before you own anything.
+        """
+        return True
 
     def __init__(
         self,
@@ -473,6 +486,18 @@ class ActionTab:
         self.submit_button.disabled = busy
         self.approve_button.disabled = busy
         self.page.update()
+
+    async def _step(self, contract: PoolContract, tx: str, done: str) -> None:
+        """Wait for a transaction that is *not* the last one in this action.
+
+        Same wait as `_confirm` -- receipt, then the endpoint's own head
+        reaching that block -- because the next step reads state the
+        previous one wrote, and reading it early reads the state before.
+        What differs is the line: it says what just landed and that more is
+        coming, so a second wallet prompt is expected rather than alarming.
+        """
+        self._say(f"{done} Waiting for {tx[:14]}… to confirm.", pending=True)
+        await wait_for_confirmation(contract.provider, tx, interval=CONFIRM_INTERVAL)
 
     async def _confirm(self, contract: PoolContract, tx: str, done: str) -> None:
         """Wait for the transaction, then let the panel read the result.
@@ -748,15 +773,40 @@ class DepositTab(ActionTab):
     pool, a second route appears whose fields are the *underlying* coins,
     and everything downstream (the quote, the approvals, the deposit, and
     the fee the slippage comes from) follows the chosen route.
+
+    **Staking is a checkbox rather than a trip to the Stake tab.** Nobody
+    deposits in order to hold an LP token; they deposit to earn on it, and
+    the LP is the intermediate step. Curve deploys a zap that does both in
+    one transaction -- see `curve.stake_zaps` -- so where that exists the
+    box costs nothing at all. Where it does not, the panel does the same
+    thing in sequence rather than hiding the option on a third of the
+    chains this app lists: deposit, then stake what was minted.
     """
 
     title = "Deposit"
     submit_label = "Deposit"
-    _done_verb = "Deposited"
+    # No `_done_verb`: `done_verb` below is a property, because the line
+    # has to say whether the LP was staked as well as minted.
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.zap = zap_for(self.pool)
+        #: The chain's deposit-and-stake contract, or None where Curve has
+        #: not deployed one. Read once: it is keyed by chain, and a panel
+        #: does not outlive the pool it was built for.
+        self.stake_zap = stake_zap_for(self.pool)
+        self.stake_box = ft.Checkbox(
+            label="Stake",
+            value=False,
+            on_change=self._stake_toggled,
+            visible=self.pool.has_gauge,
+            tooltip=(
+                "Deposit and stake in the gauge in one transaction."
+                if self.stake_zap is not None
+                else "Deposit, then stake what it mints. Two transactions: "
+                "this network has no deposit-and-stake zap."
+            ),
+        )
         self.route = _route_picker(
             self._route_changed, underlying=self.zap is not None
         )
@@ -788,8 +838,32 @@ class DepositTab(ActionTab):
         return self.routes["underlying" if self.underlying else "pool"]
 
     @property
+    def staking(self) -> bool:
+        """Is the box ticked, on a pool that has somewhere to stake?"""
+        return self.pool.has_gauge and bool(self.stake_box.value)
+
+    @property
+    def combined(self) -> bool:
+        """Can this go in one transaction rather than two?
+
+        The deposit-and-stake zap is per chain, so this is false on every
+        network Curve has not deployed it to -- which is where the panel
+        falls back to sending the two transactions itself.
+        """
+        return self.staking and self.stake_zap is not None
+
+    @property
     def spender(self) -> str:
-        """Who moves the coins: the pool itself, or the zap."""
+        """Who moves the coins: the pool, the deposit zap, or the stake zap.
+
+        Whoever is going to call `transferFrom` is who has to be approved,
+        and on the combined route that is the deposit-and-stake zap rather
+        than either of the other two -- it takes the coins and passes them
+        on. Getting this wrong is an allowance granted to a contract that
+        never spends it and a transaction that reverts for want of one.
+        """
+        if self.combined and self.stake_zap is not None:
+            return self.stake_zap.address
         return self.zap.address if self.underlying and self.zap else self.pool.address
 
     # The panel's own fields, as the rest of the class and the tests know
@@ -811,7 +885,21 @@ class DepositTab(ActionTab):
         self.rows.balances = list(values)
 
     def build(self) -> list[ft.Control]:
-        return [self.route, *(rows.control for rows in self.routes.values())]
+        return [
+            self.route,
+            *(rows.control for rows in self.routes.values()),
+            self.stake_box,
+        ]
+
+    def _stake_toggled(self, _e: AnyEvent) -> None:
+        """Ticking the box changes who gets approved, so re-read that.
+
+        The coins were approved to the pool and now have to be approved to
+        the stake zap -- or the other way round -- and until that is read
+        back the approve step is describing the route that is no longer
+        live.
+        """
+        self.page.run_task(self.refresh)
 
     def _apply_route(self) -> None:
         """Show the live route's fields and hide the other's."""
@@ -931,28 +1019,87 @@ class DepositTab(ActionTab):
                 return (coin.address, self.spender, amount)
         return None
 
+    @property
+    def done_verb(self) -> str:
+        return "Deposited and staked" if self.staking else "Deposited"
+
     async def submit(self, contract: PoolContract) -> str:
         amounts = self._amounts()
         if not any(amounts):
             raise WalletError("Enter an amount to deposit.")
         expected = await self._quote(contract, amounts)
         floor = self.with_slippage(expected)
-        if self.underlying:
-            return await contract.zap_add_liquidity(amounts, floor)
-        return await contract.add_liquidity(amounts, floor)
+        if self.combined:
+            return await contract.deposit_and_stake(
+                amounts, floor, underlying=self.underlying
+            )
+
+        # Two transactions, and the LP balance is read on both sides of the
+        # first rather than trusting the quote: `floor` is a floor, the mint
+        # is whatever the pool decided, and staking a number that is not the
+        # one that arrived either leaves dust behind or reverts.
+        before = await contract.lp_balance() if self.staking else 0
+        tx = await (
+            contract.zap_add_liquidity(amounts, floor)
+            if self.underlying
+            else contract.add_liquidity(amounts, floor)
+        )
+        if not self.staking:
+            return tx
+        await self._step(contract, tx, "Deposited.")
+        minted = await contract.lp_balance() - before
+        if minted <= 0:
+            raise WalletError(
+                "The deposit confirmed but no new LP tokens arrived, so there "
+                "is nothing to stake. Check the Stake tab."
+            )
+        allowance = await contract.allowance(self.pool.lp_token, self.pool.gauge)
+        if allowance < minted:
+            approval = await contract.approve(
+                self.pool.lp_token, self.pool.gauge, minted
+            )
+            await self._step(contract, approval, "Approved the gauge.")
+        return await contract.stake(minted)
 
 
 class WithdrawTab(ActionTab):
-    """Remove liquidity, either balanced or all into one coin."""
+    """Remove liquidity, either balanced or all into one coin.
+
+    **Staked LP counts as liquidity.** Someone who deposited and staked has
+    an LP balance of zero, and a Withdraw panel that reads only the wallet
+    tells them they have nothing to withdraw -- which is false, and the fix
+    (go to Stake, unstake, come back) is a sequence they have to work out
+    themselves. So the panel offers to draw on the gauge, and ticks the box
+    itself when the wallet is empty and the gauge is not, because in that
+    case it is the only thing that can be meant.
+
+    There is no zap for this direction -- Curve deploys one for depositing
+    and staking, and nothing for the reverse -- so a withdrawal that needs
+    staked LP unstakes first and then withdraws, as two transactions.
+    """
 
     title = "Withdraw"
     submit_label = "Withdraw"
-    _done_verb = "Withdrew"
+    # As on the deposit side: a property, because a withdrawal that had to
+    # unstake first did two things and should say so.
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.lp_balance = 0
+        self.staked = 0
         self.zap = zap_for(self.pool)
+        self.use_staked = ft.Checkbox(
+            label="Use staked",
+            value=False,
+            on_change=self._use_staked_toggled,
+            visible=False,
+            tooltip="Unstake what this withdrawal needs, then withdraw.",
+        )
+        #: Once the box has been touched it stops being set from the
+        #: balances -- the same rule the slippage box follows, and for the
+        #: same reason: a control that fights the user is worse than one
+        #: that guesses wrong once.
+        self._use_staked_is_theirs = False
         # An LP token has no logo of its own; Curve draws the pool's coins.
         self.amount = _amount_field(
             "LP tokens",
@@ -1005,10 +1152,55 @@ class WithdrawTab(ActionTab):
     def build(self) -> list[ft.Control]:
         return [
             _stacked(self.amount, self.lp_label),
+            self.use_staked,
             self.route,
             self.mode,
             self.coin_picker,
         ]
+
+    # -- where the LP comes from ------------------------------------------
+
+    @property
+    def drawing_on_gauge(self) -> bool:
+        return bool(self.use_staked.value) and self.pool.has_gauge
+
+    @property
+    def spendable(self) -> int:
+        """LP this withdrawal may use: the wallet's, plus the gauge's if asked.
+
+        Both, not either. A position can be half staked -- deposit twice,
+        stake once -- and making the box choose one balance would mean
+        withdrawing the whole of such a position took two passes for no
+        reason. What the box decides is whether the gauge may be touched at
+        all; the wallet's own LP is always spent first, because unstaking
+        what you already hold is a transaction for nothing.
+        """
+        return self.lp_balance + (self.staked if self.drawing_on_gauge else 0)
+
+    def _to_unstake(self, amount: int) -> int:
+        """How much has to come out of the gauge for `amount` to be spendable."""
+        if not self.drawing_on_gauge:
+            return 0
+        return max(0, min(amount - self.lp_balance, self.staked))
+
+    def _use_staked_toggled(self, _e: AnyEvent) -> None:
+        self._use_staked_is_theirs = True
+        self._changed(None)
+
+    def _sync_use_staked(self) -> None:
+        """Offer the box where it can do something, and pre-tick it once.
+
+        Hidden when there is nothing staked: a checkbox that cannot change
+        the outcome is noise. Ticked when the wallet holds no LP at all and
+        the gauge does, which is the state depositing-and-staking leaves
+        behind and the one case where not ticking it is certainly wrong.
+        """
+        self.use_staked.visible = self.pool.has_gauge and self.staked > 0
+        if not self.use_staked.visible:
+            self.use_staked.value = False
+            return
+        if not self._use_staked_is_theirs:
+            self.use_staked.value = self.lp_balance <= 0
 
     def _apply_route(self) -> None:
         """Swap the receive list, and force the single-coin mode on a zap."""
@@ -1032,7 +1224,7 @@ class WithdrawTab(ActionTab):
         self._changed(None)
 
     def _max(self, _e: AnyEvent) -> None:
-        self.amount.value = format_units(self.lp_balance, 18, precision=18)
+        self.amount.value = format_units(self.spendable, 18, precision=18)
         self.page.run_task(self.refresh)
 
     def _changed(self, _e: AnyEvent | None) -> None:
@@ -1113,9 +1305,25 @@ class WithdrawTab(ActionTab):
         if contract is not None and contract.can_send:
             try:
                 self.lp_balance = await contract.lp_balance()
-                self.lp_label.value = f"Balance: {format_units(self.lp_balance, 18)} LP"
+                self.staked = await contract.staked_balance()
+                self.lp_label.value = (
+                    f"Balance: {format_units(self.lp_balance, 18)} LP"
+                    + (
+                        f"  ·  Staked: {format_units(self.staked, 18)} LP"
+                        if self.staked
+                        else ""
+                    )
+                )
             except WalletError:
                 self.lp_label.value = ""
+        else:
+            # Disconnecting has to clear these, not leave the last wallet's
+            # numbers standing: they decide whether the gauge may be drawn
+            # on, and a stale non-zero would offer that against a balance
+            # nobody here holds any more.
+            self.lp_balance = self.staked = 0
+            self.lp_label.value = ""
+        self._sync_use_staked()
 
         self.estimate.value = ""
         self._quote_ok = True
@@ -1137,15 +1345,45 @@ class WithdrawTab(ActionTab):
                 self.estimate.value = str(exc)
                 self._quote_ok = False
 
+        # Said before it is sent rather than after it reverts. The number
+        # that matters is `spendable`, not the wallet balance: with the box
+        # ticked, LP still in the gauge is available and the plain balance
+        # would refuse a withdrawal that is perfectly possible.
+        over = (
+            contract is not None and contract.can_send and amount > self.spendable
+        )
+        if over:
+            self.estimate.value = (
+                f"Only {format_units(self.spendable, 18)} LP available"
+                + (
+                    "."
+                    if self.drawing_on_gauge or not self.staked
+                    else ", or more with “Use staked”."
+                )
+            )
+
         await self._sync_approval(contract)
-        if contract is None or amount <= 0 or not self._quote_ok:
+        if contract is None or amount <= 0 or not self._quote_ok or over:
             self.submit_button.disabled = True
         self.page.update()
+
+    @property
+    def done_verb(self) -> str:
+        return "Unstaked and withdrew" if self._to_unstake(self._lp_amount()) else "Withdrew"
 
     async def submit(self, contract: PoolContract) -> str:
         amount = self._lp_amount()
         if amount <= 0:
             raise WalletError("Enter an amount to withdraw.")
+        unstaking = self._to_unstake(amount)
+        if unstaking > 0:
+            # Curve has no unstake-and-withdraw zap -- only the deposit
+            # direction got one -- so this is genuinely two transactions,
+            # and the second reads the balance the first produced.
+            tx = await contract.unstake(unstaking)
+            await self._step(
+                contract, tx, f"Unstaked {self.amount_label(self.pool.lp_token, unstaking)}."
+            )
         if self.underlying:
             index = self._coin_index()
             expected = await contract.zap_calc_withdraw_one_coin(amount, index)
@@ -1458,7 +1696,15 @@ class SwapTab(ActionTab):
 
 
 class StakeTab(ActionTab):
-    """Move LP tokens in and out of the pool's gauge."""
+    """Move LP tokens in and out of the pool's gauge.
+
+    Shown only when there is something to move. Depositing is now able to
+    stake on its own and withdrawing to unstake on its own, so this panel is
+    the *manual* control: it earns a place in the bar when the wallet holds
+    LP that is not staked, or the gauge holds LP that could come out, and
+    not otherwise. An empty Stake tab on a pool nobody has any position in
+    is a tab that can only disappoint.
+    """
 
     title = "Stake"
     submit_label = "Stake"
@@ -1485,6 +1731,17 @@ class StakeTab(ActionTab):
             ),
             on_change=self._changed,
         )
+
+    @property
+    def available(self) -> bool:
+        """Is there LP to move, in either direction?
+
+        Both balances, because the tab serves both directions: LP in the
+        wallet is something to stake, LP in the gauge something to unstake.
+        Zero of each -- including the no-wallet case, where both reads are
+        skipped and stay zero -- means the panel has nothing to act on.
+        """
+        return self.pool.has_gauge and (self.lp_balance > 0 or self.staked > 0)
 
     @property
     def done_verb(self) -> str:
@@ -1538,7 +1795,11 @@ class StakeTab(ActionTab):
             self.page.update()
             return
 
-        if contract is not None:
+        # `can_send`, because both reads are balances *of the account* and
+        # a public node has none -- see `curve.rpc`. It also keeps both
+        # numbers at zero with no wallet connected, which is what takes the
+        # tab out of the bar rather than showing one that reads "0 LP".
+        if contract is not None and contract.can_send:
             try:
                 self.lp_balance = await contract.lp_balance()
                 self.staked = await contract.staked_balance()
@@ -1548,6 +1809,12 @@ class StakeTab(ActionTab):
                 )
             except WalletError:
                 self.balances_label.value = ""
+        else:
+            # Same reason as the withdraw panel: these two numbers are what
+            # `available` is computed from, so a disconnect has to take the
+            # tab away rather than leave it offering the last account's LP.
+            self.lp_balance = self.staked = 0
+            self.balances_label.value = ""
 
         staking = self.direction.value == "stake"
         self.submit_label = "Stake" if staking else "Unstake"

@@ -1385,13 +1385,58 @@ def test_the_tab_bar_is_containers_rather_than_flets_tabs() -> None:
     view = detail_view()
     labels = view._tab_bar.content.controls
 
-    assert len(labels) == len(view.tabs)
+    # One per tab that has something to act on. With no wallet the Stake
+    # panel reads no balances, so it stays out -- see `ActionTab.available`.
+    assert len(labels) == len([tab for tab in view.tabs if tab.available])
     for label in labels:
         assert isinstance(label, ft.Container)
         assert label.on_click is not None
     # And they wrap rather than scroll, so a wider font takes a second
     # line instead of putting a scrollbar in the panel.
     assert view._tab_bar.content.wrap is True
+
+
+def test_stake_joins_the_bar_once_there_is_a_position() -> None:
+    """The bar is a function of the balances, re-read after every confirmed
+    transaction -- so depositing into a pool you had nothing in makes the
+    Stake tab appear rather than leaving it there saying "0 LP"."""
+    view = detail_view()
+    titles = lambda: [  # noqa: E731 - read once, in the asserts below
+        label.content.value for label in view._tab_bar.content.controls
+    ]
+    assert "Stake" not in titles()
+
+    stake = next(tab for tab in view.tabs if tab.title == "Stake")
+    stake.lp_balance = 10**18
+    view._sync_tabs()
+    assert "Stake" in titles()
+
+
+def test_the_panel_you_are_on_survives_a_tab_appearing() -> None:
+    """Indices are into `tabs`, not into what is drawn -- otherwise a tab
+    appearing to the left of the one you are on would slide it sideways."""
+    view = detail_view()
+    view._show_tab(2)  # Swap
+    assert view._tab_body.content is view.tabs[2].frame
+
+    next(tab for tab in view.tabs if tab.title == "Stake").lp_balance = 10**18
+    view._sync_tabs()
+    assert view._tab == 2
+    assert view._tab_body.content is view.tabs[2].frame
+
+
+def test_leaving_a_tab_that_has_nothing_left_to_do() -> None:
+    """Unstaking the last of a position takes Stake out from under you."""
+    view = detail_view()
+    stake_index = next(i for i, tab in enumerate(view.tabs) if tab.title == "Stake")
+    view.tabs[stake_index].staked = 10**18
+    view._sync_tabs()
+    view._show_tab(stake_index)
+    assert view._tab == stake_index
+
+    view.tabs[stake_index].staked = 0
+    view._sync_tabs()
+    assert view._tab == 0, "fell back to the first tab that has something to do"
 
 
 def test_tapping_a_label_shows_that_panel() -> None:

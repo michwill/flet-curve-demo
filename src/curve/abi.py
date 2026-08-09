@@ -38,6 +38,7 @@ __all__ = [
     "encode_approve",
     "encode_calc_token_amount",
     "encode_calc_withdraw_one_coin",
+    "encode_deposit_and_stake",
     "encode_exchange",
     "encode_gauge_deposit",
     "encode_gauge_withdraw",
@@ -524,6 +525,79 @@ def encode_gauge_deposit(amount: int) -> str:
 
 def encode_gauge_withdraw(amount: int) -> str:
     return _call("withdraw(uint256)", _uint(amount))
+
+
+# -- depositing and staking in one call ------------------------------------
+#
+# Curve's deposit-and-stake zap. Two dynamic arrays in one argument list,
+# which is the only place in this file where two heads point at two tails,
+# so the offsets are worked out rather than written down: the second tail
+# begins after the first one's length word and its elements.
+#
+# The two spellings are `curve.stake_zaps`' business, not this file's --
+# see that module for which chains take which, and why guessing is a
+# selector for a function that does not exist.
+
+
+def _dyn_address_array(values: list[str]) -> str:
+    """The tail of an `address[]`: a length word, then one word each."""
+    return _uint(len(values)) + "".join(_address(v) for v in values)
+
+
+def encode_deposit_and_stake(
+    deposit: str,
+    lp_token: str,
+    gauge: str,
+    coins: list[str],
+    amounts: list[int],
+    min_mint: int,
+    *,
+    use_dynarray: bool,
+    pool: str,
+    use_underlying: bool | None = None,
+) -> str:
+    """Deposit `amounts` of `coins` and stake the LP that comes back.
+
+    `deposit` is where the coins go -- the pool itself, or its deposit zap
+    on the underlying route -- and `pool` is the metapool a factory zap has
+    to be told about, or the zero address when there is none. They are two
+    arguments because they are two different things: the zap is what gets
+    called, the pool is what it is called *for*.
+
+    `use_underlying` present means the ten-argument spelling; None means
+    the nine-argument one. Not a default, because there is no safe default:
+    sending the wrong arity is calldata for a function the contract does
+    not have.
+    """
+    if len(coins) != len(amounts):
+        raise ValueError(f"{len(coins)} coins against {len(amounts)} amounts")
+    flags = (
+        [_bool(use_underlying), _bool(use_dynarray)]
+        if use_underlying is not None
+        else [_bool(use_dynarray)]
+    )
+    signature = (
+        "deposit_and_stake(address,address,address,uint256,address[],uint256[],"
+        + ("uint256,bool,bool,address)" if use_underlying is not None else "uint256,bool,address)")
+    )
+    # Head: three addresses, n_coins, two offsets, min_mint, the flags, pool.
+    head_words = 7 + len(flags) + 1
+    coins_tail = _dyn_address_array(coins)
+    return _call(
+        signature,
+        _address(deposit),
+        _address(lp_token),
+        _address(gauge),
+        _uint(len(coins)),
+        _offset(head_words),
+        # Past the coins tail: its length word plus one word per address.
+        _offset(head_words + 1 + len(coins)),
+        _uint(min_mint),
+        *flags,
+        _address(pool),
+        coins_tail,
+        _dyn_array(amounts),
+    )
 
 
 # -- slippage --------------------------------------------------------------

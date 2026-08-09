@@ -1,9 +1,10 @@
 """Talking to a pool on-chain, through whatever wallet is connected.
 
 Everything the action panels need -- quotes, allowances, balances, and the
-five transactions (exchange, deposit, withdraw, stake, unstake) -- expressed
-against `wallet.WalletProvider`. That provider proxies `eth_call` to the
-user's own node, so this file needs no RPC URL of its own.
+transactions (exchange, deposit, withdraw, stake, unstake, and the combined
+deposit-and-stake) -- expressed against `wallet.WalletProvider`. That
+provider proxies `eth_call` to the user's own node, so this file needs no
+RPC URL of its own.
 
 The one non-obvious rule in here is `_read`, and it is worth stating up
 front because getting it wrong is silent:
@@ -32,6 +33,7 @@ from . import abi
 from .models import Pool
 from .multicall import MULTICALL3, decode_uints, encode_aggregate3
 from .parameters import PARAMETERS
+from .stake_zaps import ZERO_ADDRESS, StakeZap, stake_zap_for
 from .zaps import Zap, zap_for
 
 #: The two parameters that are spelled two ways: a tricrypto pool holds
@@ -66,6 +68,11 @@ class PoolContract:
         #: one. None for every pool that is not a factory metapool, which
         #: is nearly all of them.
         self.zap: Zap | None = zap_for(pool)
+        #: The deposit-and-stake zap for this *chain*, if the pool has a
+        #: gauge to stake into. Unrelated to `zap` above: that one is about
+        #: which coins a deposit may be made in, this one about whether the
+        #: deposit and the stake can share a transaction.
+        self.stake_zap: StakeZap | None = stake_zap_for(pool)
 
     @property
     def can_send(self) -> bool:
@@ -480,6 +487,58 @@ class PoolContract:
             self.pool.address,
             abi.encode_remove_liquidity_one_coin(
                 lp_amount, i, min_amount, stableswap=self.pool.is_stableswap
+            ),
+        )
+
+    async def deposit_and_stake(
+        self, amounts: list[int], min_mint: int, *, underlying: bool = False
+    ) -> str:
+        """Deposit and stake in one transaction, through Curve's zap.
+
+        The arguments mirror what the panel already knows: which route is
+        live decides where the coins go, which coin list is sent, and which
+        array shape the inner deposit uses.
+
+        `use_underlying` is always false here, and that is not a shortcut.
+        Curve's own client sets it only for lending pools and old crypto
+        metapools that have *no* deposit zap of their own -- and this app's
+        underlying route is defined by having one, so the flag can never
+        apply. Lending pools' underlying route is not offered here at all.
+
+        The pool argument is separate from the deposit address for the same
+        reason it is in `curve.zaps`: a factory zap serves every metapool on
+        its base pool and has to be told which, while a per-pool zap was
+        deployed for one and takes none.
+        """
+        zap = stake_zap_for(self.pool)
+        if zap is None:
+            raise PoolCallFailed(
+                "No deposit-and-stake zap is deployed for this network, so "
+                "depositing and staking are two transactions here."
+            )
+        if underlying:
+            deposit_zap = self._zap()
+            deposit_to = deposit_zap.address
+            coins = [coin.address for coin in self.pool.display_coins]
+            dynamic = deposit_zap.dynamic
+            for_pool = self.pool.address if deposit_zap.pool_arg else ZERO_ADDRESS
+        else:
+            deposit_to = self.pool.address
+            coins = [coin.address for coin in self.pool.pool_coins]
+            dynamic = self.pool.dynamic_arrays
+            for_pool = ZERO_ADDRESS
+        return await self._send(
+            zap.address,
+            abi.encode_deposit_and_stake(
+                deposit_to,
+                self.pool.lp_token,
+                self.pool.gauge,
+                coins,
+                amounts,
+                min_mint,
+                use_dynarray=dynamic,
+                pool=for_pool,
+                use_underlying=False if zap.use_underlying_arg else None,
             ),
         )
 

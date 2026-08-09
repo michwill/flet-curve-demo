@@ -683,9 +683,22 @@ class PoolDetailView(ft.Column):
         )
 
     def _sync_tabs(self) -> None:
-        """Draw the bar for the tab that is showing, and its panel."""
+        """Draw the bar for the tab that is showing, and its panel.
+
+        Only the tabs that have something to act on: `Stake` takes itself
+        out of the bar when the wallet holds no LP and the gauge holds none
+        either. Indices stay those of `self.tabs` rather than of what is
+        drawn, so which panel is showing survives a tab appearing or
+        disappearing underneath it -- which happens on every confirmed
+        transaction, since that is when the balances are re-read.
+        """
+        shown = [(index, tab) for index, tab in enumerate(self.tabs) if tab.available]
+        if not any(index == self._tab for index, _tab in shown):
+            # The tab that was showing has nothing left to do -- unstaking
+            # the last of a position, say. Fall back to the first that has.
+            self._tab = shown[0][0] if shown else 0
         self._tab_bar.content = ft.Row(
-            [self._tab_label(index, tab.title) for index, tab in enumerate(self.tabs)],
+            [self._tab_label(index, tab.title) for index, tab in shown],
             spacing=0,
             wrap=True,
         )
@@ -717,8 +730,25 @@ class PoolDetailView(ft.Column):
         safe_update(self._tab_body)
 
     async def refresh_actions(self) -> None:
+        """Re-read every panel, then redraw the bar in case it changed.
+
+        This runs after each confirmed transaction -- `ActionTab.on_done`
+        -- and confirmation already means the reads that follow are at or
+        after the block the transaction landed in, so a first deposit's LP
+        is visible here rather than one refresh later. See
+        `curve.confirm.wait_for_confirmation`.
+
+        The bar is redrawn because whether `Stake` belongs in it is a
+        function of those balances: staking the last unstaked LP removes
+        nothing, but withdrawing the last of a position does.
+        """
         for tab in self.tabs:
             await tab.refresh()
+        before = self._tab
+        self._sync_tabs()
+        safe_update(self._tab_bar)
+        if self._tab != before:
+            safe_update(self._tab_body)
 
     # -- chart ------------------------------------------------------------
 

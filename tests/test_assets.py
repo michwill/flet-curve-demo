@@ -519,3 +519,40 @@ def test_the_biggest_mark_still_has_pixels_for_a_dense_screen() -> None:
     from ui.assets import MARK_PIXELS
 
     assert MARK_PIXELS >= 38 * 3
+
+
+def test_a_compiled_mark_has_no_pale_rim() -> None:
+    """The bug a phone found twice.
+
+    A resampler averages each channel alone, so the colour of transparent
+    pixels bleeds into the edge unless you premultiply first. That much
+    was done -- and then the premultiplied data was rounded to uint8
+    before resizing, which is worse: at alpha 16/255 a channel value of
+    14.7 rounds to 15, and dividing that back out multiplies the error by
+    1/alpha. On this app's own network mark blue came out at 494, clipped
+    to 255, and the disc wore a white ring on iOS.
+
+    So: every part-transparent pixel on the rim must still be the colour
+    of the disc behind it, not a brighter version of it.
+    """
+    import numpy as np
+    from PIL import Image
+
+    mark = Path(__file__).resolve().parent.parent / "src/assets/curve/chains/ethereum.png"
+    assert mark.is_file(), "assets are not compiled -- run tools/build_assets.py"
+
+    pixels = np.asarray(Image.open(mark).convert("RGBA")).astype(int)
+    solid = pixels[pixels[..., 3] == 255][..., :3]
+    assert len(solid), "the mark has no opaque pixels at all"
+    brightest_solid = solid.max()
+
+    edge = pixels[(pixels[..., 3] > 0) & (pixels[..., 3] < 255)][..., :3]
+    assert len(edge), "the mark has no antialiased edge to check"
+
+    # Nothing on the rim may be brighter than the artwork it belongs to.
+    # A halo shows up as exactly that: edge pixels lighter than anything
+    # solid in the image.
+    assert edge.max() <= brightest_solid + 1, (
+        f"rim reaches {edge.max()} where the artwork peaks at "
+        f"{brightest_solid} -- that is a halo"
+    )

@@ -37,6 +37,36 @@ there is no post-build step to forget. Without it the WalletConnect connector
 simply does not appear; injected wallets (MetaMask, Rabby, Frame, qeth) work
 either way.
 
+### Testing WalletConnect without a phone
+
+WalletConnect looks untestable — it wants a projectId, a relay and a phone to
+scan a QR code — and two real bugs lived in it for exactly that reason: a
+reconnect that returned an unwrapped provider, and a disconnect that never
+ended the pairing. Both are invisible on the first connect, which is the only
+one anybody tests by hand.
+
+There is a seam. The bridge reads its module URL from
+`config.walletConnectModuleUrl` rather than hardcoding esm.sh, so a stub can be
+put in its place: `tools/fake_walletconnect.js` exports an `EthereumProvider`
+with the same four methods the bridge uses and records every call on
+`window.__wc`. Serve a build with
+
+```html
+<script>window.FLET_PAY = {walletConnectProjectId: "test-project",
+                           walletConnectModuleUrl: "./fake_walletconnect.js"};</script>
+```
+
+before `wallet_bridge.js` in `index.html`, copy the stub next to it, and the
+whole lifecycle is drivable from a headless browser. What the counters should
+say, connecting then disconnecting then connecting again:
+
+    on load       null                        module never fetched
+    connect       init 1, enable 1            the QR was offered
+    disconnect    disconnect 1                the pairing was ended
+    reconnect     init 2, enable 2            the QR was offered again
+
+Every one of those was wrong at some point, and each is one integer.
+
 The wallet layer is [`flet-pay-example`](https://github.com/michwill/flet-pay-example)'s
 `wallet/` package. Its README is the reference for how the EIP-1193 seam and the
 browser bridge work; this one covers what was added on top. Four changes were

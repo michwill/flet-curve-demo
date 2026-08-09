@@ -75,6 +75,30 @@
     }
   }
 
+  //: Ending a WalletConnect session, as opposed to forgetting about it.
+  //:
+  //: Forgetting is this page's business: it stops *this* app reaching for
+  //: that wallet again. The pairing is not -- it lives in WalletConnect's
+  //: own storage and on the phone, and it survives everything this file
+  //: used to do on a disconnect. So "disconnect, then connect again" found
+  //: a live session, skipped `enable()`, and silently reattached to the
+  //: wallet the user had just let go of. No QR, no choice, and no way to
+  //: connect a different phone short of clearing site data.
+  //:
+  //: Cleared before the await, so a `disconnect()` that throws -- an
+  //: unreachable relay, a phone that is off -- still leaves this page
+  //: ready to pair afresh rather than holding a provider nobody can use.
+  async function endWalletConnect() {
+    const provider = wcProvider;
+    if (!provider) return;
+    wcProvider = null;
+    try {
+      if (provider.session) await provider.disconnect();
+    } catch (error) {
+      log("WalletConnect would not disconnect (letting it go):", error);
+    }
+  }
+
   // A BroadcastChannel is shared by every page on the origin, so a second
   // tab running this app hears -- and would answer -- the first tab's
   // requests. Two bridges answering one client is not cosmetic: whichever
@@ -470,6 +494,12 @@
     }
     if (method === "bridge_forget") {
       forget();
+      // A deliberate disconnect, so the pairing goes too -- and with it
+      // whatever this bridge had selected, or the next request would be
+      // answered by the wallet that was just disconnected.
+      await endWalletConnect();
+      selected = null;
+      selectedInfo = null;
       return { ok: true };
     }
     if (method === "bridge_listWallets") {

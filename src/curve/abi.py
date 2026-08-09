@@ -39,15 +39,18 @@ __all__ = [
     "encode_calc_token_amount",
     "encode_calc_withdraw_one_coin",
     "encode_claim_rewards",
+    "encode_claim_rewards_for",
     "encode_claimable_reward",
     "encode_claimable_tokens",
     "encode_deposit_and_stake",
     "encode_exchange",
     "encode_gauge_deposit",
     "encode_gauge_withdraw",
+    "encode_mint_many",
     "encode_minter_mint",
     "encode_reward_count",
     "encode_reward_tokens",
+    "encode_working_balances",
     "encode_get_dy",
     "encode_remove_liquidity",
     "encode_remove_liquidity_one_coin",
@@ -55,6 +58,11 @@ __all__ = [
 ]
 
 MAX_UINT256 = (1 << 256) - 1
+
+#: Padding for a fixed-size address array. `curve.stake_zaps` spells the
+#: same constant out again rather than importing it from here, because this
+#: module is the bottom of the stack and depends on nothing above it.
+_ZERO_ADDRESS = "0x" + "0" * 40
 
 
 def selector(signature: str) -> str:
@@ -566,6 +574,56 @@ def encode_reward_tokens(index: int) -> str:
 def encode_claim_rewards() -> str:
     """Every incentive token at once. CRV is not among them."""
     return _call("claim_rewards()")
+
+
+def encode_working_balances(owner: str) -> str:
+    """The boosted balance the gauge pays CRV on.
+
+    Curve pays CRV on `working_balance`, not on what you staked:
+
+        working = min(0.4 * b + 0.6 * S * veShare, b)
+
+    so a position with no veCRV earns on 40% of itself and a fully boosted
+    one on all of it. The ratio between the two is the boost, 1x to 2.5x,
+    and it is the only per-account input to what an APR means for *you* --
+    everything else in the rate is a property of the pool.
+    """
+    return _call("working_balances(address)", _address(owner))
+
+
+def encode_mint_many(gauges: list[str], slots: int) -> str:
+    """Mint CRV across several gauges in one transaction.
+
+    A fixed-size array, and the width differs by deployment: Ethereum's
+    Minter takes eight, the sidechain gauge factories take thirty-two.
+    Unused slots are the zero address, which both implementations treat as
+    "stop here" rather than as a gauge -- so a short list is padded rather
+    than split.
+
+    This exists because the obvious alternative does not work. Multicall3
+    would be `msg.sender`, and `mint` credits whoever calls it, so batching
+    CRV claims through it mints to the multicall contract. Tried on a fork:
+    the transaction succeeds and the tokens are simply gone from the
+    caller's point of view.
+    """
+    if len(gauges) > slots:
+        raise ValueError(f"{len(gauges)} gauges into {slots} slots")
+    padded = list(gauges) + [_ZERO_ADDRESS] * (slots - len(gauges))
+    return _call(
+        f"mint_many(address[{slots}])", *(_address(gauge) for gauge in padded)
+    )
+
+
+def encode_claim_rewards_for(owner: str) -> str:
+    """Claim a gauge's incentive tokens on behalf of `owner`.
+
+    Kept distinct from `encode_claim_rewards` because the two are not
+    interchangeable: this spelling is the one a *third party* would use,
+    and on the gauges checked it reverts for anyone but the owner. It is
+    here so the portfolio can claim for the connected account explicitly
+    rather than relying on `msg.sender` being right.
+    """
+    return _call("claim_rewards(address)", _address(owner))
 
 
 def encode_minter_mint(gauge: str) -> str:

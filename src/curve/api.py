@@ -310,6 +310,29 @@ class CurveApi:
         payload = await self._v2(f"/pools/{chain_id}/{address}")
         return self._store(key, payload)
 
+    async def usd_price(self, chain: str, address: str) -> float:
+        """What one token is worth, for pricing rewards.
+
+        The pool payloads carry a price for every *incentive* token, so
+        the only thing this is needed for is CRV -- which is paid by the
+        Minter rather than streamed by the gauge and so appears in no
+        pool's reward list. A v1 endpoint, because v2 has no equivalent.
+
+        Zero when it cannot be had. A reward with no price is shown as an
+        amount without a value, which is honest; refusing to show the
+        amount because the price is missing would not be.
+        """
+        key = f"price:{chain}:{address.lower()}"
+        cached = self._cached(key)
+        if cached is not None:
+            return cached
+        try:
+            payload = await self._v1(f"/usd_price/{chain}/{address}")
+        except ApiError:
+            return 0.0
+        price = float(((payload or {}).get("data") or {}).get("usd_price") or 0.0)
+        return self._store(key, price)
+
     async def get_pool(self, chain_id: int, address: str, chain: str = "") -> Pool:
         """One pool by address, without paging a list to find it.
 

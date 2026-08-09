@@ -22,15 +22,16 @@ question is usually asked in.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 
 import flet as ft
 
+from curve.earnings import Earning
 from curve.format import compact_usd, percent, short_address, token_amount
 from curve.models import Coin
 from curve.portfolio import LP_UNIT, Holding
 
-from . import safe_update, theme
+from . import buttons, safe_update, theme
 from .logos import coin_stack
 from .typography import BODY, LABEL, METRIC, ROW_TITLE, SMALL
 
@@ -39,10 +40,17 @@ from .typography import BODY, LABEL, METRIC, ROW_TITLE, SMALL
 LOGO_SIZE = 27
 
 #: Column widths, shared by the header and the rows so they line up.
-W_WALLET = 150
-W_STAKED = 150
-W_SHARE = 110
-W_VALUE = 130
+W_WALLET = 130
+W_STAKED = 130
+W_APR = 100
+W_REWARDS = 130
+W_VALUE = 120
+
+#: `Share of pool` used to sit between Staked and Value. Two columns that
+#: change what somebody does -- what the position earns, and what is
+#: waiting to be claimed -- are worth more than one that does not, and at
+#: 610px of fixed width there was no room to simply add them: the Pool
+#: column is what pays, and it is the one that must stay readable.
 
 #: Below this a position is dust -- a wei or two left behind by a
 #: withdrawal, which nearly every long-lived address has several of. They
@@ -60,8 +68,14 @@ class HoldingRow(ft.Container):
         on_open: Callable[[Holding], None],
         index: int = 0,
         narrow: bool = False,
+        earning: Earning | None = None,
     ) -> None:
         self.holding = holding
+        #: None until the earnings pass has run -- which is a third read
+        #: after the scan, so the rows exist before it arrives. The two
+        #: columns show an en dash rather than a zero until then: "not
+        #: read yet" and "earns nothing" are different answers.
+        self.earning = earning
         quiet = holding.value < DUST_USD
         super().__init__(
             content=self._card(holding, quiet) if narrow else self._row(holding, quiet),
@@ -76,6 +90,36 @@ class HoldingRow(ft.Container):
             # its token images never paint: they are fetched, they arrive,
             # and nothing appears. Nothing needs to find these by key.
         )
+
+    def _apr_text(self) -> str:
+        """The rate this account gets, not the pool's headline.
+
+        Boosted by its veCRV share and scaled by how much of the position
+        is actually staked -- see `curve.earnings`. The boost is worth
+        showing beside it: two accounts in the same pool can be 2.5x
+        apart, and without it the number looks wrong rather than personal.
+        """
+        if self.earning is None:
+            return "\u2013"
+        apr = self.earning.user_apr
+        if apr <= 0:
+            return "\u2013"
+        boost = self.earning.boost
+        return f"{percent(apr)}" + (f"  {boost:.2f}x" if boost > 1.0 else "")
+
+    def _rewards_text(self) -> str:
+        """What is waiting in the gauge, in dollars.
+
+        A value rather than a list of amounts: several tokens do not fit a
+        column, and the amounts themselves are on the pool's own Claim
+        tab. What this column is for is noticing there is something there.
+        """
+        if self.earning is None:
+            return "\u2013"
+        value = self.earning.claimable_value
+        if value <= 0:
+            return "\u2013" if not self.earning.rewards else "< $0.01"
+        return compact_usd(value)
 
     def _name(self, holding: Holding) -> ft.Control:
         # Real token images, overlapped exactly as the pool list overlaps
@@ -109,7 +153,8 @@ class HoldingRow(ft.Container):
                 self._name(holding),
                 _cell(_lp(holding.wallet), W_WALLET, colour),
                 _cell(_lp(holding.staked) if holding.gauge else "-", W_STAKED, colour),
-                _cell(percent(holding.share * 100, places=3), W_SHARE, colour),
+                _cell(self._apr_text(), W_APR, colour),
+                _cell(self._rewards_text(), W_REWARDS, colour),
                 _cell(compact_usd(holding.value), W_VALUE, colour, weight=ft.FontWeight.W_500),
             ],
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
@@ -131,7 +176,8 @@ class HoldingRow(ft.Container):
                     [
                         _metric("In wallet", _lp(holding.wallet)),
                         _metric("Staked", _lp(holding.staked)) if holding.gauge else ft.Container(),
-                        _metric("Share", percent(holding.share * 100, places=3)),
+                        _metric("APR", self._apr_text()),
+                        _metric("Rewards", self._rewards_text()),
                     ],
                     spacing=14,
                     wrap=True,
@@ -185,13 +231,46 @@ class PortfolioView(ft.Column):
         page: ft.Page,
         on_open: Callable[[Holding], None],
         narrow: bool = False,
+        on_claim: Callable[[bool], Awaitable[None]] | None = None,
     ) -> None:
         self._page = page
         self._on_open = on_open
         self._narrow = narrow
         self._holdings: list[Holding] = []
+        #: Keyed by pool address, lowercased. Arrives after the scan.
+        self._earnings: dict[str, Earning] = {}
+        self._on_claim = on_claim
 
         self.total = ft.Text("", size=METRIC, weight=ft.FontWeight.BOLD)
+
+        # Two buttons, because claiming is two contracts: CRV is minted by
+        # the Minter and takes every gauge at once, while the incentive
+        # tokens come out of each gauge separately. One button would have
+        # to lie about one of them -- see `curve.earnings.ClaimPlan`.
+        self.claim_crv = ft.Button(
+            "Claim CRV", on_click=lambda _e: self._claim(True),
+            visible=False, style=buttons.style(page),
+        )
+        self.claim_rewards = ft.Button(
+            "Claim rewards", on_click=lambda _e: self._claim(False),
+            visible=False, style=buttons.style(page),
+        )
+        self.accrued = ft.Text("", size=SMALL, color=ft.Colors.ON_SURFACE_VARIANT)
+        self.claim_status = ft.Text("", size=SMALL, selectable=True)
+        self._claim_bar = ft.Container(
+            ft.Row(
+                [
+                    self.accrued,
+                    ft.Container(expand=True),
+                    buttons.shadowed(self.claim_crv, page),
+                    buttons.shadowed(self.claim_rewards, page),
+                ],
+                spacing=8,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                wrap=True,
+            ),
+            visible=False,
+        )
 
         # A Column, not a `ListView`: the window scrolls, and a list that
         # scrolls inside it would be a second scrollbar in the middle of
@@ -229,6 +308,8 @@ class PortfolioView(ft.Column):
                     vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     spacing=8,
                 ),
+                self._claim_bar,
+                self.claim_status,
                 self.empty,
                 self._table,
             ],
@@ -241,7 +322,10 @@ class PortfolioView(ft.Column):
         """Draw a set of positions."""
         self._holdings = holdings
         self.rows.controls = [
-            HoldingRow(holding, self._on_open, index, self._narrow)
+            HoldingRow(
+                holding, self._on_open, index, self._narrow,
+                self._earnings.get(holding.address.lower()),
+            )
             for index, holding in enumerate(holdings)
         ]
         self.total.value = compact_usd(sum(holding.value for holding in holdings))
@@ -249,10 +333,54 @@ class PortfolioView(ft.Column):
         self.empty.visible = False
         safe_update(self)
 
+    def _claim(self, crv: bool) -> None:
+        """Hand the click to the app, as a task.
+
+        The handler sends transactions and waits for them, so it is a
+        coroutine -- and a Flet click handler that returns one leaves it
+        un-awaited, which is a claim that silently never happens.
+        """
+        if self._on_claim is not None:
+            self._page.run_task(self._on_claim, crv)
+
+    def show_earnings(self, earnings: list[Earning]) -> None:
+        """Fill in the APR and rewards columns, and offer the claims.
+
+        A separate pass rather than part of `show`, because it is a third
+        read that lands after the rows are already on screen -- and the
+        rows must not wait for it. Until it arrives both columns show an
+        en dash, which says "not read" where a zero would say "nothing".
+        """
+        self._earnings = {e.pool.lower(): e for e in earnings}
+        owed = sum(e.claimable_value for e in earnings)
+        crv = any(e.has_crv for e in earnings)
+        extras = any(e.has_extras for e in earnings)
+
+        self.claim_crv.visible = crv
+        self.claim_rewards.visible = extras
+        self.accrued.value = (
+            f"Unclaimed rewards: {compact_usd(owed)}" if owed > 0
+            else "Unclaimed rewards" if crv or extras
+            else ""
+        )
+        self._claim_bar.visible = crv or extras
+        self.show(self._holdings)
+
+    def claiming(self, message: str, colour: str | None = None) -> None:
+        """Say what a claim is doing, and stop it being pressed twice."""
+        busy = bool(message) and colour is None
+        self.claim_crv.disabled = busy
+        self.claim_rewards.disabled = busy
+        self.claim_status.value = message
+        self.claim_status.color = colour or ft.Colors.ON_SURFACE_VARIANT
+        self.claim_status.visible = bool(message)
+        safe_update(self)
+
     def say(self, message: str) -> None:
         """The page has nothing to show, and this is why."""
         self.rows.controls = []
         self.total.value = ""
+        self._claim_bar.visible = False
         self._table.visible = False
         self.empty.content = ft.Text(message, size=SMALL,
                                      color=ft.Colors.ON_SURFACE_VARIANT)
@@ -288,7 +416,8 @@ class PortfolioView(ft.Column):
                     ),
                     _head("In wallet", W_WALLET),
                     _head("Staked", W_STAKED),
-                    _head("Share of pool", W_SHARE),
+                    _head("Your APR", W_APR),
+                    _head("Rewards", W_REWARDS),
                     _head("Value", W_VALUE),
                 ],
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,

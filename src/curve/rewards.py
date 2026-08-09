@@ -59,6 +59,12 @@ class Rewards:
     #: `mint(address)`: the Minter on Ethereum, the child gauge factory on
     #: every other chain.
     minter: str
+    #: How many gauges `mint_many` takes at once. Ethereum's Minter
+    #: declares `address[8]`; the child gauge factories declare
+    #: `address[32]`. It is part of the *signature*, so a wrong width is a
+    #: selector for a function that does not exist -- both read off the
+    #: verified ABIs of 0xd061D6… and 0x988d10…
+    mint_many_size: int = 32
 
 
 #: Keyed by chain id. See the module docstring for provenance.
@@ -66,6 +72,7 @@ REWARDS: dict[int, Rewards] = {
     1: Rewards(
         "0xD533a949740bb3306d119CC777fa900bA034cd52",
         "0xd061D61a4d941c39E5453435B6345Dc261C2fcE0",
+        mint_many_size=8,
     ),  # Ethereum
     10: Rewards(
         "0x0994206dfE8De6Ec6920FF4D779B0d950605Fb53",

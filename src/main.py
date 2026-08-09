@@ -25,8 +25,9 @@ from typing import Any
 
 import flet as ft
 
-from curve import ApiError, CurveApi, Pool, PoolContract, portfolio
+from curve import ApiError, CurveApi, Pool, PoolContract, earnings, portfolio, rewards
 from curve.api import PoolFeed
+from curve.confirm import wait_for_confirmation
 from curve.format import compact_usd
 from curve.lite import LiteChain
 from curve.rpc import (
@@ -601,7 +602,9 @@ class CurveApp:
         )
 
         self.list_view = PoolListView(page, on_open=self.open_pool)
-        self.portfolio_view = PortfolioView(page, on_open=self.open_holding)
+        self.portfolio_view = PortfolioView(
+            page, on_open=self.open_holding, on_claim=self.claim_portfolio
+        )
         self.progress = ft.ProgressBar(visible=False)
         self.error = ft.Text("", size=SMALL, color=ft.Colors.ERROR, visible=False)
         # One slot that holds either the list or a detail page. Simpler than
@@ -1306,6 +1309,89 @@ class CurveApp:
         else:
             view.say(f"No deposits in any {chain_name(self.chain)} pool.")
         self.page.run_task(self._remember_portfolio, holdings, account)
+        # A third read, after the rows are on screen. It is the slowest of
+        # the three -- a pool payload per gauge -- and nothing on the page
+        # needs to wait for it, so it fills the two columns in afterwards.
+        self.page.run_task(self.load_earnings, holdings, account, chain_id, provider)
+
+    async def load_earnings(self, holdings, account: str, chain_id: int, provider) -> None:
+        """What each position earns, and what it has earned but not taken.
+
+        Only the staked ones: an unstaked position has no gauge to ask and
+        earns no rewards, so asking about it is a call that can only come
+        back zero.
+        """
+        staked = [h for h in holdings if h.gauge and h.staked > 0]
+        if not staked:
+            return
+        seeds: list[earnings.Earning] = []
+        token_meta: dict[str, tuple[str, int, float]] = {}
+        for holding in staked:
+            seed = earnings.Earning(
+                pool=holding.address,
+                gauge=holding.gauge,
+                staked=holding.staked,
+                wallet=holding.wallet,
+            )
+            try:
+                detail = await self.api.pool_detail(chain_id, holding.address)
+            except ApiError:
+                seeds.append(seed)
+                continue
+            seed, meta = earnings.seed_from_detail(seed, detail)
+            seeds.append(seed)
+            token_meta.update(meta)
+
+        crv_price = 0.0
+        entry = rewards.REWARDS.get(chain_id)
+        if entry is not None:
+            with contextlib.suppress(ApiError):
+                crv_price = await self.api.usd_price(self.chain, entry.crv)
+        try:
+            filled = await earnings.read_earnings(
+                provider, account, seeds,
+                crv_price=crv_price, token_meta=token_meta,
+            )
+        except WalletError:
+            return
+        self._earnings = filled
+        self.portfolio_view.show_earnings(filled)
+
+    async def claim_portfolio(self, crv: bool) -> None:
+        """Claim one half of what the portfolio is owed.
+
+        Two buttons and two code paths, because the chain offers two:
+        `mint_many` takes every gauge at once, and the incentive tokens
+        need one `claim_rewards()` each. The line says how many are
+        coming so a second wallet prompt is expected rather than alarming.
+        """
+        view = self.portfolio_view
+        wallet = self.wallet
+        if wallet is None or not wallet.address:
+            view.claiming("Connect a wallet first.", ft.Colors.ERROR)
+            return
+        chain_id = self.chains.get(self.chain) or 0
+        plan = earnings.claim_plan(chain_id, getattr(self, "_earnings", []))
+        count = len(plan.crv) if crv else len(plan.extras)
+        if not count:
+            view.claiming("Nothing to claim.", ft.Colors.ERROR)
+            return
+        what = "CRV" if crv else "rewards"
+        view.claiming(
+            f"Confirm {count} transaction{'s' if count > 1 else ''} in your wallet…"
+        )
+        try:
+            sent = await earnings.send_claims(
+                wallet.provider, wallet.address, plan, crv=crv
+            )
+            for index, tx in enumerate(sent, start=1):
+                view.claiming(f"Waiting for {index}/{len(sent)}: {tx[:14]}…")
+                await wait_for_confirmation(wallet.provider, tx)
+        except WalletError as exc:
+            view.claiming(str(exc), ft.Colors.ERROR)
+            return
+        view.claiming(f"Claimed {what}.", ft.Colors.GREEN_600)
+        self.page.run_task(self.load_portfolio)
 
     def loading(self, fraction: float | None = None) -> None:
         """Show the strip under the top bar, at `fraction` or indefinite.

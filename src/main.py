@@ -605,6 +605,12 @@ class CurveApp:
         self.portfolio_view = PortfolioView(
             page, on_open=self.open_holding, on_claim=self.claim_portfolio
         )
+        #: The portfolio's earnings, and what they were read from. The
+        #: seeds are the half that comes from the API and does not change
+        #: when a claim lands, so a claim re-reads the chain and nothing
+        #: else -- see `reread_earnings`.
+        self._earnings: list[earnings.Earning] = []
+        self._earning_seeds: tuple | None = None
         self.progress = ft.ProgressBar(visible=False)
         self.error = ft.Text("", size=SMALL, color=ft.Colors.ERROR, visible=False)
         # One slot that holds either the list or a detail page. Simpler than
@@ -1323,6 +1329,7 @@ class CurveApp:
         """
         staked = [h for h in holdings if h.gauge and h.staked > 0]
         if not staked:
+            self._earning_seeds = None
             return
         seeds: list[earnings.Earning] = []
         token_meta: dict[str, tuple[str, int, float]] = {}
@@ -1347,6 +1354,28 @@ class CurveApp:
         if entry is not None:
             with contextlib.suppress(ApiError):
                 crv_price = await self.api.usd_price(self.chain, entry.crv)
+        # Kept, so that re-reading what is owed after a claim does not
+        # mean asking the API for a rate that has not moved -- see
+        # `reread_earnings`.
+        self._earning_seeds = (seeds, token_meta, crv_price, chain_id)
+        await self.reread_earnings(account, provider)
+
+    async def reread_earnings(self, account: str, provider) -> None:
+        """Ask the chain again what is owed, on the seeds already gathered.
+
+        This is what runs after a claim confirms. Everything on the page
+        that a claim changes -- the two buttons' amounts, the "Unclaimed
+        rewards" total, the Rewards column -- is read from the gauges, and
+        leaving it showing the figures the claim was made against says the
+        claim did not happen.
+
+        The pool payloads are not asked for again: a claim does not move an
+        APR, and the whole point of re-reading here rather than reloading
+        the page is that one is a Multicall3 round and the other is a scan.
+        """
+        if self._earning_seeds is None:
+            return
+        seeds, token_meta, crv_price, chain_id = self._earning_seeds
         try:
             filled = await earnings.read_earnings(
                 provider, account, seeds,
@@ -1373,7 +1402,7 @@ class CurveApp:
             view.claiming("Connect a wallet first.", ft.Colors.ERROR)
             return
         chain_id = self.chains.get(self.chain) or 0
-        plan = earnings.claim_plan(chain_id, getattr(self, "_earnings", []))
+        plan = earnings.claim_plan(chain_id, self._earnings)
         count = len(plan.crv) if crv else (1 if plan.extras else 0)
         if not count:
             view.claiming("Nothing to claim.", ft.Colors.ERROR)
@@ -1393,7 +1422,11 @@ class CurveApp:
             view.claiming(str(exc), ft.Colors.ERROR)
             return
         view.claiming(f"Claimed {what}.", ft.Colors.GREEN_600)
-        self.page.run_task(self.load_portfolio)
+        # Not a reload. A claim moves reward tokens, not LP, so every
+        # position on the page is exactly as it was -- what changed is
+        # what the gauges owe, and that is one Multicall3 round rather
+        # than a scan of every pool on the chain.
+        await self.reread_earnings(wallet.address, wallet.provider)
 
     def loading(self, fraction: float | None = None) -> None:
         """Show the strip under the top bar, at `fraction` or indefinite.

@@ -2012,6 +2012,17 @@ def test_the_crv_on_the_button_is_the_whole_portfolio_s() -> None:
     assert view.claim_crv.content == "Claim 3.75 CRV"
 
 
+def test_a_dust_amount_goes_back_to_naming_the_token() -> None:
+    """CRV accrues every block, so a mint is followed immediately by a few
+    hundred wei owed again -- too little to print, and "Claim 0 CRV" makes
+    the claim that just landed look like it did not."""
+    view = portfolio_view()
+    view.show([make_holding()])
+    view.show_earnings([earning(rewards=(crv_reward(0.00000013),))], chain_id=1)
+
+    assert view.claim_crv.content == "Claim CRV"
+
+
 def test_a_portfolio_too_big_for_one_mint_says_how_many_sends() -> None:
     """`mint_many(address[8])` on Ethereum, so ten gauges is two sends --
     and an unannounced second wallet prompt looks like being asked to sign
@@ -2061,6 +2072,85 @@ def test_an_unpriced_reward_drops_the_value_rather_than_showing_zero() -> None:
 
     assert view.claim_rewards.content == "Claim rewards"
     assert view.claim_rewards.visible is True
+
+
+class ClaimingChain:
+    """A chain that pays out: it answers the reads, and mines the send.
+
+    The two rounds of reads are answered from `owed`, which the send
+    empties -- so a test can watch the page's own numbers cross from
+    "before the claim" to "after" without a fork.
+    """
+
+    def __init__(self, gauge: str, token: str, owed: int) -> None:
+        self.gauge = gauge
+        self.token = token
+        self.owed = owed
+        self.sent: list[dict] = []
+        self.round = 0
+
+    async def call(self, _to: str, _data: str) -> str:
+        from .test_parameters import aggregate3_response
+
+        # `read_earnings` asks three rounds in a fixed order, each
+        # depending on the last: the per-gauge numbers and how many reward
+        # tokens there are, then which token that is, then what is owed in
+        # it. One gauge here, so one call in each of the last two.
+        answers = [
+            [400, 0, 1],                 # working balance, CRV owed, count
+            [int(self.token, 16)],       # which token
+            [self.owed],                 # what it owes
+        ][self.round % 3]
+        self.round += 1
+        return aggregate3_response(answers)
+
+    async def send_transaction(self, tx: dict) -> str:
+        self.sent.append(tx)
+        self.owed = 0
+        return "0x" + "ab" * 32
+
+
+async def test_a_confirmed_claim_updates_the_numbers_it_was_made_against(
+    monkeypatch,
+) -> None:
+    """The page must not go on showing what was owed before the claim.
+
+    Re-read rather than reloaded: a claim moves reward tokens and not LP,
+    so every position is exactly as it was, and rescanning the chain for
+    positions that cannot have changed is the slow way to learn nothing.
+    """
+    import main as app_module
+    from curve.earnings import Earning
+
+    gauge = "0x" + "22" * 20
+    token = "0x" + "ab" * 20
+    chain = ClaimingChain(gauge, token, 4 * 10**18)
+
+    monkeypatch.setattr(app_module, "wait_for_confirmation", _mined)
+
+    app = app_module.CurveApp.__new__(app_module.CurveApp)
+    app.page = StubPage()
+    app.chain = "ethereum"
+    app.chains = {"ethereum": 1}
+    app.portfolio_view = portfolio_view(app.page)
+    app.portfolio_view.show([make_holding()])
+    app.wallet = SimpleNamespace(address="0x" + "11" * 20, provider=chain)
+    seed = Earning(pool="0x" + "11" * 20, gauge=gauge, staked=1000)
+    app._earning_seeds = ([seed], {token: ("ARB", 18, 1.5)}, 0.5, 1)
+    await app.reread_earnings(app.wallet.address, chain)
+
+    assert app.portfolio_view.claim_rewards.content == "Claim rewards ($6.00)"
+    assert "Unclaimed rewards: $6.00" in app.portfolio_view.accrued.value
+
+    await app.claim_portfolio(False)
+
+    assert len(chain.sent) == 1
+    assert app.portfolio_view.claim_rewards.visible is False
+    assert app.portfolio_view.accrued.value == ""
+
+
+async def _mined(_provider, _tx, **_kw) -> dict:
+    return {"status": "0x1"}
 
 
 async def test_losing_the_wallet_reloads_the_portfolio() -> None:

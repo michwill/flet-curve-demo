@@ -442,8 +442,15 @@ class PortfolioView(ft.Column):
         second time, unannounced, looks like a wallet that has been asked
         to sign something twice.
         """
+        # "Claim 0 CRV" is what this says a moment after a claim confirms,
+        # and it is not a mistake in the reading: CRV accrues every block,
+        # so by the time the mint is mined a few hundred wei are owed
+        # again. Too little to print, and printing it as zero makes the
+        # claim that just landed look like it did not. So the number is
+        # dropped and the button goes back to naming the token.
         owed = token_amount(sum(e.crv_owed for e in earnings))
-        return f"Claim {owed} CRV" + (f" ({transactions} txs)" if transactions > 1 else "")
+        label = "Claim CRV" if owed == "0" else f"Claim {owed} CRV"
+        return label + (f" ({transactions} txs)" if transactions > 1 else "")
 
     @staticmethod
     def _rewards_label(earnings: list[Earning]) -> str:

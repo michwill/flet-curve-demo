@@ -72,6 +72,12 @@ class Reward:
     amount: int = 0
     #: USD per whole token, or 0 where nothing published one.
     price: float = 0.0
+    #: Minted by the Minter rather than streamed by the gauge -- which is
+    #: what decides *which transaction claims it*, so it is a fact about
+    #: the reward and not a guess to be made from its name. Some gauges
+    #: stream CRV as an ordinary incentive on top of the mint, and one
+    #: matched by symbol would be claimed from the wrong contract.
+    minted: bool = False
 
     @property
     def whole(self) -> float:
@@ -147,15 +153,25 @@ class Earning:
 
     @property
     def has_crv(self) -> bool:
-        return any(
-            reward.symbol == "CRV" and reward.amount > 0 for reward in self.rewards
-        )
+        """Is there CRV to mint here? Both halves matter.
+
+        `amount > 0` is what keeps a gauge owing nothing out of the batch.
+        A `mint_many` slot filled with a gauge that owes nothing is not an
+        error -- the Minter mints zero and moves on -- but it is gas paid
+        for nothing, and worse, it is a slot: eight is the array's whole
+        capacity on Ethereum, so empty ones turn one transaction into two.
+        """
+        return any(reward.minted and reward.amount > 0 for reward in self.rewards)
 
     @property
     def has_extras(self) -> bool:
-        return any(
-            reward.symbol != "CRV" and reward.amount > 0 for reward in self.rewards
-        )
+        """Is there anything for `claim_rewards` to move?
+
+        Same rule, and it costs the same thing: a gauge with nothing
+        outstanding still runs its whole checkpoint when the batch reaches
+        it, so an empty one is real gas for a guaranteed no-op.
+        """
+        return any(not reward.minted and reward.amount > 0 for reward in self.rewards)
 
 
 @dataclass(frozen=True, slots=True)
@@ -328,8 +344,13 @@ async def read_earnings(
         rewards: list[Reward] = []
         crv = crv_owed.get(position.pool, 0)
         if crv > 0:
-            rewards.append(Reward("", "CRV", CRV_DECIMALS, crv, crv_price))
+            rewards.append(
+                Reward("", "CRV", CRV_DECIMALS, crv, crv_price, minted=True)
+            )
         for token in tokens.get(position.pool, []):
+            # Nothing owed is nothing to claim. Dropped here rather than
+            # further down so that no later step -- the plan, the button's
+            # label, the total -- has to know to ignore a zero.
             amount = owed.get((position.pool, token), 0)
             if amount <= 0:
                 continue

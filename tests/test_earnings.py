@@ -25,12 +25,15 @@ from curve.earnings import (
     Earning,
     Reward,
     claim_plan,
+    read_earnings,
     seed_from_detail,
     send_claims,
 )
 from curve.multicall import MULTICALL3, encode_aggregate3
 
-CRV = Reward("", "CRV", 18, 5 * 10**18, 0.5)
+from .test_parameters import aggregate3_response
+
+CRV = Reward("", "CRV", 18, 5 * 10**18, 0.5, minted=True)
 ARB = Reward("0x" + "ab" * 20, "ARB", 18, 2 * 10**18, 1.5)
 USDC = Reward("0x" + "cd" * 20, "USDC", 6, 2_500_000, 1.0)
 
@@ -129,6 +132,35 @@ def test_crv_and_extras_are_told_apart() -> None:
     assert staked(rewards=(CRV,)).has_extras is False
     assert staked(rewards=(ARB,)).has_crv is False
     assert staked(rewards=(ARB,)).has_extras is True
+
+
+def test_crv_streamed_as_an_incentive_is_claimed_from_the_gauge() -> None:
+    """Some gauges pay CRV twice over: minted, and streamed on top.
+
+    The streamed half comes out of `claim_rewards` like any other token,
+    so telling them apart by symbol would send the wrong transaction --
+    and, on a gauge with only the streamed half, would put it in a
+    `mint_many` slot that mints nothing.
+    """
+    streamed = Reward("0x" + "cc" * 20, "CRV", 18, 10**18, 0.5)
+    position = staked(rewards=(streamed,))
+    assert position.has_crv is False
+    assert position.has_extras is True
+    assert claim_plan(1, [position]).crv == ()
+    assert claim_plan(1, [position]).extras == ("0xgauge",)
+
+
+def test_a_reward_that_is_owed_nothing_is_not_a_reason_to_send_anything() -> None:
+    """A zero in either half claims nothing and must cost nothing."""
+    nothing = staked(
+        rewards=(
+            Reward("", "CRV", 18, 0, 0.5, minted=True),
+            Reward("0x" + "ab" * 20, "ARB", 18, 0, 1.5),
+        )
+    )
+    assert nothing.has_crv is False
+    assert nothing.has_extras is False
+    assert claim_plan(1, [nothing]).transactions == 0
 
 
 # -- the claim ---------------------------------------------------------------
@@ -235,6 +267,49 @@ async def test_incentives_go_out_as_one_multicall_naming_the_owner() -> None:
         allow_failure=False,
     )
     assert tx["data"].count(selector("claim_rewards(address)")) == 3
+
+
+class Chain:
+    """A Multicall3 that answers each round in the order it was asked."""
+
+    def __init__(self, rounds: list[list[int | None]]) -> None:
+        self.rounds = list(rounds)
+        self.asked: list[str] = []
+
+    async def call(self, _to: str, data: str) -> str:
+        self.asked.append(data)
+        return aggregate3_response(self.rounds.pop(0))
+
+
+async def test_a_reward_token_owing_nothing_never_becomes_a_reward() -> None:
+    """Dropped where it is read, so nothing downstream has to know.
+
+    The gauge streams two tokens and owes one of them; a portfolio holding
+    it must offer to claim the one, and must not send a transaction that
+    would move the other.
+    """
+    paid = "0x" + "ab" * 20
+    dry = "0x" + "cd" * 20
+    me = "0x" + "11" * 20
+    position = Earning(pool="0xpool", gauge="0x" + "22" * 20, staked=1000)
+    chain = Chain(
+        [
+            [400, 0, 2],                      # working, CRV owed (none), token count
+            [int(paid, 16), int(dry, 16)],    # which tokens
+            [7 * 10**18, 0],                  # what is owed in each
+        ]
+    )
+
+    (filled,) = await read_earnings(
+        chain, me, [position],
+        token_meta={paid: ("ARB", 18, 1.5), dry: ("OP", 18, 2.0)},
+    )
+
+    assert [r.symbol for r in filled.rewards] == ["ARB"]
+    assert filled.has_crv is False
+    plan = claim_plan(1, [filled])
+    assert plan.crv == ()
+    assert plan.extras == ("0x" + "22" * 20,)
 
 
 async def test_nothing_owed_sends_nothing() -> None:

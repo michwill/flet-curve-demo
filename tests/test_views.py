@@ -2183,9 +2183,64 @@ def test_the_apr_column_is_a_rate_and_not_also_a_multiplier() -> None:
         chain_id=1,
     )
 
-    shown = view.rows.controls[0]._apr.value
-    assert shown == "25.00%"          # 10% at the 2.5x ceiling
-    assert "x" not in shown
+    # "CRV" is the mark's lettered fallback -- there are no compiled logos
+    # on the machine running this, so every token mark draws its initials.
+    rates = [line for line in texts(view.rows.controls[0]._apr) if "%" in line]
+    assert rates == ["25.00%"]        # 10% at the 2.5x ceiling
+    assert not any("x" in rate for rate in rates)
+
+
+def test_each_token_gets_its_own_rate_and_its_own_mark() -> None:
+    """A position paying 6% in CRV and 2% in ARB is a different position
+    from one paying 8% of either. The sum answers a question nobody has."""
+    from curve.models import Incentive
+    from ui.pool_list import REWARD_MARK
+
+    view = portfolio_view()
+    view.show([make_holding()])
+    view.show_earnings(
+        [
+            earning(
+                staked=1000, working=400, crv_apr=6.0,
+                incentives=(
+                    Incentive("ARB", "0x" + "ab" * 20, 2.0),
+                    Incentive("OP", "0x" + "cd" * 20, 1.0),
+                ),
+            )
+        ],
+        chain_id=1,
+    )
+
+    column = view.rows.controls[0]._apr
+    assert [line for line in texts(column) if "%" in line] == [
+        "6.00%", "2.00%", "1.00%",
+    ]
+    # Each line is a mark and a rate, so each is a Row rather than the
+    # bare Text the column falls back to when there is nothing to break
+    # down. The mark is round and REWARD_MARK across.
+    assert len(column.controls) == 3
+    for line in column.controls:
+        mark, _rate = line.controls
+        assert mark.width == mark.height == REWARD_MARK
+        assert mark.border_radius == REWARD_MARK / 2
+
+
+def test_a_gauge_paying_only_incentives_shows_no_crv_line() -> None:
+    """A rate of zero is not a rate. A line saying 0.00% is a row of the
+    table spent on something that is not happening."""
+    from curve.models import Incentive
+
+    view = portfolio_view()
+    view.show([make_holding()])
+    view.show_earnings(
+        [earning(staked=1000, working=400, crv_apr=0.0,
+                 incentives=(Incentive("ARB", "0x" + "ab" * 20, 2.0),))],
+        chain_id=1,
+    )
+
+    assert [line for line in texts(view.rows.controls[0]._apr) if "%" in line] == [
+        "2.00%"
+    ]
 
 
 def test_what_is_owed_is_set_like_the_total_it_belongs_to() -> None:

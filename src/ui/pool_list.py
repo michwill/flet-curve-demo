@@ -96,10 +96,14 @@ FIELD_INSET = 16
 REWARD_MARK = 14
 
 
-def _reward_line(
-    text: str, address: str, symbol: str, chain: str, *, muted: bool
+def reward_line(
+    text: str, address: str, symbol: str, chain: str, *, muted: bool = False
 ) -> ft.Control:
     """One reward, marked with its token where the address is known.
+
+    Shared with the portfolio, which shows the same thing about the same
+    gauges -- one line per token, the mark beside the rate -- and would
+    otherwise have grown its own not-quite-matching version.
 
     The row stays right-aligned like the rest of the column, so the mark
     sits between the numbers and the symbol rather than at a ragged left
@@ -134,7 +138,7 @@ def reward_lines(pool: Pool) -> list[ft.Control]:
     lines: list[ft.Control] = []
     if pool.crv_apr[1] > 0:
         lines.append(
-            _reward_line(
+            reward_line(
                 f"{apr_range(*pool.crv_apr)} CRV",
                 crv_token(pool),
                 "CRV",
@@ -144,7 +148,7 @@ def reward_lines(pool: Pool) -> list[ft.Control]:
         )
     for incentive in pool.incentives:
         lines.append(
-            _reward_line(
+            reward_line(
                 f"{percent(incentive.apr)} {incentive.symbol}",
                 incentive.token_address,
                 incentive.symbol,

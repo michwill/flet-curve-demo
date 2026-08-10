@@ -40,6 +40,7 @@ from dataclasses import dataclass, field
 from wallet.base import WalletProvider
 
 from . import abi
+from .models import Incentive
 from .multicall import MULTICALL3, decode_uints, encode_aggregate3
 from .rewards import CRV_DECIMALS, REWARDS
 
@@ -99,11 +100,14 @@ class Earning:
     wallet: int = 0
     #: The gauge's own boosted balance for this account.
     working: int = 0
-    #: The pool's published rates: unboosted CRV, boosted ceiling, and the
-    #: sum of every incentive token's APR.
+    #: The pool's published rates: unboosted CRV and the boosted ceiling.
     crv_apr: float = 0.0
     crv_apr_max: float = 0.0
-    incentive_apr: float = 0.0
+    #: One entry per incentive token, rather than their sum -- because the
+    #: page shows them one per line, with the token's own mark beside it,
+    #: and "6.2%" split three ways is three different reasons to be in a
+    #: pool. The sum is still available as `incentive_apr`.
+    incentives: tuple[Incentive, ...] = field(default_factory=tuple)
     rewards: tuple[Reward, ...] = field(default_factory=tuple)
 
     @property
@@ -138,9 +142,30 @@ class Earning:
         return self.crv_apr * self.boost * self.staked_share
 
     @property
+    def incentive_apr(self) -> float:
+        """Every streamed token's published rate, together."""
+        return sum(incentive.apr for incentive in self.incentives)
+
+    @property
     def user_incentive_apr(self) -> float:
         """Incentives are not boosted, but they are still staked-only."""
         return self.incentive_apr * self.staked_share
+
+    def user_incentives(self) -> list[tuple[Incentive, float]]:
+        """Each streamed token with the rate *this account* gets from it.
+
+        The same scaling as `user_incentive_apr`, kept per token so the
+        page can name what is paying: an 8% position that is 6% one token
+        and 2% another is a different position from one that is 8% of
+        either. Tokens paying nothing are left out -- a line saying 0.00%
+        is a row of the table spent on a rate that does not exist.
+        """
+        share = self.staked_share
+        return [
+            (incentive, incentive.apr * share)
+            for incentive in self.incentives
+            if incentive.apr * share > 0
+        ]
 
     @property
     def user_apr(self) -> float:
@@ -409,7 +434,7 @@ def seed_from_detail(earning: Earning, detail: dict) -> tuple[Earning, dict]:
             earning,
             crv_apr=float(detail.get("crv_apr") or 0.0),
             crv_apr_max=float(detail.get("crv_apr_boosted") or 0.0),
-            incentive_apr=sum(float(entry.get("apr") or 0.0) for entry in extras),
+            incentives=tuple(Incentive.from_v2(entry) for entry in extras),
         ),
         meta,
     )

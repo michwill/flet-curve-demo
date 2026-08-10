@@ -30,9 +30,11 @@ from curve.earnings import ClaimPlan, Earning, claim_plan
 from curve.format import compact_usd, percent, short_address, token_amount
 from curve.models import Coin
 from curve.portfolio import LP_UNIT, Holding
+from curve.rewards import REWARDS
 
 from . import buttons, safe_update, theme
 from .logos import coin_stack
+from .pool_list import reward_line
 from .status import StatusPanel
 from .typography import BODY, LABEL, METRIC, ROW_TITLE, SMALL
 
@@ -70,6 +72,7 @@ class HoldingRow(ft.Container):
         index: int = 0,
         narrow: bool = False,
         earning: Earning | None = None,
+        crv: str = "",
     ) -> None:
         self.holding = holding
         #: None until the earnings pass has run -- which is a third read
@@ -77,6 +80,9 @@ class HoldingRow(ft.Container):
         #: columns show an en dash rather than a zero until then: "not
         #: read yet" and "earns nothing" are different answers.
         self.earning = earning
+        #: CRV's address on this chain, for its mark. Empty is an answer:
+        #: a chain with no CRV deployment gets the rate without a logo.
+        self._crv = crv
         quiet = holding.value < DUST_USD
         colour = ft.Colors.ON_SURFACE_VARIANT if quiet else None
         # Held rather than built inline, because the earnings pass arrives
@@ -85,10 +91,18 @@ class HoldingRow(ft.Container):
         # keyed control to its predecessor and freezes it, and a frozen row
         # keeps its old text and never paints its token images. That is
         # exactly what a fourth `show()` did -- the table went blank.
-        self._apr = ft.Text(self._apr_text(), size=BODY, color=colour,
-                            text_align=ft.TextAlign.RIGHT)
+        #
+        # A column, because a gauge paying CRV and two incentive tokens has
+        # three rates and they are three different reasons to be in the
+        # pool. Same shape the pool list uses for the same facts.
+        self._apr = ft.Column(
+            self._apr_lines(colour),
+            spacing=0,
+            horizontal_alignment=ft.CrossAxisAlignment.END,
+        )
         self._rewards = ft.Text(self._rewards_text(), size=BODY, color=colour,
                                 text_align=ft.TextAlign.RIGHT)
+        self._quiet_colour = colour
         super().__init__(
             content=self._card(holding, quiet) if narrow else self._row(holding, quiet),
             padding=ft.Padding.symmetric(horizontal=16, vertical=10),
@@ -103,21 +117,31 @@ class HoldingRow(ft.Container):
             # and nothing appears. Nothing needs to find these by key.
         )
 
-    def _apr_text(self) -> str:
-        """The rate this account gets, not the pool's headline.
+    def _apr_lines(self, colour: str | None) -> list[ft.Control]:
+        """The rates this account gets, one token per line, each marked.
 
-        Boosted by its veCRV share and scaled by how much of the position
-        is actually staked -- see `curve.earnings`. The boost itself used
-        to be printed alongside, and is not any more: it is an input to
-        this number rather than a second number, and a column that answers
-        "what am I earning" with two figures makes the reader work out
-        which one is the answer. It is still what `curve.earnings`
-        computes the rate from, so nothing about the rate has changed.
+        Not the pool's headline: boosted by this address's veCRV share and
+        scaled by how much of the position is actually staked -- see
+        `curve.earnings`. The boost itself is not printed, being an input
+        to these numbers rather than another of them.
+
+        Split by token rather than summed, because the sum answers a
+        question nobody has. A position paying 6% in CRV and 2% in ARB is
+        a different position from one paying 8% of either -- one is a bet
+        on emissions and the other on a campaign that ends -- and the mark
+        beside each rate is what says which.
         """
         if self.earning is None:
-            return "\u2013"
-        apr = self.earning.user_apr
-        return percent(apr) if apr > 0 else "\u2013"
+            return [_apr_text("\u2013", colour)]
+        lines: list[ft.Control] = []
+        crv = self.earning.user_crv_apr
+        if crv > 0:
+            lines.append(reward_line(percent(crv), self._crv, "CRV",
+                                     self.holding.chain, muted=colour is not None))
+        for incentive, rate in self.earning.user_incentives():
+            lines.append(reward_line(percent(rate), incentive.token_address,
+                                     incentive.symbol, self.holding.chain, muted=True))
+        return lines or [_apr_text("\u2013", colour)]
 
     def _rewards_text(self) -> str:
         """What is waiting in the gauge, in dollars.
@@ -133,10 +157,11 @@ class HoldingRow(ft.Container):
             return "\u2013" if not self.earning.rewards else "< $0.01"
         return compact_usd(value)
 
-    def apply(self, earning: Earning | None) -> None:
+    def apply(self, earning: Earning | None, crv: str = "") -> None:
         """Fill in the two columns on a row that is already drawn."""
         self.earning = earning
-        self._apr.value = self._apr_text()
+        self._crv = crv
+        self._apr.controls = self._apr_lines(self._quiet_colour)
         self._rewards.value = self._rewards_text()
 
     def _name(self, holding: Holding) -> ft.Control:
@@ -221,6 +246,11 @@ def _lp(amount: int) -> str:
     return token_amount(whole)
 
 
+def _apr_text(value: str, colour: str | None) -> ft.Control:
+    """The column with no rate to break down: an en dash, or nothing."""
+    return ft.Text(value, size=BODY, color=colour, text_align=ft.TextAlign.RIGHT)
+
+
 def _wrap(control: ft.Control, width: float) -> ft.Control:
     """A fixed-width, right-aligned cell around a control somebody kept."""
     return ft.Container(control, width=width, alignment=ft.Alignment.CENTER_RIGHT)
@@ -272,6 +302,9 @@ class PortfolioView(ft.Column):
         self._earnings: dict[str, Earning] = {}
         #: What the two buttons would send. Empty until the earnings pass.
         self._plan = ClaimPlan()
+        #: CRV's address on the chain being shown, for the mark beside its
+        #: rate. Known only once the earnings pass names the chain.
+        self._crv = ""
         self._on_claim = on_claim
 
         self.total = ft.Text("", size=METRIC, weight=ft.FontWeight.BOLD)
@@ -411,7 +444,7 @@ class PortfolioView(ft.Column):
         self.rows.controls = [
             HoldingRow(
                 holding, self._on_open, index, self._narrow,
-                self._earnings.get(holding.address.lower()),
+                self._earnings.get(holding.address.lower()), self._crv,
             )
             for index, holding in enumerate(holdings)
         ]
@@ -454,6 +487,7 @@ class PortfolioView(ft.Column):
         """
         self._earnings = {}
         self._plan = ClaimPlan()
+        self._crv = ""
         self._claim_bar.visible = False
         self.status.say("")
 
@@ -482,6 +516,8 @@ class PortfolioView(ft.Column):
         button send anything" is no.
         """
         self._earnings = {e.pool.lower(): e for e in earnings}
+        entry = REWARDS.get(chain_id)
+        self._crv = entry.crv if entry else ""
         self._plan = claim_plan(chain_id, earnings)
         owed = sum(e.claimable_value for e in earnings)
         crv = bool(self._plan.crv)
@@ -500,7 +536,7 @@ class PortfolioView(ft.Column):
         self._claim_bar.visible = crv or extras
         for row in self.rows.controls:
             if isinstance(row, HoldingRow):
-                row.apply(self._earnings.get(row.holding.address.lower()))
+                row.apply(self._earnings.get(row.holding.address.lower()), self._crv)
         safe_update(self)
 
     @staticmethod

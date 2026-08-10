@@ -29,6 +29,7 @@ from curve.earnings import (
     seed_from_detail,
     send_claims,
 )
+from curve.models import Incentive
 from curve.multicall import MULTICALL3, encode_aggregate3
 
 from .test_parameters import aggregate3_response
@@ -92,7 +93,8 @@ def test_rewards_are_paid_on_the_staked_part_only() -> None:
 def test_incentives_are_staked_only_but_never_boosted() -> None:
     """Boost is a CRV mechanism; a reward token is streamed pro rata."""
     position = Earning(
-        pool="p", gauge="g", staked=500, wallet=500, working=500, incentive_apr=4.0
+        pool="p", gauge="g", staked=500, wallet=500, working=500,
+        incentives=(Incentive("ARB", "0x" + "ab" * 20, 4.0),),
     )
     assert position.boost == 2.5
     assert position.user_incentive_apr == pytest.approx(2.0)
@@ -100,8 +102,8 @@ def test_incentives_are_staked_only_but_never_boosted() -> None:
 
 def test_the_two_rates_add_up() -> None:
     position = Earning(
-        pool="p", gauge="g", staked=1000, working=400,
-        crv_apr=6.0, incentive_apr=4.0,
+        pool="p", gauge="g", staked=1000, working=400, crv_apr=6.0,
+        incentives=(Incentive("ARB", "0x" + "ab" * 20, 4.0),),
     )
     assert position.user_apr == pytest.approx(10.0)
 

@@ -65,6 +65,12 @@ PREFERRED_CHAINS = ("ethereum", "arbitrum", "base", "optimism", "polygon", "frax
 #: balances have not been read yet. The two take about the same time.
 PORTFOLIO_DISCOVERY_SHARE = 0.5
 
+#: Pool payloads asked for at once when reading what a portfolio earns.
+#: One request per staked pool, and they do not depend on each other, so
+#: the only reason not to send them all together is that this is somebody
+#: else's API.
+EARNINGS_REQUESTS = 8
+
 # -- opening somewhere other than the front page ------------------------
 #
 # Two knobs for driving the app without driving the *UI*: which page to
@@ -612,6 +618,10 @@ class CurveApp:
         #: else -- see `reread_earnings`.
         self._earnings: list[earnings.Earning] = []
         self._earning_seeds: tuple | None = None
+        #: How many pool payloads to ask for at once. Enough that a large
+        #: portfolio is a couple of waits rather than forty, few enough
+        #: that it is not a burst against somebody else's API.
+        self._details = asyncio.Semaphore(EARNINGS_REQUESTS)
         self.progress = ft.ProgressBar(visible=False)
         self.error = ft.Text("", size=SMALL, color=ft.Colors.ERROR, visible=False)
         # One slot that holds either the list or a detail page. Simpler than
@@ -1271,6 +1281,14 @@ class CurveApp:
         """
         view = self.portfolio_view
         wallet = self.wallet
+        # Before anything is drawn, and before the early returns: what the
+        # last read found belongs to whichever account it was read for,
+        # and this runs on connecting, switching account and switching
+        # chain. A claim button still offering the previous wallet's CRV
+        # is not a stale number, it is the wrong account's.
+        self._earnings = []
+        self._earning_seeds = None
+        view.forget_earnings()
         if wallet is None or not wallet.address:
             view.say("Connect a wallet to see what it holds.")
             return
@@ -1332,23 +1350,41 @@ class CurveApp:
         if not staked:
             self._earning_seeds = None
             return
+
+        async def payload(holding):
+            """One pool's published rates, or nothing.
+
+            A missing payload costs that row its APR and no more, so it is
+            an answer rather than a reason to abandon the pass.
+            """
+            async with self._details:
+                try:
+                    return await self.api.pool_detail(chain_id, holding.address)
+                except ApiError:
+                    return None
+
+        # Together, not one after another. These are independent HTTP
+        # requests -- one per staked pool -- and awaiting each in turn made
+        # the wait the *sum* of them: an address in forty gauges waited
+        # forty round trips for two columns and a claim button, which is
+        # long enough that the page looked like it had decided there was
+        # nothing to show. Bounded, because a portfolio is somebody else's
+        # API and forty at once is a burst worth not sending.
+        details = await asyncio.gather(*(payload(h) for h in staked))
+
         seeds: list[earnings.Earning] = []
         token_meta: dict[str, tuple[str, int, float]] = {}
-        for holding in staked:
+        for holding, detail in zip(staked, details, strict=True):
             seed = earnings.Earning(
                 pool=holding.address,
                 gauge=holding.gauge,
                 staked=holding.staked,
                 wallet=holding.wallet,
             )
-            try:
-                detail = await self.api.pool_detail(chain_id, holding.address)
-            except ApiError:
-                seeds.append(seed)
-                continue
-            seed, meta = earnings.seed_from_detail(seed, detail)
+            if detail is not None:
+                seed, meta = earnings.seed_from_detail(seed, detail)
+                token_meta.update(meta)
             seeds.append(seed)
-            token_meta.update(meta)
 
         crv_price = 0.0
         entry = rewards.REWARDS.get(chain_id)
@@ -1382,7 +1418,15 @@ class CurveApp:
                 provider, account, seeds,
                 crv_price=crv_price, token_meta=token_meta,
             )
-        except WalletError:
+        except WalletError as exc:
+            # This used to return, leaving both columns on their en dash
+            # and no claim bar -- which is exactly what a portfolio with
+            # nothing accruing looks like. The read failing and there
+            # being nothing to read are different answers and the page
+            # said the same thing for both.
+            self.portfolio_view.claiming(
+                f"Could not read what these gauges owe: {exc}", status.FAILED
+            )
             return
         self._earnings = filled
         self.portfolio_view.show_earnings(filled, chain_id)

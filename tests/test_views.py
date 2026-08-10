@@ -2170,6 +2170,68 @@ async def _mined(_provider, _tx, **_kw) -> dict:
     return {"status": "0x1"}
 
 
+def test_a_new_wallet_does_not_inherit_the_last_one_s_claim() -> None:
+    """Not a stale number -- the wrong account's. The earnings pass is the
+    slowest of the three reads, so the window in which it would be on
+    screen is the longest one on the page."""
+    view = portfolio_view()
+    view.show([make_holding()])
+    view.show_earnings([earning(rewards=(crv_reward(5.0), arb_reward(2.0)))], chain_id=1)
+    assert view._claim_bar.visible is True
+
+    view.forget_earnings()
+    view.show([make_holding()])
+
+    assert view._claim_bar.visible is False
+    assert view.rows.controls[0]._rewards.value == "–"
+
+
+async def test_pool_payloads_are_asked_for_together_not_in_turn() -> None:
+    """An address in forty gauges waited forty round trips for two columns
+    and a claim button, which is long enough that the page looked like it
+    had decided there was nothing to show."""
+    import main as app_module
+
+    running, high_water = 0, 0
+
+    class Api:
+        async def pool_detail(self, _chain_id, _address):
+            nonlocal running, high_water
+            running += 1
+            high_water = max(high_water, running)
+            await asyncio.sleep(0.01)
+            running -= 1
+            return {"crv_apr": 3.0, "extra_rewards_apr": []}
+
+        async def usd_price(self, _chain, _address):
+            return 0.5
+
+    app = app_module.CurveApp.__new__(app_module.CurveApp)
+    app.page = StubPage()
+    app.chain = "ethereum"
+    app.api = Api()
+    app._earnings = []
+    app._earning_seeds = None
+    app._details = asyncio.Semaphore(app_module.EARNINGS_REQUESTS)
+    app.portfolio_view = portfolio_view(app.page)
+
+    async def reread(_account, _provider) -> None:
+        pass
+
+    app.reread_earnings = reread      # type: ignore[method-assign]
+    holdings = [
+        make_holding(address=f"0x{i:040x}", gauge=f"0x{i + 1:040x}", staked=10**18)
+        for i in range(20)
+    ]
+
+    await app.load_earnings(holdings, "0x" + "11" * 20, 1, object())
+
+    assert high_water == app_module.EARNINGS_REQUESTS
+    seeds, _meta, _price, _chain = app._earning_seeds
+    assert len(seeds) == 20
+    assert all(seed.crv_apr == 3.0 for seed in seeds)
+
+
 async def test_declining_a_claim_leaves_no_red_line_behind() -> None:
     """The user dismissed the wallet. They know that; saying it back in
     red reports a failure that did not happen."""

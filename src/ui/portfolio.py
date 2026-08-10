@@ -393,6 +393,22 @@ class PortfolioView(ft.Column):
         self.empty.visible = False
         safe_update(self)
 
+    def forget_earnings(self) -> None:
+        """Drop what the last read found, without redrawing.
+
+        Called when the page starts loading somebody else's positions.
+        The two columns keep no numbers from the previous account -- they
+        go back to an en dash, which says "not read" -- and the claim bar
+        goes away rather than offering to claim what that account was
+        owed. The earnings pass is the slowest of the three reads, so the
+        window in which the wrong figures would be on screen is the
+        longest one on the page.
+        """
+        self._earnings = {}
+        self._plan = ClaimPlan()
+        self._claim_bar.visible = False
+        self.status.say("")
+
     def _claim(self, crv: bool) -> None:
         """Hand the click to the app, as a task.
 

@@ -15,6 +15,8 @@ is not the LP supply at all.
 
 from __future__ import annotations
 
+import math
+
 import flet as ft
 import pytest
 
@@ -324,7 +326,7 @@ def test_slippage_sits_with_the_amounts_not_with_the_button() -> None:
             for i, c in enumerate(fields)
             if isinstance(c, ft.Row) and tab.slippage in (c.controls or [])
         )
-        assert slippage_at < fields.index(tab.estimate)
+        assert slippage_at < fields.index(tab.estimate_panel)
         # The buttons are in the frame, below the fields, each inside the
         # container that draws Chad's shadow.
         assert tab.control is frame.controls[0]
@@ -1335,3 +1337,476 @@ async def test_pressing_deposit_without_a_wallet_says_so() -> None:
 
     await tab._approve_clicked(None)
     assert "connect a wallet" in tab.status.value.lower()
+
+
+# -- what the size of a trade costs it -------------------------------------
+#
+# The panels measure this by quoting a twentieth of what was typed and
+# comparing the two rates, so a test double whose quote is a straight line
+# proves nothing. These use pools with a curve whose price impact has a
+# closed form -- constant product for the swap, Uniswap's single-sided
+# deposit for the mint -- and check the panel against the algebra rather
+# than against a rerun of the code under test.
+
+#: A constant-product pool: `get_dy` is `Y * dx / (X + dx)`.
+CP_X = 1_000_000 * 10**6       # USDT, the coin being sold
+CP_Y = 1_000_000 * 10**18      # crvUSD, the coin being bought
+CP_SUPPLY = 1_000_000 * 10**18  # LP outstanding, for the deposit side
+
+
+def swap_impact(dx: int) -> float:
+    """`(X + dx) / (X + dx/20) - 1`, in percent.
+
+    The probe pays `Y/(X + dx/20)` per unit and the trade pays
+    `Y/(X + dx)`; `Y` cancels, and so would any fee charged in proportion.
+    """
+    from ui.actions import IMPACT_PROBE_DIVISOR
+
+    return ((CP_X + dx) / (CP_X + dx / IMPACT_PROBE_DIVISOR) - 1) * 100
+
+
+def deposit_impact(amount: int) -> float:
+    """The same comparison for `S * (sqrt(1 + a/X) - 1)`, in percent."""
+    from ui.actions import IMPACT_PROBE_DIVISOR
+
+    u = amount / CP_X
+    probe = IMPACT_PROBE_DIVISOR * (math.sqrt(1 + u / IMPACT_PROBE_DIVISOR) - 1)
+    return (probe / (math.sqrt(1 + u) - 1) - 1) * 100
+
+
+def curved_mint(amounts: list[int]) -> int:
+    """Uniswap's single-sided deposit, which is concave in the amount."""
+    return int(CP_SUPPLY * (math.sqrt(1 + amounts[0] / CP_X) - 1))
+
+
+def straight_mint(amounts: list[int]) -> int:
+    """A pool with no curve at all: LP strictly proportional to the coin."""
+    return CP_SUPPLY * amounts[0] // CP_X
+
+
+class CurvedProvider(FakeProvider):
+    """Answers the two quotes from the amounts it was actually sent."""
+
+    def __init__(self, mint=curved_mint, out_reserve: int = CP_Y) -> None:
+        super().__init__()
+        self.mint = mint
+        #: The reserve of the coin being bought. Small ones are the point
+        #: of `test_a_swap_whose_output_is_too_coarse_to_divide`.
+        self.out_reserve = out_reserve
+        #: Quotes answered so far, so a test can fail the second one.
+        self.quotes = 0
+        self.fail_quote_number = 0
+        #: Revert every quote, the way a pool does when it is asked for
+        #: more than it holds.
+        self.revert_quotes = False
+
+    async def request(self, method: str, params=None):
+        params = params or []
+        if method == "eth_call":
+            data = params[0]["data"]
+            quote = data[:10] in ("0x5e0d443f", "0xed8e84f3")
+            if quote:
+                self.quotes += 1
+                if self.revert_quotes:
+                    raise RpcError(-32000, "execution reverted")
+                if self.quotes == self.fail_quote_number:
+                    return "0x"          # what an unsupported method returns
+            if data.startswith("0x5e0d443f"):     # get_dy(int128,int128,uint256)
+                dx = words_of(data)[2]
+                return word(self.out_reserve * dx // (CP_X + dx))
+            if data.startswith("0xed8e84f3"):     # calc_token_amount(uint256[2],bool)
+                return word(self.mint(words_of(data)[:2]))
+        return await super().request(method, params)
+
+
+def impact_percent(tab) -> float:
+    """The number the panel printed, back out of its line."""
+    text = (tab.impact.value or "").removeprefix("Price impact ")
+    return float(text.rstrip("%"))
+
+
+async def test_a_swap_is_priced_against_a_twentieth_of_itself() -> None:
+    tab = swap_tab(CurvedProvider())
+    tab.amount.value = "100000"      # a tenth of the pool
+
+    await tab.refresh()
+
+    assert tab.impact_panel.visible is True
+    assert impact_percent(tab) == pytest.approx(
+        swap_impact(100_000 * 10**6), rel=1e-3
+    )
+
+
+async def test_the_probe_asks_about_the_same_trade_at_a_twentieth() -> None:
+    """Not a fixed size, and not the other direction: the impact of a
+    hundred thousand USDT is measured with five thousand USDT of the same
+    swap, so what comes back is this trade's own curve."""
+    from ui.actions import IMPACT_PROBE_DIVISOR
+
+    provider = CurvedProvider()
+    tab = swap_tab(provider)
+    tab.amount.value = "100000"
+    sent: list[list[int]] = []
+    calls = provider.request
+
+    async def record(method: str, params=None):
+        if method == "eth_call" and params[0]["data"].startswith("0x5e0d443f"):
+            sent.append(words_of(params[0]["data"]))
+        return await calls(method, params)
+
+    provider.request = record          # type: ignore[method-assign]
+    await tab.refresh()
+
+    dx = 100_000 * 10**6
+    assert [words[:2] for words in sent] == [[0, 1], [0, 1]]
+    assert [words[2] for words in sent] == [dx, dx // IMPACT_PROBE_DIVISOR]
+
+
+async def test_a_swap_big_enough_to_hurt_is_coloured() -> None:
+    """Above a percent the number stops being a footnote. Below it, the
+    line reads like every other caption in the panel."""
+    from ui.actions import IMPACT_HIGH
+
+    small = swap_tab(CurvedProvider())
+    small.amount.value = "1000"
+    await small.refresh()
+    assert impact_percent(small) < IMPACT_HIGH
+    assert small.impact.color == ft.Colors.ON_SURFACE_VARIANT
+
+    large = swap_tab(CurvedProvider())
+    large.amount.value = "100000"
+    await large.refresh()
+    assert impact_percent(large) >= IMPACT_HIGH
+    assert large.impact.color == ft.Colors.ERROR
+
+
+async def test_a_trade_too_small_to_measure_says_nothing() -> None:
+    """A twentieth of a tenth of a USDT is five thousand units, and
+    `amount // 20` has thrown away up to one of them -- so the answer would
+    carry more rounding than impact. The estimate is still shown; the line
+    that cannot be trusted is not."""
+    tab = swap_tab(CurvedProvider())
+    tab.amount.value = "0.1"
+
+    await tab.refresh()
+
+    assert tab.impact_panel.visible is False
+    assert tab.impact.value == ""
+    assert "crvUSD" in tab.estimate.value
+
+
+async def test_a_deposit_is_priced_the_same_way() -> None:
+    tab = deposit_tab(CurvedProvider())
+    tab.fields[0].value = "200000"      # a fifth of the pool, one-sided
+
+    await tab.refresh()
+
+    assert tab.impact_panel.visible is True
+    assert impact_percent(tab) == pytest.approx(
+        deposit_impact(200_000 * 10**6), rel=1e-3
+    )
+    assert "LP" in tab.estimate.value
+
+
+async def test_a_deposit_that_mints_in_proportion_reports_no_impact() -> None:
+    """A pool with no curve costs nothing to be big in -- and the line says
+    so in the terms the probe can actually support rather than "0%"."""
+    tab = deposit_tab(CurvedProvider(mint=straight_mint))
+    tab.fields[0].value = "200000"
+
+    await tab.refresh()
+
+    assert tab.impact.value == "Price impact under 0.01%"
+
+
+async def test_a_probe_that_fails_leaves_the_estimate_standing() -> None:
+    """The quote that matters already came back. A pool that answers it and
+    not the follow-up has nothing wrong with it worth saying twice."""
+    provider = CurvedProvider()
+    provider.fail_quote_number = 2      # the probe, not the quote
+    tab = swap_tab(provider)
+    tab.amount.value = "100000"
+
+    await tab.refresh()
+
+    assert tab.impact_panel.visible is False
+    assert "crvUSD" in tab.estimate.value
+    assert tab.status.value in ("", None)
+
+
+async def test_only_the_panels_with_a_price_carry_the_line() -> None:
+    """Staking moves LP into a gauge at no rate at all, so a price impact
+    there would be a number about nothing."""
+    for tab in tabs():
+        tab.mount()
+        assert (tab.impact_panel in tab.control.controls) == tab.shows_impact
+        assert tab.shows_impact == (tab.title in ("Deposit", "Swap"))
+
+
+def test_a_deposit_of_the_scarce_coin_is_a_bonus_not_an_error() -> None:
+    """Negative is a real answer: a pool short of a coin mints more than
+    the proportional share for it, and rounding the sign away would hide
+    the one case where being large is in your favour."""
+    from ui.actions import (
+        IMPACT_MIN_PROBE,
+        IMPACT_PROBE_DIVISOR,
+        format_impact,
+        price_impact,
+    )
+
+    # The whole deposit mints 10% more than twenty times the probe.
+    probe_out = IMPACT_MIN_PROBE
+    out = probe_out * IMPACT_PROBE_DIVISOR * 110 // 100
+    impact = price_impact(probe_out, out)
+    assert impact == pytest.approx(-100 / 11, rel=1e-9)
+    assert format_impact(impact) == "-9.09%"
+
+
+def test_the_probe_keeps_the_shape_of_the_deposit() -> None:
+    """A coin left empty stays empty. Probing both sides of a one-sided
+    deposit would measure a different deposit -- a balanced one, whose
+    impact is nearly nil -- and report it against the typed amount."""
+    from ui.actions import IMPACT_MIN_PROBE, IMPACT_PROBE_DIVISOR, impact_probe
+
+    amount = IMPACT_MIN_PROBE * IMPACT_PROBE_DIVISOR
+    assert impact_probe([amount, 0]) == [IMPACT_MIN_PROBE, 0]
+    # One unit short of what can be measured to the printed precision.
+    assert impact_probe([amount - IMPACT_PROBE_DIVISOR, 0]) is None
+    # And a coin that is present but too small takes the whole thing out,
+    # rather than being quietly dropped from the probe.
+    assert impact_probe([amount, 1]) is None
+    assert impact_probe([0, 0]) is None
+
+
+async def test_a_swap_whose_output_is_too_coarse_to_divide_says_nothing() -> None:
+    """The far end of the trade needs the same precision as the near one.
+
+    A dollar of USDT into a tricrypto pool buys about 1,530 units of WBTC.
+    A twentieth of that is 76, the pool answers in whole units, and 76
+    times twenty read as a 0.59% price impact on a one-dollar swap -- off
+    a real mainnet pool, with the input-side guard already in place.
+    """
+    thin = CurvedProvider(out_reserve=10 * 10**8)      # ten WBTC, 8 decimals
+
+    tab = swap_tab(thin)
+    tab.amount.value = "1"
+    await tab.refresh()
+    assert tab.impact_panel.visible is False
+
+    # The same pool, at a size whose output has units to spare.
+    tab.amount.value = "10000"
+    await tab.refresh()
+    assert tab.impact_panel.visible is True
+    assert impact_percent(tab) == pytest.approx(swap_impact(10_000 * 10**6), rel=1e-2)
+
+
+# -- the band behind a number worth stopping at ----------------------------
+
+
+class RecordingPage(StubPage):
+    """A page that runs what it is handed, and remembers every repaint."""
+
+    def __init__(self, panel=None) -> None:
+        self.tints: list[str | None] = []
+        self.panel = panel
+        self.tasks: list[tuple] = []
+
+    def update(self) -> None:
+        if self.panel is not None:
+            self.tints.append(self.panel.bgcolor)
+
+    def run_task(self, handler, *args, **kwargs) -> None:
+        self.tasks.append((handler, args))
+
+
+def high_impact_tab():
+    """A swap whose impact is well past the red line, on a live page."""
+    provider = CurvedProvider()
+    pool = make_pool()
+    contract = PoolContract(provider, pool, ACCOUNT)
+    from ui.actions import SwapTab
+
+    page = RecordingPage()
+    tab = SwapTab(page, pool, lambda: contract, None)
+    page.panel = tab.impact_panel
+    tab.mount()
+    tab.amount.value = "100000"
+    return tab, page
+
+
+async def test_a_big_impact_arms_the_alarm() -> None:
+    tab, page = high_impact_tab()
+
+    await tab.refresh()
+
+    assert tab._alarm_panel is tab.impact_panel
+    assert [handler for handler, _args in page.tasks] == [tab._pulse]
+
+
+async def test_a_small_impact_leaves_the_band_alone() -> None:
+    tab, page = high_impact_tab()
+    tab.amount.value = "1000"
+
+    await tab.refresh()
+
+    assert tab._alarm_panel is None
+    assert tab.impact_panel.bgcolor is None
+    assert page.tasks == []
+
+
+async def test_the_alarm_is_armed_on_the_crossing_not_on_every_keystroke() -> None:
+    """The panel re-quotes on each character typed. Restarting the pulse
+    every time would leave it forever on its first flash."""
+    tab, page = high_impact_tab()
+    await tab.refresh()
+    tab.amount.value = "200000"      # still red, still the same alarm
+    await tab.refresh()
+    assert len(page.tasks) == 1
+
+    tab.amount.value = "1000"        # back under the line
+    await tab.refresh()
+    assert tab._alarm_panel is None
+    assert tab.impact_panel.bgcolor is None
+
+    tab.amount.value = "100000"      # and over it again
+    await tab.refresh()
+    assert len(page.tasks) == 2
+
+
+async def test_the_pulse_flashes_and_then_settles(monkeypatch) -> None:
+    from ui import actions
+
+    monkeypatch.setattr(actions, "ALARM_INTERVAL", 0)
+    monkeypatch.setattr(actions, "ALARM_PULSES", 3)
+    tab, page = high_impact_tab()
+    await tab.refresh()
+
+    await tab._pulse(tab._alarm_run)
+
+    lit = ft.Colors.with_opacity(actions.ALARM_LIT, ft.Colors.ERROR)
+    dim = ft.Colors.with_opacity(actions.ALARM_DIM, ft.Colors.ERROR)
+    assert page.tints.count(lit) == 3
+    # Three dim steps inside the loop, and the one it settles on.
+    assert page.tints.count(dim) == 4
+    assert tab.impact_panel.bgcolor == dim
+
+
+async def test_a_retired_pulse_stops_painting(monkeypatch) -> None:
+    """The panel re-quotes under a pulse that is still running. Whatever
+    was flashing for the old number must not go on flashing over the new
+    one -- which is what `_alarm_run` is for."""
+    from ui import actions
+
+    monkeypatch.setattr(actions, "ALARM_INTERVAL", 0)
+    tab, page = high_impact_tab()
+    await tab.refresh()
+    stale = tab._alarm_run
+
+    tab.amount.value = "1000"
+    await tab.refresh()                 # disarms, and retires the run
+    page.tints.clear()
+
+    await tab._pulse(stale)
+
+    assert page.tints == []
+    assert tab.impact_panel.bgcolor is None
+
+
+def test_the_output_amount_is_sized_like_the_fields_it_answers() -> None:
+    """It is the other half of the trade, not a footnote on it."""
+    from ui.typography import BODY
+
+    for tab in tabs():
+        assert tab.estimate.size == BODY
+
+
+async def test_the_estimate_points_at_what_you_get() -> None:
+    """An ASCII arrow, like everything else user-visible here: the web
+    build's default font draws U+2192 as a tofu box."""
+    tab = swap_tab(CurvedProvider())
+    tab.amount.value = "1000"
+    await tab.refresh()
+    assert tab.estimate.value.startswith("-> ")
+    assert "~" not in tab.estimate.value
+
+
+# -- the same band for a message that means stop ---------------------------
+
+
+async def test_a_reverted_quote_gets_the_band_too() -> None:
+    """Ask a pool for more than it holds and it reverts. That is the same
+    kind of message a punishing price impact is -- stop, type something
+    else -- so it is said in the same place, in the same red."""
+    provider = CurvedProvider()
+    provider.revert_quotes = True
+    tab, page = high_impact_tab()
+    tab.get_contract().provider = provider
+
+    await tab.refresh()
+
+    assert "execution reverted" in tab.estimate.value
+    assert tab.estimate.color == ft.Colors.ERROR
+    assert tab._alarm_panel is tab.estimate_panel
+    assert [handler for handler, _args in page.tasks] == [tab._pulse]
+    # Nothing was measured, so there is no second line to flash.
+    assert tab.impact_panel.visible is False
+
+
+async def test_the_band_follows_the_message_that_is_actually_showing() -> None:
+    """From a reverted quote to a big-but-real one: the flash moves to the
+    impact line rather than leaving a red band under a good estimate."""
+    provider = CurvedProvider()
+    provider.revert_quotes = True
+    tab, _page = high_impact_tab()
+    tab.get_contract().provider = provider
+    await tab.refresh()
+    assert tab._alarm_panel is tab.estimate_panel
+
+    provider.revert_quotes = False
+    await tab.refresh()
+
+    assert tab._alarm_panel is tab.impact_panel
+    assert tab.estimate_panel.bgcolor is None
+    assert tab.estimate.color == ft.Colors.ON_SURFACE
+
+
+async def test_withdrawing_more_than_you_have_is_a_problem_not_a_caption() -> None:
+    """Said before it is sent rather than after it reverts -- which is
+    exactly why it belongs in the red."""
+    provider = FakeProvider()
+    tab = make_tab(provider)
+    tab.mount()
+    tab.lp_balance = 5 * 10**18
+    tab.amount.value = "1000"
+
+    await tab.refresh()
+
+    assert "available" in tab.estimate.value
+    assert tab.estimate.color == ft.Colors.ERROR
+    assert tab._alarm_panel is tab.estimate_panel
+
+
+async def test_an_empty_line_is_not_a_problem() -> None:
+    """`show_estimate("", problem=True)` must not flash an empty band --
+    a panel with nothing typed into it has nothing to complain about."""
+    tab, page = high_impact_tab()
+    tab.show_estimate("", problem=True)
+    assert tab._alarm_panel is None
+    assert page.tasks == []
+
+
+async def test_leaving_the_network_takes_both_lines_with_it() -> None:
+    """Nothing can be read across a network boundary, so neither line
+    means anything -- and a band left flashing over a stale number is the
+    worst of the three states."""
+    tab, _page = high_impact_tab()
+    await tab.refresh()
+    assert tab._alarm_panel is tab.impact_panel
+
+    tab.pool.chain_id = 100          # the wallet is on Ethereum
+    await tab.refresh()
+
+    assert tab.estimate.value == ""
+    assert tab.impact_panel.visible is False
+    assert tab._alarm_panel is None
+    assert tab.impact_panel.bgcolor is None

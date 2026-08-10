@@ -33,6 +33,7 @@ Two rules hold everywhere in this file:
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 from collections.abc import Awaitable, Callable
 from decimal import ROUND_CEILING, Decimal
@@ -130,6 +131,105 @@ ESTIMATE_FEE_SHARE = 1.0
 #: affordable because `a` is doing the work where the risk actually is.
 QUOTE_DRIFT = 0.005
 
+#: The probe trade, as a divisor of what was typed. A twentieth is small
+#: enough that the pool's curve is near-flat across it -- so its rate
+#: stands in for the marginal one -- and large enough that the integer
+#: division below does not swamp the answer.
+IMPACT_PROBE_DIVISOR = 20
+
+#: The smallest probe worth quoting, in the token's own smallest units --
+#: applied at **both** ends of the trade.
+#:
+#: Going in, the probe is `amount // 20`, which throws away up to one unit.
+#: Coming out, the pool answers in whole units too, and `probe_out * 20`
+#: multiplies whatever it truncated by twenty. Either way the error is
+#: about `1 / units`, and at ten thousand that is 0.01% -- exactly the
+#: precision the line is printed to. Below it the measurement is of the
+#: rounding rather than of the pool, and is left unsaid instead of being
+#: dressed up as a number.
+#:
+#: The far end is the one that bites, because it is denominated in the
+#: coin being *bought*: one USDT into TricryptoUSDT buys 1,530 units of
+#: WBTC, of which a twentieth is 76 -- and 76 rounded, times twenty, read
+#: as a 0.59% price impact on a one-dollar swap. That is not a restriction
+#: on small trades so much as a statement about them: nothing this size
+#: moves a price anyway.
+IMPACT_MIN_PROBE = 10_000
+
+#: Under this, in percent, the impact is inside the probe's own error.
+IMPACT_FLOOR = 0.01
+
+#: Where the number stops being a detail and becomes a reason to type a
+#: smaller one. Curve's own UI draws the line around here.
+IMPACT_HIGH = 1.0
+
+#: The two tints the alarm band alternates between, as opacities of the
+#: theme's error colour -- so it is red under Material and Chad's scarlet
+#: under Chad, rather than one hardcoded red that fights both.
+ALARM_LIT = 0.28
+ALARM_DIM = 0.07
+
+#: Half a pulse, in seconds. The container animates across it, so this is
+#: a fade rather than a strobe.
+ALARM_INTERVAL = 0.5
+
+#: How many times it pulses before settling on the dim tint.
+#:
+#: Bounded, and not only out of taste. A panel has no teardown hook -- the
+#: pool page rebuilds its tabs outright -- so a loop that ran until the
+#: number came down would outlive the panel it was drawing on and go on
+#: calling `page.update()` for the rest of the session. Attention is drawn
+#: by the flashing; the state stays visible in the tint that is left.
+ALARM_PULSES = 5
+
+
+def impact_probe(amounts: list[int]) -> list[int] | None:
+    """A twentieth of each amount, or None where that cannot be measured.
+
+    None rather than an unreliable number: see `IMPACT_MIN_PROBE`. A coin
+    left at zero stays at zero -- the probe has to point the same way as
+    the trade, and a single-sided deposit probed on both sides would be
+    measuring a different deposit.
+    """
+    probe = [amount // IMPACT_PROBE_DIVISOR for amount in amounts]
+    if not any(probe):
+        return None
+    if any(
+        amount > 0 and value < IMPACT_MIN_PROBE
+        for amount, value in zip(amounts, probe, strict=True)
+    ):
+        return None
+    return probe
+
+
+def price_impact(probe_out: int, out: int) -> float | None:
+    """What the size of a trade costs it, in percent.
+
+    The probe's rate scaled back up to the full size -- `probe_out * 20` --
+    is what the trade would produce if its own weight never moved the
+    price; `out` is what it actually produces. The gap between them is the
+    curve, and it is the whole of what this measures: the fee cancels,
+    because both sides pay the same proportion of it.
+
+    Negative is a real answer rather than a slipped sign. A deposit of
+    whichever coin the pool is short of mints more than its proportional
+    share, and so does a swap into a pool whose dynamic fee falls as the
+    trade rebalances it.
+
+    None where the probe's *own* answer is too coarse to divide -- see
+    `IMPACT_MIN_PROBE`, whose second half is about exactly this end.
+    """
+    if probe_out < IMPACT_MIN_PROBE or out <= 0:
+        return None
+    return (probe_out * IMPACT_PROBE_DIVISOR - out) / out * 100
+
+
+def format_impact(percent: float) -> str:
+    """Two decimals, and a floor where the probe's precision runs out."""
+    if abs(percent) < IMPACT_FLOOR:
+        return f"under {IMPACT_FLOOR:.2f}%"
+    return f"{percent:.2f}%"
+
 
 def slippage_for(
     fee_units: int, multiple: float = SLIPPAGE_OF_FEE, constant: float = 0.0
@@ -192,6 +292,10 @@ class ActionTab:
     #: `calc_token_amount`, which some implementations compute fee-free.
     fee_multiple = ESTIMATE_FEE_SHARE
     slippage_constant = QUOTE_DRIFT
+    #: Does the size of this action move the price it gets? Only for the
+    #: panels that implement `_quote`: staking has no price at all, and
+    #: claiming is not a trade.
+    shows_impact = False
 
     @property
     def available(self) -> bool:
@@ -241,7 +345,30 @@ class ActionTab:
         self.status_panel = StatusPanel(page)
         self.status = self.status_panel.text
         self.status_spinner = self.status_panel.spinner
-        self.estimate = ft.Text("", size=SMALL, color=ft.Colors.ON_SURFACE_VARIANT)
+        #: What you get. Sized like the fields above rather than like a
+        #: caption, because it is the other half of the trade: the amount
+        #: typed in and the amount coming out are the same kind of fact,
+        #: and one of them was set in eight-point grey.
+        self.estimate = ft.Text("", size=BODY, color=ft.Colors.ON_SURFACE)
+        #: What the size of the trade costs it, on its own line rather than
+        #: appended to the estimate: it is a reason to type a smaller
+        #: number, not another way of describing the result, and the line
+        #: above is already two figures long.
+        self.impact = ft.Text("", size=SMALL, color=ft.Colors.ON_SURFACE_VARIANT)
+        #: The bands behind the two lines, which are what flash. Vertical
+        #: padding only: a horizontal inset would set these 8px right of
+        #: the fields they belong under, and lines that nearly line up read
+        #: as a mistake. The impact one is hidden until there is something
+        #: to say -- see `show_impact`.
+        self.estimate_panel = self._band(self.estimate)
+        self.impact_panel = self._band(self.impact, visible=False)
+        #: Which band is flashing, if any, and which run of the pulse is
+        #: the current one -- see `_alarm`.
+        self._alarm_panel: ft.Container | None = None
+        self._alarm_run = 0
+        #: What the two lines are currently saying, as the alarm sees it.
+        self._estimate_problem = False
+        self._impact_high = False
 
         # Every read here goes through the *wallet's* provider, so it lands
         # on whatever network the wallet is on -- not the one being
@@ -331,6 +458,125 @@ class ActionTab:
         """What the fee depends on, so it is re-read when that changes."""
         return None
 
+    async def _quote(self, contract: PoolContract, amounts: list[int]) -> int:
+        """What this action produces for `amounts`, asked of the pool.
+
+        A list even where the action takes a single number, because the
+        impact probe scales whatever is here by a common factor and has no
+        business knowing which action it is measuring.
+        """
+        raise NotImplementedError
+
+    async def measure_impact(
+        self, contract: PoolContract, amounts: list[int], out: int
+    ) -> float | None:
+        """Quote a twentieth of the same action and compare the two rates.
+
+        One extra `eth_call` per keystroke, deliberately. The alternative
+        is re-deriving the pool's invariant in Python, and this file's
+        second rule is that every number on screen came from the pool.
+
+        A probe that fails says nothing at all: the estimate above it is
+        still good, and a pool that answered the real quote and not this
+        one has nothing wrong with it worth reporting twice.
+        """
+        probe = impact_probe(amounts)
+        if probe is None:
+            return None
+        try:
+            probe_out = await self._quote(contract, probe)
+        except WalletError:
+            return None
+        return price_impact(probe_out, out)
+
+    def show_estimate(self, text: str, *, problem: bool = False) -> None:
+        """The result line -- or the reason there is no result.
+
+        `problem` is for the things that would revert if they were sent:
+        a quote the pool refused, an amount larger than the balance behind
+        it. Those get the same red band a punishing price impact gets,
+        because they are the same kind of message -- stop, and type
+        something else -- and the panel has exactly one place to say it.
+        """
+        self.estimate.value = text
+        self.estimate.color = ft.Colors.ERROR if problem else ft.Colors.ON_SURFACE
+        self._estimate_problem = problem and bool(text)
+        self._sync_alarm()
+
+    def show_impact(self, impact: float | None) -> None:
+        """Put the measurement on screen, or take the line away entirely."""
+        self.impact_panel.visible = impact is not None
+        high = impact is not None and impact >= IMPACT_HIGH
+        self.impact.value = (
+            "" if impact is None else f"Price impact {format_impact(impact)}"
+        )
+        self.impact.color = ft.Colors.ERROR if high else ft.Colors.ON_SURFACE_VARIANT
+        self._impact_high = high
+        self._sync_alarm()
+
+    def _band(self, text: ft.Text, *, visible: bool = True) -> ft.Container:
+        return ft.Container(
+            text,
+            padding=ft.Padding.symmetric(vertical=6),
+            border_radius=6,
+            visible=visible,
+            animate=ft.Animation(
+                int(ALARM_INTERVAL * 800), ft.AnimationCurve.EASE_IN_OUT
+            ),
+        )
+
+    def _sync_alarm(self) -> None:
+        """Whichever line is worth flashing, or neither.
+
+        The estimate wins where both would qualify, though in practice
+        they cannot both be set: a quote that failed has no impact to
+        measure, and one that succeeded is not a problem.
+        """
+        if self._estimate_problem:
+            self._alarm(self.estimate_panel)
+        elif self._impact_high:
+            self._alarm(self.impact_panel)
+        else:
+            self._alarm(None)
+
+    def _alarm(self, panel: ft.Container | None) -> None:
+        """Start the pulse on `panel`, or stop whatever is pulsing.
+
+        Only on a *change*, not on every refresh: the panel re-quotes on
+        each keystroke, and a pulse restarted every character would never
+        get past its first flash.
+        """
+        if panel is self._alarm_panel:
+            return
+        if self._alarm_panel is not None:
+            self._alarm_panel.bgcolor = None
+        self._alarm_panel = panel
+        # Whatever is pulsing now belongs to the previous run, and checks
+        # this number before each step. Bumping it retires it.
+        self._alarm_run += 1
+        if panel is not None:
+            self.page.run_task(self._pulse, self._alarm_run)
+
+    async def _pulse(self, run: int) -> None:
+        """Flash the band, then leave it tinted. See `ALARM_PULSES`."""
+        for step in range(ALARM_PULSES * 2):
+            if run != self._alarm_run:
+                return
+            self._tint(ALARM_LIT if step % 2 == 0 else ALARM_DIM)
+            await asyncio.sleep(ALARM_INTERVAL)
+        if run == self._alarm_run:
+            self._tint(ALARM_DIM)
+
+    def _tint(self, opacity: float) -> None:
+        panel = self._alarm_panel
+        if panel is None:
+            return
+        panel.bgcolor = ft.Colors.with_opacity(opacity, ft.Colors.ERROR)
+        # A page that has gone away is not an error worth propagating out
+        # of a decoration: the message itself is already on screen.
+        with contextlib.suppress(Exception):
+            self.page.update()
+
     async def suggest_slippage(self, contract: PoolContract | None) -> None:
         """Set the tolerance from the pool's own fee, once, quietly.
 
@@ -379,7 +625,8 @@ class ActionTab:
             # Next to the amounts it protects. Down by the button it read
             # as part of the action rather than as a setting for it.
             *([_aside(self.slippage)] if self.uses_slippage else []),
-            self.estimate,
+            self.estimate_panel,
+            *([self.impact_panel] if self.shows_impact else []),
         ]
         # The status line goes with the buttons rather than with the
         # fields: it is what the button did, and it appears while a
@@ -418,7 +665,8 @@ class ActionTab:
                 "read balances or act on this pool."
             )
             self.switch_button.content = f"Switch to {wanted}"
-            self.estimate.value = ""
+            self.show_estimate("")
+            self.show_impact(None)
             self.approve_button.visible = False
             self.submit_button.disabled = True
         return matched
@@ -776,6 +1024,11 @@ class DepositTab(ActionTab):
     submit_label = "Deposit"
     # No `_done_verb`: `done_verb` below is a property, because the line
     # has to say whether the LP was staked as well as minted.
+    #: A deposit prices too. One coin at a time is a trade against the
+    #: pool in all but name -- half of it is swapped into the others -- so
+    #: it pays the same curve a swap does, and the number is worth seeing
+    #: before the LP arrives short.
+    shows_impact = True
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
@@ -970,18 +1223,28 @@ class DepositTab(ActionTab):
         amounts = rows.amounts()
         self._expected_lp = 0
         self._quote_ok = True
+        impact: float | None = None
         if contract is not None and any(amounts):
             try:
                 self._expected_lp = await self._quote(contract, amounts)
-                self.estimate.value = (
-                    f"~ {token_amount(units_to_float(self._expected_lp, 18))} LP"
+                self.show_estimate(
+                    f"-> {token_amount(units_to_float(self._expected_lp, 18))} LP"
                     f"  (min {token_amount(units_to_float(self.with_slippage(self._expected_lp), 18))})"
                 )
             except WalletError as exc:
-                self.estimate.value = str(exc)
+                self.show_estimate(str(exc), problem=True)
                 self._quote_ok = False
+            else:
+                # After the real quote, not before: the first
+                # `calc_token_amount` is what settles which array shape
+                # this pool speaks, and the probe then asks in that shape
+                # rather than spending its own round trip finding out.
+                impact = await self.measure_impact(
+                    contract, amounts, self._expected_lp
+                )
         else:
-            self.estimate.value = ""
+            self.show_estimate("")
+        self.show_impact(impact)
 
         await self._sync_approval(contract)
         if contract is not None and (not any(amounts) or not self._quote_ok):
@@ -1314,7 +1577,7 @@ class WithdrawTab(ActionTab):
             self.lp_label.value = ""
         self._sync_use_staked()
 
-        self.estimate.value = ""
+        self.show_estimate("")
         self._quote_ok = True
         if contract is not None and amount > 0 and self.mode.value == "one":
             index = self._coin_index()
@@ -1326,12 +1589,12 @@ class WithdrawTab(ActionTab):
                     if self.underlying
                     else contract.calc_withdraw_one_coin(amount, index)
                 )
-                self.estimate.value = (
-                    f"~ {token_amount(units_to_float(out, coin.decimals))} {coin.symbol}"
+                self.show_estimate(
+                    f"-> {token_amount(units_to_float(out, coin.decimals))} {coin.symbol}"
                     f"  (min {token_amount(units_to_float(self.with_slippage(out), coin.decimals))})"
                 )
             except WalletError as exc:
-                self.estimate.value = str(exc)
+                self.show_estimate(str(exc), problem=True)
                 self._quote_ok = False
 
         # Said before it is sent rather than after it reverts. The number
@@ -1342,13 +1605,14 @@ class WithdrawTab(ActionTab):
             contract is not None and contract.can_send and amount > self.spendable
         )
         if over:
-            self.estimate.value = (
+            self.show_estimate(
                 f"Only {format_units(self.spendable, 18)} LP available"
                 + (
                     "."
                     if self.drawing_on_gauge or not self.staked
                     else ", or more with “Use staked”."
-                )
+                ),
+                problem=True,
             )
 
         await self._sync_approval(contract)
@@ -1418,6 +1682,7 @@ class SwapTab(ActionTab):
     #: included -- so there is no estimator error to give back.
     fee_multiple = SLIPPAGE_OF_FEE
     slippage_constant = 0.0
+    shows_impact = True
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
@@ -1538,6 +1803,20 @@ class SwapTab(ActionTab):
     def fee_key(self) -> object:
         return (self.route.value, *self._indices())
 
+    async def _quote(self, contract: PoolContract, amounts: list[int]) -> int:
+        """`get_dy` on whichever route is live, for `[dx]`.
+
+        A one-element list because that is the shape `measure_impact`
+        scales; the coins come from the dropdowns, which do not move
+        between a quote and its probe.
+        """
+        i, j = self._indices()
+        return await (
+            contract.get_dy_underlying(i, j, amounts[0])
+            if self.underlying
+            else contract.get_dy(i, j, amounts[0])
+        )
+
     def clear_inputs(self) -> None:
         self.amount.value = ""
 
@@ -1631,24 +1910,27 @@ class SwapTab(ActionTab):
                 self.balance_label.value = ""
 
         self._expected_out = 0
-        self.estimate.value = ""
+        self.show_estimate("")
+        impact: float | None = None
         if i == j:
-            self.estimate.value = "Pick two different coins."
+            # A nudge rather than a failure: the two dropdowns move each
+            # other out of the way, so this is only reachable at all on a
+            # pool with one coin.
+            self.show_estimate("Pick two different coins.")
         elif contract is not None and dx > 0:
             try:
-                self._expected_out = await (
-                    contract.get_dy_underlying(i, j, dx)
-                    if self.underlying
-                    else contract.get_dy(i, j, dx)
-                )
+                self._expected_out = await self._quote(contract, [dx])
                 out_coin = self.coins[j]
-                self.estimate.value = (
-                    f"~ {token_amount(units_to_float(self._expected_out, out_coin.decimals))}"
+                self.show_estimate(
+                    f"-> {token_amount(units_to_float(self._expected_out, out_coin.decimals))}"
                     f" {out_coin.symbol}"
                     f"  (min {token_amount(units_to_float(self.with_slippage(self._expected_out), out_coin.decimals))})"
                 )
             except WalletError as exc:
-                self.estimate.value = str(exc)
+                self.show_estimate(str(exc), problem=True)
+            else:
+                impact = await self.measure_impact(contract, [dx], self._expected_out)
+        self.show_impact(impact)
 
         await self._sync_approval(contract)
         if contract is not None and (dx <= 0 or i == j):
@@ -1675,13 +1957,10 @@ class SwapTab(ActionTab):
             raise WalletError("Pick two different coins.")
         if dx <= 0:
             raise WalletError("Enter an amount to swap.")
+        floor = self.with_slippage(await self._quote(contract, [dx]))
         if self.underlying:
-            expected = await contract.get_dy_underlying(i, j, dx)
-            return await contract.exchange_underlying(
-                i, j, dx, self.with_slippage(expected)
-            )
-        expected = await contract.get_dy(i, j, dx)
-        return await contract.exchange(i, j, dx, self.with_slippage(expected))
+            return await contract.exchange_underlying(i, j, dx, floor)
+        return await contract.exchange(i, j, dx, floor)
 
 
 def claimable(amount: int, decimals: int) -> bool:
@@ -1806,10 +2085,7 @@ class ClaimTab(ActionTab):
         # claim yet" is only said when that is actually known -- saying it
         # after a failed read is the lie this whole attribute exists to
         # stop.
-        self.estimate.value = self.read_error
-        self.estimate.color = (
-            ft.Colors.ERROR if self.read_error else ft.Colors.ON_SURFACE_VARIANT
-        )
+        self.show_estimate(self.read_error, problem=bool(self.read_error))
         self.empty_note.visible = not lines and not self.read_error
 
     async def _meta_for(self, contract: PoolContract, token: str) -> tuple[str, int]:

@@ -295,6 +295,58 @@ transaction stopped reverting, and quote staleness against the archive.
 traps that produced wrong answers first, and why the fee term is what lets
 the constant stay at 0.005%.
 
+### Price impact
+
+Slippage is what a quote may lose before it lands. Price impact is what the
+trade costs for being the size it is, and it is a separate number: a swap
+big enough to move the pool along its own curve pays it whether or not a
+single block goes by.
+
+It is measured rather than modelled. The panel quotes the same action at a
+twentieth of what was typed, scales that answer back up, and reports the
+gap:
+
+```
+impact = (quote(amount / 20) * 20 - quote(amount)) / quote(amount)
+```
+
+A twentieth is small enough that the curve is near-flat across it, so its
+rate stands in for the marginal one. The fee cancels -- both sides pay the
+same proportion of it -- which leaves the curve on its own. One extra
+`eth_call` per keystroke buys this, and that is the price of the rule that
+every number on screen came from the pool rather than from a second
+implementation of Curve's invariant in Python.
+
+Deposits get the same treatment, because a one-sided deposit is a trade
+against the pool in all but name. There a negative answer is a real one:
+deposit whichever coin the pool is short of and it mints more than the
+proportional share.
+
+Past 1% the line turns red and its background pulses, five times, on the
+crossing rather than on every keystroke -- a panel re-quotes on each
+character typed, and a flash restarted that often never gets past its first
+frame. The pulse is bounded rather than endless because a panel has no
+teardown hook: the pool page rebuilds its tabs outright, and a loop waiting
+for the number to come down would outlive the panel it was drawing on. What
+is left behind is a steady tint, so the state stays visible after the
+flashing has done its job.
+
+The same band carries the messages that mean *stop* for a different reason:
+a quote the pool refused (ask a tricrypto pool to price 10^15 USDT and it
+reverts with `Unsafe values x[i]`), or a withdrawal larger than the LP
+behind it, which the panel says before it is sent rather than after it
+reverts. Those go where the estimate would have been, since they are what
+there is to say instead of one, and they take the band with them: a failed
+quote has no impact to measure, so the two can never ask for it at once.
+
+Both ends need enough units to divide. The probe is `amount // 20` and the
+pool answers in whole units, so each carries about `1 / units` of rounding;
+below ten thousand that swamps the 0.01% the line is printed to, and the
+line is left off instead. The far end is the one that bites, and it was
+found on mainnet rather than reasoned about: one USDT into TricryptoUSDT
+buys 1,530 units of WBTC, a twentieth of that is 76, and 76 rounded times
+twenty read as a **0.59% price impact on a one-dollar swap**.
+
 ### Metapools
 
 A metapool holds two coins: its own, and the base pool's LP token. Almost

@@ -361,7 +361,13 @@ class PortfolioView(ft.Column):
                     [
                         ft.Text("Portfolio", size=METRIC, weight=ft.FontWeight.BOLD,
                                 expand=True),
-                        ft.Text("Total value:", size=SMALL,
+                        # Set on the same line as the figure it introduces,
+                        # not shrunk beneath it: a caption a size smaller
+                        # reads as a footnote about the number rather than
+                        # as the first half of the sentence it is in.
+                        # Weight is what tells them apart -- the label is
+                        # the part you already know.
+                        ft.Text("Total value:", size=METRIC,
                                 color=ft.Colors.ON_SURFACE_VARIANT),
                         self.total,
                     ],

@@ -36,6 +36,7 @@ __all__ = [
     "encode_add_liquidity",
     "encode_allowance",
     "encode_approve",
+    "encode_balances_int128",
     "encode_calc_token_amount",
     "encode_calc_withdraw_one_coin",
     "encode_claim_rewards",
@@ -184,6 +185,18 @@ def encode_indexed_parameter(name: str, index: int) -> str:
     from the registry, so callers try both.
     """
     return _call(f"{name}(uint256)", _uint(index))
+
+
+def encode_balances_int128(index: int) -> str:
+    """`balances(int128)`, the old registry's spelling of one reserve.
+
+    3pool, the lending pools and the other originals declare the index
+    `int128`; everything from the factories on declares `uint256`, which
+    `encode_indexed_parameter("balances", i)` covers. A pool answers one
+    and reverts on the other, so callers try both -- the same dance
+    `encode_total_supply` sidesteps by reading the LP token instead.
+    """
+    return _call("balances(int128)", _int(index))
 
 
 def encode_dynamic_fee(i: int, j: int) -> str:

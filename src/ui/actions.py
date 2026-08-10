@@ -1532,6 +1532,34 @@ class WithdrawTab(ActionTab):
     def fee_key(self) -> object:
         return self.route.value
 
+    async def balanced_shares(
+        self, contract: PoolContract, amount: int
+    ) -> list[int] | None:
+        """What a balanced withdrawal of `amount` pays, coin by coin.
+
+        The one action in this panel the pool will not quote: there is no
+        `calc_remove_liquidity` anywhere in Curve. None is needed --
+        `remove_liquidity` pays `balances[i] * amount / totalSupply` and
+        nothing else -- so this is the contract's own arithmetic over two
+        numbers read from the contract, not a second implementation of the
+        invariant.
+
+        None when either read fails, which leaves the panel saying nothing
+        rather than guessing. The submit path falls back to the API's
+        reserves in that case, because a floor from a slightly stale
+        number still protects a withdrawal and no floor at all does not.
+        """
+        if amount <= 0:
+            return None
+        try:
+            reserves = await contract.reserves(self.pool.n_coins)
+            supply = await contract.lp_total_supply()
+        except WalletError:
+            return None
+        if not reserves or supply <= 0:
+            return None
+        return [reserve * amount // supply for reserve in reserves]
+
     async def _quote(self, contract: PoolContract, amounts: list[int]) -> int:
         """What `[lp]` comes back as, in the coin that is selected.
 
@@ -1619,6 +1647,19 @@ class WithdrawTab(ActionTab):
                 self._quote_ok = False
             else:
                 impact = await self.measure_impact(contract, [amount], out)
+        elif contract is not None and amount > 0:
+            # Balanced. Every coin, because that is what arrives -- a
+            # withdrawal that pays three tokens and previews one number is
+            # a preview of a different action.
+            shares = await self.balanced_shares(contract, amount)
+            if shares is not None:
+                self.show_estimate(
+                    "-> " + "  +  ".join(
+                        f"{token_amount(units_to_float(share, coin.decimals))}"
+                        f" {coin.symbol}"
+                        for coin, share in zip(self.pool.pool_coins, shares, strict=False)
+                    )
+                )
         self.show_impact(impact)
 
         # Said before it is sent rather than after it reverts. The number
@@ -1678,21 +1719,28 @@ class WithdrawTab(ActionTab):
         # many UIs send, but it offers no protection at all against a
         # sandwich.
         #
-        # The reserves come from the API (already scaled to human numbers)
-        # and the divisor from the LP token on chain, because the pool's own
-        # `balances` getter is `int128` on old pools and `uint256` on new
-        # ones -- the same ABI split as the coin indices. Stale reserves only
-        # matter to the extent they exceed the slippage tolerance.
+        # The shares come from the chain, and are the same numbers the panel
+        # previewed -- see `balanced_shares`. They used to be computed from
+        # the API's reserves because the pool's own `balances` getter is
+        # `int128` on old pools and `uint256` on new ones; `reserves` asks
+        # both spellings in one call, so the floor no longer depends on how
+        # fresh an API payload is.
+        shares = await self.balanced_shares(contract, amount)
+        if shares is None:
+            # Whatever the chain would not say, the API still might, and a
+            # floor from a slightly stale reserve protects a withdrawal
+            # where no floor at all does not.
+            shares = []
+            with contextlib.suppress(WalletError):
+                supply = await contract.lp_total_supply()
+                if supply > 0:
+                    shares = [
+                        int(coin.balance * 10**coin.decimals) * amount // supply
+                        for coin in self.pool.pool_coins
+                    ]
         min_amounts = [0] * self.pool.n_coins
-        try:
-            supply = await contract.lp_total_supply()
-        except WalletError:
-            supply = 0
-        if supply > 0:
-            for index, coin in enumerate(self.pool.pool_coins):
-                reserve = int(coin.balance * 10**coin.decimals)
-                share = reserve * amount // supply
-                min_amounts[index] = self.with_slippage(share) if share else 0
+        for index, share in enumerate(shares[: self.pool.n_coins]):
+            min_amounts[index] = self.with_slippage(share) if share else 0
         return await contract.remove_liquidity(amount, min_amounts)
 
 

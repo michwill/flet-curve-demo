@@ -118,8 +118,56 @@ def words_of(data: str) -> list[int]:
     return [int(body[i : i + 64], 16) for i in range(0, len(body), 64)]
 
 
-async def test_balanced_withdrawal_floors_each_coin_at_its_share() -> None:
-    provider = FakeProvider({"0x18160ddd": word(LP_SUPPLY)})  # totalSupply()
+class ReservedProvider(FakeProvider):
+    """A pool that answers `balances(i)` in one of the two spellings.
+
+    Which one is the point: `int128` on the old registry pools, `uint256`
+    on everything since, and a pool answers exactly one. `PoolContract`
+    asks both and takes whichever replies, so both have to be exercised.
+    """
+
+    def __init__(self, reserves: list[int], *, old: bool = False, **kw) -> None:
+        # totalSupply, and an LP balance so the panel quotes rather than
+        # reporting an empty wallet over the top of the estimate.
+        super().__init__(
+            {"0x18160ddd": word(LP_SUPPLY), "0x70a08231": word(LP_SUPPLY), **kw}
+        )
+        self.reserves = reserves
+        #: Refuse both spellings, the way a chain that will not answer
+        #: does -- which is a different state from a pool holding nothing.
+        self.refuse_reserves = False
+        mine, theirs = ("balances(int128)", "balances(uint256)")
+        if not old:
+            mine, theirs = theirs, mine
+        self.selector = "0x" + abi.selector(mine)
+        self.wrong = "0x" + abi.selector(theirs)
+
+    async def request(self, method: str, params=None):
+        if method == "eth_call":
+            data = (params or [{}])[0].get("data", "")
+            if data.startswith(self.selector):
+                if self.refuse_reserves:
+                    raise RpcError(-32000, "execution reverted")
+                index = words_of(data)[0]
+                if index < len(self.reserves):
+                    return word(self.reserves[index])
+            if data.startswith(self.wrong):
+                # What a Vyper contract does with a selector it does not
+                # have. Answering zero instead would let the caller take
+                # the first spelling it tried and never reach the right
+                # one -- which is the whole reason both are asked.
+                raise RpcError(-32000, "execution reverted")
+        return await super().request(method, params)
+
+
+#: Integer multiplication, not `float * 10**18` -- the latter loses the
+#: low digits and makes an exact share impossible to assert.
+RESERVES = [int(USDT_RESERVE) * 10**6, int(CRVUSD_RESERVE) * 10**18]
+
+
+@pytest.mark.parametrize("old", [False, True], ids=["uint256", "int128"])
+async def test_balanced_withdrawal_floors_each_coin_at_its_share(old: bool) -> None:
+    provider = ReservedProvider(RESERVES, old=old)
     tab = make_tab(provider)
     tab.amount.value = "150000"  # a tenth of the supply
 
@@ -132,6 +180,49 @@ async def test_balanced_withdrawal_floors_each_coin_at_its_share() -> None:
     # A tenth of the pool, less the 1% tolerance, in each coin's own units.
     assert usdt_min == pytest.approx(100_000 * 10**6 * 0.99, rel=1e-9)
     assert crvusd_min == pytest.approx(200_000 * 10**18 * 0.99, rel=1e-9)
+
+
+async def test_a_balanced_withdrawal_previews_every_coin_it_pays() -> None:
+    """It used to preview nothing at all. A withdrawal that pays two
+    tokens and shows one number is a preview of a different action, and
+    showing none is a panel that asks to be trusted."""
+    tab = make_tab(ReservedProvider(RESERVES))
+    tab.mode.value = "balanced"
+    tab.amount.value = "150000"          # a tenth of the supply
+
+    await tab.refresh()
+
+    assert tab.estimate.value == "-> 100,000.00 USDT  +  200,000.00 crvUSD"
+
+
+async def test_the_preview_and_the_floor_are_the_same_numbers() -> None:
+    """One source, so the panel cannot show a share it will not protect."""
+    provider = ReservedProvider(RESERVES)
+    tab = make_tab(provider)
+    tab.mode.value = "balanced"
+    tab.amount.value = "150000"
+
+    shares = await tab.balanced_shares(tab.get_contract(), 150_000 * 10**18)
+    await tab.submit(tab.get_contract())
+
+    _amount, usdt_min, crvusd_min = words_of(provider.sent[-1]["data"])
+    assert shares == [100_000 * 10**6, 200_000 * 10**18]
+    assert usdt_min == pytest.approx(shares[0] * 0.99, rel=1e-9)
+    assert crvusd_min == pytest.approx(shares[1] * 0.99, rel=1e-9)
+
+
+async def test_a_pool_that_will_not_say_its_reserves_previews_nothing() -> None:
+    """Rather than a guess. The floor still goes out -- see the fallback in
+    `submit` -- because a stale floor protects and no floor does not."""
+    provider = ReservedProvider(RESERVES)
+    provider.refuse_reserves = True
+    tab = make_tab(provider)
+    tab.mode.value = "balanced"
+    tab.amount.value = "150000"
+
+    await tab.refresh()
+
+    assert tab.estimate.value == ""
 
 
 async def test_a_zero_floor_is_sent_when_the_supply_cannot_be_read() -> None:

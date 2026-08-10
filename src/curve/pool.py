@@ -205,6 +205,49 @@ class PoolContract:
             "the withdrawal estimate",
         )
 
+    async def reserves(self, count: int) -> list[int]:
+        """What the pool holds of each coin, in that coin's own units.
+
+        Two spellings, because `balances` is declared `int128` on the old
+        registry pools and `uint256` on everything since -- the same split
+        `encode_total_supply` avoids by reading the LP token instead. This
+        one has no such escape: only the pool knows its reserves.
+
+        Asked because a *balanced* withdrawal is the one action whose
+        result the pool will not quote. There is no `calc_remove_liquidity`
+        anywhere in Curve, and none is needed: `remove_liquidity` pays
+        `balances[i] * amount / totalSupply` and nothing else. Computing
+        that here is not a second implementation of the invariant -- it is
+        the contract's own arithmetic over two numbers read from the
+        contract, which is the rule this file keeps.
+
+        Both spellings for every coin go out in **one** `eth_call` through
+        Multicall3, the same way `parameters` asks its eleven questions --
+        a three-coin pool is six reads, and sequentially that is six round
+        trips on every keystroke.
+
+        Returns `[]` rather than a partial list if any coin will not
+        answer in either spelling. A gap here would be a withdrawal
+        preview missing a line, which reads as a coin you do not get.
+        """
+        plan: list[tuple[str, str]] = []
+        for index in range(count):
+            plan.append((f"u{index}", abi.encode_indexed_parameter("balances", index)))
+            plan.append((f"i{index}", abi.encode_balances_int128(index)))
+        answers = await self._read_many(plan)
+        reserves = []
+        for index in range(count):
+            # First spelling that answers wins. A pool implements one and
+            # reverts on the other, so there is no case where both come
+            # back and disagree.
+            found = answers[index * 2]
+            if found is None:
+                found = answers[index * 2 + 1]
+            if found is None:
+                return []
+            reserves.append(found)
+        return reserves
+
     async def fee(self) -> int:
         """The pool's swap fee, in Curve's 1e10 units."""
         return await self._read(self.pool.address, abi.encode_fee(), "the pool fee")

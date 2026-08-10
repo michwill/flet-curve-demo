@@ -507,6 +507,30 @@ def test_every_mark_is_compiled_at_every_tier() -> None:
                 )
 
 
+def test_a_mark_its_parent_resizes_asks_for_the_top_tier() -> None:
+    """The picker's leading icon is handed 14 and drawn at the field's
+    height, so a tier chosen from what it was handed is art the field then
+    magnifies. It was the one mark still looking like a low-resolution
+    copy once the tokens beside it had come good.
+
+    Not measured -- nothing here computes a layout size. It just stops
+    asking low.
+    """
+    from ui.assets import MARK_PIXELS
+    from ui.logos import chain_mark
+
+    try:
+        logos.set_pixel_ratio(1.0)
+        stretched = chain_mark("ethereum", 14, sized_by_parent=True)
+        assert f"@{MARK_PIXELS}.png" in str(stretched.src)
+        # And the ordinary case is still chosen from what is drawn: a mark
+        # nobody resizes must not pay for the top tier.
+        laid_out = chain_mark("ethereum", 14)
+        assert f"@{MARK_PIXELS}.png" not in str(laid_out.src)
+    finally:
+        logos.set_pixel_ratio(2.0)
+
+
 def test_a_mark_asks_for_the_tier_that_covers_the_ratio_it_is_drawn_at() -> None:
     """The wiring, end to end: the pixel ratio the platform reported has
     to reach the filename, or the tiers are just extra files.

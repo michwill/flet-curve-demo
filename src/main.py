@@ -227,7 +227,7 @@ def chain_icon(chain: str) -> ft.Control | None:
     it is -- shrinking it alone just puts a smaller logo against the
     border. The inset has to come from the mark itself.
     """
-    mark = chain_mark(chain, CHAIN_ICON)
+    mark = chain_mark(chain, CHAIN_ICON, sized_by_parent=True)
     if mark is None:
         return None
     return ft.Container(mark, padding=ft.Padding.only(left=10, right=4))

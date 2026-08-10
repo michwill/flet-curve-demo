@@ -17,7 +17,7 @@ import flet as ft
 
 from curve.models import Coin, Pool
 
-from .assets import chain_logo, token_logo
+from .assets import MARK_PIXELS, chain_logo, token_logo
 
 #: How a logo gets from 200-280px of source art down to the 22-34px it is
 #: drawn at. Two knobs, and the answer is not the intuitive one.
@@ -274,7 +274,9 @@ def pool_stack(pool: Pool, size: float = 24, limit: int = 5) -> ft.Control:
     return coin_stack(pool.display_coins, pool.chain, size, limit)
 
 
-def chain_mark(chain: str, size: float = 18) -> ft.Control | None:
+def chain_mark(
+    chain: str, size: float = 18, *, sized_by_parent: bool = False
+) -> ft.Control | None:
     """A network's logo, or None when there is no image for it.
 
     A bare `Image`, deliberately, where `token_mark` is a clipped
@@ -284,8 +286,24 @@ def chain_mark(chain: str, size: float = 18) -> ft.Control | None:
     clip then cropped a 14-wide, 24-tall pill out of a round mark. An
     `Image` with both sides set and `CONTAIN` keeps its shape wherever it
     is put, which is the property that matters more here than the clip.
+
+    **`sized_by_parent` is the other half of that same stretch**, and it
+    was missed when the marks went tiered. That decoration box means
+    `size` is what this control is *given*, not what it ends up drawn at
+    -- so choosing a tier from it asks for art the field then magnifies.
+    The picker's mark is handed 14 and drawn at the field's height, which
+    fetched the 20px tier for something nearer 27 device pixels: the one
+    mark on the page that still looked like a low-resolution copy, while
+    every token beside it had come good.
+
+    Nothing here measures the field. This app does not compute layout
+    sizes, and a number derived from Material's own metrics would be
+    wrong the first time either changed. It simply stops guessing low and
+    takes the top tier, which costs one extra file for one mark -- the
+    selected network's, once.
     """
-    source = chain_logo(chain, size * pixel_ratio())
+    wanted = MARK_PIXELS if sized_by_parent else size * pixel_ratio()
+    source = chain_logo(chain, wanted)
     if not source:
         return None
     return ft.Image(

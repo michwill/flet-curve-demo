@@ -618,10 +618,9 @@ def encode_claim_rewards_for(owner: str) -> str:
     """Claim a gauge's incentive tokens on behalf of `owner`.
 
     Kept distinct from `encode_claim_rewards` because the two are not
-    interchangeable: this spelling is the one a *third party* would use,
-    and on the gauges checked it reverts for anyone but the owner. It is
-    here so the portfolio can claim for the connected account explicitly
-    rather than relying on `msg.sender` being right.
+    interchangeable: this spelling names the account being claimed for
+    instead of taking `msg.sender`, which is what lets a whole portfolio
+    go through Multicall3 in one transaction -- see `earnings.ClaimPlan`.
     """
     return _call("claim_rewards(address)", _address(owner))
 

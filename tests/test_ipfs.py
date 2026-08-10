@@ -267,6 +267,46 @@ def test_the_renamed_package_is_still_searched(tmp_path: Path) -> None:
     assert ipfs.leaked(root, "SEKRIT") == ["app.tgz:src/local_config.toml"]
 
 
+def test_a_key_is_still_found_once_the_package_is_wrapped(tmp_path: Path) -> None:
+    """The shape the build is in when the scan actually runs.
+
+    `wrap_package` base64s the archive and deletes it, and `main` does that
+    *before* this check -- so the one file `src/local_config.toml` ends up
+    in was, for a while, the one file the scan could not read. Base64 does
+    not preserve substrings, so searching the JSON found nothing and the
+    build was pronounced clean.
+    """
+    root = build(
+        tmp_path,
+        {"index.html": f'<script>appPackageUrl: "{ipfs.PACKAGE_FROM}"</script>'},
+    )
+    buffer = io.BytesIO(b'jwt = "SEKRIT"\n')
+    with tarfile.open(root / ipfs.PACKAGE_FROM, "w:gz") as archive:
+        info = tarfile.TarInfo("src/local_config.toml")
+        info.size = len(buffer.getvalue())
+        archive.addfile(info, buffer)
+    assert ipfs.wrap_package(root) is True
+
+    assert ipfs.leaked(root, "SEKRIT") == [
+        f"{ipfs.PACKAGE_TO}:src/local_config.toml"
+    ]
+
+
+def test_a_key_in_the_wrapped_package_is_named_once(tmp_path: Path) -> None:
+    """A raw tarball is reached by the file walk and by the archive pass,
+    and one leak reported twice reads as two."""
+    root = build(tmp_path, {"index.html": "<html>"})
+    buffer = io.BytesIO(b'jwt = "SEKRIT"\n')
+    with tarfile.open(root / ipfs.PACKAGE_FROM, "w:gz") as archive:
+        info = tarfile.TarInfo("src/local_config.toml")
+        info.size = len(buffer.getvalue())
+        archive.addfile(info, buffer)
+
+    assert ipfs.leaked(root, "SEKRIT") == [
+        f"{ipfs.PACKAGE_FROM}:src/local_config.toml"
+    ]
+
+
 def test_a_clean_build_reports_nothing(tmp_path: Path) -> None:
     root = build(tmp_path, {"index.html": "<html>", "main.dart.js": "console.log(1)"})
     assert ipfs.leaked(root, "SEKRIT") == []

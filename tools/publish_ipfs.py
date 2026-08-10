@@ -323,6 +323,15 @@ def leaked(root: Path, secret: str) -> list[str]:
     IPFS has no unpublish. A key that goes up stays up for as long as
     anyone finds it worth pinning, so this runs before the upload rather
     than as a lint afterwards.
+
+    **The app archive is searched through `app_archive`, not as a file.**
+    It is the one member of the build that matters most here -- it is what
+    `src/local_config.toml` ends up inside, which is the mistake this whole
+    function exists to catch -- and by the time this runs it is no longer a
+    tarball at all: `wrap_package` has base64'd it into JSON and deleted
+    it. Base64 does not preserve substrings, so scanning that JSON for the
+    key matches nothing, and the scan reported clean builds for a shape it
+    could not see into.
     """
     needle = secret.encode()
     found = []
@@ -338,7 +347,17 @@ def leaked(root: Path, secret: str) -> list[str]:
             and needle in path.read_bytes()
         ):
             found.append(name)
-    return found
+    package = app_archive(root)
+    if package is not None:
+        name, archive = package
+        with archive:
+            found += [
+                f"{name}:{member}"
+                for member in _members_holding(archive, needle)
+                # A raw tarball is reached by the loop above as well.
+                if f"{name}:{member}" not in found
+            ]
+    return sorted(found)
 
 
 def app_archive(root: Path) -> tuple[str, tarfile.TarFile] | None:
@@ -414,14 +433,19 @@ def build_env() -> dict[str, str]:
 
 def _in_tarball(path: Path, needle: bytes) -> list[str]:
     with tarfile.open(path) as archive:
-        names = []
-        for member in archive.getmembers():
-            if not member.isfile() or member.size > MAX_SCAN:
-                continue
-            handle = archive.extractfile(member)
-            if handle is not None and needle in handle.read():
-                names.append(member.name)
-        return names
+        return _members_holding(archive, needle)
+
+
+def _members_holding(archive: tarfile.TarFile, needle: bytes) -> list[str]:
+    """Members of an open archive containing `needle`."""
+    names = []
+    for member in archive.getmembers():
+        if not member.isfile() or member.size > MAX_SCAN:
+            continue
+        handle = archive.extractfile(member)
+        if handle is not None and needle in handle.read():
+            names.append(member.name)
+    return names
 
 
 # -- the request body ------------------------------------------------------

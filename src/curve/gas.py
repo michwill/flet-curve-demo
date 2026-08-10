@@ -34,6 +34,7 @@ looked up per chain -- see `NATIVE`.
 
 from __future__ import annotations
 
+from contextlib import suppress
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -127,6 +128,34 @@ def settlement_price(
     # BNB Smart Chain and friends: the base fee is zero and the reported
     # gas price *is* the mandatory tip, so that is the whole cost.
     return max(gas_price, node_tip, MIN_TIP_WEI)
+
+
+async def read_fees(provider) -> tuple[int, int, int, bool]:
+    """`(base fee, gas price, node tip, eip1559)` from the chain itself.
+
+    Three reads, and two of them are allowed to fail. A chain with no
+    `baseFeePerGas` in its head block is pre-1559 (or a fork that never
+    adopted it) and takes the legacy arm; `eth_maxPriorityFeePerGas` is
+    not implemented everywhere and is only ever a floor, so its absence
+    costs nothing.
+    """
+    base = gas_price = tip = 0
+    eip1559 = False
+    try:
+        head = await provider.request("eth_getBlockByNumber", ["latest", False])
+        raw = (head or {}).get("baseFeePerGas")
+        if raw is not None:
+            base = int(raw, 16) if isinstance(raw, str) else int(raw)
+            eip1559 = True
+    except Exception:
+        return 0, 0, 0, False
+    with suppress(Exception):
+        answer = await provider.request("eth_gasPrice", [])
+        gas_price = int(answer, 16) if isinstance(answer, str) else int(answer)
+    with suppress(Exception):
+        answer = await provider.request("eth_maxPriorityFeePerGas", [])
+        tip = int(answer, 16) if isinstance(answer, str) else int(answer)
+    return base, gas_price, tip, eip1559
 
 
 async def native_price(api, chain: str, chain_id: int) -> float:

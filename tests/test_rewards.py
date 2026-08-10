@@ -69,6 +69,11 @@ class FakeProvider(WalletProvider):
         if method == "eth_call":
             self.calls.append(params[0])
             return self.answers.get(params[0]["data"][:10], self.default)
+        if method == "eth_estimateGas":
+            # The panel prices what it would send -- see `show_gas`. The
+            # fee line still stays hidden here, because this double
+            # reports no base fee for it to be priced at.
+            return hex(150_000)
         if method == "eth_sendTransaction":
             self.sent.append(params[0])
             return "0x" + f"{len(self.sent):02x}" * 32

@@ -35,14 +35,25 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
 from collections.abc import Awaitable, Callable
 from decimal import ROUND_CEILING, Decimal
 
 import flet as ft
 
 from curve.abi import FEE_DENOMINATOR, apply_slippage
+from curve.api import CurveApi
 from curve.confirm import POLL_INTERVAL, wait_for_confirmation
 from curve.format import token_amount, units_to_float
+from curve.gas import (
+    fee_in_native,
+    format_fee,
+    native_for,
+    native_price,
+    read_fees,
+    settlement_price,
+)
+from curve.http import ApiError
 from curve.models import Coin, Pool
 from curve.pool import PoolContract
 from curve.rewards import CRV_DECIMALS, crv_token
@@ -155,6 +166,25 @@ IMPACT_PROBE_DIVISOR = 20
 #: on small trades so much as a statement about them: nothing this size
 #: moves a price anyway.
 IMPACT_MIN_PROBE = 10_000
+
+#: How long the chain's fee readings are kept before being asked for
+#: again. One Ethereum block; on faster chains it simply means the figure
+#: lags by a second, which a fee estimate can afford.
+FEE_TTL = 12.0
+
+#: One client for the native coin's price, shared by every panel. Its own
+#: five-minute cache is what keeps this to one request per chain rather
+#: than one per keystroke.
+_PRICES = CurveApi()
+
+
+async def _native_usd(chain: str, chain_id: int) -> float:
+    """What the chain's coin is worth, or zero if nobody will say."""
+    try:
+        return await native_price(_PRICES, chain, chain_id)
+    except ApiError:
+        return 0.0
+
 
 #: The mark beside an amount on the estimate line. Sized to the text it
 #: sits with rather than to the amount fields' 18-20px: this is a caption
@@ -386,6 +416,16 @@ class ActionTab:
         )
         self.estimate_panel = self._band(self.estimate_line)
         self.impact_panel = self._band(self.impact, visible=False)
+        #: What sending this will cost in fees, on its own quiet line.
+        #: Hidden until there is a figure: it depends on a simulation, and
+        #: an action that cannot be simulated yet -- a deposit before its
+        #: approval -- has no honest number to show.
+        self.fee = ft.Text("", size=SMALL, color=ft.Colors.ON_SURFACE_VARIANT)
+        self.fee_panel = self._band(self.fee, visible=False)
+        #: Chain fees change per block, not per keystroke. Read once and
+        #: kept for a block's worth of typing.
+        self._fees: tuple[int, int, int, bool] | None = None
+        self._fees_read_at = 0.0
         #: Which band is flashing, if any, and which run of the pulse is
         #: the current one -- see `_alarm`.
         self._alarm_panel: ft.Container | None = None
@@ -564,6 +604,68 @@ class ActionTab:
         self._estimate_problem = False
         self._sync_alarm()
 
+    def preview(self, contract: PoolContract) -> tuple[str, str] | None:
+        """The transaction `submit` would send, without sending it.
+
+        None where the panel has nothing to send yet, which is most of the
+        time. Built through the same `build_` the sender uses -- see
+        `PoolContract._send` -- so the fee quoted is the fee of the
+        transaction that will actually be signed.
+        """
+        return None
+
+    async def show_gas(self, contract: PoolContract | None) -> None:
+        """Price the transaction this panel would send, or say nothing.
+
+        Nothing is the common case and not a failure: no wallet, nothing
+        typed, a quote the pool refused, or -- the one worth knowing -- a
+        deposit whose token has no allowance yet, which reverts under
+        simulation exactly as it would on chain. The fee appears once the
+        approval does.
+        """
+        self.fee_panel.visible = False
+        self.fee.value = ""
+        if contract is None or not contract.can_send:
+            return
+        try:
+            built = self.preview(contract)
+        except WalletError:
+            return
+        if built is None:
+            return
+        gas = await contract.estimate_gas(built)
+        if gas <= 0:
+            return
+        fees = await self._chain_fees(contract)
+        if fees is None:
+            return
+        base, price, tip, eip1559 = fees
+        per_gas = settlement_price(
+            base_fee=base, gas_price=price, node_tip=tip, eip1559=eip1559
+        )
+        native = native_for(self.pool.chain_id)
+        amount = fee_in_native(gas, per_gas)
+        usd = await _native_usd(self.pool.chain, self.pool.chain_id)
+        self.fee.value = "Network fee " + format_fee(amount, native.symbol, amount * usd)
+        self.fee_panel.visible = True
+
+    async def _chain_fees(
+        self, contract: PoolContract
+    ) -> tuple[int, int, int, bool] | None:
+        """The chain's own numbers, at most once a block.
+
+        Three reads per keystroke on top of a quote and an impact probe is
+        three too many, and a base fee that changed between one character
+        and the next would not be worth them.
+        """
+        now = time.monotonic()
+        if self._fees is None or now - self._fees_read_at > FEE_TTL:
+            fees = await read_fees(contract.provider)
+            if not any(fees[:2]):
+                return None
+            self._fees, self._fees_read_at = fees, now
+        return self._fees
+
     def show_impact(self, impact: float | None) -> None:
         """Put the measurement on screen, or take the line away entirely."""
         self.impact_panel.visible = impact is not None
@@ -688,6 +790,7 @@ class ActionTab:
             *([_aside(self.slippage)] if self.uses_slippage else []),
             self.estimate_panel,
             *([self.impact_panel] if self.shows_impact else []),
+            self.fee_panel,
         ]
         # The status line goes with the buttons rather than with the
         # fields: it is what the button did, and it appears while a
@@ -1318,6 +1421,7 @@ class DepositTab(ActionTab):
         self.show_impact(impact)
 
         await self._sync_approval(contract)
+        await self.show_gas(contract)
         if contract is not None and (not any(amounts) or not self._quote_ok):
             self.submit_button.disabled = True
         self.page.update()
@@ -1345,6 +1449,20 @@ class DepositTab(ActionTab):
     @property
     def done_verb(self) -> str:
         return "Deposited and staked" if self.staking else "Deposited"
+
+    def preview(self, contract: PoolContract) -> tuple[str, str] | None:
+        """The deposit as it would be sent, staking and route included."""
+        amounts = self.rows.amounts()
+        if not any(amounts) or not self._quote_ok or self._expected_lp <= 0:
+            return None
+        floor = self.with_slippage(self._expected_lp)
+        if self.staking:
+            return contract.build_deposit_and_stake(
+                amounts, floor, underlying=self.underlying
+            )
+        if self.underlying:
+            return contract.build_zap_add_liquidity(amounts, floor)
+        return contract.build_add_liquidity(amounts, floor)
 
     async def submit(self, contract: PoolContract) -> str:
         amounts = self._amounts()
@@ -1461,6 +1579,10 @@ class WithdrawTab(ActionTab):
             on_select=self._changed,
         )
         self._quote_ok = True
+        #: What the last refresh quoted, so `preview` can build the very
+        #: transaction the panel is describing without asking again.
+        self._expected_out = 0
+        self._shares: list[int] | None = None
         # The zap route is the default where it exists, so the receive list
         # and the single-coin rule have to hold from the start rather than
         # from the first time the switch is touched.
@@ -1603,6 +1725,32 @@ class WithdrawTab(ActionTab):
     def fee_key(self) -> object:
         return self.route.value
 
+    def preview(self, contract: PoolContract) -> tuple[str, str] | None:
+        """The withdrawal as it would be sent, in whichever mode is live.
+
+        The balanced arm reuses the shares the panel previewed rather than
+        reading them again -- one source, as `submit` uses.
+        """
+        amount = self._lp_amount()
+        if amount <= 0 or not self._quote_ok or amount > self.spendable:
+            return None
+        if self.mode.value == "one":
+            index = self._coin_index()
+            if self._expected_out <= 0:
+                return None
+            floor = self.with_slippage(self._expected_out)
+            if self.underlying:
+                return contract.build_zap_remove_liquidity_one_coin(
+                    amount, index, floor
+                )
+            return contract.build_remove_liquidity_one_coin(amount, index, floor)
+        if self._shares is None:
+            return None
+        floors = [0] * self.pool.n_coins
+        for index, share in enumerate(self._shares[: self.pool.n_coins]):
+            floors[index] = self.with_slippage(share) if share else 0
+        return contract.build_remove_liquidity(amount, floors)
+
     async def balanced_shares(
         self, contract: PoolContract, amount: int
     ) -> list[int] | None:
@@ -1697,6 +1845,8 @@ class WithdrawTab(ActionTab):
 
         self.show_estimate("")
         self._quote_ok = True
+        self._expected_out = 0
+        self._shares = None
         # None unless a one-coin withdrawal says otherwise. A balanced one
         # takes the same share of every reserve, which is what the pool
         # holds rather than a point on its curve -- there is no size at
@@ -1709,6 +1859,7 @@ class WithdrawTab(ActionTab):
             coin = coins[index] if index < len(coins) else coins[0]
             try:
                 out = await self._quote(contract, [amount])
+                self._expected_out = out
                 floor = token_amount(
                     units_to_float(self.with_slippage(out), coin.decimals)
                 )
@@ -1729,6 +1880,7 @@ class WithdrawTab(ActionTab):
             # withdrawal that pays three tokens and previews one number is
             # a preview of a different action.
             shares = await self.balanced_shares(contract, amount)
+            self._shares = shares
             if shares is not None:
                 self.show_receipts([
                     (
@@ -1759,6 +1911,7 @@ class WithdrawTab(ActionTab):
             )
 
         await self._sync_approval(contract)
+        await self.show_gas(contract)
         if contract is None or amount <= 0 or not self._quote_ok or over:
             self.submit_button.disabled = True
         self.page.update()
@@ -2090,6 +2243,7 @@ class SwapTab(ActionTab):
         self.show_impact(impact)
 
         await self._sync_approval(contract)
+        await self.show_gas(contract)
         if contract is not None and (dx <= 0 or i == j):
             self.submit_button.disabled = True
         self.page.update()
@@ -2106,6 +2260,17 @@ class SwapTab(ActionTab):
             self.approve_button.content = f"1. Approve {coin.symbol}"
             return (coin.address, spender, dx)
         return None
+
+    def preview(self, contract: PoolContract) -> tuple[str, str] | None:
+        """The swap as it would be sent, on whichever route is live."""
+        i, j = self._indices()
+        dx = self._dx()
+        if dx <= 0 or i == j or self._expected_out <= 0:
+            return None
+        floor = self.with_slippage(self._expected_out)
+        if self.underlying:
+            return contract.build_exchange_underlying(i, j, dx, floor)
+        return contract.build_exchange(i, j, dx, floor)
 
     async def submit(self, contract: PoolContract) -> str:
         i, j = self._indices()
@@ -2309,7 +2474,21 @@ class ClaimTab(ActionTab):
         # owes, and neither is a `transferFrom` of the user's own balance.
         self.approve_button.visible = False
         self.submit_button.disabled = contract is None or not self.available
+        await self.show_gas(contract)
         self.page.update()
+
+    def preview(self, contract: PoolContract) -> tuple[str, str] | None:
+        """The first of the one or two transactions a claim comes to.
+
+        CRV where there is CRV, because that is the one sent first. A
+        claim of both is two transactions and this prices the leading one
+        -- `submit` says so on the line between them.
+        """
+        if claimable(self.crv_claimable, CRV_DECIMALS):
+            return contract.build_claim_crv()
+        if self.available:
+            return contract.build_claim_rewards()
+        return None
 
     async def submit(self, contract: PoolContract) -> str:
         # The same test the tab and its lines use, so the button sends
@@ -2469,6 +2648,7 @@ class StakeTab(ActionTab):
             self.submit_button.disabled = contract is None
         if contract is not None and amount <= 0:
             self.submit_button.disabled = True
+        await self.show_gas(contract)
         self.page.update()
 
     async def approval_needed(self, contract: PoolContract) -> tuple[str, str, int] | None:
@@ -2482,6 +2662,17 @@ class StakeTab(ActionTab):
             self.approve_button.content = "1. Approve LP"
             return (self.pool.lp_token, self.pool.gauge, amount)
         return None
+
+    def preview(self, contract: PoolContract) -> tuple[str, str] | None:
+        amount = self._amount_units()
+        if amount <= 0:
+            return None
+        staking = self.direction.value == "stake"
+        return (
+            contract.build_stake(amount)
+            if staking
+            else contract.build_unstake(amount)
+        )
 
     async def submit(self, contract: PoolContract) -> str:
         amount = self._amount_units()

@@ -48,6 +48,7 @@ class FakeProvider(WalletProvider):
     def __init__(self, answers: dict[str, str] | None = None) -> None:
         self.answers = answers or {}
         self.sent: list[dict] = []
+        self.estimated: list[dict] = []
         self.default = word(0)
         self.raise_on_call: Exception | None = None
         #: What network the wallet says it is on. The panels ask, because
@@ -63,6 +64,13 @@ class FakeProvider(WalletProvider):
             if self.raise_on_call is not None:
                 raise self.raise_on_call
             return self.answers.get(params[0]["data"][:10], self.default)
+        if method == "eth_estimateGas":
+            # The panels price what they would send -- see `show_gas`.
+            # A flat answer is enough: the fee line stays hidden anyway
+            # unless the chain also reports a base fee, which this double
+            # does not.
+            self.estimated.append(params[0])
+            return "0x30d40"
         if method == "eth_sendTransaction":
             self.sent.append(params[0])
             return "0x" + "cd" * 32
@@ -1730,7 +1738,11 @@ async def test_only_the_panels_with_a_price_carry_the_line() -> None:
     about nothing. The other three each trade against the curve."""
     for tab in tabs():
         tab.mount()
-        assert (tab.impact_panel in tab.control.controls) == tab.shows_impact
+        # `is`, not `in`: two hidden bands holding empty text compare
+        # equal by value, so membership finds the fee line and calls it
+        # the impact one.
+        drawn = any(control is tab.impact_panel for control in tab.control.controls)
+        assert drawn == tab.shows_impact
         assert tab.shows_impact == (tab.title in ("Deposit", "Swap", "Withdraw"))
 
 
@@ -2122,3 +2134,77 @@ async def test_leaving_the_network_takes_both_lines_with_it() -> None:
     assert tab.impact_panel.visible is False
     assert tab._alarm_panel is None
     assert tab.impact_panel.bgcolor is None
+
+
+# -- what it costs to send --------------------------------------------------
+
+
+class PricedProvider(CurvedProvider):
+    """A pool that quotes, on a chain that reports a base fee.
+
+    Both halves are needed: with nothing quoted there is no transaction to
+    price, and with no base fee there is no price to quote it at.
+    """
+
+    BASE = 30 * 10**9
+    GAS = 150_000
+
+    async def request(self, method: str, params=None):
+        if method == "eth_getBlockByNumber":
+            return {"baseFeePerGas": hex(self.BASE)}
+        if method == "eth_gasPrice":
+            return hex(self.BASE)
+        if method == "eth_maxPriorityFeePerGas":
+            return hex(0)
+        if method == "eth_estimateGas":
+            self.estimated.append((params or [{}])[0])
+            return hex(self.GAS)
+        return await super().request(method, params)
+
+
+async def test_a_swap_says_what_sending_it_will_cost(monkeypatch) -> None:
+    from ui import actions as actions_module
+
+    async def priced(_chain, _chain_id):
+        return 2_000.0
+
+    monkeypatch.setattr(actions_module, "_native_usd", priced)
+    tab = swap_tab(PricedProvider())
+    tab.amount.value = "1000"
+
+    await tab.refresh()
+
+    # 150,000 gas at 30 gwei + 5% tip = 0.004725 ETH, at $2,000 = $9.45
+    assert tab.fee_panel.visible is True
+    assert tab.fee.value == "Network fee 0.004725 ETH  ($9.45)"
+
+
+async def test_the_fee_is_for_the_transaction_that_would_be_sent() -> None:
+    """Not a representative one. The estimate goes out against the same
+    calldata `submit` builds -- see `PoolContract.build_exchange`."""
+    provider = PricedProvider()
+    tab = swap_tab(provider)
+    tab.amount.value = "1000"
+
+    await tab.refresh()
+
+    asked = provider.estimated[-1]
+    built = tab.preview(tab.get_contract())
+    assert (asked["to"], asked["data"]) == built
+
+
+async def test_a_panel_with_nothing_typed_prices_nothing() -> None:
+    tab = swap_tab(PricedProvider())
+    await tab.refresh()
+    assert tab.fee_panel.visible is False
+
+
+async def test_a_chain_that_reports_no_fees_shows_no_line() -> None:
+    """A public node behind a wallet that will not answer `eth_gasPrice`
+    is a missing line, not a wrong number."""
+    tab = swap_tab(FakeProvider())
+    tab.amount.value = "1000"
+
+    await tab.refresh()
+
+    assert tab.fee_panel.visible is False

@@ -529,6 +529,62 @@ async def test_a_relayed_wallet_is_still_the_only_thing_that_signs() -> None:
     assert public.calls == []
 
 
+# -- a wallet that is on another chain --------------------------------------
+#
+# Not a slow source or a flaky one. A source that answers the wrong
+# question confidently, which no amount of falling back can detect.
+
+
+async def test_a_wallet_on_another_chain_is_not_read_through_at_all() -> None:
+    """The reported failure. `balanceOf` on an Ethereum LP token, asked of
+    a wallet sitting on Fraxtal, returns `0x` -- there is no code at that
+    address there. Successfully. So nothing raises, nothing falls back,
+    and the portfolio reads empty for an account with eight positions.
+
+    The only fix is not to ask.
+    """
+    wallet = Scripted("0x")  # what a call to a contract that is not there says
+    public = Scripted("0x" + "0" * 63 + "5")
+    reader = FallbackProvider(wallet, public, read_primary=False)
+
+    assert await reader.call("0x" + "ca11" * 10, "0xdata") == "0x" + "0" * 63 + "5"
+    assert wallet.calls == [], "asked, it would have answered, and been wrong"
+
+
+async def test_a_wallet_on_another_chain_is_still_the_one_that_signs() -> None:
+    """Which is the whole reason it is dropped from `sources` rather than
+    from the object: the wallet that must not be read through is exactly
+    the wallet that must be asked to move."""
+    wallet = Scripted("0xhash", "0xhash")
+    public = Scripted("0xbeef")
+    reader = FallbackProvider(wallet, public, read_primary=False)
+
+    assert await reader.request("eth_sendTransaction", [{"to": "0x0"}]) == "0xhash"
+    assert await reader.request("wallet_switchEthereumChain", [{"chainId": "0x1"}])
+    assert public.calls == []
+
+
+async def test_which_chain_it_is_on_is_still_asked_of_the_wallet() -> None:
+    """`eth_chainId` is not a read of the chain, so it never went through
+    `sources` -- which is what keeps this recoverable. The app can still
+    see where the wallet is, and so can still ask it to come across."""
+    wallet = Scripted("0xfc")  # Fraxtal
+    public = Scripted("0x1")
+    reader = FallbackProvider(wallet, public, read_primary=False)
+
+    assert await reader.chain_id() == 252
+    assert public.calls == []
+
+
+async def test_closing_spares_a_wallet_that_was_never_read_from() -> None:
+    """Same rule as everywhere else here: the session is the user's."""
+    wallet, public = Scripted(), Scripted()
+    await FallbackProvider(wallet, public, read_primary=False).close()
+
+    assert not wallet.closed
+    assert public.closed
+
+
 # -- the question that is about the source, not the chain -------------------
 
 

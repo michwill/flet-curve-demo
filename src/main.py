@@ -1021,10 +1021,19 @@ class CurveApp:
     async def align_wallet_chain(self) -> None:
         """Ask the wallet to move to the network being browsed.
 
-        Only on a deliberate pick from the header -- never on load, where
-        the wallet's own network is a choice the app follows rather than
-        overrides. The wallet prompts; it may refuse, and refusing is a
-        perfectly good answer that leaves the panels' own notice standing.
+        On a deliberate pick from the header, and on connecting or
+        restoring -- anywhere the app and the wallet can end up naming
+        different networks. It used to be the header alone, on the
+        reasoning that the wallet's own network is a choice to follow
+        rather than override; but the app only follows it on a *change*
+        (`_follow_wallet_chain`), so a page that opened on Ethereum with a
+        wallet already sitting on another chain followed nothing and said
+        nothing. Reads went out through that wallet and came back empty.
+
+        The wallet prompts; it may refuse, and refusing is a perfectly
+        good answer that leaves the panels' own notice standing -- and
+        now leaves the reads correct too, since `reader` stops asking a
+        wallet that is somewhere else.
 
         A wallet that has never heard of the network answers 4902. For the
         Curve Lite chains that is the normal case, and their API is the
@@ -1032,7 +1041,7 @@ class CurveApp:
         offer is made with that.
         """
         wallet = self.wallet
-        chain_id = self.chains.get(self.chain)
+        chain_id = await self.current_chain_id()
         if wallet is None or not chain_id or wallet.chain.chain_id == chain_id:
             return
         try:
@@ -1244,16 +1253,56 @@ class CurveApp:
         when nothing public answers, and still the only thing asked to
         sign.
 
+        A wallet on *another network* is not asked at all. It would answer
+        -- that is the trouble. Reads are `eth_call`, and a wallet on
+        Fraxtal answers a question about an Ethereum address by looking up
+        that address on Fraxtal, where there is no code: `0x`, successfully,
+        which decodes to a zero balance. Nothing raises, so `FallbackProvider`
+        has no reason to move on and the public node behind it is never
+        reached. The portfolio then reports "No deposits in any Ethereum
+        pool" for an account with eight positions, which is how this was
+        found -- with the wallet's own UI insisting it was on Ethereum
+        while `eth_chainId` said 252.
+
+        `align_wallet_chain` asks it to come across, and a wallet that
+        does lands here matching on the next read. This is what happens
+        when it does not: the answer is still right, because the public
+        node is pinned to the network being browsed. Only the wallet is
+        allowed to be somewhere else.
+
         Without a chain id there is no public node to name, so the wallet
         is all there is and is returned unwrapped.
         """
         if not chain_id:
             return provider
+        wallet = self.wallet
         return FallbackProvider(
             provider,
             self.public_node(chain_id),
             spares_first=prefers_public_reads(provider),
+            read_primary=wallet is None or wallet.chain.chain_id == chain_id,
         )
+
+    async def current_chain_id(self) -> int:
+        """The id of the network being browsed, waiting for the list if it
+        has not arrived yet.
+
+        `restore` and `load_portfolio` both run at startup, racing
+        `load_pools` for the one thing that turns a chain *name* into an
+        id. Reading `self.chains` directly there gets `0` as often as not,
+        and `0` is not a harmless miss: `reader` reads it as "no public
+        node to name" and hands back the bare wallet -- the single reader
+        this page must not be given, since a wallet on the wrong network
+        answers every call successfully and wrongly.
+
+        `CurveApi.chains` is cached, so this is one request the first time
+        and none after.
+        """
+        if not self.chains:
+            with contextlib.suppress(ApiError):
+                self.chains = await self.api.chains()
+                self._sync_chain_options()
+        return self.chains.get(self.chain) or 0
 
     def public_node(self, chain_id: int) -> PublicNode:
         node = self._public_nodes.get(chain_id)
@@ -1283,7 +1332,7 @@ class CurveApp:
             view.say("Connect a wallet to see what it holds.")
             return
         account = wallet.address
-        chain_id = self.chains.get(self.chain) or 0
+        chain_id = await self.current_chain_id()
 
         remembered = await self._remembered_portfolio(account)
         if remembered:
@@ -1738,13 +1787,23 @@ class CurveApp:
             with contextlib.suppress(WalletError):
                 await previous.close()
 
-        self.wallet.on_change(lambda: self.page.run_task(self._wallet_changed))
-        self.wallet.on_disconnect(lambda: self.page.run_task(self._wallet_gone))
         self.connect_button.content = CONNECT_LABEL
         self.connect_button.disabled = False
         self.connect_button.visible = False
         self._show_account()
         self.page.update()
+        # After the header is drawn, because the wallet may prompt here and
+        # a header still reading "Connecting…" behind that prompt describes
+        # something that already finished.
+        #
+        # Before the handlers are on, so a wallet that does come across
+        # does not also fire `_wallet_changed` into a second scan of the
+        # chain this is about to read. `Wallet.chain` tracks the switch
+        # either way -- the subscription is what the *app* hears, not what
+        # the wallet knows.
+        await self.align_wallet_chain()
+        self.wallet.on_change(lambda: self.page.run_task(self._wallet_changed))
+        self.wallet.on_disconnect(lambda: self.page.run_task(self._wallet_gone))
         if self._detail is not None:
             await self._detail.refresh_actions()
         # Connecting *while on the portfolio* is the whole point of the
@@ -1762,11 +1821,16 @@ class CurveApp:
         if wallet is None:
             return
         self.wallet = wallet
-        self.wallet.on_change(lambda: self.page.run_task(self._wallet_changed))
-        self.wallet.on_disconnect(lambda: self.page.run_task(self._wallet_gone))
         self.connect_button.visible = False
         self._show_account()
         self.page.update()
+        # Placed exactly as in `connect`, for the reasons given there. This
+        # is the path the reported failure came in on: a remembered
+        # session, a page opened on Ethereum, and a wallet still on
+        # whatever it was last used for.
+        await self.align_wallet_chain()
+        self.wallet.on_change(lambda: self.page.run_task(self._wallet_changed))
+        self.wallet.on_disconnect(lambda: self.page.run_task(self._wallet_gone))
         if self._detail is not None:
             await self._detail.refresh_actions()
         # A portfolio opened by URL asks before the wallet is back --

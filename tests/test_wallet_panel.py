@@ -222,6 +222,12 @@ def app_with(wallet) -> main.CurveApp:
     app._detail = None
     app._page_name = "pools"      # not the portfolio, so nothing reloads
     app._address_expanded = False
+    # Connecting aligns the wallet to the network on screen, so these are
+    # now part of "just enough". Ethereum on both sides, which is the
+    # case where alignment has nothing to do: a test about the header
+    # should not also be arranging a chain switch.
+    app.chain = "ethereum"
+    app.chains = {"ethereum": 1}
     app.account_label = ft.Text("")
     app.account_chip = ft.Container(app.account_label)
     app.connect_button = ft.Button("Connect wallet")
@@ -395,6 +401,107 @@ def test_an_injected_wallet_keeps_being_read_first() -> None:
 
     assert reader.sources[0] is provider
     assert isinstance(reader.sources[1], PublicNode)
+
+
+def test_a_wallet_on_another_chain_is_not_in_the_read_order() -> None:
+    """The reported failure: qeth was on Fraxtal while the page showed
+    Ethereum, and every `balanceOf` came back `0x` -- successfully, from a
+    chain where none of those contracts exist. The portfolio said "No
+    deposits in any Ethereum pool" for an account holding eight positions.
+
+    A source that answers the wrong question cannot be fallen back from,
+    so it does not get asked.
+    """
+    app, provider = app_that_reads(), StubProvider()
+    app.wallet.chain = chains.get_chain(252)
+    reader = app.reader(1, provider)
+
+    assert provider not in reader.sources, "not read through"
+    assert [isinstance(s, PublicNode) for s in reader.sources] == [True]
+    assert reader.primary is provider, "still the only thing that signs"
+
+
+def test_a_wallet_on_the_chain_being_browsed_is_read_first_as_before() -> None:
+    """The check is a mismatch, not a suspicion: agreeing is the normal
+    case and it must cost nothing."""
+    app, provider = app_that_reads(), StubProvider()
+    app.wallet.chain = chains.get_chain(1)
+
+    assert app.reader(1, provider).sources[0] is provider
+
+
+def test_with_no_wallet_there_is_nothing_to_disagree_with() -> None:
+    """`reader` is called with a bare provider in places that have no
+    `Wallet` around it. Nothing is known against it, so nothing is done
+    about it."""
+    app, provider = app_that_reads(), StubProvider()
+    app.wallet = None
+
+    assert app.reader(1, provider).sources[0] is provider
+
+
+async def test_restoring_a_session_asks_the_wallet_for_the_chain_on_screen(
+    monkeypatch,
+) -> None:
+    """The path the failure came in on: a remembered wallet, a page opened
+    on Ethereum, and a wallet still on whatever it was last used for. The
+    app only ever *followed* a chain change (`_follow_wallet_chain`), so a
+    disagreement that was already there when the page opened was followed
+    nowhere and mentioned nowhere."""
+    wallet = Recorder()
+    wallet.chain = chains.get_chain(252)
+    switched: list[int] = []
+
+    class Provider(StubProvider):
+        async def switch_chain(self, chain_id: int) -> None:
+            switched.append(chain_id)
+            wallet.chain = chains.get_chain(chain_id)
+
+    wallet.provider = Provider()
+
+    async def remembered() -> Recorder:
+        return wallet
+
+    monkeypatch.setattr(main.Wallet, "restore", remembered)
+    app = app_with(wallet)
+    app.wallet = None
+    await app.restore()
+
+    assert switched == [1], "asked to come across to the network being browsed"
+    assert app.wallet is wallet
+
+
+async def test_a_wallet_that_will_not_come_across_still_reads_correctly(
+    monkeypatch,
+) -> None:
+    """Refusing is a perfectly good answer -- and the one that used to
+    leave the page silently empty. Now it only leaves the wallet where it
+    is: the reads go to the public node, pinned to the network on screen."""
+    from wallet.base import RpcError
+
+    wallet = Recorder()
+    wallet.chain = chains.get_chain(252)
+
+    class Refuses(StubProvider):
+        async def switch_chain(self, chain_id: int) -> None:
+            raise RpcError(4001, "User rejected the request")
+
+    wallet.provider = Refuses()
+
+    async def remembered() -> Recorder:
+        return wallet
+
+    monkeypatch.setattr(main.Wallet, "restore", remembered)
+    app = app_with(wallet)
+    app.wallet = None
+    app._chainlist = ChainlistDirectory()
+    app._public_nodes = {}
+    await app.restore()
+
+    assert wallet.chain.chain_id == 252, "the wallet stayed where it was"
+    reader = app.reader(1, wallet.provider)
+    assert wallet.provider not in reader.sources
+    assert isinstance(reader.sources[0], PublicNode)
 
 
 def test_a_longer_address_does_not_change_how_the_chip_is_built() -> None:

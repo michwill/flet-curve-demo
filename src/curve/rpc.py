@@ -319,9 +319,20 @@ class FallbackProvider(WalletProvider):
     the list either way: on a chain chainlist has never heard of, the
     wallet is the only thing that can answer at all.
 
+    With `read_primary=False` it is not in the list at all, and that is a
+    different case from either: a wallet on *another chain* is not a slow
+    source or an unreliable one, it is a source answering a question about
+    Ethereum with what Fraxtal says. It answers successfully, so nothing
+    above ever falls back -- `balanceOf` on a contract that does not exist
+    there returns `0x`, which decodes to nothing held. A portfolio reads
+    empty and no error is raised anywhere. See `CurveApp.reader`.
+
     Whichever way the reads go, *only* the primary is ever asked to sign,
     to send, or to switch networks. That is not a preference, it is the
-    whole distinction: a public node has no key.
+    whole distinction: a public node has no key. Which is why the wallet
+    is dropped from `sources` rather than from the object: the thing that
+    must not be *read* through on the wrong chain is exactly the thing
+    that must still be asked to move to the right one.
 
     What is *not* retried is a node that answered. An `RpcError` is a
     reply -- a reverted call, a rejected request -- and asking a different
@@ -335,6 +346,7 @@ class FallbackProvider(WalletProvider):
         primary: WalletProvider,
         *spares: WalletProvider,
         spares_first: bool = False,
+        read_primary: bool = True,
     ) -> None:
         #: The wallet. Signs, sends, switches -- and names the transport
         #: in the UI, whatever order the reads go in.
@@ -344,6 +356,8 @@ class FallbackProvider(WalletProvider):
         self.sources: list[WalletProvider] = (
             [*spares, primary] if spares_first else [primary, *spares]
         )
+        if not read_primary:
+            self.sources = list(spares)
         self.name = getattr(primary, "name", "wallet")
         self.kind = getattr(primary, "kind", "unknown")
         self.connector = getattr(primary, "connector", "")

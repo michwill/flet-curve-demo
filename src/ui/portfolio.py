@@ -32,9 +32,10 @@ from curve.models import Coin
 from curve.portfolio import LP_UNIT, Holding
 from curve.rewards import REWARDS
 
-from . import buttons, safe_update, theme
+from . import buttons, pool_list, safe_update, theme
 from .logos import coin_stack
 from .pool_list import reward_line
+from .responsive import Layout
 from .status import StatusPanel
 from .typography import BODY, LABEL, METRIC, ROW_TITLE, SMALL
 
@@ -42,18 +43,52 @@ from .typography import BODY, LABEL, METRIC, ROW_TITLE, SMALL
 #: the same kind of row and they sit in the same column.
 LOGO_SIZE = 27
 
-#: Column widths, shared by the header and the rows so they line up.
-W_WALLET = 130
-W_STAKED = 130
-W_APR = 100
-W_REWARDS = 130
-W_VALUE = 120
+#: Column widths, taken from the pool list rather than chosen again here.
+#: The two tables sit one click apart and hold the same kinds of thing --
+#: a rate, a dollar figure, a stack of reward lines -- and columns that
+#: nearly line up read worse than columns that plainly do not.
+#:
+#: `Your APR` gets the width the pool list gives *its* reward column,
+#: because it now holds the same content: one marked line per token.
+W_WALLET = pool_list.W_TVL
+W_STAKED = pool_list.W_TVL
+W_APR = pool_list.W_REWARDS
+W_REWARDS = pool_list.W_VOLUME
+W_VALUE = pool_list.W_TVL
 
 #: `Share of pool` used to sit between Staked and Value. Two columns that
 #: change what somebody does -- what the position earns, and what is
 #: waiting to be claimed -- are worth more than one that does not, and at
 #: 610px of fixed width there was no room to simply add them: the Pool
 #: column is what pays, and it is the one that must stay readable.
+
+#: Every column, widest layout first, in the order they are drawn.
+COLUMNS = ("wallet", "staked", "apr", "rewards", "value")
+
+#: What survives between the card breakpoint and the compact one. `In
+#: wallet` goes, on the pool list's own rule -- the least decisive column
+#: first. It reads zero for any position that is fully staked, which is
+#: most of them, and the card layout below still shows it.
+COMPACT_COLUMNS = ("staked", "apr", "rewards", "value")
+
+#: Heading, and what to sort by. Descending always, like the pool list:
+#: nobody opens a portfolio to find their smallest position.
+SORTS: dict[str, tuple[str, Callable[[Holding, Earning | None], float]]] = {
+    "wallet": ("In wallet", lambda h, _e: h.wallet),
+    "staked": ("Staked", lambda h, _e: h.staked),
+    "apr": ("Your APR", lambda _h, e: e.user_apr if e else -1.0),
+    "rewards": ("Rewards", lambda _h, e: e.claimable_value if e else -1.0),
+    "value": ("Value", lambda h, _e: h.value),
+}
+
+#: What the page opens on: what a position is worth, which is the order
+#: the question is usually asked in.
+DEFAULT_SORT = "value"
+
+#: Sorts whose key comes from the earnings pass rather than from the scan.
+#: Ordering by one of these has to wait for that read and be redone when
+#: it lands -- the other three are known as soon as the rows are.
+EARNED_SORTS = ("apr", "rewards")
 
 #: Below this a position is dust -- a wei or two left behind by a
 #: withdrawal, which nearly every long-lived address has several of. They
@@ -73,8 +108,10 @@ class HoldingRow(ft.Container):
         narrow: bool = False,
         earning: Earning | None = None,
         crv: str = "",
+        columns: tuple[str, ...] = COLUMNS,
     ) -> None:
         self.holding = holding
+        self._columns = columns
         #: None until the earnings pass has run -- which is a third read
         #: after the scan, so the rows exist before it arrives. The two
         #: columns show an en dash rather than a zero until then: "not
@@ -191,15 +228,18 @@ class HoldingRow(ft.Container):
 
     def _row(self, holding: Holding, quiet: bool) -> ft.Control:
         colour = ft.Colors.ON_SURFACE_VARIANT if quiet else None
+        cells = {
+            "wallet": lambda: _cell(_lp(holding.wallet), W_WALLET, colour),
+            "staked": lambda: _cell(
+                _lp(holding.staked) if holding.gauge else "-", W_STAKED, colour
+            ),
+            "apr": lambda: _wrap(self._apr, W_APR),
+            "rewards": lambda: _wrap(self._rewards, W_REWARDS),
+            "value": lambda: _cell(compact_usd(holding.value), W_VALUE, colour,
+                                   weight=ft.FontWeight.W_500),
+        }
         return ft.Row(
-            [
-                self._name(holding),
-                _cell(_lp(holding.wallet), W_WALLET, colour),
-                _cell(_lp(holding.staked) if holding.gauge else "-", W_STAKED, colour),
-                _wrap(self._apr, W_APR),
-                _wrap(self._rewards, W_REWARDS),
-                _cell(compact_usd(holding.value), W_VALUE, colour, weight=ft.FontWeight.W_500),
-            ],
+            [self._name(holding)] + [cells[key]() for key in self._columns],
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
         )
 
@@ -300,6 +340,9 @@ class PortfolioView(ft.Column):
         self._holdings: list[Holding] = []
         #: Keyed by pool address, lowercased. Arrives after the scan.
         self._earnings: dict[str, Earning] = {}
+        #: Which column the table is ordered by, and which are drawn.
+        self._sort = DEFAULT_SORT
+        self._columns: tuple[str, ...] = COMPACT_COLUMNS if narrow else COLUMNS
         #: What the two buttons would send. Empty until the earnings pass.
         self._plan = ClaimPlan()
         #: CRV's address on the chain being shown, for the mark beside its
@@ -439,19 +482,48 @@ class PortfolioView(ft.Column):
     # -- what the app calls ------------------------------------------------
 
     def show(self, holdings: list[Holding]) -> None:
-        """Draw a set of positions."""
+        """Draw a set of positions, in the order the header asks for."""
         self._holdings = holdings
         self.rows.controls = [
             HoldingRow(
                 holding, self._on_open, index, self._narrow,
                 self._earnings.get(holding.address.lower()), self._crv,
+                self._columns,
             )
-            for index, holding in enumerate(holdings)
+            for index, holding in enumerate(self._in_order(holdings))
         ]
         self.total.value = compact_usd(sum(holding.value for holding in holdings))
         self._table.visible = bool(holdings)
         self.empty.visible = False
         safe_update(self)
+
+    def _in_order(self, holdings: list[Holding]) -> list[Holding]:
+        """Sorted by the active column, descending.
+
+        Descending always, as on the pool list: nobody opens a portfolio
+        looking for their smallest position, and a second click to reverse
+        is a control that has to be explained.
+
+        A position the earnings pass has not reached sorts *below* one
+        earning nothing, on the two columns that pass fills in -- its key
+        is -1 rather than 0. "Not read yet" is not a rate of zero, and
+        leaving the unknowns mixed among the zeroes makes the order change
+        under the reader as the read lands.
+        """
+        key = SORTS[self._sort][1]
+        return sorted(
+            holdings,
+            key=lambda h: key(h, self._earnings.get(h.address.lower())),
+            reverse=True,
+        )
+
+    def sort_by(self, key: str) -> None:
+        """Order the table by a column. Same key again is not a reversal."""
+        if key not in SORTS or key == self._sort:
+            return
+        self._sort = key
+        self._sync_header()
+        self.show(self._holdings)
 
     def _lay_out_claim_bar(self) -> None:
         """Buttons and label side by side, or stacked on a phone.
@@ -515,6 +587,7 @@ class PortfolioView(ft.Column):
         answer to "is any CRV owed" is yes while the answer to "can this
         button send anything" is no.
         """
+        was = self._earnings
         self._earnings = {e.pool.lower(): e for e in earnings}
         entry = REWARDS.get(chain_id)
         self._crv = entry.crv if entry else ""
@@ -534,6 +607,14 @@ class PortfolioView(ft.Column):
         )
         self.accrued_value.value = compact_usd(owed) if owed > 0 else ""
         self._claim_bar.visible = crv or extras
+        if self._sort in EARNED_SORTS and self._earnings != was:
+            # The order itself depends on what just arrived, so the rows
+            # are rebuilt rather than edited in place. Only for these two
+            # columns: the other three are known from the scan, and a
+            # rebuild of forty rows to change nothing about their order is
+            # a flicker for no reason.
+            self.show(self._holdings)
+            return
         for row in self.rows.controls:
             if isinstance(row, HoldingRow):
                 row.apply(self._earnings.get(row.holding.address.lower()), self._crv)
@@ -604,11 +685,25 @@ class PortfolioView(ft.Column):
         self.empty.visible = True
         safe_update(self)
 
-    def set_layout(self, narrow: bool) -> None:
-        if narrow == self._narrow:
+    def set_layout(self, layout: Layout) -> None:
+        """Adopt a new layout: which columns fit, and cards or a table.
+
+        The pool list's own `Layout`, rather than a second set of
+        breakpoints -- the two tables are on the same page at the same
+        width and there is no reading under which one of them should
+        become cards while the other does not.
+        """
+        columns = (
+            () if layout.cards
+            else COLUMNS if layout.name == "wide"
+            else COMPACT_COLUMNS
+        )
+        if layout.cards == self._narrow and columns == self._columns:
             return
-        self._narrow = narrow
-        self._header.visible = not narrow
+        self._narrow = layout.cards
+        self._columns = columns or COLUMNS
+        self._header.visible = not layout.cards
+        self._sync_header()
         self._lay_out_claim_bar()
         self.show(self._holdings)
 
@@ -625,6 +720,29 @@ class PortfolioView(ft.Column):
     # -- header ------------------------------------------------------------
 
     def _build_header(self) -> ft.Container:
+        """Column headings, each one a click target that re-sorts the table.
+
+        Plain `Container`s with `on_click` rather than `TextButton`s, for
+        the reason `PoolListView._build_header` records: a TextButton here
+        hovers correctly and never fires in the published web build, with
+        no exception and no event. The container also makes the whole cell
+        the hit target, which is the better affordance anyway.
+        """
+        self._sort_cells = {
+            key: ft.Container(
+                width=width,
+                alignment=ft.Alignment.CENTER_RIGHT,
+                padding=ft.Padding.symmetric(horizontal=6, vertical=8),
+                on_click=lambda _e, k=key: self.sort_by(k),
+                ink=True,
+                border_radius=6,
+            )
+            for key, width in (
+                ("wallet", W_WALLET), ("staked", W_STAKED), ("apr", W_APR),
+                ("rewards", W_REWARDS), ("value", W_VALUE),
+            )
+        }
+        self._sync_header()
         return ft.Container(
             ft.Row(
                 [
@@ -632,11 +750,7 @@ class PortfolioView(ft.Column):
                         ft.Text("Pool", size=SMALL, color=ft.Colors.ON_SURFACE_VARIANT),
                         expand=True,
                     ),
-                    _head("In wallet", W_WALLET),
-                    _head("Staked", W_STAKED),
-                    _head("Your APR", W_APR),
-                    _head("Rewards", W_REWARDS),
-                    _head("Value", W_VALUE),
+                    *(self._sort_cells[key] for key in COLUMNS),
                 ],
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
             ),
@@ -646,11 +760,31 @@ class PortfolioView(ft.Column):
             visible=not self._narrow,
         )
 
+    def _sync_header(self) -> None:
+        """Mark the column being sorted on, and hide the ones not drawn.
 
-def _head(label: str, width: float) -> ft.Control:
-    return ft.Container(
-        ft.Text(label, size=SMALL, color=ft.Colors.ON_SURFACE_VARIANT,
-                text_align=ft.TextAlign.RIGHT),
-        width=width,
-        alignment=ft.Alignment.CENTER_RIGHT,
-    )
+        The arrow is a Material icon rather than a "↓" in the label: the
+        published web build's font has no glyph for that character and
+        renders a tofu box, while the icon font is bundled and works on
+        both platforms. Same reasoning, and the same icon, as the pool
+        list -- these are two views of one table style.
+        """
+        for key, cell in self._sort_cells.items():
+            cell.visible = key in self._columns
+            active = key == self._sort
+            label = ft.Text(
+                SORTS[key][0],
+                size=SMALL,
+                weight=ft.FontWeight.BOLD if active else ft.FontWeight.NORMAL,
+                color=ft.Colors.PRIMARY if active else ft.Colors.ON_SURFACE_VARIANT,
+            )
+            cell.content = ft.Row(
+                [label] + (
+                    [ft.Icon(ft.Icons.ARROW_DOWNWARD, size=BODY,
+                             color=ft.Colors.PRIMARY)]
+                    if active else []
+                ),
+                spacing=2,
+                tight=True,
+                alignment=ft.MainAxisAlignment.END,
+            )

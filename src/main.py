@@ -845,7 +845,7 @@ class CurveApp:
         # wide window and the table under it stayed stretched.
         safe_update(self.body)
         self.list_view.set_layout(layout)
-        self.portfolio_view.set_layout(layout.cards)
+        self.portfolio_view.set_layout(layout)
         if self._detail is not None:
             self._detail.set_layout(layout)
 
@@ -1234,7 +1234,7 @@ class CurveApp:
         self._sync_nav()
         self._show(self.portfolio_view)
         if self.page.width:
-            self.portfolio_view.set_layout(layout_for(self.page.width).cards)
+            self.portfolio_view.set_layout(layout_for(self.page.width))
         self._go(routing.build(self.chain, page=PAGE_PORTFOLIO))
         self.page.update()
         if reload:

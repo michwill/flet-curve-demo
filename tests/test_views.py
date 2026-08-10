@@ -2190,6 +2190,76 @@ def test_the_apr_column_is_a_rate_and_not_also_a_multiplier() -> None:
     assert not any("x" in rate for rate in rates)
 
 
+def test_the_portfolio_opens_on_what_a_position_is_worth() -> None:
+    view = portfolio_view()
+    view.show([
+        make_holding(address="0x" + "11" * 20, name="small", tvl=10.0, supply=10.0),
+        make_holding(address="0x" + "22" * 20, name="big", tvl=1000.0, supply=10.0),
+    ])
+
+    assert [r.holding.name for r in view.rows.controls] == ["big", "small"]
+
+
+def test_a_heading_click_re_sorts_the_table() -> None:
+    """The pool list's columns do this and the portfolio's did not, which
+    made two tables one click apart behave differently."""
+    view = portfolio_view()
+    view.show([
+        make_holding(address="0x" + "11" * 20, name="loose",
+                     wallet=9 * 10**18, tvl=10.0, supply=10.0),
+        make_holding(address="0x" + "22" * 20, name="rich",
+                     wallet=1 * 10**18, tvl=1000.0, supply=10.0),
+    ])
+    assert [r.holding.name for r in view.rows.controls] == ["rich", "loose"]
+
+    view._sort_cells["wallet"].on_click(None)
+
+    assert [r.holding.name for r in view.rows.controls] == ["loose", "rich"]
+
+
+def test_sorting_by_a_column_the_scan_cannot_fill_waits_for_the_read() -> None:
+    """"Not read yet" is not a rate of zero. An unread row sorts below one
+    earning nothing, so the order does not shuffle as the read lands."""
+    view = portfolio_view()
+    read = make_holding(address="0x" + "11" * 20, name="earning", tvl=10.0, supply=10.0)
+    unread = make_holding(address="0x" + "22" * 20, name="unknown", tvl=1000.0, supply=10.0)
+    view.show([read, unread])
+    view._sort_cells["apr"].on_click(None)
+
+    view.show_earnings(
+        [earning(pool=read.address, staked=1000, working=400, crv_apr=6.0,
+                 rewards=(crv_reward(1.0),))],
+        chain_id=1,
+    )
+
+    assert [r.holding.name for r in view.rows.controls] == ["earning", "unknown"]
+
+
+def test_the_narrower_table_drops_its_least_decisive_column() -> None:
+    """`In wallet` reads zero for any position that is fully staked, which
+    is most of them -- and the cards below show it anyway."""
+    from ui.responsive import layout_for
+
+    view = portfolio_view()
+    view.show([make_holding()])
+
+    view.set_layout(layout_for(900))
+    assert view._sort_cells["wallet"].visible is False
+    assert view._sort_cells["value"].visible is True
+    assert len(view.rows.controls[0].content.controls) == 5   # name + four
+
+    view.set_layout(layout_for(1200))
+    assert view._sort_cells["wallet"].visible is True
+    assert len(view.rows.controls[0].content.controls) == 6
+
+
+def test_the_two_tables_size_their_columns_the_same() -> None:
+    from ui import pool_list, portfolio
+
+    assert portfolio.W_VALUE == pool_list.W_TVL
+    assert portfolio.W_APR == pool_list.W_REWARDS
+
+
 def test_each_token_gets_its_own_rate_and_its_own_mark() -> None:
     """A position paying 6% in CRV and 2% in ARB is a different position
     from one paying 8% of either. The sum answers a question nobody has."""

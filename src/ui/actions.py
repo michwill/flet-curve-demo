@@ -449,7 +449,7 @@ class ActionTab:
         try:
             await contract.provider.switch_chain(self.pool.chain_id)
         except WalletError as exc:
-            self._say(str(exc), ft.Colors.ERROR)
+            self._failed(exc)
             return
         # The wallet emits `chainChanged`, which the app follows; refresh
         # anyway in case it was already there and simply said nothing.
@@ -482,6 +482,16 @@ class ActionTab:
         self.status_panel.visible = bool(message)
         self.status_panel.bgcolor = _status_tint(colour, pending)
         self.page.update()
+
+    def _failed(self, error: WalletError) -> None:
+        """Report a wallet failure -- or, for a refusal, report nothing.
+
+        Dismissing a wallet prompt is not an error to be shown back: the
+        person who dismissed it knows what they did, and "Rejected in the
+        wallet" in red says something went wrong. The line goes back to
+        empty, which is where it was before the button was pressed.
+        """
+        self._say("" if error.rejected_by_user else str(error), ft.Colors.ERROR)
 
     def _busy(self, busy: bool) -> None:
         self.submit_button.disabled = busy
@@ -558,7 +568,7 @@ class ActionTab:
                     contract, tx, f"Approved {self.amount_label(token, amount)}."
                 )
         except WalletError as exc:
-            self._say(str(exc), ft.Colors.ERROR)
+            self._failed(exc)
         finally:
             self._busy(False)
             await self.refresh()
@@ -579,7 +589,7 @@ class ActionTab:
             self.clear_inputs()
             await self.on_done()
         except WalletError as exc:
-            self._say(str(exc), ft.Colors.ERROR)
+            self._failed(exc)
         finally:
             self._busy(False)
             await self.refresh()

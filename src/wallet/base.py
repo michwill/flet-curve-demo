@@ -40,6 +40,16 @@ class WalletError(Exception):
     user, not a stack trace.
     """
 
+    #: Did the human say no, or did something break? Almost everything
+    #: here is the second, and the UI paints it red and leaves it up.
+    #:
+    #: A refusal is neither. It is the answer to a question the app asked,
+    #: and the person who gave it already knows what they clicked -- so
+    #: telling them "Rejected in the wallet" in red reports a failure that
+    #: did not happen. The exceptions that *are* a refusal say so here,
+    #: and the UI clears the line instead.
+    rejected_by_user = False
+
 
 def quantity(value: Any, what: str) -> int:
     """A number from a wallet, whatever shape it arrived in.

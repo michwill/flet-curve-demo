@@ -1202,24 +1202,52 @@ async def test_the_switch_button_asks_the_wallet_to_move() -> None:
     assert tab.network_panel.visible is False
 
 
-async def test_a_refused_switch_is_reported_not_swallowed() -> None:
+async def test_a_switch_that_failed_is_reported_not_swallowed() -> None:
+    """A wallet that could not move says why. The panel telling the user
+    to switch is still up, and without a reason it looks ignored."""
+
+    class Broken(FakeProvider):
+        async def request(self, method, params=None):
+            if method == "wallet_switchEthereumChain":
+                raise RpcError(-32603, "Internal JSON-RPC error")
+            return await super().request(method, params)
+
+    tab = await _refusing_tab(Broken)
+
+    assert "internal" in tab.status.value.lower()
+    assert tab.network_panel.visible is True
+
+
+async def test_a_switch_the_user_declined_says_nothing() -> None:
+    """Declining is an answer. The panel above still says the wallet is on
+    the wrong network, which is the whole of what there is to know -- and
+    "Rejected in the wallet", in red, reports a failure that did not
+    happen."""
+
     class Refusing(FakeProvider):
         async def request(self, method, params=None):
             if method == "wallet_switchEthereumChain":
                 raise RpcError(4001, "User rejected the request")
             return await super().request(method, params)
 
+    tab = await _refusing_tab(Refusing)
+
+    assert tab.status.value == ""
+    assert tab.status_panel.visible is False
+    assert tab.network_panel.visible is True
+
+
+async def _refusing_tab(transport):
     pool = make_pool()
     pool.chain_id = 100
-    contract = PoolContract(Refusing(), pool, ACCOUNT)
+    contract = PoolContract(transport(), pool, ACCOUNT)
     from ui.actions import DepositTab
 
     tab = DepositTab(StubPage(), pool, lambda: contract, None)
     tab.mount()
-
+    await tab.refresh()
     await tab._switch_network(None)
-
-    assert "rejected" in tab.status.value.lower()
+    return tab
 
 
 # -- reading without a wallet ----------------------------------------------

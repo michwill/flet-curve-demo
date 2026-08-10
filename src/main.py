@@ -1419,7 +1419,11 @@ class CurveApp:
                 view.claiming(f"Waiting for {index}/{len(sent)}: {tx[:14]}…")
                 await wait_for_confirmation(wallet.provider, tx)
         except WalletError as exc:
-            view.claiming(str(exc), ft.Colors.ERROR)
+            # A dismissed wallet prompt goes back to a blank line rather
+            # than a red one -- see `WalletError.rejected_by_user`.
+            view.claiming(
+                "" if exc.rejected_by_user else str(exc), ft.Colors.ERROR
+            )
             return
         view.claiming(f"Claimed {what}.", ft.Colors.GREEN_600)
         # Not a reload. A claim moves reward tokens, not LP, so every
@@ -1685,17 +1689,16 @@ class CurveApp:
             self.wallet = await Wallet.connect(
                 choose=self._choose_wallet, always_choose=always_choose
             )
-        except ConnectionCancelled:
-            # Dismissing the picker is an answer, not a failure. Reporting
-            # it back tells the user only what they just did, and in red it
-            # reads as though something broke.
-            self._connect_ended(previous)
-            return
         except WalletError as exc:
-            # In the header a failure would be clipped by the chip's fixed
-            # width; the error line under it has the whole page.
-            self.error.value = str(exc)
-            self.error.visible = True
+            # Dismissing the picker -- or the wallet's own connect prompt
+            # -- is an answer, not a failure. Reporting it back tells the
+            # user only what they just did, and in red it reads as though
+            # something broke.
+            if not exc.rejected_by_user:
+                # In the header a failure would be clipped by the chip's
+                # fixed width; the error line under it has the whole page.
+                self.error.value = str(exc)
+                self.error.visible = True
             self._connect_ended(previous)
             return
 

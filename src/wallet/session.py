@@ -44,6 +44,8 @@ class InvalidToken(WalletError):
 class ConnectionCancelled(WalletError):
     """The user dismissed wallet selection."""
 
+    rejected_by_user = True
+
     def __init__(self) -> None:
         super().__init__("Wallet selection cancelled.")
 

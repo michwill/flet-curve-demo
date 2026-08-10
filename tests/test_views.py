@@ -2153,6 +2153,32 @@ async def _mined(_provider, _tx, **_kw) -> dict:
     return {"status": "0x1"}
 
 
+async def test_declining_a_claim_leaves_no_red_line_behind() -> None:
+    """The user dismissed the wallet. They know that; saying it back in
+    red reports a failure that did not happen."""
+    import main as app_module
+    from wallet.base import RpcError
+
+    class Refusing:
+        async def send_transaction(self, _tx: dict) -> str:
+            raise RpcError(4001, "User rejected the request")
+
+    app = app_module.CurveApp.__new__(app_module.CurveApp)
+    app.page = StubPage()
+    app.chain = "ethereum"
+    app.chains = {"ethereum": 1}
+    app.portfolio_view = portfolio_view(app.page)
+    app.wallet = SimpleNamespace(address="0x" + "11" * 20, provider=Refusing())
+    app._earnings = [
+        earning(rewards=(arb_reward(4.0),)),
+    ]
+
+    await app.claim_portfolio(False)
+
+    assert app.portfolio_view.claim_status.value == ""
+    assert app.portfolio_view.claim_status.visible is False
+
+
 async def test_losing_the_wallet_reloads_the_portfolio() -> None:
     """Whoever's positions those were, they are not on screen for a page
     with no wallet behind it. The same reload hangs off connecting,

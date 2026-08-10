@@ -283,6 +283,110 @@ class Chain:
         return aggregate3_response(self.rounds.pop(0))
 
 
+class SlowChain:
+    """A Multicall3 that takes its time, and records how many callers are
+    inside it at once."""
+
+    def __init__(self, answer: int = 1) -> None:
+        self.answer = answer
+        self.calls = 0
+        self.running = 0
+        self.at_once = 0
+
+    async def call(self, _to: str, data: str) -> str:
+        import asyncio
+
+        from .test_parameters import aggregate3_response
+
+        self.calls += 1
+        self.running += 1
+        self.at_once = max(self.at_once, self.running)
+        await asyncio.sleep(0.01)
+        self.running -= 1
+        # One answer per call in the batch; the count is in the second word.
+        count = int(data[2 + 8 + 64 : 2 + 8 + 128], 16)
+        return aggregate3_response([self.answer] * count)
+
+
+async def test_the_chunks_of_a_round_go_out_together() -> None:
+    """A round is one question asked of many gauges, so nothing in it
+    waits on anything else in it. Sent one after another, an address in
+    three hundred gauges paid for five round trips to ask one thing."""
+    from curve.earnings import CHUNK, CONCURRENCY, _batch
+
+    chain = SlowChain()
+    calls = [("0x" + f"{i:040x}", "0x11223344") for i in range(CHUNK * 4)]
+
+    answers = await _batch(chain, calls)
+
+    assert chain.calls == 4
+    assert chain.at_once == 4, "four chunks, none of them waiting on another"
+    assert len(answers) == CHUNK * 4
+    assert CONCURRENCY >= 4
+
+
+async def test_a_round_wider_than_the_gate_still_waits_its_turn() -> None:
+    """Together is not unbounded: this is the user's own endpoint and it
+    may rate-limit by request."""
+    from curve.earnings import CHUNK, CONCURRENCY, _batch
+
+    chain = SlowChain()
+    calls = [("0x" + f"{i:040x}", "0x11223344") for i in range(CHUNK * (CONCURRENCY + 3))]
+
+    await _batch(chain, calls)
+
+    assert chain.calls == CONCURRENCY + 3
+    assert chain.at_once == CONCURRENCY
+
+
+async def test_answers_keep_their_order_however_they_arrive() -> None:
+    """The caller indexes into this list by gauge, so a chunk that
+    finishes early must not move ahead of one that started before it."""
+    import asyncio
+
+    from curve.earnings import CHUNK, _batch
+
+    from .test_parameters import aggregate3_response
+
+    order = []
+
+    class Uneven:
+        async def call(self, _to: str, data: str) -> str:
+            count = int(data[2 + 8 + 64 : 2 + 8 + 128], 16)
+            index = len(order)
+            order.append(index)
+            # The later chunks come back first.
+            await asyncio.sleep(0.02 - 0.005 * index)
+            return aggregate3_response([index] * count)
+
+    answers = await _batch(Uneven(), [("0x" + f"{i:040x}", "0x11223344")
+                                      for i in range(CHUNK * 3)])
+
+    assert answers[:1] == [0]
+    assert answers[CHUNK : CHUNK + 1] == [1]
+    assert answers[CHUNK * 2 : CHUNK * 2 + 1] == [2]
+
+
+async def test_a_chunk_that_fails_costs_only_its_own_calls() -> None:
+    from curve.earnings import CHUNK, _batch
+
+    from .test_parameters import aggregate3_response
+
+    class Flaky:
+        async def call(self, _to: str, data: str) -> str:
+            count = int(data[2 + 8 + 64 : 2 + 8 + 128], 16)
+            if not hasattr(self, "seen"):
+                self.seen = True
+                raise RuntimeError("endpoint said no")
+            return aggregate3_response([7] * count)
+
+    answers = await _batch(Flaky(), [("0x" + f"{i:040x}", "0x11223344")
+                                     for i in range(CHUNK * 2)])
+
+    assert answers.count(None) == CHUNK
+    assert answers.count(7) == CHUNK
+
+
 async def test_a_reward_token_owing_nothing_never_becomes_a_reward() -> None:
     """Dropped where it is read, so nothing downstream has to know.
 

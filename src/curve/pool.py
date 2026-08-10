@@ -404,24 +404,36 @@ class PoolContract:
             "The deposit zap",
         )
 
-    async def zap_add_liquidity(self, amounts: list[int], min_mint: int) -> str:
+    def build_zap_add_liquidity(
+        self, amounts: list[int], min_mint: int
+    ) -> tuple[str, str]:
         zap = self._zap()
-        return await self._send(
+        return (
             zap.address,
             abi.encode_zap_add_liquidity(
                 self._zap_pool(zap), amounts, min_mint, dynamic=zap.dynamic
             ),
         )
 
-    async def zap_remove_liquidity_one_coin(
+    async def zap_add_liquidity(self, amounts: list[int], min_mint: int) -> str:
+        return await self._send(*self.build_zap_add_liquidity(amounts, min_mint))
+
+    def build_zap_remove_liquidity_one_coin(
         self, lp_amount: int, i: int, min_amount: int
-    ) -> str:
+    ) -> tuple[str, str]:
         zap = self._zap()
-        return await self._send(
+        return (
             zap.address,
             abi.encode_zap_remove_liquidity_one_coin(
                 self._zap_pool(zap), lp_amount, i, min_amount, stableswap=zap.stableswap
             ),
+        )
+
+    async def zap_remove_liquidity_one_coin(
+        self, lp_amount: int, i: int, min_amount: int
+    ) -> str:
+        return await self._send(
+            *self.build_zap_remove_liquidity_one_coin(lp_amount, i, min_amount)
         )
 
     async def zap_remove_liquidity(
@@ -485,7 +497,47 @@ class PoolContract:
             {"from": self.account, "to": to, "value": "0x0", "data": data}
         )
 
-    async def approve(self, token: str, spender: str, amount: int) -> str:
+    async def estimate_gas(self, built: tuple[str, str]) -> int:
+        """What the chain says this transaction would burn.
+
+        The simulation's own figure, which is what the transaction pays
+        for. It is *not* the gas limit the wallet will set: that carries
+        headroom -- qeth reserves half again -- and the headroom is
+        refunded. See `curve.gas`.
+
+        Zero rather than an exception when it cannot be had, and there are
+        two ordinary ways it cannot: a deposit whose token has not been
+        approved yet reverts under simulation exactly as it would on
+        chain, and a public node with no account behind it has no `from`
+        to simulate for. Neither is worth a red line about a fee.
+        """
+        if not self.can_send:
+            return 0
+        to, data = built
+        try:
+            answer = await self.provider.request(
+                "eth_estimateGas",
+                [{"from": self.account, "to": to, "value": "0x0", "data": data}],
+            )
+        except WalletError:
+            return 0
+        try:
+            return int(answer, 16) if isinstance(answer, str) else int(answer)
+        except (TypeError, ValueError):
+            return 0
+
+    # Every write below is split in two: a `build_` that works out where
+    # the transaction goes and what its calldata is, and a sender that
+    # does nothing else. The split exists so a panel can ask what an
+    # action *would* cost -- `eth_estimateGas` needs the transaction, and
+    # before this there was no way to hold one without also sending it.
+    #
+    # Nothing may be duplicated across the two. A fee quoted for calldata
+    # assembled a second time is a fee for a different transaction, and it
+    # would agree with the real one right up until a route or a pool type
+    # differed.
+
+    def build_approve(self, token: str, spender: str, amount: int) -> tuple[str, str]:
         """Approve exactly `amount` rather than an unlimited allowance.
 
         An infinite approval is one signature cheaper over time, but it
@@ -493,39 +545,72 @@ class PoolContract:
         an app whose point is to demonstrate the flow, the safer default is
         the honest one.
         """
-        return await self._send(token, abi.encode_approve(spender, amount))
+        return token, abi.encode_approve(spender, amount)
 
-    async def exchange(self, i: int, j: int, dx: int, min_dy: int) -> str:
-        return await self._send(
+    async def approve(self, token: str, spender: str, amount: int) -> str:
+        return await self._send(*self.build_approve(token, spender, amount))
+
+    def build_exchange(self, i: int, j: int, dx: int, min_dy: int) -> tuple[str, str]:
+        return (
             self.pool.address,
             abi.encode_exchange(i, j, dx, min_dy, stableswap=self.pool.is_stableswap),
         )
 
-    async def exchange_underlying(self, i: int, j: int, dx: int, min_dy: int) -> str:
+    async def exchange(self, i: int, j: int, dx: int, min_dy: int) -> str:
+        return await self._send(*self.build_exchange(i, j, dx, min_dy))
+
+    def build_exchange_underlying(
+        self, i: int, j: int, dx: int, min_dy: int
+    ) -> tuple[str, str]:
         to, stableswap = self.underlying_swap_target()
-        return await self._send(
-            to, abi.encode_exchange_underlying(i, j, dx, min_dy, stableswap=stableswap)
+        return to, abi.encode_exchange_underlying(
+            i, j, dx, min_dy, stableswap=stableswap
         )
 
-    async def add_liquidity(self, amounts: list[int], min_mint: int) -> str:
+    async def exchange_underlying(self, i: int, j: int, dx: int, min_dy: int) -> str:
+        return await self._send(*self.build_exchange_underlying(i, j, dx, min_dy))
+
+    def build_add_liquidity(
+        self, amounts: list[int], min_mint: int
+    ) -> tuple[str, str]:
         """Deposit, in whichever array shape this pool speaks.
 
         The shape is whatever `calc_token_amount` proved -- the panel
         always quotes before it sends -- falling back to what the registry
         implies for a pool nobody has quoted yet.
         """
-        return await self._send(
+        return (
             self.pool.address,
             abi.encode_add_liquidity(
                 amounts, min_mint, dynamic=self.pool.dynamic_arrays
             ),
         )
 
-    async def remove_liquidity(self, lp_amount: int, min_amounts: list[int]) -> str:
-        return await self._send(
+    async def add_liquidity(self, amounts: list[int], min_mint: int) -> str:
+        return await self._send(*self.build_add_liquidity(amounts, min_mint))
+
+    def build_remove_liquidity(
+        self, lp_amount: int, min_amounts: list[int]
+    ) -> tuple[str, str]:
+        return (
             self.pool.address,
             abi.encode_remove_liquidity(
                 lp_amount, min_amounts, dynamic=self.pool.dynamic_arrays
+            ),
+        )
+
+    async def remove_liquidity(self, lp_amount: int, min_amounts: list[int]) -> str:
+        return await self._send(
+            *self.build_remove_liquidity(lp_amount, min_amounts)
+        )
+
+    def build_remove_liquidity_one_coin(
+        self, lp_amount: int, i: int, min_amount: int
+    ) -> tuple[str, str]:
+        return (
+            self.pool.address,
+            abi.encode_remove_liquidity_one_coin(
+                lp_amount, i, min_amount, stableswap=self.pool.is_stableswap
             ),
         )
 
@@ -533,15 +618,12 @@ class PoolContract:
         self, lp_amount: int, i: int, min_amount: int
     ) -> str:
         return await self._send(
-            self.pool.address,
-            abi.encode_remove_liquidity_one_coin(
-                lp_amount, i, min_amount, stableswap=self.pool.is_stableswap
-            ),
+            *self.build_remove_liquidity_one_coin(lp_amount, i, min_amount)
         )
 
-    async def deposit_and_stake(
+    def build_deposit_and_stake(
         self, amounts: list[int], min_mint: int, *, underlying: bool = False
-    ) -> str:
+    ) -> tuple[str, str]:
         """Deposit and stake in one transaction, through Curve's zap.
 
         The arguments mirror what the panel already knows: which route is
@@ -576,7 +658,7 @@ class PoolContract:
             coins = [coin.address for coin in self.pool.pool_coins]
             dynamic = self.pool.dynamic_arrays
             for_pool = ZERO_ADDRESS
-        return await self._send(
+        return (
             zap.address,
             abi.encode_deposit_and_stake(
                 deposit_to,
@@ -591,15 +673,28 @@ class PoolContract:
             ),
         )
 
-    async def stake(self, amount: int) -> str:
+    async def deposit_and_stake(
+        self, amounts: list[int], min_mint: int, *, underlying: bool = False
+    ) -> str:
+        return await self._send(
+            *self.build_deposit_and_stake(amounts, min_mint, underlying=underlying)
+        )
+
+    def build_stake(self, amount: int) -> tuple[str, str]:
         if not self.pool.has_gauge:
             raise PoolCallFailed("This pool has no gauge to stake in.")
-        return await self._send(self.pool.gauge, abi.encode_gauge_deposit(amount))
+        return self.pool.gauge, abi.encode_gauge_deposit(amount)
 
-    async def unstake(self, amount: int) -> str:
+    async def stake(self, amount: int) -> str:
+        return await self._send(*self.build_stake(amount))
+
+    def build_unstake(self, amount: int) -> tuple[str, str]:
         if not self.pool.has_gauge:
             raise PoolCallFailed("This pool has no gauge to unstake from.")
-        return await self._send(self.pool.gauge, abi.encode_gauge_withdraw(amount))
+        return self.pool.gauge, abi.encode_gauge_withdraw(amount)
+
+    async def unstake(self, amount: int) -> str:
+        return await self._send(*self.build_unstake(amount))
 
     # -- claiming ---------------------------------------------------------
     #
@@ -700,17 +795,23 @@ class PoolContract:
                     decimals = value
         return symbol, decimals
 
-    async def claim_crv(self) -> str:
+    def build_claim_crv(self) -> tuple[str, str]:
         """Mint the CRV. Goes to the minter, not to the gauge."""
         entry = rewards_for(self.pool)
         if entry is None:
             raise PoolCallFailed(
                 "CRV is not minted on this network, so there is nothing to claim."
             )
-        return await self._send(entry.minter, abi.encode_minter_mint(self.pool.gauge))
+        return entry.minter, abi.encode_minter_mint(self.pool.gauge)
 
-    async def claim_rewards(self) -> str:
+    async def claim_crv(self) -> str:
+        return await self._send(*self.build_claim_crv())
+
+    def build_claim_rewards(self) -> tuple[str, str]:
         """Claim every incentive token at once. Goes to the gauge."""
         if not self.pool.has_gauge:
             raise PoolCallFailed("This pool has no gauge, so nothing accrues.")
-        return await self._send(self.pool.gauge, abi.encode_claim_rewards())
+        return self.pool.gauge, abi.encode_claim_rewards()
+
+    async def claim_rewards(self) -> str:
+        return await self._send(*self.build_claim_rewards())

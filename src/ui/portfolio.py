@@ -300,37 +300,44 @@ class PortfolioView(ft.Column):
         #: like a different program's idea of a pending transaction.
         self.status = StatusPanel(page)
         self.claim_status = self.status.text
-        self._claim_bar = ft.Container(
-            ft.Row(
-                [
-                    self.accrued,
-                    # Wrapping, and with **no flex child**. Both halves of
-                    # that matter and they pull against each other:
-                    #
-                    #   * `Wrap` cannot lay out a flex child, so an
-                    #     `expand=True` spacer in here is a layout assertion
-                    #     rather than a stretchy gap -- and it fails
-                    #     silently, dropping the subtree and taking the
-                    #     table and its header with it while Python logs
-                    #     nothing. The page went blank for exactly as long
-                    #     as this bar was visible;
-                    #   * but dropping `wrap` to get rid of the spacer just
-                    #     moves the problem to the other end: a label and
-                    #     two buttons in a fixed row overflow a phone.
-                    #
-                    # So it wraps and the buttons sit next to the label
-                    # rather than against the right edge. A gap that costs
-                    # the whole page is not worth the alignment.
-                    buttons.shadowed(self.claim_crv, page),
-                    buttons.shadowed(self.claim_rewards, page),
-                ],
-                spacing=8,
-                run_spacing=8,
-                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                wrap=True,
-            ),
-            visible=False,
+        # The buttons at the left edge, under the page's title, where the
+        # thing you came to press belongs. What is owed goes to the right,
+        # under the total it is part of.
+        #
+        # **Wrapping, with no flex child.** Both halves matter and they
+        # pull against each other:
+        #
+        #   * `Wrap` cannot lay out a flex child, so an `expand=True`
+        #     spacer in here is a layout assertion rather than a stretchy
+        #     gap -- and it fails silently, dropping the subtree and taking
+        #     the table and its header with it while Python logs nothing.
+        #     The page went blank for exactly as long as this bar was
+        #     visible;
+        #   * but dropping `wrap` to be rid of the spacer moves the problem
+        #     to the other end: a label and two buttons in a fixed row
+        #     overflow a phone.
+        #
+        # So the outer row does not wrap -- it is a plain `Row`, which
+        # fills its width and can therefore hold a flex child. The buttons
+        # take the flex and the label keeps its own size, which is what
+        # puts one at each edge.
+        #
+        # Note what is *not* here: a spacer, and `SPACE_BETWEEN`. Neither
+        # works in a `Wrap`, and for the same reason -- it sizes itself to
+        # its content, so there is no free space to space anything between,
+        # and a flex child is a layout assertion it fails silently.
+        self._buttons = ft.Row(
+            [
+                buttons.shadowed(self.claim_crv, page),
+                buttons.shadowed(self.claim_rewards, page),
+            ],
+            spacing=8,
+            run_spacing=8,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            wrap=True,
         )
+        self._claim_bar = ft.Container(visible=False)
+        self._lay_out_claim_bar()
 
         # A Column, not a `ListView`: the window scrolls, and a list that
         # scrolls inside it would be a second scrollbar in the middle of
@@ -398,6 +405,27 @@ class PortfolioView(ft.Column):
         self._table.visible = bool(holdings)
         self.empty.visible = False
         safe_update(self)
+
+    def _lay_out_claim_bar(self) -> None:
+        """Buttons and label side by side, or stacked on a phone.
+
+        Side by side they are at opposite edges, which is where each
+        belongs: the buttons under the page's title, the figure under the
+        total it is part of. There is no width at which both of those fit
+        *and* a phone does, though -- two labelled buttons and a sum come
+        to more than 400px however they are arranged -- so below the width
+        at which the table becomes cards, the bar becomes two lines.
+        """
+        self._buttons.expand = not self._narrow
+        self._claim_bar.content = (
+            ft.Column([self._buttons, self.accrued], spacing=6)
+            if self._narrow
+            else ft.Row(
+                [self._buttons, self.accrued],
+                spacing=8,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            )
+        )
 
     def forget_earnings(self) -> None:
         """Drop what the last read found, without redrawing.
@@ -530,6 +558,7 @@ class PortfolioView(ft.Column):
             return
         self._narrow = narrow
         self._header.visible = not narrow
+        self._lay_out_claim_bar()
         self.show(self._holdings)
 
     def rebuild(self) -> None:

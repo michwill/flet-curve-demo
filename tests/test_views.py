@@ -2183,7 +2183,7 @@ def test_a_new_wallet_does_not_inherit_the_last_one_s_claim() -> None:
     view.show([make_holding()])
 
     assert view._claim_bar.visible is False
-    assert view.rows.controls[0]._rewards.value == "–"
+    assert view.rows.controls[0]._rewards.value == "\u2013"
 
 
 async def test_pool_payloads_are_asked_for_together_not_in_turn() -> None:

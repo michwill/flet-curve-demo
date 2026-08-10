@@ -93,6 +93,37 @@ def style(page: ft.Page) -> ft.ButtonStyle | None:
     )
 
 
+class Themed(ft.Button):
+    """A button that takes the theme it is drawn in, not the one it was
+    built in.
+
+    `style()` reads the live page, so a button that calls it once at
+    construction is styled for whatever theme was current *then*. For the
+    pool panels that is fine -- they are built when a pool is opened, long
+    after startup. For anything built with the app itself it is not: the
+    remembered theme is applied after `_build()` has run, so the header
+    and the portfolio's claim buttons were constructed under Material's
+    default and kept Material's stadium shape under Chad, sitting among
+    boxes with a hard shadow behind them and Material's own blurred one
+    inside.
+
+    Nor is startup the only time this happens. The theme can be switched
+    at any point, and a rebuild that reaches only the rows leaves the
+    buttons where they were.
+
+    Asking at update time costs nothing -- `style()` is a few comparisons
+    -- and means nothing has to remember to re-ask.
+    """
+
+    def __init__(self, *args, page: ft.Page, **kwargs) -> None:
+        self._page = page
+        super().__init__(*args, **kwargs)
+
+    def before_update(self) -> None:
+        super().before_update()
+        self.style = style(self._page)
+
+
 class Shadowed(ft.Container):
     """A hard shadow behind a button, and nothing else.
 

@@ -482,14 +482,16 @@ class CurveApp:
                 curve=ft.AnimationCurve.EASE_OUT,
             ),
         )
-        self.connect_button = ft.Button(
+        self.connect_button = buttons.Themed(
             CONNECT_LABEL,
+            page=page,
             icon=ft.Icons.ACCOUNT_BALANCE_WALLET,
             on_click=self.connect,
             # A button draws no border of its own; the style is where one
-            # goes, along with Chad's corners. None outside Chad, which is
-            # the same as not passing a style at all.
-            style=buttons.style(page),
+            # goes, along with Chad's corners -- and `Themed` re-reads it
+            # every update, because the header is built before the
+            # remembered theme has been applied and outlives every switch
+            # after that.
         )
         #: What is actually on the bar: the wallet mark, at every width.
         #:

@@ -280,13 +280,18 @@ class PortfolioView(ft.Column):
         # the Minter and takes every gauge at once, while the incentive
         # tokens come out of each gauge separately. One button would have
         # to lie about one of them -- see `curve.earnings.ClaimPlan`.
-        self.claim_crv = ft.Button(
-            "Claim CRV", on_click=lambda _e: self._claim(True),
-            visible=False, style=buttons.style(page),
+        # `buttons.Themed`, not a plain button with a style taken once:
+        # this page is built with the app, before the remembered theme has
+        # been applied, so a style read at construction is Material's --
+        # and a stadium among Chad's boxes is a control borrowed from
+        # another program.
+        self.claim_crv = buttons.Themed(
+            "Claim CRV", page=page, on_click=lambda _e: self._claim(True),
+            visible=False,
         )
-        self.claim_rewards = ft.Button(
-            "Claim rewards", on_click=lambda _e: self._claim(False),
-            visible=False, style=buttons.style(page),
+        self.claim_rewards = buttons.Themed(
+            "Claim rewards", page=page, on_click=lambda _e: self._claim(False),
+            visible=False,
         )
         self.accrued = ft.Text("", size=SMALL, color=ft.Colors.ON_SURFACE_VARIANT)
         #: The same panel the pool's Deposit and Withdraw tabs use -- see

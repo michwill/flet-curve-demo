@@ -1987,6 +1987,23 @@ def arb_reward(amount: float, price: float = 1.5):
     return Reward("0x" + "ab" * 20, "ARB", 18, int(amount * 10**18), price)
 
 
+def test_the_claim_buttons_are_dressed_by_the_theme_they_end_up_in() -> None:
+    """Built before the remembered theme is applied, so a style read once
+    at construction is Material's -- and a stadium among Chad's boxes is a
+    control borrowed from another program."""
+    from ui import buttons, theme
+
+    page = ThemedPage("light")
+    view = portfolio_view(page)
+    assert view.claim_crv.style is None
+
+    page.theme, page.theme_mode = theme.theme_for("chad")
+    view.claim_crv.before_update()
+
+    assert view.claim_crv.style is not None
+    assert view.claim_crv.style.shape.radius == buttons.RADIUS
+
+
 def test_the_claim_buttons_say_what_they_would_claim() -> None:
     """"Claim 1.23 CRV", not "Claim CRV". The button commits an address to
     a transaction, and it should say what that transaction is for."""

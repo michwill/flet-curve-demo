@@ -267,18 +267,18 @@ class ActionTab:
         # button keeps whatever it was built with. That is how Unstake stayed
         # labelled "Stake", and why the numbered "2. Deposit" step never
         # appeared next to "1. Approve".
-        self.approve_button = ft.Button(
+        self.approve_button = buttons.Themed(
             "1. Approve",
+            page=page,
             on_click=self._approve_clicked,
             visible=False,
             disabled=True,
-            style=buttons.style(page),
         )
-        self.submit_button = ft.Button(
+        self.submit_button = buttons.Themed(
             self.submit_label,
+            page=page,
             on_click=self._submit_clicked,
             disabled=True,
-            style=buttons.style(page),
         )
         # Wrapped for the shadow. `visible` is still set on the buttons
         # themselves everywhere below -- the wrapper follows it.

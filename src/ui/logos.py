@@ -59,8 +59,52 @@ SAMPLING = ft.FilterQuality.MEDIUM
 #:     without it. A ratio of 1 shows nothing either way, which is why
 #:     every desktop window looked right.
 #:
-#: So nothing here asks the browser to resize anything. The file arrives
-#: at very nearly the size it is drawn, and `SAMPLING` handles the rest.
+#: So nothing here asks the browser to resize anything -- and nothing can
+#: any more even if it wanted to: on Flet 0.86.5 a `cache_width` on a web
+#: build renders the image as *nothing at all*, silently, with no
+#: exception raised. Restored and measured: every token mark, chain mark
+#: and wallet icon disappeared while the files still served 200. So that
+#: knob is not a thing to go back to; it is gone for good.
+#:
+#: What replaces it is `ui.assets.MARK_TIERS`: the file arrives at very
+#: nearly the size it is drawn because the *build* wrote one that size,
+#: and this picks it. Same goal as `cache_width` -- leave the renderer
+#: almost nothing to minify -- reached without asking the browser to
+#: resize anything, which is what put a pale rim on WebKit.
+
+#: How many device pixels the platform draws per logical one, which is
+#: what turns a mark's drawn size into the tier to ask for.
+#:
+#: This was missed the first time round and the mistake is worth keeping:
+#: a ratio of 1 is the only one where the logical size and the physical
+#: size cannot be told apart, and every desktop window is a ratio of 1 --
+#: so a bug that only exists above 1 looks like no bug at all from a
+#: desktop. Phones report 2, 3, and 3.5.
+#:
+#: Asking the platform, not assuming. `page.media` carries it and
+#: `CurveApp._apply_layout` hands it over -- read there rather than once
+#: at startup, because `page.media` is not always answered by the first
+#: paint and a window moved between displays changes it. The default is 2
+#: rather than 1 so a mark built before the page has answered errs
+#: towards too much resolution rather than too little. Held in a list so
+#: nothing here needs `global`, and so a reader can see there is exactly
+#: one of it.
+_pixel_ratio = [2.0]
+
+
+def set_pixel_ratio(ratio: float | None) -> None:
+    """Tell the marks how many device pixels a logical one is worth.
+
+    Ignores nothing-yet: the standing guess is better than multiplying by
+    None.
+    """
+    if ratio and ratio > 0:
+        _pixel_ratio[0] = float(ratio)
+
+
+def pixel_ratio() -> float:
+    """What the platform last said, or the standing guess."""
+    return _pixel_ratio[0]
 
 
 #: How much of each logo the next one covers. Enough to read as a group,
@@ -131,7 +175,7 @@ def token_mark(coin: Coin, chain: str, size: float = 24) -> ft.Container:
     Always a `Container` with an explicit size, so it can be dropped
     straight into a `Stack` with `left`/`top` and needs no extra wrapper.
     """
-    source = token_logo(chain, coin.address)
+    source = token_logo(chain, coin.address, size * pixel_ratio())
     letters = initials_mark(coin.symbol, size)
     content: ft.Control
     if source:
@@ -241,7 +285,7 @@ def chain_mark(chain: str, size: float = 18) -> ft.Control | None:
     `Image` with both sides set and `CONTAIN` keeps its shape wherever it
     is put, which is the property that matters more here than the clip.
     """
-    source = chain_logo(chain)
+    source = chain_logo(chain, size * pixel_ratio())
     if not source:
         return None
     return ft.Image(

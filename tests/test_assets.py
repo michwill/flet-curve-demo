@@ -421,11 +421,111 @@ def test_no_compiled_mark_is_larger_than_it_is_drawn(monkeypatch) -> None:
 def test_the_biggest_mark_still_has_pixels_for_a_dense_screen() -> None:
     """38px is the largest thing drawn -- the stack on a detail page --
     and the densest screens put four device pixels on each logical one.
-    Nothing asks the browser to resize any more, so this is the only
-    thing standing between a mark and being drawn from too few pixels."""
+    Nothing asks the browser to resize any more, so the top tier is the
+    only thing standing between a mark and being drawn from too few
+    pixels."""
     from ui.assets import MARK_PIXELS
 
     assert MARK_PIXELS >= 38 * 4
+
+
+# -- and how far above it they are allowed to be ----------------------------
+#
+# The half that was missing, and the reason this bug outlived three fixes.
+# Every check here used to be a *floor*: art must be at least large enough
+# for the worst case. Nothing was a ceiling, so 160px art against a 27px
+# mark satisfied the suite completely while looking exactly like the
+# problem the suite was written to prevent.
+
+
+def test_no_mark_is_drawn_from_far_more_art_than_it_needs() -> None:
+    """The regression, stated as a rule.
+
+    CanvasKit builds no mipmap chain, so `FilterQuality.MEDIUM` comes down
+    to four bilinear taps however far the reduction is. Four taps over a
+    six-pixel span is the mush that was reported -- and measured beside
+    curve.finance, whose marks are `<img>` elements put through the
+    browser's own downscaler.
+
+    So the tier a mark is drawn from may sit above the size it is drawn
+    at, but never more than twice above: four pixels averaged into one is
+    a box filter, which is exactly what four bilinear taps compute and
+    exactly what a mipmap level would have held. The tiers double so that
+    the gap between any two of them is that bound.
+    """
+    from ui.assets import MARK_TIERS, mark_tier
+
+    # Every size this app draws a mark at, against every ratio a screen
+    # reports -- including the fractional ones desktop scaling produces,
+    # which is where this was found.
+    for size in (14, 18, 20, 22, 24, 26, 28, 34, 38):
+        for ratio in (1.0, 1.140625, 1.25, 1.5, 2.0, 2.625, 3.0, 3.5, 4.0):
+            drawn = size * ratio
+            tier = mark_tier(drawn)
+            assert tier >= drawn or tier == MARK_TIERS[-1], (
+                f"{size}px at {ratio}x wants {drawn:.0f} and got {tier}"
+            )
+            assert tier <= drawn * 2, (
+                f"{size}px at {ratio}x is {drawn:.0f} device pixels drawn from "
+                f"{tier}px of art -- a {tier / drawn:.1f}x reduction for a "
+                "filter that manages two"
+            )
+
+
+def test_a_tier_is_never_smaller_than_what_it_is_asked_for() -> None:
+    """Rounding down would magnify, and magnification is the one direction
+    no filter recovers from -- it invents nothing and smears what is
+    there. Up to the ceiling, the answer is always at least the ask."""
+    from ui.assets import MARK_TIERS, mark_tier
+
+    for wanted in range(1, MARK_TIERS[-1] + 1):
+        assert mark_tier(wanted) >= wanted
+    # Past the top there is no more art, so that is what everything gets.
+    assert mark_tier(MARK_TIERS[-1] + 1) == MARK_TIERS[-1]
+    assert mark_tier(10_000) == MARK_TIERS[-1]
+
+
+def test_every_mark_is_compiled_at_every_tier() -> None:
+    """A tier that is asked for and was never written is a 404 and an
+    unpainted mark -- and in the browser `_exists` cannot check, so it
+    would ship silently."""
+    from PIL import Image
+
+    from ui.assets import MARK_TIERS
+
+    root = Path(__file__).resolve().parent.parent / "src/assets/curve"
+    stems = {p.name.split("@")[0] for p in (root / "chains").glob("*.png")}
+    assert stems, "assets are not compiled -- run tools/build_assets.py"
+
+    for stem in sorted(stems):
+        for tier in MARK_TIERS:
+            mark = root / "chains" / f"{stem}@{tier}.png"
+            assert mark.is_file(), f"{mark.name} was never written"
+            with Image.open(mark) as image:
+                assert max(image.size) <= tier, (
+                    f"{mark.name} is {image.size}, larger than the tier it names"
+                )
+
+
+def test_a_mark_asks_for_the_tier_that_covers_the_ratio_it_is_drawn_at() -> None:
+    """The wiring, end to end: the pixel ratio the platform reported has
+    to reach the filename, or the tiers are just extra files.
+
+    A ratio of 1 is the only one where the logical size and the physical
+    size cannot be told apart -- and every desktop window is a ratio of 1,
+    which is how a bug that only exists above 1 hid for so long.
+    """
+    from ui import logos
+
+    try:
+        logos.set_pixel_ratio(1.0)
+        assert "@20.png" in str(logos.chain_mark("ethereum", 18).src)
+        logos.set_pixel_ratio(3.0)
+        assert "@80.png" in str(logos.chain_mark("ethereum", 18).src)
+        logos.set_pixel_ratio(4.0)
+        assert "@160.png" in str(logos.chain_mark("ethereum", 38).src)
+    finally:
+        logos.set_pixel_ratio(2.0)
 
 
 def test_a_compiled_mark_has_no_pale_rim() -> None:
@@ -441,28 +541,36 @@ def test_a_compiled_mark_has_no_pale_rim() -> None:
 
     So: every part-transparent pixel on the rim must still be the colour
     of the disc behind it, not a brighter version of it.
+
+    Every tier, not just the largest: each is resampled from the original
+    in its own right, and the smallest has the furthest to fall, so it is
+    the one most likely to bleed.
     """
     import numpy as np
     from PIL import Image
 
-    mark = Path(__file__).resolve().parent.parent / "src/assets/curve/chains/ethereum.png"
-    assert mark.is_file(), "assets are not compiled -- run tools/build_assets.py"
+    from ui.assets import MARK_TIERS
 
-    pixels = np.asarray(Image.open(mark).convert("RGBA")).astype(int)
-    solid = pixels[pixels[..., 3] == 255][..., :3]
-    assert len(solid), "the mark has no opaque pixels at all"
-    brightest_solid = solid.max()
+    root = Path(__file__).resolve().parent.parent / "src/assets/curve/chains"
+    for tier in MARK_TIERS:
+        mark = root / f"ethereum@{tier}.png"
+        assert mark.is_file(), "assets are not compiled -- run tools/build_assets.py"
 
-    edge = pixels[(pixels[..., 3] > 0) & (pixels[..., 3] < 255)][..., :3]
-    assert len(edge), "the mark has no antialiased edge to check"
+        pixels = np.asarray(Image.open(mark).convert("RGBA")).astype(int)
+        solid = pixels[pixels[..., 3] == 255][..., :3]
+        assert len(solid), f"the {tier}px mark has no opaque pixels at all"
+        brightest_solid = solid.max()
 
-    # Nothing on the rim may be brighter than the artwork it belongs to.
-    # A halo shows up as exactly that: edge pixels lighter than anything
-    # solid in the image.
-    assert edge.max() <= brightest_solid + 1, (
-        f"rim reaches {edge.max()} where the artwork peaks at "
-        f"{brightest_solid} -- that is a halo"
-    )
+        edge = pixels[(pixels[..., 3] > 0) & (pixels[..., 3] < 255)][..., :3]
+        assert len(edge), f"the {tier}px mark has no antialiased edge to check"
+
+        # Nothing on the rim may be brighter than the artwork it belongs
+        # to. A halo shows up as exactly that: edge pixels lighter than
+        # anything solid in the image.
+        assert edge.max() <= brightest_solid + 1, (
+            f"rim of the {tier}px mark reaches {edge.max()} where the artwork "
+            f"peaks at {brightest_solid} -- that is a halo"
+        )
 
 
 def test_every_mark_fades_out_rather_than_stopping() -> None:

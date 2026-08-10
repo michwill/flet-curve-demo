@@ -52,7 +52,75 @@ ASSET_ROOT = "curve"
 #:
 #: A *ceiling*: art that arrives smaller is left alone rather than blown
 #: up to meet it.
-MARK_PIXELS = 160
+#:
+#: **And one size cannot serve this alone**, which is what took three
+#: attempts to see. A mark is drawn between 14 and 38 logical pixels and
+#: a screen puts between 1 and 4 device pixels on each, so the art has to
+#: cover 14 through 152 -- an elevenfold spread. A single ceiling sized
+#: for the top of it hands the renderer a sixfold reduction for the
+#: ordinary case: a 24px mark on a 1x desktop is 27 device pixels, drawn
+#: from 160.
+#:
+#: That is the one reduction CanvasKit does badly. It builds no mipmap
+#: chain, so `FilterQuality.MEDIUM` has nothing to average over and comes
+#: down to four bilinear taps spanning six source pixels. Measured against
+#: curve.finance side by side -- whose marks are `<img>` elements put
+#: through the browser's own downscaler, and are visibly crisper -- that
+#: is the whole difference. The art was never the problem; the ratio it
+#: was asked to survive was.
+#:
+#: So every mark is compiled at each of these, and the nearest size *up*
+#: is what gets asked for. The renderer is then left a scale of at most
+#: 2:1, which is the one reduction a four-tap bilinear does exactly: four
+#: pixels averaged into one is a box filter, the same answer a mipmap
+#: level would have held.
+#:
+#: **They double for that reason.** The worst case between two tiers is
+#: their ratio, so a ratio of 2 is what bounds it at 2. Three tiers of
+#: 32/64/160 was the first attempt and does not: 22px on a 3x screen is
+#: 66 device pixels, one past 64, and falls all the way to 160 -- a 2.4x
+#: reduction, back in the territory this exists to leave. The test that
+#: sweeps every drawn size against every ratio a screen reports is what
+#: caught it, which is the test that was missing all along.
+#:
+#: 20 at the bottom because the smallest mark is 14px and a 1x screen
+#: draws it at 14; 160 at the top because the largest is 38px and a 4x
+#: screen draws it at 152.
+MARK_TIERS = (20, 40, 80, 160)
+
+#: The largest tier, and so the size nothing is compiled above. Named
+#: separately because it is the ceiling the build enforces, whereas the
+#: tuple above is the set of sizes it writes.
+MARK_PIXELS = MARK_TIERS[-1]
+
+
+def mark_tier(device_pixels: float) -> int:
+    """The smallest compiled size that still covers what will be drawn.
+
+    Rounds *up*, deliberately. Art below the size it is drawn at is
+    magnified, and magnification is the one direction no filter recovers
+    from -- it invents nothing and smears what is there. Art above it is
+    only a reduction, and by construction a small enough one to be done
+    well.
+
+    Past the largest tier there is no more art, so that is the answer for
+    anything bigger.
+    """
+    for tier in MARK_TIERS:
+        if device_pixels <= tier:
+            return tier
+    return MARK_TIERS[-1]
+
+
+def tiered(filename: str, tier: int) -> str:
+    """`0xabc.png` at tier 64 is `0xabc@64.png`.
+
+    The suffix goes before the extension rather than into a per-tier
+    directory so that one token's sizes sort together, and so a missing
+    tier is visible beside the ones that were written.
+    """
+    stem, dot, suffix = filename.rpartition(".")
+    return f"{stem}@{tier}{dot}{suffix}" if dot else f"{filename}@{tier}"
 
 #: The same directory on the Python filesystem, for existence checks. On
 #: web this path does not exist -- `flet publish` deliberately leaves the
@@ -111,20 +179,29 @@ def _exists(relative: str) -> bool:
     return (_LOCAL_ROOT / relative).is_file()
 
 
-def chain_logo(chain: str) -> str | None:
-    """The network's mark, for the chain picker."""
+def chain_logo(chain: str, device_pixels: float = MARK_PIXELS) -> str | None:
+    """The network's mark, for the chain picker.
+
+    `device_pixels` is how large it will actually be drawn, in device
+    pixels -- the logical size times the screen's ratio. It picks the
+    compiled tier; the default asks for the largest, which is what a
+    caller that does not know the ratio should get.
+    """
     name = (chain or "").strip().lower()
     if not name:
         return None
-    relative = f"chains/{name}.png"
-    return asset_url("chains", f"{name}.png") if _exists(relative) else None
+    filename = tiered(f"{name}.png", mark_tier(device_pixels))
+    relative = f"chains/{filename}"
+    return asset_url("chains", filename) if _exists(relative) else None
 
 
-def token_logo(chain: str, address: str) -> str | None:
+def token_logo(
+    chain: str, address: str, device_pixels: float = MARK_PIXELS
+) -> str | None:
     """A token's mark. Upstream names them by lowercased address."""
     if not chain or not address:
         return None
-    filename = f"{address.strip().lower()}.png"
+    filename = tiered(f"{address.strip().lower()}.png", mark_tier(device_pixels))
     relative = f"tokens/{chain}/{filename}"
     return asset_url("tokens", chain, filename) if _exists(relative) else None
 

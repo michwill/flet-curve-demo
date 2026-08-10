@@ -81,7 +81,19 @@ BLEED_PAD = 0.20
 #: reads them back, so the decoder cannot be told to ask for resolution
 #: this step did not produce -- see `ui.assets.MARK_PIXELS`.
 sys.path.insert(0, str(ROOT / "src"))
-from ui.assets import MARK_PIXELS  # noqa: E402
+from ui.assets import MARK_PIXELS, MARK_TIERS, tiered  # noqa: E402
+
+
+def tier_paths(target: Path) -> list[tuple[int, Path]]:
+    """Every size one source image is written at, and where.
+
+    Each tier is resampled from the *original*, never from a larger tier.
+    Resampling a resampling softens twice, and the difference is visible:
+    a 28px mark taken in one step from the 256px upstream art is crisper
+    than the same 28px taken from the 160px copy. That is the whole point
+    of doing this at build time, where the original is still to hand.
+    """
+    return [(tier, target.with_name(tiered(target.name, tier))) for tier in MARK_TIERS]
 
 
 def shrink(image, target: int = MARK_PIXELS):
@@ -242,7 +254,8 @@ def pad_full_bleed(path: Path, target: Path) -> bool:
         spots = ((0, 0), (width - 1, 0), (0, height - 1), (width - 1, height - 1))
         corners = [rgba.getpixel(spot) for spot in spots]
         if any(not isinstance(pixel, tuple) or pixel[3] == 0 for pixel in corners):
-            round_off(shrink(rgba)).save(target, optimize=True)
+            for tier, out in tier_paths(target):
+                round_off(shrink(rgba, tier)).save(out, optimize=True)
             return False
 
         pad = round(width * BLEED_PAD)
@@ -252,16 +265,19 @@ def pad_full_bleed(path: Path, target: Path) -> bool:
         # the artwork rather than added at a size it was not measured for.
         canvas = Image.new("RGBA", (width + pad * 2, height + pad * 2), corners[0])
         canvas.paste(rgba, (pad, pad), rgba)
-        round_off(shrink(canvas)).save(target, optimize=True)
+        for tier, out in tier_paths(target):
+            round_off(shrink(canvas, tier)).save(out, optimize=True)
     return True
 
 
 def shrink_file(path: Path, target: Path) -> None:
-    """Copy one image, no larger than a compiled mark needs to be."""
+    """Copy one image at every tier a mark is compiled at."""
     from PIL import Image
 
     with Image.open(path) as image:
-        round_off(shrink(image.convert("RGBA"))).save(target, optimize=True)
+        rgba = image.convert("RGBA")
+        for tier, out in tier_paths(target):
+            round_off(shrink(rgba, tier)).save(out, optimize=True)
 
 
 def copy_tree(source: Path, target: Path, *, tokens: bool = False) -> tuple[int, int]:
@@ -273,15 +289,21 @@ def copy_tree(source: Path, target: Path, *, tokens: bool = False) -> tuple[int,
         if not item.is_file():
             continue
         destination = target / item.name
-        if tokens and item.suffix.lower() == ".png":
-            padded += pad_full_bleed(item, destination)
-        elif item.suffix.lower() == ".png":
-            # Chain marks. Drawn smallest of anything here -- 14px in the
-            # picker -- so they had the furthest to fall and looked the
-            # worst for it.
-            shrink_file(item, destination)
-        else:
-            shutil.copy2(item, destination)
+        if item.suffix.lower() == ".png":
+            if tokens:
+                padded += pad_full_bleed(item, destination)
+            else:
+                # Chain marks. Drawn smallest of anything here -- 14px in
+                # the picker -- so they had the furthest to fall and
+                # looked the worst for it.
+                shrink_file(item, destination)
+            # One source image, several files: count the tiers, since
+            # they are what ships and what a pin has to carry.
+            for _tier, out in tier_paths(destination):
+                files += 1
+                size += out.stat().st_size
+            continue
+        shutil.copy2(item, destination)
         files += 1
         size += destination.stat().st_size
     if padded:

@@ -33,6 +33,7 @@ from curve.portfolio import LP_UNIT, Holding
 
 from . import buttons, safe_update, theme
 from .logos import coin_stack
+from .status import StatusPanel
 from .typography import BODY, LABEL, METRIC, ROW_TITLE, SMALL
 
 #: The same size the pool list draws its coin marks at, because this is
@@ -288,7 +289,12 @@ class PortfolioView(ft.Column):
             visible=False, style=buttons.style(page),
         )
         self.accrued = ft.Text("", size=SMALL, color=ft.Colors.ON_SURFACE_VARIANT)
-        self.claim_status = ft.Text("", size=SMALL, selectable=True)
+        #: The same panel the pool's Deposit and Withdraw tabs use -- see
+        #: `ui.status`. A claim waits on the same wallet and the same
+        #: block, and saying so in loose grey text made the portfolio look
+        #: like a different program's idea of a pending transaction.
+        self.status = StatusPanel(page)
+        self.claim_status = self.status.text
         self._claim_bar = ft.Container(
             ft.Row(
                 [
@@ -358,7 +364,7 @@ class PortfolioView(ft.Column):
                     spacing=8,
                 ),
                 self._claim_bar,
-                self.claim_status,
+                self.status,
                 self.empty,
                 self._table,
             ],
@@ -468,13 +474,17 @@ class PortfolioView(ft.Column):
         return "Claim rewards" + (f" ({compact_usd(value)})" if value > 0 else "")
 
     def claiming(self, message: str, colour: str | None = None) -> None:
-        """Say what a claim is doing, and stop it being pressed twice."""
-        busy = bool(message) and colour is None
-        self.claim_crv.disabled = busy
-        self.claim_rewards.disabled = busy
-        self.claim_status.value = message
-        self.claim_status.color = colour or ft.Colors.ON_SURFACE_VARIANT
-        self.claim_status.visible = bool(message)
+        """Say what a claim is doing, and stop it being pressed twice.
+
+        A message with no colour is something still in flight -- the
+        wallet prompt, or a block -- which is what greys the buttons and
+        turns the spinner. A colour means it is over, one way or the
+        other, and the buttons come back.
+        """
+        pending = bool(message) and colour is None
+        self.claim_crv.disabled = pending
+        self.claim_rewards.disabled = pending
+        self.status.say(message, colour, pending=pending)
         safe_update(self)
 
     def say(self, message: str) -> None:

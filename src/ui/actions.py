@@ -53,6 +53,7 @@ from wallet.erc20 import format_units, parse_units
 from . import AnyEvent, buttons, theme
 from .assets import chain_name
 from .logos import pool_stack, token_mark
+from .status import DONE, FAILED, StatusPanel
 from .typography import BODY, LABEL, SMALL
 
 #: How often to ask whether a transaction has been mined. A module-level
@@ -154,17 +155,6 @@ def format_slippage(percent: float) -> str:
     return text or "0"
 
 
-def _status_tint(colour: str | None, pending: bool) -> str:
-    """The panel behind a status line, keyed to what it is saying."""
-    if pending:
-        return ft.Colors.with_opacity(0.10, ft.Colors.PRIMARY)
-    if colour == ft.Colors.ERROR:
-        return ft.Colors.with_opacity(0.10, ft.Colors.ERROR)
-    if colour == ft.Colors.GREEN_600:
-        return ft.Colors.with_opacity(0.12, ft.Colors.GREEN_600)
-    return ft.Colors.with_opacity(0.06, ft.Colors.ON_SURFACE)
-
-
 def _stacked(*controls: ft.Control) -> ft.Column:
     """A field with its caption underneath, both as wide as the panel."""
     return ft.Column(
@@ -244,21 +234,13 @@ class ActionTab:
         #: What the last suggestion was for, so a fee is read once per pair
         #: rather than on every keystroke.
         self._fee_read_for: object = _NOT_READ
-        self.status = ft.Text("", size=SMALL, selectable=True, expand=True)
-        #: Shown while a transaction is in flight. A wallet takes seconds
-        #: and a block takes twelve, and a line of text that simply sits
-        #: there is indistinguishable from one that has stopped.
-        self.status_spinner = ft.ProgressRing(width=14, height=14, stroke_width=2)
         #: The status line as a whole: a tinted panel rather than loose
         #: text, so "waiting", "done" and "failed" are told apart before
-        #: the words are read.
-        self.status_panel = ft.Container(
-            ft.Row([self.status_spinner, self.status], spacing=10, tight=True),
-            padding=ft.Padding.symmetric(horizontal=10, vertical=8),
-            border_radius=8,
-            visible=False,
-            shadow=theme.panel_shadow(page, inset=True),
-        )
+        #: the words are read. Shared with the portfolio's claim bar --
+        #: see `ui.status`, which is where the three states are defined.
+        self.status_panel = StatusPanel(page)
+        self.status = self.status_panel.text
+        self.status_spinner = self.status_panel.spinner
         self.estimate = ft.Text("", size=SMALL, color=ft.Colors.ON_SURFACE_VARIANT)
 
         # Every read here goes through the *wallet's* provider, so it lands
@@ -476,11 +458,7 @@ class ActionTab:
         The tint is derived from the text colour rather than passed in, so
         a caller cannot say "green" and get an amber panel.
         """
-        self.status.value = message
-        self.status.color = colour or ft.Colors.ON_SURFACE_VARIANT
-        self.status_spinner.visible = pending
-        self.status_panel.visible = bool(message)
-        self.status_panel.bgcolor = _status_tint(colour, pending)
+        self.status_panel.say(message, colour, pending=pending)
         self.page.update()
 
     def _failed(self, error: WalletError) -> None:
@@ -491,7 +469,7 @@ class ActionTab:
         wallet" in red says something went wrong. The line goes back to
         empty, which is where it was before the button was pressed.
         """
-        self._say("" if error.rejected_by_user else str(error), ft.Colors.ERROR)
+        self._say("" if error.rejected_by_user else str(error), FAILED)
 
     def _busy(self, busy: bool) -> None:
         self.submit_button.disabled = busy
@@ -525,7 +503,7 @@ class ActionTab:
         """
         self._say(f"Waiting for {tx[:14]}… to confirm.", pending=True)
         await wait_for_confirmation(contract.provider, tx, interval=CONFIRM_INTERVAL)
-        self._say(done, ft.Colors.GREEN_600)
+        self._say(done, DONE)
 
     def amount_label(self, address: str, amount: int) -> str:
         """`1,000 USDC` -- an amount in the units of whatever token it is.

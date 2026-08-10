@@ -2176,7 +2176,7 @@ async def test_declining_a_claim_leaves_no_red_line_behind() -> None:
     await app.claim_portfolio(False)
 
     assert app.portfolio_view.claim_status.value == ""
-    assert app.portfolio_view.claim_status.visible is False
+    assert app.portfolio_view.status.visible is False
 
 
 async def test_losing_the_wallet_reloads_the_portfolio() -> None:

@@ -37,7 +37,7 @@ from curve.rpc import (
     prefers_public_reads,
 )
 from curve.sort import DEFAULT_SORT
-from ui import AnyEvent, buttons, routing, safe_update
+from ui import AnyEvent, buttons, routing, safe_update, status
 from ui import theme as themes
 from ui.assets import chad_mark, chain_name, curve_logo
 from ui.logos import chain_mark
@@ -47,7 +47,6 @@ from ui.portfolio import PortfolioView
 from ui.responsive import content_width, layout_for
 from ui.typography import BODY, LABEL, ROW_TITLE, SMALL, TITLE
 from wallet import (
-    ConnectionCancelled,
     Wallet,
     WalletChoice,
     WalletError,
@@ -1399,13 +1398,13 @@ class CurveApp:
         view = self.portfolio_view
         wallet = self.wallet
         if wallet is None or not wallet.address:
-            view.claiming("Connect a wallet first.", ft.Colors.ERROR)
+            view.claiming("Connect a wallet first.", status.FAILED)
             return
         chain_id = self.chains.get(self.chain) or 0
         plan = earnings.claim_plan(chain_id, self._earnings)
         count = len(plan.crv) if crv else (1 if plan.extras else 0)
         if not count:
-            view.claiming("Nothing to claim.", ft.Colors.ERROR)
+            view.claiming("Nothing to claim.", status.FAILED)
             return
         what = "CRV" if crv else "rewards"
         view.claiming(
@@ -1422,10 +1421,10 @@ class CurveApp:
             # A dismissed wallet prompt goes back to a blank line rather
             # than a red one -- see `WalletError.rejected_by_user`.
             view.claiming(
-                "" if exc.rejected_by_user else str(exc), ft.Colors.ERROR
+                "" if exc.rejected_by_user else str(exc), status.FAILED
             )
             return
-        view.claiming(f"Claimed {what}.", ft.Colors.GREEN_600)
+        view.claiming(f"Claimed {what}.", status.DONE)
         # Not a reload. A claim moves reward tokens, not LP, so every
         # position on the page is exactly as it was -- what changed is
         # what the gauges owe, and that is one Multicall3 round rather

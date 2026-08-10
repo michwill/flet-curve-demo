@@ -136,6 +136,8 @@ class ReservedProvider(FakeProvider):
         #: Refuse both spellings, the way a chain that will not answer
         #: does -- which is a different state from a pool holding nothing.
         self.refuse_reserves = False
+        #: Refuse the one-coin quote, so the line falls back to words.
+        self.refuse_quote_all = False
         mine, theirs = ("balances(int128)", "balances(uint256)")
         if not old:
             mine, theirs = theirs, mine
@@ -151,6 +153,10 @@ class ReservedProvider(FakeProvider):
                 index = words_of(data)[0]
                 if index < len(self.reserves):
                     return word(self.reserves[index])
+            if self.refuse_quote_all and data.startswith(
+                "0x" + abi.selector("calc_withdraw_one_coin(uint256,int128)")
+            ):
+                raise RpcError(-32000, "execution reverted")
             if data.startswith(self.wrong):
                 # What a Vyper contract does with a selector it does not
                 # have. Answering zero instead would let the caller take
@@ -223,6 +229,99 @@ async def test_a_pool_that_will_not_say_its_reserves_previews_nothing() -> None:
     await tab.refresh()
 
     assert tab.estimate.value == ""
+
+
+# -- the mark beside the amount --------------------------------------------
+#
+# An amount and the token it is in are one fact. These panels mark tokens
+# everywhere else -- the coin picker, the amount fields, every reward line
+# -- and the one line that says what you *get* had a bare symbol on it.
+
+
+def marks_on(tab) -> list:
+    """The token marks drawn on the estimate line, in order."""
+    from ui.actions import ESTIMATE_MARK
+
+    found = []
+    for control in tab.estimate_line.controls:
+        for child in getattr(control, "controls", []):
+            if getattr(child, "width", None) == ESTIMATE_MARK:
+                found.append(child)
+    return found
+
+
+async def test_every_coin_of_a_balanced_withdrawal_is_marked() -> None:
+    tab = make_tab(ReservedProvider(RESERVES))
+    tab.mode.value = "balanced"
+    tab.amount.value = "150000"
+
+    await tab.refresh()
+
+    assert len(marks_on(tab)) == 2, "one per coin paid out"
+    assert tab.estimate.value == "-> 100,000.00 USDT  +  200,000.00 crvUSD"
+
+
+async def test_a_one_coin_withdrawal_marks_the_coin_it_pays() -> None:
+    provider = ReservedProvider(
+        RESERVES,
+        **{"0x" + abi.selector("calc_withdraw_one_coin(uint256,int128)"): word(99 * 10**6)},
+    )
+    tab = make_tab(provider)
+    tab.mode.value = "one"
+    tab.coin_picker.value = "0"
+    tab.amount.value = "100"
+
+    await tab.refresh()
+
+    assert len(marks_on(tab)) == 1
+    assert "USDT" in tab.estimate.value
+
+
+async def test_a_swap_marks_the_coin_it_pays_out() -> None:
+    """The coin bought, not the one sold: the line says what arrives."""
+    tab = swap_tab(CurvedProvider())
+    tab.amount.value = "1000"
+
+    await tab.refresh()
+
+    assert len(marks_on(tab)) == 1
+    assert "crvUSD" in tab.estimate.value, "the coin on the receiving side"
+
+
+async def test_a_deposit_is_marked_with_the_pool_it_buys_into() -> None:
+    """An LP token has no logo of its own, so Curve draws the pool's coins
+    overlapped -- the same mark this panel's own amount field carries."""
+    from ui.actions import ESTIMATE_MARK
+
+    provider = FakeProvider({"0x" + abi.selector("calc_token_amount(uint256[2],bool)"):
+                             word(5 * 10**18)})
+    tab = deposit_tab(provider)
+    tab.fields[0].value = "100"
+
+    await tab.refresh()
+
+    assert "LP" in tab.estimate.value
+    # A stack of the pool's coins rather than one token's mark: same
+    # height, wider, and the panel's own field is built the same way.
+    stack = tab.estimate_line.controls[1].controls[0]
+    assert stack.height == ESTIMATE_MARK
+    assert stack.width > ESTIMATE_MARK
+
+
+async def test_a_line_with_nothing_to_mark_is_still_just_words() -> None:
+    """An error, or a balance warning. The row falls back to the one Text
+    that has always held the words, so nothing downstream changes."""
+    provider = ReservedProvider(RESERVES)
+    provider.refuse_quote_all = True
+    tab = make_tab(provider)
+    tab.mode.value = "one"
+    tab.amount.value = "100"
+
+    await tab.refresh()
+
+    assert marks_on(tab) == []
+    assert tab.estimate_line.controls == [tab.estimate]
+    assert "reverted" in tab.estimate.value
 
 
 async def test_a_zero_floor_is_sent_when_the_supply_cannot_be_read() -> None:

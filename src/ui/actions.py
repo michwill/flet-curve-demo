@@ -156,6 +156,11 @@ IMPACT_PROBE_DIVISOR = 20
 #: moves a price anyway.
 IMPACT_MIN_PROBE = 10_000
 
+#: The mark beside an amount on the estimate line. Sized to the text it
+#: sits with rather than to the amount fields' 18-20px: this is a caption
+#: saying which token, not a control to aim at.
+ESTIMATE_MARK = 16
+
 #: Under this, in percent, the impact is inside the probe's own error.
 IMPACT_FLOOR = 0.01
 
@@ -360,7 +365,26 @@ class ActionTab:
         #: the fields they belong under, and lines that nearly line up read
         #: as a mistake. The impact one is hidden until there is something
         #: to say -- see `show_impact`.
-        self.estimate_panel = self._band(self.estimate)
+        #: The estimate as it is *drawn*, which is not always the same
+        #: control as the one holding its words.
+        #:
+        #: An amount and the token it is in are one fact, and the panels
+        #: mark tokens everywhere else -- in the coin picker, in the amount
+        #: fields, beside every reward. Only the line that says what you
+        #: get had a bare symbol. So when there is something to mark, this
+        #: row holds a mark and a figure per coin; when there is not -- an
+        #: error, a balance warning -- it holds `estimate` itself, which is
+        #: also where the words always live, whether or not they are the
+        #: control on screen. Everything that reasons about the line
+        #: (`_sync_alarm`, `summary`, the tests) reads `estimate.value`.
+        self.estimate_line = ft.Row(
+            [self.estimate],
+            spacing=6,
+            run_spacing=4,
+            wrap=True,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        )
+        self.estimate_panel = self._band(self.estimate_line)
         self.impact_panel = self._band(self.impact, visible=False)
         #: Which band is flashing, if any, and which run of the pulse is
         #: the current one -- see `_alarm`.
@@ -500,7 +524,44 @@ class ActionTab:
         """
         self.estimate.value = text
         self.estimate.color = ft.Colors.ERROR if problem else ft.Colors.ON_SURFACE
+        self.estimate_line.controls = [self.estimate]
         self._estimate_problem = problem and bool(text)
+        self._sync_alarm()
+
+    def show_receipts(self, receipts: list[tuple[ft.Control, str]]) -> None:
+        """The same line, with each amount behind the mark of its token.
+
+        `receipts` is `(mark, "1,234.00 USDT")` per coin, already
+        formatted -- the marks come from the caller because only it knows
+        whether the thing arriving is a coin (`token_mark`) or a share of
+        the pool itself (`pool_stack`, as the Deposit panel's own field
+        draws it).
+
+        `estimate.value` is set to the plain reading either way, so
+        nothing that reasons about this line has to know it was drawn
+        twice over.
+        """
+        if not receipts:
+            self.show_estimate("")
+            return
+        self.estimate.value = "-> " + "  +  ".join(text for _mark, text in receipts)
+        self.estimate.color = ft.Colors.ON_SURFACE
+        controls: list[ft.Control] = [
+            ft.Text("->", size=BODY, color=ft.Colors.ON_SURFACE)
+        ]
+        for index, (mark, text) in enumerate(receipts):
+            if index:
+                controls.append(ft.Text("+", size=BODY, color=ft.Colors.ON_SURFACE))
+            controls.append(
+                ft.Row(
+                    [mark, ft.Text(text, size=BODY, color=ft.Colors.ON_SURFACE)],
+                    spacing=5,
+                    tight=True,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                )
+            )
+        self.estimate_line.controls = controls
+        self._estimate_problem = False
         self._sync_alarm()
 
     def show_impact(self, impact: float | None) -> None:
@@ -514,7 +575,7 @@ class ActionTab:
         self._impact_high = high
         self._sync_alarm()
 
-    def _band(self, text: ft.Text, *, visible: bool = True) -> ft.Container:
+    def _band(self, text: ft.Control, *, visible: bool = True) -> ft.Container:
         return ft.Container(
             text,
             padding=ft.Padding.symmetric(vertical=6),
@@ -1227,10 +1288,20 @@ class DepositTab(ActionTab):
         if contract is not None and any(amounts):
             try:
                 self._expected_lp = await self._quote(contract, amounts)
-                self.show_estimate(
-                    f"-> {token_amount(units_to_float(self._expected_lp, 18))} LP"
-                    f"  (min {token_amount(units_to_float(self.with_slippage(self._expected_lp), 18))})"
+                floor = token_amount(
+                    units_to_float(self.with_slippage(self._expected_lp), 18)
                 )
+                # The pool's own coins, overlapped, because an LP token
+                # has no logo of its own -- the same mark this panel's
+                # amount field already carries, and the one the pool list
+                # draws beside the pool's name.
+                self.show_receipts([
+                    (
+                        pool_stack(self.pool, ESTIMATE_MARK, limit=4),
+                        f"{token_amount(units_to_float(self._expected_lp, 18))} LP"
+                        f"  (min {floor})",
+                    )
+                ])
             except WalletError as exc:
                 self.show_estimate(str(exc), problem=True)
                 self._quote_ok = False
@@ -1638,10 +1709,16 @@ class WithdrawTab(ActionTab):
             coin = coins[index] if index < len(coins) else coins[0]
             try:
                 out = await self._quote(contract, [amount])
-                self.show_estimate(
-                    f"-> {token_amount(units_to_float(out, coin.decimals))} {coin.symbol}"
-                    f"  (min {token_amount(units_to_float(self.with_slippage(out), coin.decimals))})"
+                floor = token_amount(
+                    units_to_float(self.with_slippage(out), coin.decimals)
                 )
+                self.show_receipts([
+                    (
+                        token_mark(coin, self.pool.chain, ESTIMATE_MARK),
+                        f"{token_amount(units_to_float(out, coin.decimals))}"
+                        f" {coin.symbol}  (min {floor})",
+                    )
+                ])
             except WalletError as exc:
                 self.show_estimate(str(exc), problem=True)
                 self._quote_ok = False
@@ -1653,13 +1730,14 @@ class WithdrawTab(ActionTab):
             # a preview of a different action.
             shares = await self.balanced_shares(contract, amount)
             if shares is not None:
-                self.show_estimate(
-                    "-> " + "  +  ".join(
+                self.show_receipts([
+                    (
+                        token_mark(coin, self.pool.chain, ESTIMATE_MARK),
                         f"{token_amount(units_to_float(share, coin.decimals))}"
-                        f" {coin.symbol}"
-                        for coin, share in zip(self.pool.pool_coins, shares, strict=False)
+                        f" {coin.symbol}",
                     )
-                )
+                    for coin, share in zip(self.pool.pool_coins, shares, strict=False)
+                ])
         self.show_impact(impact)
 
         # Said before it is sent rather than after it reverts. The number
@@ -1993,11 +2071,18 @@ class SwapTab(ActionTab):
             try:
                 self._expected_out = await self._quote(contract, [dx])
                 out_coin = self.coins[j]
-                self.show_estimate(
-                    f"-> {token_amount(units_to_float(self._expected_out, out_coin.decimals))}"
-                    f" {out_coin.symbol}"
-                    f"  (min {token_amount(units_to_float(self.with_slippage(self._expected_out), out_coin.decimals))})"
+                floor = token_amount(
+                    units_to_float(
+                        self.with_slippage(self._expected_out), out_coin.decimals
+                    )
                 )
+                self.show_receipts([
+                    (
+                        token_mark(out_coin, self.pool.chain, ESTIMATE_MARK),
+                        f"{token_amount(units_to_float(self._expected_out, out_coin.decimals))}"
+                        f" {out_coin.symbol}  (min {floor})",
+                    )
+                ])
             except WalletError as exc:
                 self.show_estimate(str(exc), problem=True)
             else:

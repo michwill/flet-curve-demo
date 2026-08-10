@@ -405,6 +405,8 @@ class PortfolioView(ft.Column):
 
         self.claim_crv.visible = crv
         self.claim_rewards.visible = extras
+        self.claim_crv.content = self._crv_label(earnings)
+        self.claim_rewards.content = self._rewards_label(earnings)
         self.accrued.value = (
             f"Unclaimed rewards: {compact_usd(owed)}" if owed > 0
             else "Unclaimed rewards" if crv or extras
@@ -415,6 +417,32 @@ class PortfolioView(ft.Column):
             if isinstance(row, HoldingRow):
                 row.apply(self._earnings.get(row.holding.address.lower()))
         safe_update(self)
+
+    @staticmethod
+    def _crv_label(earnings: list[Earning]) -> str:
+        """"Claim 1.23 CRV" -- the amount, on the button that takes it.
+
+        A claim is not a choice between amounts, so the number is not
+        needed to decide anything; it is there because a button that
+        commits an address to a transaction should say what the
+        transaction is for, and "some CRV" is not that.
+        """
+        return f"Claim {token_amount(sum(e.crv_owed for e in earnings))} CRV"
+
+    @staticmethod
+    def _rewards_label(earnings: list[Earning]) -> str:
+        """"Claim rewards ($12.34)", or without the value if there is none.
+
+        Several tokens do not fit a button, so the incentives are named by
+        what they come to rather than by what they are -- the amounts
+        themselves are on each pool's Claim tab.
+
+        A reward the API never priced is worth $0 here while being worth
+        something in fact, and "Claim rewards ($0)" reads as a button that
+        does nothing. So an unpriced claim simply drops the parenthesis.
+        """
+        value = sum(e.extras_value for e in earnings)
+        return "Claim rewards" + (f" ({compact_usd(value)})" if value > 0 else "")
 
     def claiming(self, message: str, colour: str | None = None) -> None:
         """Say what a claim is doing, and stop it being pressed twice."""

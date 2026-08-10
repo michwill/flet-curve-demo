@@ -1964,6 +1964,64 @@ def test_a_theme_change_reaches_the_portfolio_too() -> None:
     assert view._table.shadow is theme.PANEL_SHADOW
 
 
+# -- the claim bar ----------------------------------------------------------
+
+
+def earning(**kw):
+    from curve.earnings import Earning
+
+    base = {"pool": "0x" + "11" * 20, "gauge": "0x" + "22" * 20, "staked": 1000}
+    base.update(kw)
+    return Earning(**base)
+
+
+def crv_reward(amount: float):
+    from curve.earnings import Reward
+
+    return Reward("", "CRV", 18, int(amount * 10**18), 0.5, minted=True)
+
+
+def arb_reward(amount: float, price: float = 1.5):
+    from curve.earnings import Reward
+
+    return Reward("0x" + "ab" * 20, "ARB", 18, int(amount * 10**18), price)
+
+
+def test_the_claim_buttons_say_what_they_would_claim() -> None:
+    """"Claim 1.23 CRV", not "Claim CRV". The button commits an address to
+    a transaction, and it should say what that transaction is for."""
+    view = portfolio_view()
+    view.show([make_holding()])
+    view.show_earnings([earning(rewards=(crv_reward(1.23), arb_reward(4.0)))])
+
+    assert view.claim_crv.content == "Claim 1.23 CRV"
+    assert view.claim_rewards.content == "Claim rewards ($6.00)"
+
+
+def test_the_crv_on_the_button_is_the_whole_portfolio_s() -> None:
+    view = portfolio_view()
+    view.show([make_holding()])
+    view.show_earnings(
+        [
+            earning(pool="0x" + "11" * 20, rewards=(crv_reward(1.5),)),
+            earning(pool="0x" + "33" * 20, rewards=(crv_reward(2.25),)),
+        ]
+    )
+
+    assert view.claim_crv.content == "Claim 3.75 CRV"
+
+
+def test_an_unpriced_reward_drops_the_value_rather_than_showing_zero() -> None:
+    """`Claim rewards ($0)` reads as a button that does nothing, and the
+    tokens are there whether or not the API published a price for them."""
+    view = portfolio_view()
+    view.show([make_holding()])
+    view.show_earnings([earning(rewards=(arb_reward(4.0, price=0.0),))])
+
+    assert view.claim_rewards.content == "Claim rewards"
+    assert view.claim_rewards.visible is True
+
+
 async def test_losing_the_wallet_reloads_the_portfolio() -> None:
     """Whoever's positions those were, they are not on screen for a page
     with no wallet behind it. The same reload hangs off connecting,

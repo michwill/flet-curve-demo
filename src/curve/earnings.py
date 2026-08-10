@@ -152,6 +152,18 @@ class Earning:
         return sum(reward.value for reward in self.rewards)
 
     @property
+    def crv_owed(self) -> float:
+        """Whole CRV waiting at the Minter, which is what a button says."""
+        return sum(reward.whole for reward in self.rewards if reward.minted)
+
+    @property
+    def extras_value(self) -> float:
+        """What the streamed tokens are worth. Zero if none was priced --
+        which is not the same as nothing owed, so callers check
+        `has_extras` before reading this as an amount."""
+        return sum(reward.value for reward in self.rewards if not reward.minted)
+
+    @property
     def has_crv(self) -> bool:
         """Is there CRV to mint here? Both halves matter.
 

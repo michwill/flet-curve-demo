@@ -40,10 +40,12 @@ from __future__ import annotations
 import argparse
 import base64
 import gzip
+import io
 import json
 import os
 import re
 import secrets
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -64,6 +66,20 @@ if __package__ in (None, ""):  # pragma: no cover - direct-script import
 
 #: Outside `src/`, and outside git. Both on purpose -- see the module note.
 SECRETS = ROOT / "local_secrets.toml"
+
+#: What `flet publish` tars into the app, and therefore what must be clean
+#: before it runs.
+SOURCE = ROOT / "src"
+
+#: Compiled bytecode, which goes up unless something stops it.
+#:
+#: Flet's own tar filter excludes a member whose name *starts with*
+#: `__pycache__`, which catches `src/__pycache__` and nothing below it --
+#: so `curve/__pycache__/abi.cpython-313.pyc` and forty-seven of its
+#: neighbours were pinned in the first published build. They are not
+#: merely redundant: Pyodide runs a different Python than the one that
+#: wrote them, so nothing can load them even in principle.
+BYTECODE = "__pycache__"
 
 PIN_URL = "https://api.pinata.cloud/pinning/pinFileToIPFS"
 
@@ -325,6 +341,77 @@ def leaked(root: Path, secret: str) -> list[str]:
     return found
 
 
+def app_archive(root: Path) -> tuple[str, tarfile.TarFile] | None:
+    """The app's own archive, whichever shape the build has it in.
+
+    `wrap_package` base64s it into JSON and deletes the tarball, so
+    anything that wants to look inside has to know both forms -- and every
+    check here runs immediately before the upload, which is *after* the
+    wrapping. Reaching for `app.tar.gz` alone finds nothing and says so
+    cheerfully.
+    """
+    raw = root / PACKAGE_FROM
+    if raw.is_file() and tarfile.is_tarfile(raw):
+        return PACKAGE_FROM, tarfile.open(raw)
+    wrapped = root / PACKAGE_TO
+    if wrapped.is_file():
+        try:
+            blob = json.loads(wrapped.read_text(encoding="utf-8"))[PACKAGE_KEY]
+            return PACKAGE_TO, tarfile.open(
+                fileobj=io.BytesIO(base64.b64decode(blob))
+            )
+        except (ValueError, KeyError, tarfile.TarError):
+            return None
+    return None
+
+
+def bytecode(root: Path) -> list[str]:
+    """`__pycache__` in the build. Empty is the only good answer.
+
+    Checked rather than trusted to the two measures that should have
+    prevented it, because `--no-build` skips both: somebody pinning a
+    `dist/` they built by hand gets the same protection as somebody who
+    let this script build it.
+    """
+    found = [
+        path.relative_to(root).as_posix()
+        for path in sorted(root.rglob("*"))
+        if path.is_file() and BYTECODE in path.parts
+    ]
+    package = app_archive(root)
+    if package is not None:
+        name, archive = package
+        with archive:
+            found += [
+                f"{name}:{member.name}"
+                for member in archive.getmembers()
+                if member.isfile() and BYTECODE in Path(member.name).parts
+            ]
+    return found
+
+
+def clear_bytecode() -> list[str]:
+    """Delete every `__pycache__` under `src/`, and say which went."""
+    gone = []
+    for directory in sorted(SOURCE.rglob(BYTECODE)):
+        if directory.is_dir():
+            gone.append(directory.relative_to(ROOT).as_posix())
+            shutil.rmtree(directory)
+    return gone
+
+
+def build_env() -> dict[str, str]:
+    """The environment the build steps run in.
+
+    Sweeping `__pycache__` first is not enough on its own, and the reason
+    is worth stating: `build_assets` imports `ui.assets` to read
+    `MARK_PIXELS`, and the interpreter writes that import's bytecode as it
+    goes -- after the sweep, before `flet publish` tars the directory. The
+    first clean attempt still shipped three files for exactly that reason.
+    """
+    return {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+
+
 def _in_tarball(path: Path, needle: bytes) -> list[str]:
     with tarfile.open(path) as archive:
         names = []
@@ -499,6 +586,7 @@ def compile_assets() -> None:
     result = subprocess.run(
         [sys.executable, str(ROOT / "tools" / "build_assets.py")],
         cwd=ROOT,
+        env=build_env(),
         check=False,
     )
     if result.returncode != 0:
@@ -531,6 +619,7 @@ def publish() -> None:
             ROUTE_STRATEGY,
         ],
         cwd=ROOT,
+        env=build_env(),
         check=False,
     )
     if result.returncode != 0:
@@ -555,6 +644,10 @@ def main() -> int:
     options = parser.parse_args()
 
     if not options.no_build:
+        # Before either step, because both import from `src/` and
+        # `flet publish` tars whatever is in there -- see `BYTECODE`.
+        if (swept := clear_bytecode()):
+            print(f"swept {len(swept)} bytecode {'directory' if len(swept) == 1 else 'directories'} under src/")
         # The marks first: `flet publish` tars `src/` into the app, so
         # anything compiled after it would not be in the build.
         compile_assets()
@@ -599,6 +692,16 @@ def main() -> int:
         print(f"{WORKER}: taught to unwrap it")
     if options.probe:
         print("probes: " + ", ".join(add_probes(dist)))
+
+    if found := bytecode(dist):
+        raise SystemExit(
+            "The build carries compiled bytecode:\n  "
+            + "\n  ".join(found[:10])
+            + (f"\n  ... and {len(found) - 10} more" if len(found) > 10 else "")
+            + "\n\nNothing was uploaded. Pyodide cannot load it and a pin is "
+            "forever. Rebuild without --no-build, which sweeps it and keeps "
+            "the build from writing more."
+        )
 
     jwt = "" if options.dry_run else token()
     if jwt and (found := leaked(dist, jwt)):

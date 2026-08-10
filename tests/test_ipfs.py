@@ -272,6 +272,73 @@ def test_a_clean_build_reports_nothing(tmp_path: Path) -> None:
     assert ipfs.leaked(root, "SEKRIT") == []
 
 
+# -- compiled bytecode ------------------------------------------------------
+
+
+def _packaged(root: Path, members: dict[str, bytes]) -> None:
+    """Write `app.tar.gz` holding exactly these members."""
+    with tarfile.open(root / ipfs.PACKAGE_FROM, "w:gz") as archive:
+        for name, payload in members.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(payload)
+            archive.addfile(info, io.BytesIO(payload))
+
+
+def test_bytecode_below_the_top_level_is_found(tmp_path: Path) -> None:
+    """The case that actually shipped. Flet's own tar filter drops a member
+    whose name *starts with* `__pycache__`, so `src/__pycache__` never got
+    in and `curve/__pycache__/...` always did -- forty-eight files of it."""
+    root = build(tmp_path, {"index.html": "<html>"})
+    _packaged(
+        root,
+        {
+            "curve/abi.py": b"x = 1\n",
+            "curve/__pycache__/abi.cpython-313.pyc": b"\x00\x00",
+            "ui/__pycache__/assets.cpython-313.pyc": b"\x00\x00",
+        },
+    )
+
+    assert ipfs.bytecode(root) == [
+        f"{ipfs.PACKAGE_FROM}:curve/__pycache__/abi.cpython-313.pyc",
+        f"{ipfs.PACKAGE_FROM}:ui/__pycache__/assets.cpython-313.pyc",
+    ]
+
+
+def test_bytecode_is_found_after_the_package_is_wrapped(tmp_path: Path) -> None:
+    """Which is the shape it is in when the check runs: `wrap_package` has
+    already base64'd the archive and deleted it. Looking for `app.tar.gz`
+    at that point finds nothing and says the build is clean."""
+    root = build(
+        tmp_path,
+        {"index.html": f'<script>appPackageUrl: "{ipfs.PACKAGE_FROM}"</script>'},
+    )
+    _packaged(root, {"curve/__pycache__/abi.cpython-313.pyc": b"\x00\x00"})
+    assert ipfs.wrap_package(root) is True
+    assert not (root / ipfs.PACKAGE_FROM).exists()
+
+    assert ipfs.bytecode(root) == [
+        f"{ipfs.PACKAGE_TO}:curve/__pycache__/abi.cpython-313.pyc"
+    ]
+
+
+def test_loose_bytecode_in_the_build_counts_too(tmp_path: Path) -> None:
+    root = build(tmp_path, {"index.html": "<html>", "__pycache__/x.pyc": "junk"})
+    assert ipfs.bytecode(root) == ["__pycache__/x.pyc"]
+
+
+def test_a_build_with_no_bytecode_reports_nothing(tmp_path: Path) -> None:
+    root = build(tmp_path, {"index.html": "<html>"})
+    _packaged(root, {"curve/abi.py": b"x = 1\n"})
+    assert ipfs.bytecode(root) == []
+
+
+def test_the_build_runs_with_bytecode_writing_off() -> None:
+    """Sweeping first is not enough: `build_assets` imports `ui.assets` for
+    `MARK_PIXELS`, and the import writes its own bytecode -- after the
+    sweep and before `flet publish` tars the directory."""
+    assert ipfs.build_env()["PYTHONDONTWRITEBYTECODE"] == "1"
+
+
 # -- the base href ----------------------------------------------------------
 
 

@@ -199,3 +199,54 @@ async def test_rates_are_not_asked_for_twice(served) -> None:
     await api.pool_rates(CHAIN, [pools[0]["address"]])
 
     assert len(server.details) == 1
+
+
+# -- what a pool is worth ---------------------------------------------------
+
+
+def test_a_pool_is_valued_by_what_it_holds() -> None:
+    """Not by `tvl_usd`. A position is priced by its share of the total,
+    so a wrong total is multiplied by however small the supply is."""
+    from curve.api import pool_composition
+
+    assert pool_composition(
+        {"balances_usd": [1_000.0, 2_500.5], "tvl_usd": 3_500.5}
+    ) == pytest.approx(3_500.5)
+
+
+def test_the_two_ethx_pools_stop_being_worth_thirty_dollars() -> None:
+    """The payload that started this, verbatim from v1 /chains/ethereum.
+
+    Both pools hold a few tens of thousands of wei, one account holds
+    100% of the LP, and the Portfolio page showed $30.03 and $25.11.
+    """
+    from curve.api import pool_composition
+
+    ethx_wsteth = {
+        "tvl_usd": 30.03324352900331,
+        "balances_usd": [6.877406287619365e-11, 7.752986382331606e-11],
+    }
+    ethx_weth = {
+        "tvl_usd": 25.11359659328098,
+        "balances_usd": [2.700916017478441e-11, 4.022215192807452e-11],
+    }
+    assert pool_composition(ethx_wsteth) < 1e-9
+    assert pool_composition(ethx_weth) < 1e-9
+
+
+def test_a_payload_with_no_reserves_still_gets_a_number() -> None:
+    """`tvl_usd` of unknown provenance beats dropping the pool entirely:
+    it decides only whether the pool is worth scanning."""
+    from curve.api import pool_composition
+
+    assert pool_composition({"tvl_usd": 1_234.5}) == 1_234.5
+    assert pool_composition({"tvl_usd": 1_234.5, "balances_usd": []}) == 1_234.5
+    assert pool_composition({}) == 0.0
+
+
+def test_a_reserve_that_is_null_counts_as_nothing() -> None:
+    """Curve Lite omits the price where it has none, and `None + float`
+    would take the whole scan down."""
+    from curve.api import pool_composition
+
+    assert pool_composition({"balances_usd": [10.0, None]}) == 10.0

@@ -131,6 +131,32 @@ class Candle:
         return self.close >= self.open
 
 
+def pool_composition(raw: dict[str, Any]) -> float:
+    """What a pool holds, in USD, from its own reserves.
+
+    `balances_usd` rather than `tvl_usd`, and the difference is not
+    academic. A position is priced by its share of what the pool holds,
+    so a wrong total is multiplied by however small the supply is -- and
+    on a pool drained to its rounding floor that factor is enormous.
+
+    Two of them on Ethereum say so in one object: ETHx/wstETH reports
+    `balances_usd` of `[6.9e-11, 7.8e-11]` and `tvl_usd` of `30.03`,
+    which put a dust position that nobody can withdraw anything from at
+    thirty dollars on the Portfolio page. The reserves agree with the
+    chain to the wei; the total does not agree with anything.
+
+    So the total is derived rather than taken. `tvl_usd` remains the
+    fallback for a payload that carries no reserves at all, where a
+    number of unknown provenance still beats no pool at all -- it decides
+    only whether the pool is worth scanning, and every position in it is
+    priced from this sum.
+    """
+    balances = raw.get("balances_usd")
+    if isinstance(balances, list) and balances:
+        return sum(float(value or 0.0) for value in balances)
+    return float(raw.get("tvl_usd") or 0.0)
+
+
 def _rates_key(chain_id: int, address: str) -> str:
     """Where one pool's published rates live in the cache.
 
@@ -459,7 +485,8 @@ class CurveApi:
         )
         targets = []
         for raw in (listing or {}).get("data") or []:
-            if float(raw.get("tvl_usd") or 0.0) <= 0:
+            held = pool_composition(raw)
+            if held <= 0:
                 continue
             address = raw.get("address") or ""
             targets.append(
@@ -469,7 +496,7 @@ class CurveApi:
                     chain=chain,
                     lp_token=raw.get("lp_token_address") or address,
                     gauge=gauges.get(address.lower(), ""),
-                    tvl=float(raw.get("tvl_usd") or 0.0),
+                    tvl=held,
                     coins=tuple(
                         (coin.get("address") or "", coin.get("symbol") or "?")
                         for coin in raw.get("coins") or []

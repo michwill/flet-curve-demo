@@ -24,7 +24,15 @@ from curve import abi, earnings
 from curve.models import Pool
 from curve.multicall import MULTICALL3
 from curve.pool import PoolContract
-from ui.actions import ClaimTab, DepositTab, StakeTab, SwapTab, WithdrawTab
+from curve.rewards import CRV_DECIMALS
+from ui.actions import (
+    ClaimTab,
+    DepositTab,
+    StakeTab,
+    SwapTab,
+    WithdrawTab,
+    claimable,
+)
 
 pytestmark = pytest.mark.fork
 
@@ -199,12 +207,12 @@ async def test_claiming_takes_all_but_the_next_block_s_worth(fork) -> None:
     mined and a few hundred wei have accrued again. Measured here at 1.3e-7
     CRV against the 1.5e-2 that was claimed.
 
-    Which is worth knowing for the tab rule as much as for this assertion:
-    `ClaimTab.available` is `> 0`, so for any live gauge position there is
-    always *technically* something owed and the tab is always shown. That
-    is the honest reading of "only when there is something to claim"; if it
-    should instead hide below some dust threshold, that is a product
-    decision and this test is where it would be pinned.
+    Which is what settled the tab rule. `ClaimTab.available` asked `> 0`,
+    so for any live gauge position something was always *technically*
+    owed and the tab was always in the bar -- over a panel reading "CRV 0",
+    because a residue this size prints as nothing. It now asks whether the
+    amount prints as anything at all (`ui.actions.claimable`), so the
+    reading below is exactly the state in which the tab goes away.
     """
     fork.give_eth(STAKER)
     fork.advance()
@@ -223,6 +231,9 @@ async def test_claiming_takes_all_but_the_next_block_s_worth(fork) -> None:
         f"{tab.crv_claimable} still owed against {owed} claimed -- that is not "
         "one block's accrual, the mint did not take it"
     )
+    # And the residue is small enough that the tab takes itself out of the
+    # bar, which is the whole point of measuring it here.
+    assert not claimable(tab.crv_claimable, CRV_DECIMALS)
 
 
 # -- staking ----------------------------------------------------------------

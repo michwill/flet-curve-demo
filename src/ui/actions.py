@@ -1684,6 +1684,25 @@ class SwapTab(ActionTab):
         return await contract.exchange(i, j, dx, self.with_slippage(expected))
 
 
+def claimable(amount: int, decimals: int) -> bool:
+    """Is this enough to be worth a tab, a line and a transaction?
+
+    Not `> 0`, which is what this used to ask and is very nearly always
+    true: CRV is emitted continuously, so a gauge position accrues again
+    in the block after it is claimed, and a few hundred wei of it kept the
+    Claim tab in the bar forever. The panel then showed "CRV 0" over a
+    Claim button, which is a tab that can only disappoint.
+
+    The test is what the panel would *print*. Anything that renders as a
+    number is worth claiming; anything that renders as "0" is not, and
+    would be shown as nothing anyway. Asking it this way keeps the tab,
+    the lines inside it and the button that sends them in agreement by
+    construction -- three separate thresholds is how a tab comes to exist
+    with nothing in it.
+    """
+    return token_amount(units_to_float(amount, decimals)) != "0"
+
+
 class ClaimTab(ActionTab):
     """What the gauge owes you, and the one or two transactions to get it.
 
@@ -1734,8 +1753,11 @@ class ClaimTab(ActionTab):
 
     @property
     def available(self) -> bool:
-        """Anything owed, of either kind?"""
-        return self.crv_claimable > 0 or any(amount > 0 for *_, amount in self.extras)
+        """Anything worth claiming, of either kind? See `claimable`."""
+        return claimable(self.crv_claimable, CRV_DECIMALS) or any(
+            claimable(amount, decimals)
+            for _address, _symbol, decimals, amount in self.extras
+        )
 
     def build(self) -> list[ft.Control]:
         if not self.pool.has_gauge:
@@ -1772,12 +1794,12 @@ class ClaimTab(ActionTab):
 
     def _render(self) -> None:
         lines: list[ft.Control] = []
-        if self.crv_claimable > 0:
+        if claimable(self.crv_claimable, CRV_DECIMALS):
             lines.append(
                 self._line(crv_token(self.pool), "CRV", CRV_DECIMALS, self.crv_claimable)
             )
         for address, symbol, decimals, amount in self.extras:
-            if amount > 0:
+            if claimable(amount, decimals):
                 lines.append(self._line(address, symbol, decimals, amount))
         self.rows.controls = lines
         # The reason goes where every other panel puts one. "Nothing to
@@ -1798,14 +1820,14 @@ class ClaimTab(ActionTab):
 
     def summary(self) -> str:
         parts = []
-        if self.crv_claimable > 0:
+        if claimable(self.crv_claimable, CRV_DECIMALS):
             parts.append(
                 f"{token_amount(units_to_float(self.crv_claimable, CRV_DECIMALS))} CRV"
             )
         parts += [
             f"{token_amount(units_to_float(amount, decimals))} {symbol}"
             for _address, symbol, decimals, amount in self.extras
-            if amount > 0
+            if claimable(amount, decimals)
         ]
         return " + ".join(parts)
 
@@ -1857,8 +1879,16 @@ class ClaimTab(ActionTab):
         self.page.update()
 
     async def submit(self, contract: PoolContract) -> str:
-        crv = self.crv_claimable
-        extras = any(amount > 0 for *_, amount in self.extras)
+        # The same test the tab and its lines use, so the button sends
+        # exactly what the panel showed -- see `claimable`. A dust half is
+        # not worth a second wallet prompt, and claiming it would move
+        # nothing anybody could see.
+        owed = self.crv_claimable
+        crv = claimable(owed, CRV_DECIMALS)
+        extras = any(
+            claimable(amount, decimals)
+            for _address, _symbol, decimals, amount in self.extras
+        )
         if not crv and not extras:
             raise WalletError("Nothing to claim.")
         if crv and extras:
@@ -1866,7 +1896,7 @@ class ClaimTab(ActionTab):
             await self._step(
                 contract,
                 tx,
-                f"Claimed {token_amount(units_to_float(crv, CRV_DECIMALS))} CRV.",
+                f"Claimed {token_amount(units_to_float(owed, CRV_DECIMALS))} CRV.",
             )
             return await contract.claim_rewards()
         return await (contract.claim_crv() if crv else contract.claim_rewards())

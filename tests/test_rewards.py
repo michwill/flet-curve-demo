@@ -229,6 +229,66 @@ async def test_the_tab_appears_once_crv_accrues() -> None:
     assert "CRV" in tab.summary()
 
 
+async def test_a_block_s_worth_of_crv_does_not_earn_a_tab() -> None:
+    """CRV is emitted continuously, so a position accrues again in the
+    block after it is claimed. `> 0` therefore meant "always", and the tab
+    sat in the bar forever showing "CRV 0" over a Claim button."""
+    provider = FakeProvider({"0x33134583": word(130)})  # 1.3e-16 CRV
+    tab = claim_tab(provider)
+    await tab.refresh()
+
+    assert tab.crv_claimable == 130, "still read, still true"
+    assert tab.available is False
+    assert tab.summary() == ""
+
+
+async def test_what_the_panel_prints_is_what_puts_it_in_the_bar() -> None:
+    """The tab, its lines and the button that sends them ask one question,
+    so a tab that appears always has something in it."""
+    from ui.actions import claimable
+
+    provider = FakeProvider({"0x33134583": word(5 * 10**13)})  # 0.00005 CRV
+    tab = claim_tab(provider)
+    await tab.refresh()
+
+    assert claimable(tab.crv_claimable, 18) is True
+    assert tab.available is True
+    assert len(tab.rows.controls) == 1
+    assert tab.empty_note.visible is False
+
+    provider.answers["0x33134583"] = word(4 * 10**13)  # 0.00004, prints as 0
+    await tab.refresh()
+
+    assert tab.available is False
+    assert tab.rows.controls == []
+
+
+async def test_a_dust_half_is_not_worth_its_own_wallet_prompt() -> None:
+    """Two prompts for one apparent action is worth it for two real
+    rewards, not for one real one and a rounding error."""
+    provider = FakeProvider(
+        {
+            "0x33134583": word(200),  # dust CRV
+            "0x963c94b9": word(1),
+            "0x54c49fe9": address_word(ARB),
+            "0x95d89b41": string_word("ARB"),
+            "0x313ce567": word(18),
+            "0x33fd6f74": word(3 * 10**18),  # 3 ARB, real
+            "0xe6f1daf2": word(0),
+        }
+    )
+    tab = claim_tab(provider)
+    await tab.refresh()
+
+    assert tab.available is True
+    assert tab.summary() == "3 ARB", "the dust CRV is not offered"
+
+    sent = await tab.submit(tab.get_contract())
+    assert sent
+    assert provider.sent[-1]["data"] == abi.encode_claim_rewards()
+    assert len(provider.sent) == 1, "one prompt, not two"
+
+
 async def test_an_incentive_token_is_named_and_scaled_from_the_chain() -> None:
     """Symbol and decimals are read, not assumed: 6-decimal reward tokens
     exist, and rendering one as 18 is wrong by a factor of a trillion."""
@@ -269,6 +329,11 @@ async def test_both_kinds_owed_is_two_transactions(monkeypatch) -> None:
     await tab.submit(tab.get_contract())
 
     assert [tx["to"] for tx in provider.sent] == [MINTER_ETHEREUM, GAUGE]
+    # The line between the two prompts names what the first one took, so
+    # the second is expected rather than alarming. It reads the *amount*,
+    # which is a different thing from whether the amount was worth
+    # claiming -- conflating the two turned this into "Claimed 0 CRV."
+    assert "Claimed 1 CRV." in tab.status.value
 
 
 async def test_only_incentives_owed_skips_the_minter() -> None:

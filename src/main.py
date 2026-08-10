@@ -65,12 +65,6 @@ PREFERRED_CHAINS = ("ethereum", "arbitrum", "base", "optimism", "polygon", "frax
 #: balances have not been read yet. The two take about the same time.
 PORTFOLIO_DISCOVERY_SHARE = 0.5
 
-#: Pool payloads asked for at once when reading what a portfolio earns.
-#: One request per staked pool, and they do not depend on each other, so
-#: the only reason not to send them all together is that this is somebody
-#: else's API.
-EARNINGS_REQUESTS = 8
-
 # -- opening somewhere other than the front page ------------------------
 #
 # Two knobs for driving the app without driving the *UI*: which page to
@@ -618,10 +612,6 @@ class CurveApp:
         #: else -- see `reread_earnings`.
         self._earnings: list[earnings.Earning] = []
         self._earning_seeds: tuple | None = None
-        #: How many pool payloads to ask for at once. Enough that a large
-        #: portfolio is a couple of waits rather than forty, few enough
-        #: that it is not a burst against somebody else's API.
-        self._details = asyncio.Semaphore(EARNINGS_REQUESTS)
         self.progress = ft.ProgressBar(visible=False)
         self.error = ft.Text("", size=SMALL, color=ft.Colors.ERROR, visible=False)
         # One slot that holds either the list or a detail page. Simpler than
@@ -1351,36 +1341,31 @@ class CurveApp:
             self._earning_seeds = None
             return
 
-        async def payload(holding):
-            """One pool's published rates, or nothing.
-
-            A missing payload costs that row its APR and no more, so it is
-            an answer rather than a reason to abandon the pass.
-            """
-            async with self._details:
-                try:
-                    return await self.api.pool_detail(chain_id, holding.address)
-                except ApiError:
-                    return None
-
-        # Together, not one after another. These are independent HTTP
-        # requests -- one per staked pool -- and awaiting each in turn made
-        # the wait the *sum* of them: an address in forty gauges waited
-        # forty round trips for two columns and a claim button, which is
-        # long enough that the page looked like it had decided there was
-        # nothing to show. Bounded, because a portfolio is somebody else's
-        # API and forty at once is a burst worth not sending.
-        details = await asyncio.gather(*(payload(h) for h in staked))
+        # One call, however many pools -- see `CurveApi.pool_rates`. This
+        # used to be a request per staked pool, and on an address in three
+        # hundred gauges that was three hundred requests for figures the
+        # scan had already downloaded a moment earlier: the pool list it
+        # pages to find the gauges carries every rate on the chain.
+        try:
+            rates = await self.api.pool_rates(
+                chain_id, [holding.address for holding in staked]
+            )
+        except ApiError:
+            # No rates is a page with no APR column, not a page with no
+            # rewards: the claimable amounts come from the chain and are
+            # read below regardless.
+            rates = {}
 
         seeds: list[earnings.Earning] = []
         token_meta: dict[str, tuple[str, int, float]] = {}
-        for holding, detail in zip(staked, details, strict=True):
+        for holding in staked:
             seed = earnings.Earning(
                 pool=holding.address,
                 gauge=holding.gauge,
                 staked=holding.staked,
                 wallet=holding.wallet,
             )
+            detail = rates.get(holding.address.lower())
             if detail is not None:
                 seed, meta = earnings.seed_from_detail(seed, detail)
                 token_meta.update(meta)

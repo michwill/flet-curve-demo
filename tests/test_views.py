@@ -2355,22 +2355,21 @@ def test_a_new_wallet_does_not_inherit_the_last_one_s_claim() -> None:
     assert view.rows.controls[0]._rewards.value == "\u2013"
 
 
-async def test_pool_payloads_are_asked_for_together_not_in_turn() -> None:
-    """An address in forty gauges waited forty round trips for two columns
-    and a claim button, which is long enough that the page looked like it
-    had decided there was nothing to show."""
+async def test_the_rates_are_asked_for_once_however_many_pools() -> None:
+    """It was a request per staked pool. On an address in three hundred
+    gauges that was three hundred requests for figures the scan had
+    already downloaded -- see `CurveApi.pool_rates`."""
     import main as app_module
 
-    running, high_water = 0, 0
+    calls = []
 
     class Api:
-        async def pool_detail(self, _chain_id, _address):
-            nonlocal running, high_water
-            running += 1
-            high_water = max(high_water, running)
-            await asyncio.sleep(0.01)
-            running -= 1
-            return {"crv_apr": 3.0, "extra_rewards_apr": []}
+        async def pool_rates(self, chain_id, addresses):
+            calls.append(list(addresses))
+            return {
+                a.lower(): {"crv_apr": 3.0, "extra_rewards_apr": []}
+                for a in addresses
+            }
 
         async def usd_price(self, _chain, _address):
             return 0.5
@@ -2381,7 +2380,6 @@ async def test_pool_payloads_are_asked_for_together_not_in_turn() -> None:
     app.api = Api()
     app._earnings = []
     app._earning_seeds = None
-    app._details = asyncio.Semaphore(app_module.EARNINGS_REQUESTS)
     app.portfolio_view = portfolio_view(app.page)
 
     async def reread(_account, _provider) -> None:
@@ -2390,15 +2388,52 @@ async def test_pool_payloads_are_asked_for_together_not_in_turn() -> None:
     app.reread_earnings = reread      # type: ignore[method-assign]
     holdings = [
         make_holding(address=f"0x{i:040x}", gauge=f"0x{i + 1:040x}", staked=10**18)
-        for i in range(20)
+        for i in range(300)
     ]
 
     await app.load_earnings(holdings, "0x" + "11" * 20, 1, object())
 
-    assert high_water == app_module.EARNINGS_REQUESTS
+    assert len(calls) == 1 and len(calls[0]) == 300
     seeds, _meta, _price, _chain = app._earning_seeds
-    assert len(seeds) == 20
+    assert len(seeds) == 300
     assert all(seed.crv_apr == 3.0 for seed in seeds)
+
+
+async def test_rates_that_cannot_be_read_still_leave_the_claim_working() -> None:
+    """The APR column comes from the API and the claimable amounts come
+    from the chain. Losing the first must not cost the second."""
+    import main as app_module
+    from curve.http import ApiError
+
+    class Api:
+        async def pool_rates(self, _chain_id, _addresses):
+            raise ApiError("down")
+
+        async def usd_price(self, _chain, _address):
+            return 0.5
+
+    app = app_module.CurveApp.__new__(app_module.CurveApp)
+    app.page = StubPage()
+    app.chain = "ethereum"
+    app.api = Api()
+    app._earnings = []
+    app._earning_seeds = None
+    app.portfolio_view = portfolio_view(app.page)
+    read = []
+
+    async def reread(_account, _provider) -> None:
+        read.append(True)
+
+    app.reread_earnings = reread      # type: ignore[method-assign]
+
+    await app.load_earnings(
+        [make_holding(gauge="0x" + "22" * 20, staked=10**18)],
+        "0x" + "11" * 20, 1, object(),
+    )
+
+    seeds, _meta, _price, _chain = app._earning_seeds
+    assert len(seeds) == 1 and seeds[0].crv_apr == 0.0
+    assert read == [True], "the chain read still ran"
 
 
 async def test_declining_a_claim_leaves_no_red_line_behind() -> None:

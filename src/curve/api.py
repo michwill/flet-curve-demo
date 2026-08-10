@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -44,6 +45,10 @@ PRICES_V1 = "https://prices.curve.finance/v1"
 
 #: The v2 hard cap on `pagination`; anything larger is a 422.
 MAX_PAGE_SIZE = 50
+
+#: Per-pool detail requests in flight at once, when `pool_rates` has to
+#: fall back to asking one at a time.
+DETAIL_REQUESTS = 8
 
 #: Below this the list is mostly dust: thousands of abandoned factory pools
 #: with no liquidity. v1's `getPools/big` drew the line in the same place,
@@ -126,12 +131,29 @@ class Candle:
         return self.close >= self.open
 
 
+def _rates_key(chain_id: int, address: str) -> str:
+    """Where one pool's published rates live in the cache.
+
+    Separate from the `detail:` key even though a detail payload can fill
+    it, because the two are not the same promise: this one says only that
+    the APR fields are present, which is all the list endpoint carries.
+    """
+    return f"rates:{chain_id}:{address.lower()}"
+
+
 class CurveApi:
     """Reads Curve's APIs, with a small time-based cache."""
 
     def __init__(self, ttl: float = CACHE_TTL) -> None:
         self._ttl = ttl
         self._cache: dict[str, tuple[float, Any]] = {}
+        #: Requests it would take to page each chain's pool list, learned
+        #: from the last listing rather than asked for -- see `pool_rates`.
+        self._pages: dict[int, int] = {}
+        #: How many per-pool requests may be in flight at once. Enough that
+        #: a wallet in a dozen pools is one wait, few enough that this is
+        #: not a burst against somebody else's API.
+        self._details = asyncio.Semaphore(DETAIL_REQUESTS)
 
     # -- caching ----------------------------------------------------------
 
@@ -463,29 +485,136 @@ class CurveApi:
         this is twenty-odd requests. They go out together: in sequence it
         is the slowest thing on the page by a wide margin.
         """
-        first = await self._v2(
-            "/pools/", {"chain_id": chain_id, "page": 1, "pagination": MAX_PAGE_SIZE}
-        )
-        count = int(first.get("count") or 0)
-        pages = await asyncio.gather(
+        gauges: dict[str, str] = {}
+        for raw in await self._list_pools(chain_id):
+            gauge = _first_live_gauge(raw.get("gauges"))
+            if gauge:
+                gauges[(raw.get("address") or "").lower()] = gauge
+        return gauges
+
+    async def _list_pools(self, chain_id: int) -> list[dict[str, Any]]:
+        """Every pool on the chain, as the list endpoint describes it.
+
+        Each entry is kept under its own key on the way past, because the
+        list carries the *published rates* -- `crv_apr`, `crv_apr_boosted`
+        and `extra_rewards_apr`, the last complete with each token's
+        address, decimals and price -- and those are exactly what the
+        portfolio's earnings pass needs. Checked against the detail
+        endpoint: identical fields, identical values.
+
+        Whoever wanted the whole list has therefore already paid for every
+        rate on the chain, and `pool_rates` below can answer from here
+        rather than asking again per pool.
+        """
+        first = await self._list_page(chain_id, 1)
+        rest = await asyncio.gather(
             *[
-                self._v2(
-                    "/pools/",
-                    {"chain_id": chain_id, "page": number, "pagination": MAX_PAGE_SIZE},
-                )
-                for number in range(2, count // MAX_PAGE_SIZE + 2)
+                self._list_page(chain_id, number)
+                for number in range(2, self._pages[chain_id] + 1)
             ],
             return_exceptions=True,
         )
-        gauges: dict[str, str] = {}
-        for payload in [first, *pages]:
-            if not isinstance(payload, dict):
-                continue  # a page that failed; the rest are still worth having
-            for raw in payload.get("pools") or []:
-                gauge = _first_live_gauge(raw.get("gauges"))
-                if gauge:
-                    gauges[(raw.get("address") or "").lower()] = gauge
-        return gauges
+        pools = list(first)
+        for page in rest:
+            if isinstance(page, list):  # a page that failed; the rest still count
+                pools += page
+        return pools
+
+    async def _list_page(self, chain_id: int, page: int) -> list[dict[str, Any]]:
+        """One page of the list, with every rate on it kept.
+
+        Also records what paging this chain would cost, which is the only
+        thing `pool_rates` needs a request to find out and the reason it
+        is worth spending one.
+        """
+        payload = await self._v2(
+            "/pools/",
+            {"chain_id": chain_id, "page": page, "pagination": MAX_PAGE_SIZE},
+        )
+        count = int(payload.get("count") or 0)
+        # Rounded up, not `count // size + 1` -- which asks for one page
+        # past the end whenever the count divides exactly, and got an
+        # empty answer for the trouble.
+        self._pages[chain_id] = max(1, -(-count // MAX_PAGE_SIZE))
+        pools = list(payload.get("pools") or [])
+        for raw in pools:
+            self._store(_rates_key(chain_id, raw.get("address") or ""), raw)
+        return pools
+
+    async def pool_rates(
+        self, chain_id: int, addresses: Sequence[str]
+    ) -> dict[str, dict[str, Any]]:
+        """The published rates for these pools, in as few requests as it takes.
+
+        Three routes, cheapest first:
+
+          * **nothing** -- the portfolio scan lists every pool on the chain
+            to find the gauges, and `_list_pools` keeps what it saw. On the
+            page this actually runs on, that covers everything;
+          * **the list** -- one request per page of the chain, which beats
+            asking per pool once there are more pools to look up than the
+            chain has pages. Ethereum is 45 pages against 300 positions;
+          * **per pool** -- one request each, which is fewer when a wallet
+            is in a handful of pools. Most wallets are.
+
+        The choice is arithmetic, not a guess, and the one number it needs
+        -- how many pages the chain has -- costs a request to learn. So it
+        is only bought when a wallet is in enough pools that the answer
+        could go either way, and the page it arrives on is kept and
+        counted, leaving `pages - 1` as what the list route still owes.
+
+        A pool nothing answers for is left out rather than raised: it costs
+        that row its rate and no more.
+        """
+        wanted = [address.lower() for address in addresses]
+
+        def known() -> dict[str, dict[str, Any]]:
+            return {
+                address: cached
+                for address in wanted
+                if (cached := self._cached(_rates_key(chain_id, address))) is not None
+            }
+
+        rates = known()
+        missing = [address for address in wanted if address not in rates]
+        if not missing:
+            return rates
+
+        pages = self._pages.get(chain_id)
+        first: list[dict[str, Any]] | None = None
+        if pages is None and len(missing) >= MAX_PAGE_SIZE:
+            # Never listed, and enough pools wanted that the list might
+            # win. One page settles it -- and fills fifty rates whichever
+            # way it goes, so it is not wasted even when it loses.
+            first = await self._list_page(chain_id, 1)
+            rates = known()
+            missing = [address for address in wanted if address not in rates]
+            pages = self._pages[chain_id] - 1
+
+        if missing and pages is not None and len(missing) > pages:
+            await asyncio.gather(
+                *[
+                    self._list_page(chain_id, number)
+                    for number in range(
+                        2 if first is not None else 1, self._pages[chain_id] + 1
+                    )
+                ],
+                return_exceptions=True,
+            )
+            rates = known()
+            missing = [address for address in wanted if address not in rates]
+
+        async def one(address: str) -> tuple[str, dict[str, Any] | None]:
+            async with self._details:
+                try:
+                    return address, await self.pool_detail(chain_id, address)
+                except ApiError:
+                    return address, None
+
+        for address, payload in await asyncio.gather(*(one(a) for a in missing)):
+            if payload is not None:
+                rates[address] = self._store(_rates_key(chain_id, address), payload)
+        return rates
 
     # -- v1: charts -------------------------------------------------------
     #

@@ -1,0 +1,201 @@
+"""How many requests it takes to learn what a portfolio earns.
+
+The rates the earnings pass needs -- `crv_apr`, `crv_apr_boosted` and
+`extra_rewards_apr`, the last carrying each token's address, decimals and
+price -- are on the pool *list* as well as on the per-pool detail
+endpoint. Checked against the live API: same fields, same values.
+
+That matters because the list is already downloaded. A portfolio scan
+pages every pool on the chain to find the gauges, so by the time anything
+asks for a rate, every rate on the chain has been paid for. An address in
+three hundred gauges was making three hundred requests for figures it
+already had.
+
+The fallbacks below are what happens when it has not: paging the list
+(`ceil(count / 50)` requests) beats asking per pool once there are more
+pools to look up than the chain has pages, and loses when a wallet is in
+a handful of pools -- which most wallets are.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from curve import api as api_module
+from curve.http import ApiError
+
+CHAIN = 1
+
+
+def pool(address: str, crv: float = 1.5) -> dict:
+    return {
+        "address": address,
+        "name": f"pool {address[-2:]}",
+        "crv_apr": crv,
+        "crv_apr_boosted": crv * 2.5,
+        "extra_rewards_apr": [],
+        "gauges": [{"address": "0x" + "9" * 40, "is_killed": False}],
+    }
+
+
+class Server:
+    """Counts what it is asked for, and answers as v2 does."""
+
+    def __init__(self, pools: list[dict], page_size: int = 50) -> None:
+        self.pools = pools
+        self.page_size = page_size
+        self.list_pages: list[int] = []
+        self.details: list[str] = []
+
+    async def get_json(self, url: str, timeout: float = 30.0) -> dict:
+        path = url.split("/v2")[1]
+        if path.startswith(("/pools/?", "/pools/&")):
+            page = int(_param(url, "page") or 1)
+            self.list_pages.append(page)
+            start = (page - 1) * self.page_size
+            return {
+                "count": len(self.pools),
+                "pools": self.pools[start : start + self.page_size],
+            }
+        address = path.rsplit("/", 1)[-1].split("?")[0]
+        self.details.append(address.lower())
+        found = next(
+            (p for p in self.pools if p["address"].lower() == address.lower()), None
+        )
+        if found is None:
+            raise ApiError(f"no such pool {address}")
+        return found
+
+
+def _param(url: str, name: str) -> str | None:
+    for part in url.split("?", 1)[-1].split("&"):
+        key, _, value = part.partition("=")
+        if key == name:
+            return value
+    return None
+
+
+@pytest.fixture
+def served(monkeypatch):
+    def build(count: int, page_size: int = 50):
+        pools = [pool("0x" + f"{i:040x}") for i in range(count)]
+        server = Server(pools, page_size)
+        monkeypatch.setattr(api_module, "get_json", server.get_json)
+        monkeypatch.setattr(api_module, "MAX_PAGE_SIZE", page_size)
+        return server, api_module.CurveApi(), pools
+
+    return build
+
+
+async def test_a_scanned_chain_costs_nothing_to_rate(served) -> None:
+    """The case the portfolio actually hits. `_all_gauges` pages the whole
+    chain to find gauges; every rate on it comes along for free."""
+    server, api, pools = served(120)
+    await api._all_gauges(CHAIN)
+    asked = len(server.list_pages)
+
+    rates = await api.pool_rates(CHAIN, [p["address"] for p in pools])
+
+    assert len(rates) == 120
+    assert server.list_pages == list(range(1, asked + 1)), "no second listing"
+    assert server.details == [], "and not one per-pool request"
+    assert rates[pools[0]["address"].lower()]["crv_apr"] == 1.5
+
+
+async def test_a_handful_of_pools_is_asked_for_one_at_a_time(served) -> None:
+    """Three pools against a chain of twelve pages: asking per pool is
+    three requests and paging the list is twelve."""
+    server, api, pools = served(600)
+    await api._all_gauges(CHAIN)
+    api.invalidate()          # rates expired; the page count is still known
+    server.list_pages.clear()
+
+    await api.pool_rates(CHAIN, [p["address"] for p in pools[:3]])
+
+    assert server.list_pages == []
+    assert len(server.details) == 3
+
+
+async def test_more_pools_than_pages_takes_the_list(served) -> None:
+    """Twenty pools against a chain of two pages: paging is two requests
+    and asking per pool is twenty."""
+    server, api, pools = served(100)
+    await api._all_gauges(CHAIN)
+    api.invalidate()
+    server.list_pages.clear()
+
+    rates = await api.pool_rates(CHAIN, [p["address"] for p in pools[:20]])
+
+    assert sorted(server.list_pages) == [1, 2]
+    assert server.details == []
+    assert len(rates) == 20
+
+
+async def test_an_unlisted_chain_asks_per_pool_for_a_few(served) -> None:
+    """Three pools cannot be worth a request to find out how many pages
+    the chain has, whatever the answer would have been."""
+    server, api, pools = served(600)
+
+    await api.pool_rates(CHAIN, [p["address"] for p in pools[:3]])
+
+    assert server.list_pages == []
+    assert len(server.details) == 3
+
+
+async def test_an_unlisted_chain_buys_the_page_count_when_it_matters(served) -> None:
+    """Three hundred pools on a chain never listed here. Asking per pool
+    is three hundred requests and paging is twelve, but nothing knows that
+    until a page is fetched -- so one is, and it pays for itself twice
+    over by carrying fifty of the rates."""
+    server, api, pools = served(600)
+
+    rates = await api.pool_rates(CHAIN, [p["address"] for p in pools[:300]])
+
+    assert sorted(server.list_pages) == list(range(1, 13))
+    assert server.details == []
+    assert len(rates) == 300
+
+
+async def test_the_probe_page_is_not_fetched_twice(served) -> None:
+    """The page bought to learn the count is the first page of the listing
+    that follows, not an extra one."""
+    server, api, pools = served(600)
+
+    await api.pool_rates(CHAIN, [p["address"] for p in pools[:300]])
+
+    assert server.list_pages.count(1) == 1
+
+
+async def test_buying_the_count_can_settle_it_the_other_way(served) -> None:
+    """Fifty pools on a chain of two hundred pages: the probe says paging
+    would cost far more than asking, so the rest are asked for -- and the
+    fifty rates the probe brought back are kept, not thrown away."""
+    server, api, pools = served(10_000)
+    wanted = [p["address"] for p in pools[:25]] + [p["address"] for p in pools[-25:]]
+
+    rates = await api.pool_rates(CHAIN, wanted)
+
+    assert server.list_pages == [1], "one page, to learn the count"
+    # The first twenty-five were on that page; only the others cost a
+    # request of their own.
+    assert len(server.details) == 25
+    assert len(rates) == 50
+
+
+async def test_a_pool_nothing_answers_for_is_left_out(served) -> None:
+    """It costs that row its APR and no more."""
+    _server, api, pools = served(10)
+
+    rates = await api.pool_rates(
+        CHAIN, [pools[0]["address"], "0x" + "ff" * 20]
+    )
+
+    assert list(rates) == [pools[0]["address"].lower()]
+
+
+async def test_rates_are_not_asked_for_twice(served) -> None:
+    server, api, pools = served(10)
+    await api.pool_rates(CHAIN, [pools[0]["address"]])
+    await api.pool_rates(CHAIN, [pools[0]["address"]])
+
+    assert len(server.details) == 1

@@ -422,6 +422,10 @@ class ActionTab:
         #: approval -- has no honest number to show.
         self.fee = ft.Text("", size=SMALL, color=ft.Colors.ON_SURFACE_VARIANT)
         self.fee_panel = self._band(self.fee, visible=False)
+        #: The approval this panel is waiting on, as `_sync_approval` last
+        #: found it. Held rather than asked for again: it is one allowance
+        #: read, and `show_gas` runs in the same refresh.
+        self._pending_approval: tuple[str, str, int] | None = None
         #: Chain fees change per block, not per keystroke. Read once and
         #: kept for a block's worth of typing.
         self._fees: tuple[int, int, int, bool] | None = None
@@ -614,26 +618,48 @@ class ActionTab:
         """
         return None
 
+    def prelude(self, contract: PoolContract) -> tuple[str, tuple[str, str]] | None:
+        """The transaction that has to go first, and what to call it.
+
+        An approval, for every panel that needs one. It matters because
+        the main action *cannot be simulated* until this has landed --
+        `add_liquidity` reverts under `eth_estimateGas` without an
+        allowance, exactly as it would on chain -- so without this the
+        panel showed no fee at all during the part of the flow where
+        somebody is deciding whether to go ahead.
+        """
+        if self._pending_approval is None:
+            return None
+        token, spender, amount = self._pending_approval
+        return "to approve first", contract.build_approve(token, spender, amount)
+
     async def show_gas(self, contract: PoolContract | None) -> None:
         """Price the transaction this panel would send, or say nothing.
 
-        Nothing is the common case and not a failure: no wallet, nothing
-        typed, a quote the pool refused, or -- the one worth knowing -- a
-        deposit whose token has no allowance yet, which reverts under
-        simulation exactly as it would on chain. The fee appears once the
-        approval does.
+        Two attempts, because a flow with a preamble cannot simulate its
+        main action until the preamble has run: the action itself, and
+        then whatever `prelude` says must go first. The line names which
+        one it priced, since "the fee for approving" and "the fee for
+        depositing" are different answers to the same question.
+
+        Nothing is still an ordinary outcome -- no wallet, nothing typed,
+        a quote the pool refused -- and not a failure worth colouring.
         """
         self.fee_panel.visible = False
         self.fee.value = ""
         if contract is None or not contract.can_send:
             return
-        try:
+        gas, note = 0, ""
+        with contextlib.suppress(WalletError):
             built = self.preview(contract)
-        except WalletError:
-            return
-        if built is None:
-            return
-        gas = await contract.estimate_gas(built)
+            if built is not None:
+                gas = await contract.estimate_gas(built)
+        if gas <= 0:
+            with contextlib.suppress(WalletError):
+                first = self.prelude(contract)
+                if first is not None:
+                    note, built = first
+                    gas = await contract.estimate_gas(built)
         if gas <= 0:
             return
         fees = await self._chain_fees(contract)
@@ -646,7 +672,11 @@ class ActionTab:
         native = native_for(self.pool.chain_id)
         amount = fee_in_native(gas, per_gas)
         usd = await _native_usd(self.pool.chain, self.pool.chain_id)
-        self.fee.value = "Network fee " + format_fee(amount, native.symbol, amount * usd)
+        self.fee.value = (
+            "Network fee "
+            + format_fee(amount, native.symbol, amount * usd)
+            + (f"  {note}" if note else "")
+        )
         self.fee_panel.visible = True
 
     async def _chain_fees(
@@ -997,6 +1027,8 @@ class ActionTab:
             pending = await self.approval_needed(contract)
         except WalletError:
             pending = None
+        # Kept so `show_gas` can price it without a second allowance read.
+        self._pending_approval = pending
         self.approve_button.visible = pending is not None
         self.approve_button.disabled = pending is None
         self.submit_button.content = (
@@ -1724,6 +1756,25 @@ class WithdrawTab(ActionTab):
 
     def fee_key(self) -> object:
         return self.route.value
+
+    def prelude(self, contract: PoolContract) -> tuple[str, tuple[str, str]] | None:
+        """The unstake a gauge-drawing withdrawal does first.
+
+        Not an approval: burning LP at the pool needs none. What it needs
+        is the LP in the wallet, and while it is in the gauge the
+        withdrawal reverts under simulation -- which is how an account
+        with 1.5m LP staked came to show no fee at all for withdrawing
+        some of it.
+
+        The zap route keeps the approval instead, since there the LP is
+        moved by a third party. Both cannot be pending at once: the zap
+        route is single-coin and this one only fires when the wallet is
+        short.
+        """
+        if self.drawing_on_gauge and self._lp_amount() > self.lp_balance:
+            short = self._lp_amount() - self.lp_balance
+            return "to unstake first", contract.build_unstake(short)
+        return super().prelude(contract)
 
     def preview(self, contract: PoolContract) -> tuple[str, str] | None:
         """The withdrawal as it would be sent, in whichever mode is live.

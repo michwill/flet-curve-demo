@@ -2208,3 +2208,100 @@ async def test_a_chain_that_reports_no_fees_shows_no_line() -> None:
     await tab.refresh()
 
     assert tab.fee_panel.visible is False
+
+
+async def test_an_action_that_cannot_be_simulated_prices_its_approval(
+    monkeypatch,
+) -> None:
+    """A deposit reverts under simulation until its token is approved --
+    which is exactly the part of the flow where somebody is deciding
+    whether to go ahead, and where the panel used to say nothing."""
+    from ui import actions as actions_module
+
+    async def priced(_chain, _chain_id):
+        return 2_000.0
+
+    monkeypatch.setattr(actions_module, "_native_usd", priced)
+
+    class Unapproved(PricedProvider):
+        """The pool quotes; the deposit itself reverts for want of an
+        allowance, and `allowance` reads zero."""
+
+        async def request(self, method: str, params=None):
+            if method == "eth_estimateGas":
+                data = (params or [{}])[0].get("data", "")
+                if not data.startswith("0x" + abi.selector("approve(address,uint256)")):
+                    raise RpcError(-32000, "execution reverted")
+            return await super().request(method, params)
+
+    tab = deposit_tab(Unapproved())
+    tab.fields[0].value = "1000"
+
+    await tab.refresh()
+
+    assert tab.fee_panel.visible is True
+    assert tab.fee.value.endswith("to approve first")
+    assert "ETH" in tab.fee.value
+
+
+async def test_the_main_action_wins_where_both_can_be_priced() -> None:
+    """The approval is the fallback, not the answer. Once it has landed
+    the line goes back to pricing what the button actually does."""
+    tab = swap_tab(PricedProvider())
+    tab.amount.value = "1000"
+
+    await tab.refresh()
+
+    assert tab.fee_panel.visible is True
+    assert "first" not in tab.fee.value
+
+
+async def test_a_withdrawal_from_the_gauge_prices_the_unstake(monkeypatch) -> None:
+    """Not an approval -- burning LP at the pool needs none. What it needs
+    is the LP in the wallet, and while it is staked the withdrawal reverts
+    under simulation."""
+    from ui import actions as actions_module
+
+    async def priced(_chain, _chain_id):
+        return 2_000.0
+
+    monkeypatch.setattr(actions_module, "_native_usd", priced)
+
+    class Staked(ReservedProvider):
+        """Nothing in the wallet, a million in the gauge, and a withdrawal
+        that reverts until some of it comes out."""
+
+        GAUGE = "0x" + "cc" * 20
+
+        async def request(self, method: str, params=None):
+            if method == "eth_getBlockByNumber":
+                return {"baseFeePerGas": hex(30 * 10**9)}
+            if method in ("eth_gasPrice", "eth_maxPriorityFeePerGas"):
+                return hex(30 * 10**9 if method == "eth_gasPrice" else 0)
+            if method == "eth_estimateGas":
+                data = (params or [{}])[0].get("data", "")
+                unstake = "0x" + abi.selector("withdraw(uint256)")
+                if not data.startswith(unstake):
+                    raise RpcError(-32000, "execution reverted")
+                return hex(90_000)
+            if method == "eth_call":
+                call = (params or [{}])[0]
+                # `balanceOf` by *target*: the wallet holds no LP and the
+                # gauge holds a million. One selector, two questions --
+                # answering it by selector alone makes a staked position
+                # indistinguishable from an empty one.
+                if call.get("data", "").startswith("0x70a08231"):
+                    staked = call.get("to", "").lower() == self.GAUGE.lower()
+                    return word(10**24 if staked else 0)
+            return await super().request(method, params)
+
+    provider = Staked(RESERVES)
+    tab = make_tab(provider)
+    tab.pool.gauge = Staked.GAUGE
+    tab.use_staked.value = True
+    tab.mode.value = "one"
+    tab.amount.value = "100"
+
+    await tab.refresh()
+
+    assert tab.fee.value.endswith("to unstake first"), tab.fee.value

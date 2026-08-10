@@ -1535,12 +1535,13 @@ async def test_a_probe_that_fails_leaves_the_estimate_standing() -> None:
 
 
 async def test_only_the_panels_with_a_price_carry_the_line() -> None:
-    """Staking moves LP into a gauge at no rate at all, so a price impact
-    there would be a number about nothing."""
+    """Staking moves LP into a gauge at no rate at all, and claiming takes
+    what is already owed, so a price impact on either would be a number
+    about nothing. The other three each trade against the curve."""
     for tab in tabs():
         tab.mount()
         assert (tab.impact_panel in tab.control.controls) == tab.shows_impact
-        assert tab.shows_impact == (tab.title in ("Deposit", "Swap"))
+        assert tab.shows_impact == (tab.title in ("Deposit", "Swap", "Withdraw"))
 
 
 def test_a_deposit_of_the_scarce_coin_is_a_bonus_not_an_error() -> None:
@@ -1576,6 +1577,127 @@ def test_the_probe_keeps_the_shape_of_the_deposit() -> None:
     # rather than being quietly dropped from the probe.
     assert impact_probe([amount, 1]) is None
     assert impact_probe([0, 0]) is None
+
+
+class WithdrawingProvider(FakeProvider):
+    """A pool whose one-coin withdrawal pays worse the more is asked of it.
+
+    `out = lp * rate * (1 - lp / depth)`, which is not Curve's invariant --
+    it does not have to be. What the panel measures is the gap between a
+    quote and a twentieth of the same quote scaled back up, so any curve
+    that bends the right way exercises it, and the arithmetic below is
+    reproducible by hand.
+    """
+
+    DEPTH = 10**24                      # LP wei at which the pool is drained
+    RATE = 10**6 / 10**18               # LP wei -> 6-decimal coin units
+
+    def __init__(self, depth: int | None = None) -> None:
+        # A million LP in the wallet, so the panel quotes rather than
+        # reporting an empty balance -- `balanceOf`, which is what both
+        # `lp_balance` and `staked_balance` ask.
+        super().__init__({"0x70a08231": word(10**24)})
+        self.depth = depth or self.DEPTH
+        #: Refuse the withdrawal quote alone, the way a pool does when the
+        #: amount is impossible -- balances and fees still answer, so the
+        #: panel reaches the branch under test rather than the one about
+        #: an empty wallet.
+        self.refuse_quote = False
+
+    async def request(self, method: str, params=None):
+        if method == "eth_call":
+            data = (params or [{}])[0].get("data", "")
+            if data.startswith(
+                "0x" + abi.selector("calc_withdraw_one_coin(uint256,int128)")
+            ):
+                if self.refuse_quote:
+                    raise RpcError(-32000, "execution reverted")
+                lp = words_of(data)[0]
+                out = lp * self.RATE * (1 - lp / self.depth)
+                return word(int(out))
+        return await super().request(method, params)
+
+
+def withdraw_impact(lp: int, depth: int = WithdrawingProvider.DEPTH) -> float:
+    """What `WithdrawingProvider` should make the panel print."""
+    from ui.actions import IMPACT_PROBE_DIVISOR
+
+    probe = lp / IMPACT_PROBE_DIVISOR
+    full = 1 - lp / depth
+    return ((1 - probe / depth) / full - 1) * 100
+
+
+async def test_taking_one_coin_out_is_priced_like_a_trade() -> None:
+    """Because it is one. A balanced withdrawal takes a slice of every
+    reserve; asking for it all in one coin walks the pool along its curve
+    exactly as a swap does, and costs the same way."""
+    provider = WithdrawingProvider()
+    tab = make_tab(provider)
+    tab.mode.value = "one"
+    tab.coin_picker.value = "0"
+    tab.amount.value = "50000"          # 5% of the depth above
+
+    await tab.refresh()
+
+    assert tab.impact_panel.visible is True
+    assert impact_percent(tab) == pytest.approx(
+        withdraw_impact(50_000 * 10**18), rel=1e-3
+    )
+
+
+async def test_the_withdrawal_probe_asks_about_the_same_coin() -> None:
+    """A twentieth of *this* withdrawal, into the coin that is selected --
+    not a fixed size and not the first coin in the list."""
+    from ui.actions import IMPACT_PROBE_DIVISOR
+
+    provider = WithdrawingProvider()
+    tab = make_tab(provider)
+    tab.mode.value = "one"
+    tab.coin_picker.value = "1"
+    tab.amount.value = "50000"
+    asked: list[list[int]] = []
+    original = provider.request
+
+    async def record(method: str, params=None):
+        if method == "eth_call" and params[0]["data"].startswith(
+            "0x" + abi.selector("calc_withdraw_one_coin(uint256,int128)")
+        ):
+            asked.append(words_of(params[0]["data"]))
+        return await original(method, params)
+
+    provider.request = record          # type: ignore[method-assign]
+    await tab.refresh()
+
+    lp = 50_000 * 10**18
+    assert [words[0] for words in asked] == [lp, lp // IMPACT_PROBE_DIVISOR]
+    assert [words[1] for words in asked] == [1, 1], "the selected coin, both times"
+
+
+async def test_a_balanced_withdrawal_is_measured_against_nothing() -> None:
+    """It takes the same share of every reserve, so there is no size at
+    which it costs more per LP token. "under 0.01%" would imply there is."""
+    tab = make_tab(WithdrawingProvider())
+    tab.mode.value = "balanced"
+    tab.amount.value = "50000"
+
+    await tab.refresh()
+
+    assert tab.impact_panel.visible is False
+
+
+async def test_a_withdrawal_the_pool_refuses_reports_that_and_not_an_impact() -> None:
+    """The quote failed, so there is no number to compare a probe against
+    -- and two red lines for one refusal is one too many."""
+    provider = WithdrawingProvider()
+    provider.refuse_quote = True
+    tab = make_tab(provider)
+    tab.mode.value = "one"
+    tab.amount.value = "50000"
+
+    await tab.refresh()
+
+    assert tab.impact_panel.visible is False
+    assert "reverted" in tab.estimate.value
 
 
 async def test_a_swap_whose_output_is_too_coarse_to_divide_says_nothing() -> None:

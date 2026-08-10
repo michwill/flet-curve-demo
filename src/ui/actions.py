@@ -1332,6 +1332,10 @@ class WithdrawTab(ActionTab):
 
     title = "Withdraw"
     submit_label = "Withdraw"
+    #: One coin out of a pool is a trade against it in all but name -- the
+    #: same reasoning that gave the deposit side its measurement, run
+    #: backwards. Take enough of one reserve and the pool charges for it.
+    shows_impact = True
     # As on the deposit side: a property, because a withdrawal that had to
     # unstake first did two things and should say so.
 
@@ -1528,6 +1532,21 @@ class WithdrawTab(ActionTab):
     def fee_key(self) -> object:
         return self.route.value
 
+    async def _quote(self, contract: PoolContract, amounts: list[int]) -> int:
+        """What `[lp]` comes back as, in the coin that is selected.
+
+        Only ever asked in one-coin mode -- see `refresh`, which does not
+        measure a balanced withdrawal at all. A one-element list because
+        that is the shape `measure_impact` scales, and the coin comes from
+        the dropdown, which does not move between a quote and its probe.
+        """
+        index = self._coin_index()
+        return await (
+            contract.zap_calc_withdraw_one_coin(amounts[0], index)
+            if self.underlying
+            else contract.calc_withdraw_one_coin(amounts[0], index)
+        )
+
     async def approval_needed(self, contract: PoolContract) -> tuple[str, str, int] | None:
         """LP tokens the zap has to be allowed to take.
 
@@ -1579,16 +1598,18 @@ class WithdrawTab(ActionTab):
 
         self.show_estimate("")
         self._quote_ok = True
+        # None unless a one-coin withdrawal says otherwise. A balanced one
+        # takes the same share of every reserve, which is what the pool
+        # holds rather than a point on its curve -- there is no size at
+        # which it costs more per LP token, so there is nothing to measure
+        # and a line reading "under 0.01%" would only imply there could be.
+        impact = None
         if contract is not None and amount > 0 and self.mode.value == "one":
             index = self._coin_index()
             coins = self.coins
             coin = coins[index] if index < len(coins) else coins[0]
             try:
-                out = await (
-                    contract.zap_calc_withdraw_one_coin(amount, index)
-                    if self.underlying
-                    else contract.calc_withdraw_one_coin(amount, index)
-                )
+                out = await self._quote(contract, [amount])
                 self.show_estimate(
                     f"-> {token_amount(units_to_float(out, coin.decimals))} {coin.symbol}"
                     f"  (min {token_amount(units_to_float(self.with_slippage(out), coin.decimals))})"
@@ -1596,6 +1617,9 @@ class WithdrawTab(ActionTab):
             except WalletError as exc:
                 self.show_estimate(str(exc), problem=True)
                 self._quote_ok = False
+            else:
+                impact = await self.measure_impact(contract, [amount], out)
+        self.show_impact(impact)
 
         # Said before it is sent rather than after it reverts. The number
         # that matters is `spendable`, not the wallet balance: with the box

@@ -107,17 +107,17 @@ class HoldingRow(ft.Container):
         """The rate this account gets, not the pool's headline.
 
         Boosted by its veCRV share and scaled by how much of the position
-        is actually staked -- see `curve.earnings`. The boost is worth
-        showing beside it: two accounts in the same pool can be 2.5x
-        apart, and without it the number looks wrong rather than personal.
+        is actually staked -- see `curve.earnings`. The boost itself used
+        to be printed alongside, and is not any more: it is an input to
+        this number rather than a second number, and a column that answers
+        "what am I earning" with two figures makes the reader work out
+        which one is the answer. It is still what `curve.earnings`
+        computes the rate from, so nothing about the rate has changed.
         """
         if self.earning is None:
             return "\u2013"
         apr = self.earning.user_apr
-        if apr <= 0:
-            return "\u2013"
-        boost = self.earning.boost
-        return f"{percent(apr)}" + (f"  {boost:.2f}x" if boost > 1.0 else "")
+        return percent(apr) if apr > 0 else "\u2013"
 
     def _rewards_text(self) -> str:
         """What is waiting in the gauge, in dollars.

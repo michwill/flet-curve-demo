@@ -2172,6 +2172,22 @@ async def _mined(_provider, _tx, **_kw) -> dict:
     return {"status": "0x1"}
 
 
+def test_the_apr_column_is_a_rate_and_not_also_a_multiplier() -> None:
+    """The boost is an input to this number, not a second number. A column
+    answering "what am I earning" with two figures makes the reader work
+    out which one is the answer."""
+    view = portfolio_view()
+    view.show([make_holding()])
+    view.show_earnings(
+        [earning(staked=1000, working=1000, crv_apr=10.0, rewards=(crv_reward(1.0),))],
+        chain_id=1,
+    )
+
+    shown = view.rows.controls[0]._apr.value
+    assert shown == "25.00%"          # 10% at the 2.5x ceiling
+    assert "x" not in shown
+
+
 def test_what_is_owed_is_set_like_the_total_it_belongs_to() -> None:
     """Words in the body colour, figure bold -- the same pairing as
     "Total value:", because it is the same kind of statement about the

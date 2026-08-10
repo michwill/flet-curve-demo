@@ -1355,7 +1355,7 @@ class CurveApp:
         except WalletError:
             return
         self._earnings = filled
-        self.portfolio_view.show_earnings(filled)
+        self.portfolio_view.show_earnings(filled, chain_id)
 
     async def claim_portfolio(self, crv: bool) -> None:
         """Claim one half of what the portfolio is owed.

@@ -26,7 +26,7 @@ from collections.abc import Awaitable, Callable
 
 import flet as ft
 
-from curve.earnings import Earning
+from curve.earnings import ClaimPlan, Earning, claim_plan
 from curve.format import compact_usd, percent, short_address, token_amount
 from curve.models import Coin
 from curve.portfolio import LP_UNIT, Holding
@@ -269,6 +269,8 @@ class PortfolioView(ft.Column):
         self._holdings: list[Holding] = []
         #: Keyed by pool address, lowercased. Arrives after the scan.
         self._earnings: dict[str, Earning] = {}
+        #: What the two buttons would send. Empty until the earnings pass.
+        self._plan = ClaimPlan()
         self._on_claim = on_claim
 
         self.total = ft.Text("", size=METRIC, weight=ft.FontWeight.BOLD)
@@ -390,22 +392,29 @@ class PortfolioView(ft.Column):
         if self._on_claim is not None:
             self._page.run_task(self._on_claim, crv)
 
-    def show_earnings(self, earnings: list[Earning]) -> None:
+    def show_earnings(self, earnings: list[Earning], chain_id: int = 0) -> None:
         """Fill in the APR and rewards columns, and offer the claims.
 
         A separate pass rather than part of `show`, because it is a third
         read that lands after the rows are already on screen -- and the
         rows must not wait for it. Until it arrives both columns show an
         en dash, which says "not read" where a zero would say "nothing".
+
+        What each button offers comes from the *plan* rather than from the
+        rewards, because those are two different questions. A gauge can
+        owe CRV on a chain with no Minter deployed on it, and there the
+        answer to "is any CRV owed" is yes while the answer to "can this
+        button send anything" is no.
         """
         self._earnings = {e.pool.lower(): e for e in earnings}
+        self._plan = claim_plan(chain_id, earnings)
         owed = sum(e.claimable_value for e in earnings)
-        crv = any(e.has_crv for e in earnings)
-        extras = any(e.has_extras for e in earnings)
+        crv = bool(self._plan.crv)
+        extras = bool(self._plan.extras)
 
         self.claim_crv.visible = crv
         self.claim_rewards.visible = extras
-        self.claim_crv.content = self._crv_label(earnings)
+        self.claim_crv.content = self._crv_label(earnings, len(self._plan.crv))
         self.claim_rewards.content = self._rewards_label(earnings)
         self.accrued.value = (
             f"Unclaimed rewards: {compact_usd(owed)}" if owed > 0
@@ -419,15 +428,22 @@ class PortfolioView(ft.Column):
         safe_update(self)
 
     @staticmethod
-    def _crv_label(earnings: list[Earning]) -> str:
-        """"Claim 1.23 CRV" -- the amount, on the button that takes it.
+    def _crv_label(earnings: list[Earning], transactions: int = 1) -> str:
+        """"Claim 1.23 CRV", and "(4 txs)" when it is not one transaction.
 
         A claim is not a choice between amounts, so the number is not
         needed to decide anything; it is there because a button that
         commits an address to a transaction should say what the
         transaction is for, and "some CRV" is not that.
+
+        The count is there for a harder reason. `mint_many` takes eight
+        gauges on Ethereum and thirty-two elsewhere, so a large portfolio
+        cannot be claimed in one send -- and a wallet that asks to sign a
+        second time, unannounced, looks like a wallet that has been asked
+        to sign something twice.
         """
-        return f"Claim {token_amount(sum(e.crv_owed for e in earnings))} CRV"
+        owed = token_amount(sum(e.crv_owed for e in earnings))
+        return f"Claim {owed} CRV" + (f" ({transactions} txs)" if transactions > 1 else "")
 
     @staticmethod
     def _rewards_label(earnings: list[Earning]) -> str:

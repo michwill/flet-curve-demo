@@ -1992,7 +1992,7 @@ def test_the_claim_buttons_say_what_they_would_claim() -> None:
     a transaction, and it should say what that transaction is for."""
     view = portfolio_view()
     view.show([make_holding()])
-    view.show_earnings([earning(rewards=(crv_reward(1.23), arb_reward(4.0)))])
+    view.show_earnings([earning(rewards=(crv_reward(1.23), arb_reward(4.0)))], chain_id=1)
 
     assert view.claim_crv.content == "Claim 1.23 CRV"
     assert view.claim_rewards.content == "Claim rewards ($6.00)"
@@ -2005,10 +2005,51 @@ def test_the_crv_on_the_button_is_the_whole_portfolio_s() -> None:
         [
             earning(pool="0x" + "11" * 20, rewards=(crv_reward(1.5),)),
             earning(pool="0x" + "33" * 20, rewards=(crv_reward(2.25),)),
-        ]
+        ],
+        chain_id=1,
     )
 
     assert view.claim_crv.content == "Claim 3.75 CRV"
+
+
+def test_a_portfolio_too_big_for_one_mint_says_how_many_sends() -> None:
+    """`mint_many(address[8])` on Ethereum, so ten gauges is two sends --
+    and an unannounced second wallet prompt looks like being asked to sign
+    the same thing twice."""
+    view = portfolio_view()
+    view.show([make_holding()])
+    view.show_earnings(
+        [earning(pool=f"0x{i:040x}", gauge=f"0x{i + 1:040x}", rewards=(crv_reward(1.0),))
+         for i in range(10)],
+        chain_id=1,
+    )
+
+    assert view.claim_crv.content == "Claim 10 CRV (2 txs)"
+
+
+def test_the_same_ten_gauges_are_one_send_where_the_array_is_bigger() -> None:
+    """Thirty-two slots on the sidechain factories, so no count at all."""
+    view = portfolio_view()
+    view.show([make_holding()])
+    view.show_earnings(
+        [earning(pool=f"0x{i:040x}", gauge=f"0x{i + 1:040x}", rewards=(crv_reward(1.0),))
+         for i in range(10)],
+        chain_id=42161,
+    )
+
+    assert view.claim_crv.content == "Claim 10 CRV"
+
+
+def test_crv_owed_where_there_is_no_minter_offers_no_button() -> None:
+    """X Layer has gauges and no Minter. "Something is owed" and "this
+    button can send something" are different questions, and the button
+    answers the second one."""
+    view = portfolio_view()
+    view.show([make_holding()])
+    view.show_earnings([earning(rewards=(crv_reward(5.0), arb_reward(1.0)))], chain_id=196)
+
+    assert view.claim_crv.visible is False
+    assert view.claim_rewards.visible is True
 
 
 def test_an_unpriced_reward_drops_the_value_rather_than_showing_zero() -> None:
@@ -2016,7 +2057,7 @@ def test_an_unpriced_reward_drops_the_value_rather_than_showing_zero() -> None:
     tokens are there whether or not the API published a price for them."""
     view = portfolio_view()
     view.show([make_holding()])
-    view.show_earnings([earning(rewards=(arb_reward(4.0, price=0.0),))])
+    view.show_earnings([earning(rewards=(arb_reward(4.0, price=0.0),))], chain_id=1)
 
     assert view.claim_rewards.content == "Claim rewards"
     assert view.claim_rewards.visible is True

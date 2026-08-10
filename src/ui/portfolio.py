@@ -293,7 +293,21 @@ class PortfolioView(ft.Column):
             "Claim rewards", page=page, on_click=lambda _e: self._claim(False),
             visible=False,
         )
-        self.accrued = ft.Text("", size=SMALL, color=ft.Colors.ON_SURFACE_VARIANT)
+        # Set like the total above it, which is the same kind of statement
+        # about the same portfolio: the words in the body colour, the
+        # figure bold. Two controls rather than one string, because one
+        # string cannot be half bold -- and the weight is the whole point,
+        # since it is what says which half you are meant to read.
+        self.accrued_value = ft.Text("", size=BODY, weight=ft.FontWeight.BOLD)
+        self.accrued_label = ft.Text(
+            "", size=BODY, color=ft.Colors.ON_SURFACE_VARIANT
+        )
+        self.accrued = ft.Row(
+            [self.accrued_label, self.accrued_value],
+            spacing=6,
+            tight=True,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        )
         #: The same panel the pool's Deposit and Withdraw tabs use -- see
         #: `ui.status`. A claim waits on the same wallet and the same
         #: block, and saying so in loose grey text made the portfolio look
@@ -477,11 +491,12 @@ class PortfolioView(ft.Column):
         self.claim_rewards.visible = extras
         self.claim_crv.content = self._crv_label(earnings, len(self._plan.crv))
         self.claim_rewards.content = self._rewards_label(earnings)
-        self.accrued.value = (
-            f"Unclaimed rewards: {compact_usd(owed)}" if owed > 0
-            else "Unclaimed rewards" if crv or extras
-            else ""
+        # No figure where nothing was priced: an unpriced reward is worth
+        # something, and "$0" beside a claim button says it is not.
+        self.accrued_label.value = "Unclaimed rewards:" if owed > 0 else (
+            "Unclaimed rewards" if crv or extras else ""
         )
+        self.accrued_value.value = compact_usd(owed) if owed > 0 else ""
         self._claim_bar.visible = crv or extras
         for row in self.rows.controls:
             if isinstance(row, HoldingRow):

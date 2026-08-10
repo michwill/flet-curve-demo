@@ -2157,17 +2157,45 @@ async def test_a_confirmed_claim_updates_the_numbers_it_was_made_against(
     await app.reread_earnings(app.wallet.address, chain)
 
     assert app.portfolio_view.claim_rewards.content == "Claim rewards ($6.00)"
-    assert "Unclaimed rewards: $6.00" in app.portfolio_view.accrued.value
+    assert app.portfolio_view.accrued_label.value == "Unclaimed rewards:"
+    assert app.portfolio_view.accrued_value.value == "$6.00"
 
     await app.claim_portfolio(False)
 
     assert len(chain.sent) == 1
     assert app.portfolio_view.claim_rewards.visible is False
-    assert app.portfolio_view.accrued.value == ""
+    assert app.portfolio_view.accrued_label.value == ""
+    assert app.portfolio_view.accrued_value.value == ""
 
 
 async def _mined(_provider, _tx, **_kw) -> dict:
     return {"status": "0x1"}
+
+
+def test_what_is_owed_is_set_like_the_total_it_belongs_to() -> None:
+    """Words in the body colour, figure bold -- the same pairing as
+    "Total value:", because it is the same kind of statement about the
+    same portfolio."""
+    import flet as ft
+
+    view = portfolio_view()
+    view.show([make_holding()])
+    view.show_earnings([earning(rewards=(arb_reward(3.0, price=2.0),))], chain_id=1)
+
+    assert view.accrued_label.value == "Unclaimed rewards:"
+    assert view.accrued_label.weight != ft.FontWeight.BOLD
+    assert view.accrued_value.value == "$6.00"
+    assert view.accrued_value.weight == ft.FontWeight.BOLD
+
+
+def test_nothing_priced_leaves_the_figure_off_rather_than_showing_zero() -> None:
+    view = portfolio_view()
+    view.show([make_holding()])
+    view.show_earnings([earning(rewards=(arb_reward(3.0, price=0.0),))], chain_id=1)
+
+    assert view.accrued_label.value == "Unclaimed rewards"
+    assert view.accrued_value.value == ""
+    assert view._claim_bar.visible is True
 
 
 def test_a_new_wallet_does_not_inherit_the_last_one_s_claim() -> None:

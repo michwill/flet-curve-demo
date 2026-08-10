@@ -357,6 +357,17 @@ def test_the_encoding_round_trips() -> None:
     body = data[10:]
     assert int(body[0:64], 16) == 32
     assert int(body[64:128], 16) == 2
+
+
+def test_failures_can_be_refused() -> None:
+    """The flag a write depends on: false means a bad call takes the
+    transaction with it, rather than being mined as a silent no-op."""
+    calls = [("0x" + "11" * 20, "0xf446c1d0"), ("0x" + "22" * 20, "0xb1373929")]
+    allowed = encode_aggregate3(calls)
+    refused = encode_aggregate3(calls, allow_failure=False)
+
+    assert len(allowed) == len(refused)
+    assert allowed.count(word(1)) - refused.count(word(1)) == len(calls)
     assert decode_uints(aggregate3_response([1, None]), 2) == [1, None]
 
 

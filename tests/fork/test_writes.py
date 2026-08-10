@@ -20,8 +20,9 @@ from __future__ import annotations
 
 import pytest
 
-from curve import abi
+from curve import abi, earnings
 from curve.models import Pool
+from curve.multicall import MULTICALL3
 from curve.pool import PoolContract
 from ui.actions import ClaimTab, DepositTab, StakeTab, SwapTab, WithdrawTab
 
@@ -139,6 +140,55 @@ async def test_claiming_moves_both_kinds_of_reward(fork) -> None:
     rlusd_gained = fork.erc20_balance(RLUSD, STAKER) - rlusd_before
     assert crv_gained >= owed_crv, f"CRV: got {crv_gained}, owed {owed_crv}"
     assert rlusd_gained >= owed_extra.get(RLUSD.lower(), 0) > 0
+
+
+async def test_the_portfolio_claims_incentives_through_multicall(fork) -> None:
+    """One transaction to Multicall3, and the tokens land with the owner.
+
+    This is the claim the portfolio page sends, and it is here because the
+    app spent a while believing it was impossible. The transaction goes to
+    Multicall3, so **Multicall3 is `msg.sender` at the gauge** -- and the
+    tokens have to reach the staker anyway. They do, because
+    `claim_rewards(address)` pays the address in its argument; only
+    redirecting the payment elsewhere is reserved to the caller. See
+    `curve.earnings.ClaimPlan` for how the opposite came to be written
+    down as fact.
+    """
+    fork.give_eth(STAKER)
+    fork.advance()
+    fork.warm(GAUGE, abi.encode_claim_rewards_for(STAKER))
+
+    before = fork.erc20_balance(RLUSD, STAKER)
+    plan = earnings.ClaimPlan(extras=(GAUGE,))
+    sent = await earnings.send_claims(fork.provider(), STAKER, plan, crv=False)
+
+    assert len(sent) == 1, "every gauge goes in one transaction"
+    receipt = await confirm(fork, sent[0])
+    assert receipt["to"].lower() == MULTICALL3.lower()
+    gained = fork.erc20_balance(RLUSD, STAKER) - before
+    assert gained > 0, (
+        "Multicall3 claimed and the staker got nothing -- either the gauge "
+        "paid its caller, or the batch swallowed a failed call"
+    )
+
+
+async def test_a_claim_that_cannot_pay_takes_the_batch_down(fork) -> None:
+    """`allowFailure=false`, checked against a contract that is not a gauge.
+
+    With failures allowed this mines successfully and the page says
+    "Claimed" over a transaction that moved nothing. That is not a
+    hypothetical failure mode: it is the one that produced the wrong
+    conclusion this feature was built on.
+    """
+    fork.give_eth(STAKER)
+    plan = earnings.ClaimPlan(extras=(GAUGE, RLUSD))  # a token, not a gauge
+    sent = await earnings.send_claims(fork.provider(), STAKER, plan, crv=False)
+
+    receipt = fork.wait(sent[0], require_success=False)
+    assert int(receipt["status"], 16) == 0, (
+        "a call that cannot succeed was mined as a success -- allowFailure "
+        "is back on, and a refused claim now looks like a claimed one"
+    )
 
 
 async def test_claiming_takes_all_but_the_next_block_s_worth(fork) -> None:

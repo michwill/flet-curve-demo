@@ -174,7 +174,7 @@ class Fork:
     def rpc(self, method: str, params: list | None = None):
         return _rpc(self.url, method, params)
 
-    def wait(self, tx: str, timeout: float = 30.0) -> dict:
+    def wait(self, tx: str, timeout: float = 30.0, *, require_success: bool = True) -> dict:
         """The receipt, once there is one, asserting it did not revert.
 
         Polled rather than read once. `eth_sendTransaction` returns as soon
@@ -182,12 +182,17 @@ class Fork:
         it in a block a moment later -- so a single read is a race, and it
         is the race that failed four of these the first time they ran. The
         app has the same rule for the same reason; see `curve.confirm`.
+
+        `require_success=False` for the tests whose point is that something
+        *did* revert -- a claim batch that refuses to hide a failed call.
         """
         deadline = time.monotonic() + timeout
         while True:
             receipt = self.rpc("eth_getTransactionReceipt", [tx])
             if receipt is not None:
-                assert int(receipt["status"], 16) == 1, f"{tx} reverted"
+                assert not require_success or int(receipt["status"], 16) == 1, (
+                    f"{tx} reverted"
+                )
                 return receipt
             assert time.monotonic() < deadline, f"{tx} not mined within {timeout}s"
             time.sleep(0.2)
@@ -246,7 +251,20 @@ class Fork:
         return self.rpc("evm_snapshot")
 
     def revert(self, snapshot: str) -> None:
-        self.rpc("evm_revert", [snapshot])
+        """Roll back, and insist that it happened.
+
+        **A snapshot is spent by the revert that uses it**, along with
+        every snapshot taken after it. Reverting to the same id twice is
+        not an error: anvil answers `false` and leaves the chain exactly
+        where it was. A comparison written as "revert, act, revert, act"
+        therefore runs its second act against the first one's leftovers,
+        which is how a claim that works came to be recorded as a claim
+        that does not -- the second attempt had nothing left to claim.
+        """
+        assert self.rpc("evm_revert", [snapshot]) is True, (
+            f"evm_revert({snapshot}) refused: a snapshot is freed by the "
+            "revert that uses it, so take a new one before rolling back again"
+        )
 
     def erc20_balance(self, token: str, owner: str) -> int:
         from wallet.erc20 import encode_balance_of

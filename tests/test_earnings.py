@@ -7,15 +7,18 @@ which is the 1x to 2.5x spread. Getting that wrong shows somebody a number
 they cannot earn.
 
 The second half is the claim, and it is a counting problem rather than a
-maths one. CRV batches -- `mint_many` takes eight gauges on Ethereum and
-thirty-two elsewhere -- and the incentive tokens do not batch at all, so
-"claim everything" is not one transaction and the page must not say it is.
+maths one. CRV batches eight gauges at a time on Ethereum and thirty-two
+elsewhere, because that is the array `mint_many` declares; the incentive
+tokens batch without limit, because `claim_rewards(address)` names the
+account it pays and so goes through Multicall3. Neither count is a guess
+the page may make on its own -- it is what the buttons say out loud.
 """
 
 from __future__ import annotations
 
 import pytest
 
+from curve.abi import encode_claim_rewards_for, selector
 from curve.earnings import (
     MAX_BOOST,
     ClaimPlan,
@@ -23,7 +26,9 @@ from curve.earnings import (
     Reward,
     claim_plan,
     seed_from_detail,
+    send_claims,
 )
+from curve.multicall import MULTICALL3, encode_aggregate3
 
 CRV = Reward("", "CRV", 18, 5 * 10**18, 0.5)
 ARB = Reward("0x" + "ab" * 20, "ARB", 18, 2 * 10**18, 1.5)
@@ -149,17 +154,17 @@ def test_crv_batches_thirty_two_at_a_time_elsewhere() -> None:
     assert [len(g) for _m, g in claim_plan(42161, many).crv] == [10]
 
 
-def test_incentives_do_not_batch_at_all() -> None:
-    """One `claim_rewards()` per gauge. There is no batching contract, and
-    the page says the count rather than implying one prompt."""
+def test_incentives_batch_however_many_gauges_there_are() -> None:
+    """`claim_rewards(address)` pays the address it is given rather than
+    its caller, so the whole lot goes through Multicall3 in one send."""
     many = [
         Earning(pool=f"p{i}", gauge=f"0x{i:040x}", staked=1, rewards=(ARB,))
-        for i in range(3)
+        for i in range(30)
     ]
     plan = claim_plan(1, many)
     assert plan.crv == ()
-    assert len(plan.extras) == 3
-    assert plan.transactions == 3
+    assert len(plan.extras) == 30
+    assert plan.transactions == 1
 
 
 def test_a_gauge_owing_nothing_is_left_out_of_the_plan() -> None:
@@ -183,6 +188,60 @@ def test_a_chain_with_no_crv_offers_no_crv_claim() -> None:
 def test_an_empty_plan_is_no_transactions() -> None:
     assert ClaimPlan().transactions == 0
     assert claim_plan(1, []).transactions == 0
+
+
+# -- what gets sent ----------------------------------------------------------
+
+
+class Recorder:
+    """A provider that keeps the transactions rather than sending them."""
+
+    def __init__(self) -> None:
+        self.sent: list[dict] = []
+
+    async def send_transaction(self, tx: dict) -> str:
+        self.sent.append(tx)
+        return f"0x{len(self.sent):064x}"
+
+
+async def test_incentives_go_out_as_one_multicall_naming_the_owner() -> None:
+    """Three gauges, one transaction, and the owner in every call.
+
+    `claim_rewards()` with no argument would credit whoever sent the
+    transaction -- which is the same address here, so it would look
+    correct -- but the batched form is Multicall3's call, and Multicall3
+    would keep the tokens.
+    """
+    account = "0x" + "11" * 20
+    plan = claim_plan(
+        1,
+        [
+            Earning(pool=f"p{i}", gauge=f"0x{i:040x}", staked=1, rewards=(ARB,))
+            for i in range(3)
+        ],
+    )
+    provider = Recorder()
+    hashes = await send_claims(provider, account, plan, crv=False)
+
+    assert len(hashes) == 1
+    (tx,) = provider.sent
+    assert tx["to"] == MULTICALL3
+    assert tx["from"] == account
+    # Three `claim_rewards(account)` calls, none of them allowed to fail
+    # quietly: `allowFailure` is what turns a refusal into a mined no-op,
+    # and this is the one call site that must never permit it.
+    assert tx["data"] == encode_aggregate3(
+        [(f"0x{i:040x}", encode_claim_rewards_for(account)) for i in range(3)],
+        allow_failure=False,
+    )
+    assert tx["data"].count(selector("claim_rewards(address)")) == 3
+
+
+async def test_nothing_owed_sends_nothing() -> None:
+    provider = Recorder()
+    assert await send_claims(provider, "0xme", ClaimPlan(), crv=False) == []
+    assert await send_claims(provider, "0xme", ClaimPlan(), crv=True) == []
+    assert provider.sent == []
 
 
 # -- seeding from the pool payload -------------------------------------------

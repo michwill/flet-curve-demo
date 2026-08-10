@@ -55,15 +55,25 @@ def _bytes_tail(data: str) -> str:
     return _uint(len(body) // 2) + body + "0" * padding
 
 
-def encode_aggregate3(calls: list[tuple[str, str]]) -> str:
+def encode_aggregate3(
+    calls: list[tuple[str, str]], *, allow_failure: bool = True
+) -> str:
     """Calldata for `aggregate3`, from `(target, calldata)` pairs.
 
-    Every call is sent with `allowFailure=true`: the caller is asking
-    which of these a contract implements, and a revert is one of the
+    `allowFailure` defaults to true, because the usual caller here is
+    asking which of these a contract implements and a revert is one of the
     answers.
+
+    **A write must pass false.** With failures allowed the outer
+    transaction succeeds whatever the inner calls did, so a gauge that
+    refuses to pay comes back as a mined transaction and a green line,
+    with the reason discarded -- and that is not a hypothetical. It is how
+    this app came to claim, on the record, that `claim_rewards(address)`
+    could not be batched: the batch was sent, `aggregate3` swallowed the
+    inner result, and the absence of tokens was read as a refusal.
     """
     elements = [
-        _address(target) + _bool(True) + _offset(3) + _bytes_tail(data)
+        _address(target) + _bool(allow_failure) + _offset(3) + _bytes_tail(data)
         for target, data in calls
     ]
     # Each element's offset is measured from the start of the element

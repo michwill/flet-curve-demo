@@ -1361,9 +1361,11 @@ class CurveApp:
         """Claim one half of what the portfolio is owed.
 
         Two buttons and two code paths, because the chain offers two:
-        `mint_many` takes every gauge at once, and the incentive tokens
-        need one `claim_rewards()` each. The line says how many are
-        coming so a second wallet prompt is expected rather than alarming.
+        CRV is minted for `msg.sender` and so goes through `mint_many`
+        eight or thirty-two gauges at a time, while the incentives are
+        transfers that name their recipient and so go through Multicall3
+        in one send. The line says how many transactions are coming, so a
+        second wallet prompt is expected rather than alarming.
         """
         view = self.portfolio_view
         wallet = self.wallet
@@ -1372,7 +1374,7 @@ class CurveApp:
             return
         chain_id = self.chains.get(self.chain) or 0
         plan = earnings.claim_plan(chain_id, getattr(self, "_earnings", []))
-        count = len(plan.crv) if crv else len(plan.extras)
+        count = len(plan.crv) if crv else (1 if plan.extras else 0)
         if not count:
             view.claiming("Nothing to claim.", ft.Colors.ERROR)
             return

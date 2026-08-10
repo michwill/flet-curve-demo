@@ -25,11 +25,11 @@ Two further things the number has to be honest about:
     working balance. Showing the pool's boosted ceiling next to it would
     be advertising a rate that address cannot get.
 
-**Reads batch, writes do not.** Everything here goes through Multicall3 in
-a handful of round trips, `claimable_tokens` included -- it is declared
-`nonpayable` because it checkpoints, but inside an `eth_call` the
-checkpoint is simulated and discarded. Claiming is the opposite: see
-`claim_plan` for why it takes two transactions rather than one.
+**Reads batch, and so does half the writing.** Everything read here goes
+through Multicall3 in a handful of round trips, `claimable_tokens`
+included -- it is declared `nonpayable` because it checkpoints, but inside
+an `eth_call` the checkpoint is simulated and discarded. Claiming batches
+too, but by two different routes and only within each: see `ClaimPlan`.
 """
 
 from __future__ import annotations
@@ -163,30 +163,41 @@ class ClaimPlan:
     """The transactions "claim everything" actually comes to.
 
     Two lists rather than one, because CRV and the incentive tokens are
-    claimed from different contracts and only one of them batches.
+    claimed from different contracts and they batch by different means.
 
-    `mint_many` takes a fixed-size array of gauges and does the whole lot
-    in a single transaction -- eight on Ethereum's Minter, thirty-two on
-    the sidechain factories -- so CRV across a portfolio is one send per
-    batch of that size.
+    **CRV** is minted, and the Minter mints for `msg.sender` alone, so
+    these have to come from the user's own address. `mint_many` takes a
+    fixed-size array of gauges -- eight on Ethereum's Minter, thirty-two
+    on the sidechain factories -- so a portfolio is one transaction per
+    batch of that size, and `crv` is already chunked to it.
 
-    Incentives have no equivalent. `claim_rewards()` is per gauge and
-    credits `msg.sender`, and the third-party spelling
-    `claim_rewards(address)` reverts for anyone but the owner on the
-    gauges checked -- tried through Multicall3 on a fork, where the outer
-    transaction succeeded and no tokens moved, because `aggregate3` sends
-    every call with `allowFailure=true`. So there is no batching to be had
-    and this is honest about the count.
+    **Incentives** are transfers, not mints, and `claim_rewards(address)`
+    pays the address it is given rather than its caller: the gauge's
+    `_checkpoint_rewards` resolves the receiver from `_user`, and the only
+    thing reserved to `msg.sender` is redirecting the payment somewhere
+    else. So a stranger can claim on an owner's behalf, the tokens land
+    with the owner, and every gauge in a portfolio goes into one
+    Multicall3 transaction.
+
+    That contradicts what this docstring used to say, and the correction
+    is worth keeping: the original test batched through `aggregate3` with
+    `allowFailure=true`, which turns an inner revert into a mined
+    transaction that moved nothing. It was read as a refusal. It was not
+    one -- the call had succeeded, and a second bad measurement (anvil
+    frees a snapshot when you revert to it, so the follow-up ran against
+    already-claimed state) agreed with the first. Claims are sent with
+    `allowFailure=false` now, so a gauge that will not pay reverts the
+    transaction instead of being quietly dropped.
     """
 
     #: `(minter, [gauge, ...])` per transaction, already chunked.
     crv: tuple[tuple[str, tuple[str, ...]], ...] = field(default_factory=tuple)
-    #: Gauges needing their own `claim_rewards()`.
+    #: Every gauge owing an incentive token, claimed in one batch.
     extras: tuple[str, ...] = field(default_factory=tuple)
 
     @property
     def transactions(self) -> int:
-        return len(self.crv) + len(self.extras)
+        return len(self.crv) + (1 if self.extras else 0)
 
 
 def claim_plan(chain_id: int, earnings: list[Earning]) -> ClaimPlan:
@@ -377,10 +388,14 @@ async def send_claims(
     """Send a plan, returning one hash per transaction, in order.
 
     `crv` picks which half: the page offers them as two buttons because
-    they are two contracts and the counts differ -- all the CRV in one
-    send per batch of eight (or thirty-two), the incentives one send per
-    gauge. Presenting that as a single button would be claiming to do
-    something the chain does not offer.
+    they are two contracts. CRV goes one send per batch of eight (or
+    thirty-two), because that is `mint_many`'s array; the incentives go in
+    a single Multicall3 transaction however many gauges there are.
+
+    Batching the incentives is safe on any chain this can be reached from:
+    every number behind the buttons was read through Multicall3 by
+    `read_earnings`, so a chain without that contract shows nothing owed
+    and offers nothing to claim.
 
     Gas and nonce are left to the wallet, as everywhere else in this app.
     """
@@ -401,14 +416,20 @@ async def send_claims(
                 )
             )
         return sent
-    for gauge in plan.extras:
+    if plan.extras:
+        # `allowFailure=false`: a gauge that will not pay must take the
+        # transaction down with it. See `ClaimPlan` -- allowing failures
+        # here is what made a silent no-op look like a mined claim.
+        calls = [
+            (gauge, abi.encode_claim_rewards_for(account)) for gauge in plan.extras
+        ]
         sent.append(
             await provider.send_transaction(
                 {
                     "from": account,
-                    "to": gauge,
+                    "to": MULTICALL3,
                     "value": "0x0",
-                    "data": abi.encode_claim_rewards(),
+                    "data": encode_aggregate3(calls, allow_failure=False),
                 }
             )
         )

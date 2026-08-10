@@ -1617,6 +1617,24 @@ class CurvedProvider(FakeProvider):
         return await super().request(method, params)
 
 
+def calm(band) -> bool:
+    """Is this band at rest -- its own colour rather than the alarm's?
+
+    Not "has no colour": the impact and fee bands now carry a resting
+    tint, so an assertion that they are colourless would pass only while
+    they were unstyled. Nor is it only "not alarming", which would let a
+    band stay red for ever -- it is both, and either the resting colour
+    or none at all, since the resting one is applied when the band is
+    painted and these tests do not always paint.
+    """
+    from ui import theme
+
+    return not band.alarming and band.bgcolor in (
+        None,
+        theme.note_tint(band._page, band.kind),
+    )
+
+
 def impact_percent(tab) -> float:
     """The number the panel printed, back out of its line."""
     text = (tab.impact.value or "").removeprefix("Price impact ")
@@ -1974,7 +1992,7 @@ async def test_a_small_impact_leaves_the_band_alone() -> None:
     await tab.refresh()
 
     assert tab._alarm_panel is None
-    assert tab.impact_panel.bgcolor is None
+    assert calm(tab.impact_panel)
     assert page.tasks == []
 
 
@@ -1990,7 +2008,7 @@ async def test_the_alarm_is_armed_on_the_crossing_not_on_every_keystroke() -> No
     tab.amount.value = "1000"        # back under the line
     await tab.refresh()
     assert tab._alarm_panel is None
-    assert tab.impact_panel.bgcolor is None
+    assert calm(tab.impact_panel)
 
     tab.amount.value = "100000"      # and over it again
     await tab.refresh()
@@ -2033,7 +2051,7 @@ async def test_a_retired_pulse_stops_painting(monkeypatch) -> None:
     await tab._pulse(stale)
 
     assert page.tints == []
-    assert tab.impact_panel.bgcolor is None
+    assert calm(tab.impact_panel)
 
 
 def test_the_output_amount_is_sized_like_the_fields_it_answers() -> None:
@@ -2090,7 +2108,7 @@ async def test_the_band_follows_the_message_that_is_actually_showing() -> None:
     await tab.refresh()
 
     assert tab._alarm_panel is tab.impact_panel
-    assert tab.estimate_panel.bgcolor is None
+    assert calm(tab.estimate_panel)
     assert tab.estimate.color == ft.Colors.ON_SURFACE
 
 
@@ -2133,7 +2151,7 @@ async def test_leaving_the_network_takes_both_lines_with_it() -> None:
     assert tab.estimate.value == ""
     assert tab.impact_panel.visible is False
     assert tab._alarm_panel is None
-    assert tab.impact_panel.bgcolor is None
+    assert calm(tab.impact_panel)
 
 
 # -- what it costs to send --------------------------------------------------
@@ -2305,3 +2323,76 @@ async def test_a_withdrawal_from_the_gauge_prices_the_unstake(monkeypatch) -> No
     await tab.refresh()
 
     assert tab.fee.value.endswith("to unstake first"), tab.fee.value
+
+
+# -- the colour of an annotation --------------------------------------------
+
+
+class ThemedPage(StubPage):
+    """A page wearing one of the three themes, for the colour questions."""
+
+    def __init__(self, name: str = "light") -> None:
+        super().__init__()
+        from ui import theme
+
+        self.theme, self.theme_mode = theme.theme_for(name)
+
+
+def test_the_two_annotations_are_told_apart_by_colour() -> None:
+    """Price impact is a cost of this trade being large; the network fee
+    is a cost of using the chain at all. Two kinds of thing, and the
+    panel has room for one word each."""
+    from ui import theme
+
+    page = ThemedPage("chad")
+    assert theme.note_tint(page, "impact") != theme.note_tint(page, "fee")
+
+
+def test_every_theme_colours_them_and_none_reuses_the_error() -> None:
+    """A large impact is worth noticing and is still not an error -- the
+    error colour belongs to the pulse, and to a quote the pool refused."""
+    from ui import theme
+
+    for name in ("chad", "light", "dark"):
+        page = ThemedPage(name)
+        for kind in ("impact", "fee"):
+            tint = theme.note_tint(page, kind)
+            assert tint, f"{name}/{kind} has no colour"
+            assert "ERROR" not in str(tint).upper()
+
+
+def test_a_band_with_nothing_to_say_takes_no_colour() -> None:
+    """The estimate line itself: it holds the answer, not a note about
+    it, and a wash behind every quote would be noise."""
+    from ui import theme
+
+    assert theme.note_tint(ThemedPage("chad"), "") is None
+
+
+def test_chad_fills_where_material_tints() -> None:
+    """Chad is a theme of flat colour -- an alpha there shows the panel
+    through and reads as a smudge -- while a Material surface has to be
+    tinted or the band fights the page."""
+    from ui import theme
+
+    assert "," not in theme.note_tint(ThemedPage("chad"), "fee")
+    assert "," in theme.note_tint(ThemedPage("light"), "fee")
+
+
+async def test_a_theme_change_repaints_the_bands() -> None:
+    """They are built with the panel and outlive any number of switches,
+    so the colour is re-read before each paint rather than fixed."""
+    from ui import theme
+
+    page = ThemedPage("light")
+    tab = swap_tab(PricedProvider())
+    tab.page = page
+    tab.impact_panel._page = page
+    tab.impact_panel.before_update()
+    light = tab.impact_panel.bgcolor
+
+    page.theme, page.theme_mode = theme.theme_for("chad")
+    tab.impact_panel.before_update()
+
+    assert tab.impact_panel.bgcolor != light
+    assert tab.impact_panel.bgcolor == theme.NOTE_IMPACT_CHAD

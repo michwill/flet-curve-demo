@@ -186,6 +186,41 @@ async def _native_usd(chain: str, chain_id: int) -> float:
         return 0.0
 
 
+class _Band(ft.Container):
+    """One line of annotation under the estimate, in the theme's colour.
+
+    The colour is re-read before every paint rather than fixed at
+    construction, for the reason `buttons.Themed` gives: a panel outlives
+    any number of theme switches, and a band built under Chad and left
+    there is a flat Tango fill on a Material surface.
+
+    `alarming` is what keeps the two out of each other's way. A punishing
+    price impact pulses the same band red, and a repaint in the middle of
+    that pulse would put the calm colour back under it.
+    """
+
+    def __init__(
+        self, content: ft.Control, page: ft.Page, *, kind: str = "", visible: bool = True
+    ) -> None:
+        self._page = page
+        self.kind = kind
+        self.alarming = False
+        super().__init__(
+            content,
+            padding=ft.Padding.symmetric(horizontal=8, vertical=6),
+            border_radius=6,
+            visible=visible,
+            animate=ft.Animation(
+                int(ALARM_INTERVAL * 800), ft.AnimationCurve.EASE_IN_OUT
+            ),
+        )
+
+    def before_update(self) -> None:
+        super().before_update()
+        if not self.alarming:
+            self.bgcolor = theme.note_tint(self._page, self.kind)
+
+
 #: The mark beside an amount on the estimate line. Sized to the text it
 #: sits with rather than to the amount fields' 18-20px: this is a caption
 #: saying which token, not a control to aim at.
@@ -415,13 +450,13 @@ class ActionTab:
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
         )
         self.estimate_panel = self._band(self.estimate_line)
-        self.impact_panel = self._band(self.impact, visible=False)
+        self.impact_panel = self._band(self.impact, visible=False, kind="impact")
         #: What sending this will cost in fees, on its own quiet line.
         #: Hidden until there is a figure: it depends on a simulation, and
         #: an action that cannot be simulated yet -- a deposit before its
         #: approval -- has no honest number to show.
         self.fee = ft.Text("", size=SMALL, color=ft.Colors.ON_SURFACE_VARIANT)
-        self.fee_panel = self._band(self.fee, visible=False)
+        self.fee_panel = self._band(self.fee, visible=False, kind="fee")
         #: The approval this panel is waiting on, as `_sync_approval` last
         #: found it. Held rather than asked for again: it is one allowance
         #: read, and `show_gas` runs in the same refresh.
@@ -707,16 +742,13 @@ class ActionTab:
         self._impact_high = high
         self._sync_alarm()
 
-    def _band(self, text: ft.Control, *, visible: bool = True) -> ft.Container:
-        return ft.Container(
-            text,
-            padding=ft.Padding.symmetric(vertical=6),
-            border_radius=6,
-            visible=visible,
-            animate=ft.Animation(
-                int(ALARM_INTERVAL * 800), ft.AnimationCurve.EASE_IN_OUT
-            ),
-        )
+    def _band(
+        self, text: ft.Control, *, visible: bool = True, kind: str = ""
+    ) -> ft.Container:
+        return _Band(text, self._page_of(), kind=kind, visible=visible)
+
+    def _page_of(self) -> ft.Page:
+        return self.page
 
     def _sync_alarm(self) -> None:
         """Whichever line is worth flashing, or neither.
@@ -742,12 +774,18 @@ class ActionTab:
         if panel is self._alarm_panel:
             return
         if self._alarm_panel is not None:
-            self._alarm_panel.bgcolor = None
+            # Back to whatever the band is normally, which for the two
+            # annotated ones is a colour rather than nothing.
+            self._alarm_panel.alarming = False
+            self._alarm_panel.bgcolor = theme.note_tint(
+                self.page, self._alarm_panel.kind
+            )
         self._alarm_panel = panel
         # Whatever is pulsing now belongs to the previous run, and checks
         # this number before each step. Bumping it retires it.
         self._alarm_run += 1
         if panel is not None:
+            panel.alarming = True
             self.page.run_task(self._pulse, self._alarm_run)
 
     async def _pulse(self, run: int) -> None:

@@ -222,6 +222,61 @@ def is_chad(page: ft.Page) -> bool:
     return bool(scheme and scheme.primary == ACTIVE)
 
 
+#: The two annotations under an estimate, as flat fills for Chad. Tango's
+#: Butter and Sky Blue, lightened until they sit under body text without
+#: fighting it -- this theme fills with solid colour rather than tinting,
+#: so an alpha here would show the panel through and read as a smudge.
+NOTE_IMPACT_CHAD = "#F6E7A6"
+NOTE_FEE_CHAD = "#D3E1F2"
+
+#: The same two, as hues to tint a Material surface with. Warmer and
+#: darker on a light theme, where a pale wash disappears; lighter and a
+#: little stronger on a dark one, where a dark wash is invisible against
+#: the surface and a saturated one glares.
+NOTE_HUES = {
+    "impact": ("#F9A825", "#FFC107"),   # (light theme, dark theme)
+    "fee": ("#0288D1", "#4FC3F7"),
+}
+NOTE_ALPHA_LIGHT = 0.14
+NOTE_ALPHA_DARK = 0.22
+
+
+def is_dark(page: ft.Page) -> bool:
+    """Is a dark palette on screen?
+
+    `SYSTEM` is the default mode, so the answer usually comes from the
+    desktop rather than from anything this app set -- and it can change
+    under a running app, which is why this is read live rather than
+    remembered.
+    """
+    mode = getattr(page, "theme_mode", None)
+    if mode == ft.ThemeMode.DARK:
+        return True
+    if mode == ft.ThemeMode.LIGHT:
+        return False
+    return getattr(page, "platform_brightness", None) == ft.Brightness.DARK
+
+
+def note_tint(page: ft.Page, kind: str) -> str | None:
+    """The background for one of the annotation bands, in this theme.
+
+    A colour rather than a label because the two say different kinds of
+    thing: price impact is a cost of *this* trade being large, and worth
+    a warm colour that catches the eye; the network fee is a cost of
+    using the chain at all, and belongs in the blue everything else uses
+    for gas. Neither is an error, so neither takes the error colour.
+    """
+    hues = NOTE_HUES.get(kind)
+    if hues is None:
+        return None
+    if is_chad(page):
+        return NOTE_IMPACT_CHAD if kind == "impact" else NOTE_FEE_CHAD
+    dark = is_dark(page)
+    return ft.Colors.with_opacity(
+        NOTE_ALPHA_DARK if dark else NOTE_ALPHA_LIGHT, hues[1 if dark else 0]
+    )
+
+
 def panel_shadow(page: ft.Page, *, inset: bool = False) -> ft.BoxShadow | None:
     """The hard shadow, under Chad only. None elsewhere."""
     if not is_chad(page):

@@ -80,7 +80,10 @@ def build_url(base: str, path: str, params: dict[str, Any] | None = None) -> str
         # Drop None so callers can pass optional query args unconditionally.
         clean = {k: v for k, v in params.items() if v is not None}
         if clean:
-            url = f"{url}?{urlencode(clean)}"
+            # `doseq` so a list value becomes the same key repeated, which
+            # is how Merkl's `/v4/tokens?id=…&id=…` takes a batch. Without
+            # it the list is stringified into one unusable `['a', 'b']`.
+            url = f"{url}?{urlencode(clean, doseq=True)}"
     return url
 
 

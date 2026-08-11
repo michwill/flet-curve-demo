@@ -97,7 +97,13 @@ REWARD_MARK = 14
 
 
 def reward_line(
-    text: str, address: str, symbol: str, chain: str, *, muted: bool = False
+    text: str,
+    address: str,
+    symbol: str,
+    chain: str,
+    *,
+    muted: bool = False,
+    tooltip: str = "",
 ) -> ft.Control:
     """One reward, marked with its token where the address is known.
 
@@ -116,6 +122,7 @@ def reward_line(
         size=SMALL,
         color=ft.Colors.ON_SURFACE_VARIANT if muted else None,
         text_align=ft.TextAlign.RIGHT,
+        tooltip=tooltip or None,
     )
     if not address:
         return label
@@ -126,7 +133,112 @@ def reward_line(
         tight=True,
         alignment=ft.MainAxisAlignment.END,
         vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        tooltip=tooltip or None,
     )
+
+
+#: The icon on a line that has no rate. Points cannot be priced, so there
+#: is nothing to put in the percentage's place -- and a blank where every
+#: other line has a number reads as a missing value rather than as a
+#: different kind of reward. A mark says which kind.
+POINTS_ICON = ft.Icons.AUTO_AWESOME
+
+
+def point_line(text: str, tooltip: str = "") -> ft.Control:
+    """A reward with no rate: the points mark, then who is paying.
+
+    Right-aligned like every other line in the column, and muted like the
+    incentive lines, so the eye still runs down the numbers -- this one
+    just does not have one.
+    """
+    return ft.Row(
+        [
+            ft.Icon(POINTS_ICON, size=REWARD_MARK, color=ft.Colors.ON_SURFACE_VARIANT),
+            ft.Text(
+                text,
+                size=SMALL,
+                color=ft.Colors.ON_SURFACE_VARIANT,
+                text_align=ft.TextAlign.RIGHT,
+            ),
+        ],
+        spacing=5,
+        tight=True,
+        alignment=ft.MainAxisAlignment.END,
+        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        tooltip=tooltip or None,
+    )
+
+
+def _token_note(token, plain: str) -> str:
+    """A reward's tooltip, naming the wrapper where there is one.
+
+    The row says crvUSD because crvUSD is what arrives; this says where
+    the accounting on Merkl's own page will say ybwcrvUSD instead, so the
+    two can be reconciled by whoever goes and looks.
+    """
+    if not token.wrapped:
+        return f"{token.symbol}, {plain}"
+    return (
+        f"{token.paid_symbol}, {plain} as {token.symbol} -- a Merkl wrapper "
+        f"that delivers {token.paid_symbol} when you claim."
+    )
+
+
+def campaign_lines(pool: Pool) -> list[ft.Control]:
+    """What Merkl and the external campaigns pay, under the gauge's rewards.
+
+    Three things Curve's own fields cannot say, in the order they matter:
+
+      * **which token** the merkle campaign pays. `merkle_apr` is a bare
+        percentage with no symbol attached to it;
+      * **that there are two campaigns**, one for staked liquidity and one
+        for unstaked. Only the higher is printed here -- the column has no
+        room to explain the difference and they are usually within a
+        rounding error of each other -- and the pool page breaks them out;
+      * **points**, which have no price and so appear in no APR anywhere.
+
+    The token named is the one that **arrives**, which on a wrapped
+    campaign is not the one the campaign is denominated in: the
+    pyUSD/crvUSD pool is quoted in `ybwcrvUSD` and pays crvUSD. See
+    `curve.merkl.MerklToken`. The wrapper is not lost -- it is in the
+    tooltip, and spelled out on the pool page -- but a symbol nobody
+    recognises is the wrong thing to lead a row with.
+
+    The `merkle_apr` line survives as the fallback for a chain Merkl does
+    not cover or a request that did not come back, where a percentage with
+    no token beats saying nothing.
+    """
+    lines: list[ft.Control] = []
+    for token in pool.merkl.tokens:
+        if token.points:
+            lines.append(
+                point_line(token.paid_symbol, _token_note(token, "paid through Merkl"))
+            )
+            continue
+        unstaked, staked = pool.merkl.rate_for(token)
+        lines.append(
+            reward_line(
+                f"{percent(max(unstaked, staked))} {token.paid_symbol}",
+                token.paid_address,
+                token.paid_symbol,
+                pool.chain,
+                muted=True,
+                tooltip=_token_note(token, "paid through Merkl"),
+            )
+        )
+    if not pool.merkl and pool.merkle_apr > 0:
+        lines.append(
+            ft.Text(
+                f"{percent(pool.merkle_apr)} merkle",
+                size=SMALL,
+                color=ft.Colors.ON_SURFACE_VARIANT,
+                text_align=ft.TextAlign.RIGHT,
+            )
+        )
+    lines += [
+        point_line(campaign.label, campaign.describe()) for campaign in pool.points
+    ]
+    return lines
 
 
 def reward_lines(pool: Pool) -> list[ft.Control]:
@@ -156,15 +268,7 @@ def reward_lines(pool: Pool) -> list[ft.Control]:
                 muted=True,
             )
         )
-    if pool.merkle_apr > 0:
-        lines.append(
-            ft.Text(
-                f"{percent(pool.merkle_apr)} merkle",
-                size=SMALL,
-                color=ft.Colors.ON_SURFACE_VARIANT,
-                text_align=ft.TextAlign.RIGHT,
-            )
-        )
+    lines += campaign_lines(pool)
     if not lines:
         lines.append(
             # An en dash, not a hyphen: it is standing in for a missing
@@ -298,6 +402,22 @@ class PoolRow(ft.Container):
                         *[
                             _metric(i.symbol, percent(i.apr))
                             for i in pool.incentives[:2]
+                        ],
+                        # The same two-per-kind cap the incentives take: a
+                        # card is two lines and a pool paying five things
+                        # would make it six. The pool page shows them all.
+                        *[
+                            _metric(t.symbol, percent(max(pool.merkl.rate_for(t))))
+                            for t in pool.merkl.tokens[:2]
+                            if not t.points
+                        ],
+                        *[
+                            point_line(t.symbol, f"{t.symbol}, paid through Merkl")
+                            for t in pool.merkl.points[:2]
+                        ],
+                        *[
+                            point_line(c.label, c.describe())
+                            for c in pool.points[:2]
                         ],
                     ],
                     spacing=14,

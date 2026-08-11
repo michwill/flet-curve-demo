@@ -243,6 +243,8 @@ what the generator emits, because a body that disagrees with its own
 src/curve/     no Flet anywhere in it — pure logic, directly testable
     api.py         Prices v2 (pools) + v1 (charts), and the paging cursor
     models.py      Pool/Coin/Incentive, and parsing the API's shapes
+    merkl.py       campaigns Curve reports half of, and every points one
+    external.py    point campaigns kept in curve-frontend and nowhere else
     sort.py        column -> the v2 sort field it maps to
     format.py      numbers -> the strings a dense table can show
     abi.py         calldata for the pool contracts
@@ -475,14 +477,17 @@ probed. Their underlying coins can still be swapped.
 ## Reading Curve
 
 Public APIs, no keys. Pool data comes from the **Prices API v2**; charts from
-**v1**, which is the only one with OHLC. The full survey is in
+**v1**, which is the only one with OHLC. Two sources that are not Curve's fill
+in the rewards it does not report — see
+[below](#the-rewards-curves-api-does-not-report). The full survey is in
 [`docs/curve-api.md`](docs/curve-api.md); the parts that shape the code:
 
 - **v2 returns everything about a pool in one object** — TVL, volume, base APR,
   the CRV boost range, reward tokens and merkle rewards. The older main API split
   those across `getPools` and `getVolumes` and needed a join by address; v2 is
   also ~4× smaller (351 KB against 1.3 MB for Ethereum) and adds `merkle_apr`,
-  which v1 had no equivalent for.
+  which v1 had no equivalent for — though that one turns out to be half a
+  campaign with no token named, which is what sent this app to Merkl.
 - **`pagination` is capped at 50**, and there is no "give me everything" call.
   That one limit is why the list is a paged cursor and why the ordering moved
   server-side — see below.
@@ -561,6 +566,84 @@ whatever happened to be in memory. Search is debounced and sent as
 `aggregate_apr`, the API's combined base + CRV + tokens + merkle figure — there
 is no rewards-without-base field, and the difference is immaterial when base APR
 is low single digits and incentive APRs run to hundreds of percent.
+
+### The rewards Curve's API does not report
+
+Three of them, and none is a rounding error. `merkle_apr` is a bare percentage
+with no token attached to it, and it turns out to be **half of one campaign**:
+
+```
+merkle_apr (v2)                                                325.0632316262278
+Merkl "Stake into the Curve frxUSP gauge"                      325.0632316262278
+Merkl "Provide liquidity to Curve frxUSD-USP"                  325.1121240372897   <- nowhere in Curve
+```
+
+A Merkl campaign watches a **token**, and for a Curve pool that is either the
+LP token — paid whether or not you stake — or the gauge, paid only on what is
+staked. Merkl usually runs both, and Curve reports the second. The difference
+is normally a rounding error, and occasionally it is the whole reward: a
+campaign paying only unstaked liquidity is one that **staking switches off**,
+which the pool page says in those words because the Stake button is right
+there.
+
+Then **points**, which no APR field anywhere can carry, because a point has no
+price. Merkl marks them `POINT` and quotes `apr: 0`; the rest live in a
+directory of JSON files inside curve-frontend, which is the only
+machine-readable record that Ethena counts a Curve position at 30x. Those get
+a line naming who is paying, a multiplier where there is one, and a link to
+whoever is counting — a percentage invented for them would be worse than the
+nought.
+
+So the rewards column and the pool page read two more sources, `curve/merkl.py`
+and `curve/external.py`, and there are three things worth knowing about how:
+
+- **the requests go out beside the pool list, not after it.** Both are on the
+  first page's critical path, so `list_pools` gathers all three and pays the
+  slowest rather than the sum, on a five-second timeout for the same reason
+  `LITE_TIMEOUT` is five. Neither is load-bearing: every path returns an empty
+  index rather than raising, and **the emptiness is cached**, so a host that is
+  down is asked once per TTL and not once per page of pools;
+- **Merkl replaces `merkle_apr` rather than adding to it.** They are the same
+  money read two ways, so `Pool.campaign_apr` takes Merkl's where it has one
+  and Curve's otherwise. Adding both would report 650% on a pool paying 325%
+  and sort it above pools that genuinely pay more;
+- **the lookup runs twice on a pool page.** A campaign can be watching the LP
+  token, and an old-registry pool's LP token is a different contract from the
+  pool — which the *list* endpoint does not carry. So the pool page asks again
+  once its detail lands. Both sources are cached by then, so it costs nothing.
+
+**And the token a campaign names is not always the token it pays.** A Merkl
+*wrapper* is an ERC-20 with an `onClaim` hook: the campaign is denominated in
+the wrapper, and what reaches the wallet is the underlying — pulled from the
+incentiviser, withdrawn from Aave, unwrapped from wETH, or deposited into a
+vault, depending on which of Merkl's four templates was used. The pyUSD/crvUSD
+pool advertises `ybwcrvUSD`, which is "Yield Basis crvUSD (Merkl wrapper)",
+and pays **crvUSD**; three of the fourteen tokens paying live Curve campaigns
+were wrappers when this was measured. Rows therefore read as what arrives, and
+the wrapper is named in the tooltip and written out on the pool page — Merkl's
+own page still calls it `ybwcrvUSD`, and the two have to reconcile for anyone
+who follows the link.
+
+`underlyingTokenId` is how that is found, and it costs one extra request for a
+whole chain, because `/v4/tokens` takes `id` more than once. One trap in it:
+`WFRAX` and `tGBP` carry that field set to their **own** id, which means "not a
+wrapper" in the same field that elsewhere means "here is what a claim really
+pays" — follow it and you print "WFRAX pays WFRAX".
+
+One consequence to be aware of: the incentives sort is still `aggregate_apr`,
+computed server-side from Curve's own fields, so a pool whose campaign only
+Merkl knows about is ordered by the smaller number even though the row shows
+the larger one. Fixing that means sorting a list the client has not loaded,
+which is the constraint the whole cursor exists for.
+
+**`campaignEnd` in the external files is not a date anybody maintains**, and
+it is worth saying because the obvious code is wrong. 121 of the 122 pool
+entries had an end already in the past when this was measured, 119 of them the
+same round `1770000000`, while Curve's site showed all of them: upstream skips
+the check entirely when `campaignStart` is `"0"`, and reads seconds as
+milliseconds when it does run it. Enforcing that field correctly empties the
+feature. It is carried and not enforced; `campaignStart` *is* honoured, which
+costs nothing today and is right the first time somebody schedules one.
 
 ### Curve Lite, and showing less on purpose
 

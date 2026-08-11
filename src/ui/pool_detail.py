@@ -24,7 +24,8 @@ from curve.format import (
     token_amount,
 )
 from curve.http import ApiError
-from curve.models import Pool
+from curve.merkl import MerklCampaign
+from curve.models import Coin, Pool
 from curve.pool import PoolContract
 from wallet.base import WalletError
 
@@ -32,6 +33,7 @@ from . import AnyEvent, safe_update, theme
 from .actions import ClaimTab, DepositTab, StakeTab, SwapTab, WithdrawTab
 from .candles import CandleChart
 from .logos import pool_stack, token_mark
+from .pool_list import POINTS_ICON
 from .responsive import Layout, layout_for
 from .typography import BODY, LABEL, METRIC, SMALL, TITLE, TITLE_NARROW
 
@@ -103,6 +105,10 @@ class PoolDetailView(ft.Column):
         #: turn "loading" into an empty one.
         self._composition_ready = False
         self._yields_slot = ft.Container(self._yields())
+        # Empty for most pools, and empty until the campaign lookups have
+        # landed for the rest -- they ride alongside the pool list rather
+        # than blocking it, so a deep link can paint before they arrive.
+        self._campaigns_slot = ft.Container(self._campaigns())
         # Read from the pool itself, so it cannot be built until the
         # provider has answered. The rows are replaced in place -- this
         # container outlives the reads and is never re-made, which is what
@@ -160,6 +166,7 @@ class PoolDetailView(ft.Column):
                 *chart_block,
                 self._composition_slot,
                 self._yields_slot,
+                self._campaigns_slot,
                 self._parameters_slot,
             ],
             spacing=10,
@@ -486,6 +493,7 @@ class PoolDetailView(ft.Column):
             lines.append(self._yield_row("CRV (min to max boost)", apr_range(*self.pool.crv_apr)))
         for incentive in self.pool.incentives:
             lines.append(self._yield_row(f"{incentive.symbol} incentives", percent(incentive.apr)))
+        lines += self._merkl_rows()
         if len(lines) > 1:
             lines.append(
                 self._yield_row(
@@ -504,6 +512,158 @@ class PoolDetailView(ft.Column):
         return ft.Column(
             [ft.Text("YIELD", size=LABEL, weight=ft.FontWeight.BOLD), *lines],
             spacing=4,
+        )
+
+    def _merkl_rows(self) -> list[ft.Control]:
+        """What Merkl pays, with the two sides of a campaign named.
+
+        The list column prints the better of the two rates and leaves it
+        there, because it has 190 pixels. Here there is room to say which
+        side is which, and it is worth saying: a campaign paying only
+        unstaked liquidity is one that staking switches off, and this is
+        the page with a Stake button on it.
+
+        Points get no row at all. They have no rate, so a row here would
+        be a label against a blank in a column of percentages; they are
+        named in the campaigns block below instead, which is also where
+        the link to go and count them lives.
+        """
+        rows: list[ft.Control] = []
+        for token in self.pool.merkl.tokens:
+            for qualifier, apr in self.pool.merkl.sides_for(token):
+                # What arrives, not what the campaign is denominated in --
+                # see `curve.merkl.MerklToken`. The wrapper is named in
+                # the campaigns block below rather than lost.
+                label = f"{token.paid_symbol} via Merkl"
+                rows.append(
+                    self._yield_row(
+                        f"{label} ({qualifier})" if qualifier else label, percent(apr)
+                    )
+                )
+        if not self.pool.merkl and self.pool.merkle_apr > 0:
+            # Curve's own figure, for a chain Merkl does not cover or a
+            # request that did not come back. It names no token, which is
+            # the whole reason the rows above exist.
+            rows.append(self._yield_row("Merkle campaign", percent(self.pool.merkle_apr)))
+        return rows
+
+    # -- campaigns --------------------------------------------------------
+
+    def _campaigns(self) -> ft.Control:
+        """Where to go for the rewards this app cannot hand over.
+
+        Two kinds end up here and both need a door rather than a button.
+        A Merkl campaign is claimed on Merkl -- it is a merkle drop, not a
+        gauge, so `claim_rewards()` knows nothing about it -- and points
+        are not claimable anywhere by anybody; what you can do with points
+        is see how many you have, on whoever's dashboard is counting them.
+
+        So every row here is a link out, and the section disappears
+        entirely when there is nothing to link to, which is most pools.
+        """
+        rows: list[ft.Control] = []
+        for campaign in self.pool.merkl.all:
+            token = next(iter(campaign.tokens), None)
+            rows.append(
+                self._campaign_row(
+                    mark=(
+                        ft.Icon(POINTS_ICON, size=20, color=ft.Colors.ON_SURFACE_VARIANT)
+                        if token is None or token.points
+                        else token_mark(
+                            Coin(
+                                address=token.paid_address,
+                                symbol=token.paid_symbol,
+                                decimals=18,
+                            ),
+                            self.pool.chain,
+                            20,
+                        )
+                    ),
+                    title=campaign.name or "Merkl campaign",
+                    detail=self._campaign_detail(campaign),
+                    url=campaign.url,
+                    link="Open on Merkl",
+                )
+            )
+        for external in self.pool.points:
+            rows.append(
+                self._campaign_row(
+                    mark=ft.Icon(POINTS_ICON, size=20, color=ft.Colors.ON_SURFACE_VARIANT),
+                    title=external.label,
+                    detail=external.describe(),
+                    url=external.dashboard,
+                    link=f"Open {external.platform}",
+                )
+            )
+        if not rows:
+            return ft.Container()
+        return ft.Column(
+            [
+                ft.Text("CAMPAIGNS", size=LABEL, weight=ft.FontWeight.BOLD),
+                ft.Text(
+                    "Paid outside the gauge. Merkl rewards are claimed on "
+                    "Merkl; points are counted by whoever is giving them.",
+                    size=LABEL,
+                    color=ft.Colors.ON_SURFACE_VARIANT,
+                ),
+                *rows,
+            ],
+            spacing=4,
+        )
+
+    def _campaign_detail(self, campaign: MerklCampaign) -> str:
+        """The second line of a Merkl row: what it pays, and how fast.
+
+        This is the one place the wrapper is written out. Merkl's own page
+        -- the one the link goes to -- will say `ybwcrvUSD` where this app
+        says crvUSD, so the sentence has to hold both or the two cannot be
+        reconciled by whoever follows the link.
+        """
+        tokens = ", ".join(token.paid_symbol for token in campaign.tokens) or "rewards"
+        wrapped = [t for t in campaign.tokens if t.wrapped]
+        via = (
+            " (paid as "
+            + ", ".join(t.symbol for t in wrapped)
+            + " on Merkl, unwrapped when you claim)"
+            if wrapped
+            else ""
+        )
+        if campaign.points_only:
+            return f"{tokens}, which carry no price and so no rate{via}"
+        return f"{tokens} at {percent(campaign.apr)}{via}"
+
+    def _campaign_row(
+        self, *, mark: ft.Control, title: str, detail: str, url: str, link: str
+    ) -> ft.Control:
+        """One campaign: what it is, and the way out to it.
+
+        `ft.Url` with a blank target rather than a bare string, for the
+        same reason the explorer links use one -- this app is a page
+        somebody was in the middle of.
+        """
+        return ft.Row(
+            [
+                mark,
+                ft.Column(
+                    [
+                        ft.Text(title, size=SMALL),
+                        ft.Text(
+                            detail, size=LABEL, color=ft.Colors.ON_SURFACE_VARIANT
+                        ),
+                    ],
+                    spacing=0,
+                    expand=True,
+                ),
+                ft.IconButton(
+                    ft.Icons.OPEN_IN_NEW,
+                    icon_size=14,
+                    tooltip=link,
+                    url=ft.Url(url, target=ft.UrlTarget.BLANK) if url else None,
+                    disabled=not url,
+                ),
+            ],
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            spacing=8,
         )
 
     # -- parameters -------------------------------------------------------
@@ -829,6 +989,21 @@ class PoolDetailView(ft.Column):
         )
         self._page.update()
 
+    async def _load_campaigns(self) -> None:
+        """Re-run the campaign lookup now that the LP token is known.
+
+        Cheap: both sources are cached on the API client for the session,
+        so a pool reached from the list asks nothing here. It is run at
+        all because the list endpoint carries no `lp_token_address`, and
+        an old-registry pool's LP token is a different contract from the
+        pool -- which is one of the three addresses a Merkl campaign can
+        be watching. A pool reached by deep link had it already.
+        """
+        await self.api.attach_campaigns(
+            self.pool.chain_id, self.pool.chain, [self.pool]
+        )
+        self._campaigns_slot.content = self._campaigns()
+
     async def _load_detail(self) -> None:
         """Fetch the fields only the detail endpoint has, then redraw.
 
@@ -839,6 +1014,7 @@ class PoolDetailView(ft.Column):
         # A Lite pool arrives complete -- reserves, prices, LP token and
         # all -- because that API has no list/detail split to fill in.
         if self.pool.detailed:
+            await self._load_campaigns()
             self._composition_slot.content = self._composition()
             self._composition_ready = True
             self._yields_slot.content = self._yields()
@@ -852,6 +1028,7 @@ class PoolDetailView(ft.Column):
             self._page.update()
             return
         self.pool.merge_detail(raw)
+        await self._load_campaigns()
         self._composition_slot.content = self._composition()
         self._composition_ready = True
         self._yields_slot.content = self._yields()

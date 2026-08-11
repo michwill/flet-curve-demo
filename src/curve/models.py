@@ -23,6 +23,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from .external import ExternalCampaign
+from .merkl import NO_REWARDS, MerklRewards
+from .merkl import split as merkl_split
+
 #: `pool_type`/`registry_type` values whose pools use the StableSwap ABI:
 #: `int128` coin indices. Both the v2 spellings and the older hyphenated v1
 #: registry ids are listed, so a Pool built from either source dispatches
@@ -187,7 +191,23 @@ class Pool:
     incentives: list[Incentive] = field(default_factory=list)
     #: Off-gauge campaign rewards, claimed via a merkle drop. v1 had no
     #: equivalent, so this column simply did not exist before.
+    #:
+    #: One number for what is usually two campaigns, and it is the staked
+    #: one: measured against Merkl, this matches the *gauge* opportunity
+    #: to the digit and omits the one paying unstaked liquidity. It also
+    #: names no token and counts no points campaign, since a points
+    #: campaign has no price and so no APR to add. `merkl` below is the
+    #: same money read from the source; this stays as the fallback for
+    #: when Merkl cannot be reached.
     merkle_apr: float = 0.0
+    #: What Merkl itself says is being paid here, staked and unstaked,
+    #: with the tokens named. Empty until `CurveApi` has attached it, and
+    #: empty for good on a chain Merkl does not cover -- which is not an
+    #: error, it is most chains.
+    merkl: MerklRewards = NO_REWARDS
+    #: Point campaigns from curve-frontend's own `external-rewards`
+    #: directory. No rate attaches to any of them; see `curve.external`.
+    points: tuple[ExternalCampaign, ...] = ()
     is_meta: bool = False
     #: Address of the pool this one is built on, when it is a metapool.
     base_pool: str = ""
@@ -326,14 +346,33 @@ class Pool:
         return bool(self.gauge)
 
     @property
+    def campaign_apr(self) -> float:
+        """The Merkl rate, from Merkl where it answered and Curve otherwise.
+
+        Never both. The two are the same money -- `merkle_apr` is Curve's
+        reading of the gauge campaign -- so adding them would report a
+        yield twice and a sort would put this pool above pools that pay
+        more. Merkl wins where it is present because it also sees the
+        campaign paying unstaked liquidity, which Curve's field does not.
+        """
+        return self.merkl.apr if self.merkl else self.merkle_apr
+
+    @property
     def incentives_apr(self) -> float:
-        """Total rewards APR: max-boost CRV, every incentive token, merkle.
+        """Total rewards APR: max-boost CRV, every incentive token, campaigns.
 
         This is what the "incentives" sort orders by. Max boost rather than
         minimum because it is the number a depositor can actually reach, and
         it is the top of the range Curve's own UI prints.
+
+        Points contribute nothing, because they have no price. That is not
+        a gap to be filled with an estimate: a pool can be worth being in
+        entirely for its points, and the honest way to say so is to name
+        the campaign rather than to invent a percentage for it.
         """
-        return self.crv_apr[1] + sum(i.apr for i in self.incentives) + self.merkle_apr
+        return (
+            self.crv_apr[1] + sum(i.apr for i in self.incentives) + self.campaign_apr
+        )
 
     @property
     def total_apr(self) -> float:
@@ -353,6 +392,33 @@ class Pool:
                 name = name[len(prefix) :]
                 break
         return name or self.address[:10]
+
+    # -- campaigns --------------------------------------------------------
+
+    def attach_campaigns(
+        self,
+        merkl_index: dict[str, list[Any]],
+        external_index: dict[tuple[str, str], list[ExternalCampaign]],
+        *,
+        chain: str = "",
+    ) -> Pool:
+        """Look this pool up in the two campaign indexes. Mutates and returns.
+
+        Safe to run twice, and worth running twice: the first pass happens
+        on a list row, which has no LP token, and a Merkl campaign can be
+        watching one. Nothing here is cumulative -- both fields are
+        replaced -- so the second pass is a strictly better answer rather
+        than a doubled one.
+        """
+        self.merkl = merkl_split(
+            merkl_index,
+            pool=self.address,
+            lp_token=self.lp_token,
+            gauge=self.gauge,
+        )
+        where = (self.chain or chain).lower()
+        self.points = tuple(external_index.get((where, self.address.lower()), ()))
+        return self
 
     # -- parsing ----------------------------------------------------------
 

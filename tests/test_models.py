@@ -8,7 +8,35 @@ a list payload that simply lacks the LP token and the reserves.
 
 from __future__ import annotations
 
+from curve.external import ExternalCampaign, by_pool
+from curve.merkl import MerklCampaign, MerklToken, by_identifier
 from curve.models import Pool
+
+#: A pool paying a Merkl campaign, and one paying only points. Built
+#: directly rather than parsed -- `tests/test_merkl.py` owns the parsing;
+#: what is being checked here is what the numbers do once attached.
+MERKL_POOL = "0xd50492de3541d75e61edc34d1aa79c7dc2d20da9"
+POINTS_POOL = "0xf4d0cf32908b2c7f1021339c43df0f77f06896d7"
+_PIKU = MerklToken("PIKU", "0x2e4039e8")
+_ORBITAL = MerklToken("Orbital Points", "0x10710501", points=True)
+_MERKL_INDEX = by_identifier(
+    [
+        MerklCampaign(1, MERKL_POOL, "Provide liquidity", 325.11, "a", (_PIKU,)),
+        MerklCampaign(1, POINTS_POOL, "Provide liquidity", 0.0, "c", (_ORBITAL,)),
+    ]
+)
+_POINTS_INDEX = by_pool(
+    [
+        ExternalCampaign(
+            platform="Ethena",
+            dashboard="https://app.ethena.fi/liquidity",
+            network="ethereum",
+            address=POINTS_POOL,
+            multiplier="30x",
+            tags=("points",),
+        )
+    ]
+)
 
 # One entry of `/v2/pools/?chain_id=1`.
 LIST_3POOL = {
@@ -172,6 +200,44 @@ def test_incentives_apr_includes_merkle() -> None:
         {"crv_apr": 1.0, "crv_apr_boosted": 2.0, "merkle_apr": 322.4}
     )
     assert pool.incentives_apr == 2.0 + 322.4
+
+
+def test_merkl_replaces_curves_merkle_figure_rather_than_adding_to_it() -> None:
+    """They are the same money read two ways, and adding both doubles it.
+
+    Curve's `merkle_apr` is the gauge campaign; Merkl reports that one
+    *and* the one paying unstaked liquidity. Summing them would put this
+    pool above pools that genuinely pay more.
+    """
+    pool = Pool.from_v2(
+        {"address": MERKL_POOL, "crv_apr_boosted": 2.0, "merkle_apr": 325.06}
+    )
+    assert pool.campaign_apr == 325.06  # nothing attached yet: Curve's figure
+
+    pool.attach_campaigns(_MERKL_INDEX, {})
+    assert pool.campaign_apr == 325.11  # Merkl's, and only Merkl's
+    assert pool.incentives_apr == 2.0 + 325.11
+
+
+def test_points_add_nothing_to_any_total() -> None:
+    """A points campaign has no price, so it has no rate to contribute.
+
+    The pool is worth being in for them; the way to say so is to name the
+    campaign, not to invent a percentage.
+    """
+    pool = Pool.from_v2({"address": POINTS_POOL, "crv_apr_boosted": 2.0}, "ethereum")
+    pool.attach_campaigns(_MERKL_INDEX, _POINTS_INDEX)
+    assert pool.merkl.points
+    assert pool.points
+    assert pool.incentives_apr == 2.0
+
+
+def test_attaching_twice_replaces_rather_than_accumulates() -> None:
+    """The pool page runs the lookup a second time once the LP token lands."""
+    pool = Pool.from_v2({"address": MERKL_POOL, "crv_apr_boosted": 2.0})
+    pool.attach_campaigns(_MERKL_INDEX, {})
+    pool.attach_campaigns(_MERKL_INDEX, {})
+    assert pool.campaign_apr == 325.11
 
 
 def test_total_apr_adds_base() -> None:

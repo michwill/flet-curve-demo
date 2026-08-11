@@ -26,12 +26,33 @@ from types import SimpleNamespace
 import flet as ft
 import pytest
 
+from curve.external import ExternalCampaign, by_pool
+from curve.merkl import MerklCampaign, MerklToken, by_identifier
 from curve.models import Pool
-from ui.actions import DepositTab, StakeTab, SwapTab, WithdrawTab
+from ui.actions import ClaimTab, DepositTab, StakeTab, SwapTab, WithdrawTab
 from ui.candles import CandleChart
 from ui.pool_detail import PoolDetailView
-from ui.pool_list import PoolListView, PoolRow
+from ui.pool_list import PoolListView, PoolRow, reward_lines
 from ui.responsive import layout_for
+
+PIKU = MerklToken("PIKU", "0x" + "3" * 40)
+ORBITAL = MerklToken("Orbital Points", "0x" + "4" * 40, points=True)
+#: A Merkl wrapper, already resolved: the campaign is denominated in
+#: `ybwcrvUSD` and crvUSD is what a claim delivers.
+YBW = MerklToken(
+    "ybwcrvUSD",
+    "0x" + "5" * 40,
+    underlying_id="crvusd",
+    underlying=MerklToken("crvUSD", "0x" + "6" * 40),
+)
+ETHENA_CAMPAIGN = ExternalCampaign(
+    platform="Ethena",
+    dashboard="https://app.ethena.fi/liquidity",
+    network="ethereum",
+    address="0x" + "1" * 40,
+    multiplier="30x",
+    tags=("points",),
+)
 
 
 class FakeFeed:
@@ -131,6 +152,49 @@ def make_pool(n_coins: int = 2, *, registry: str = "crvusd", gauge: str = "0xg")
             ],
         }
     )
+
+
+def texts(control) -> list[str]:
+    """Every string in a subtree, for asserting on what a panel says."""
+    found: list[str] = []
+
+    def walk(node, seen):
+        if id(node) in seen:
+            return
+        seen.add(id(node))
+        if isinstance(node, ft.Text) and node.value:
+            found.append(node.value)
+        if isinstance(node, ft.Control):
+            for name in node.__dataclass_fields__:
+                walk(getattr(node, name, None), seen)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item, seen)
+
+    walk(control, set())
+    return found
+
+
+def urls(control) -> list[str]:
+    """Every link out of a subtree. `ft.Url`, not a bare string: everything
+    that leaves this app opens in a new tab."""
+    found: list[str] = []
+
+    def walk(node, seen):
+        if id(node) in seen:
+            return
+        seen.add(id(node))
+        if isinstance(node, ft.Url):
+            found.append(node.url)
+        if isinstance(node, ft.Control):
+            for name in node.__dataclass_fields__:
+                walk(getattr(node, name, None), seen)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item, seen)
+
+    walk(control, set())
+    return found
 
 
 # -- list ------------------------------------------------------------------
@@ -394,6 +458,132 @@ def test_deposit_ignores_unparseable_input_rather_than_raising() -> None:
     tab.mount()
     tab.fields[0].value = "not a number"
     assert tab._amounts() == [0, 0]
+
+
+# -- campaigns --------------------------------------------------------------
+#
+# Merkl and curve-frontend's `external-rewards`, which between them carry
+# the reward tokens `merkle_apr` does not name and the points campaigns no
+# APR field anywhere can hold. `test_merkl.py` and `test_external.py` own
+# the parsing; these check what reaches the screen.
+
+
+def with_campaigns(pool: Pool) -> Pool:
+    return pool.attach_campaigns(
+        by_identifier(
+            [
+                MerklCampaign(1, pool.address, "Provide liquidity", 40.0, "a", (PIKU,)),
+                MerklCampaign(1, pool.gauge, "Stake into the gauge", 12.0, "b", (PIKU,)),
+                MerklCampaign(1, pool.address, "Points", 0.0, "c", (ORBITAL,)),
+            ]
+        ),
+        by_pool([ETHENA_CAMPAIGN]),
+        chain="ethereum",
+    )
+
+
+def test_the_rewards_column_names_the_token_a_merkle_apr_does_not() -> None:
+    lines = texts(ft.Column(reward_lines(with_campaigns(make_pool()))))
+    assert "40.00% PIKU" in lines
+    # The better of the two sides; the column has no room to explain which.
+    assert "12.00% PIKU" not in lines
+
+
+def test_the_rewards_column_carries_points_without_a_rate() -> None:
+    lines = texts(ft.Column(reward_lines(with_campaigns(make_pool()))))
+    assert "Orbital Points" in lines
+    assert "Ethena 30x" in lines
+    assert not any(line.startswith("0%") for line in lines)
+
+
+def test_curves_merkle_line_is_the_fallback_and_not_a_duplicate() -> None:
+    """Shown when Merkl has nothing, gone the moment it does."""
+    alone = make_pool()
+    alone.merkle_apr = 12.5
+    assert "12.50% merkle" in texts(ft.Column(reward_lines(alone)))
+
+    both = with_campaigns(make_pool())
+    both.merkle_apr = 12.5
+    assert "12.50% merkle" not in texts(ft.Column(reward_lines(both)))
+
+
+def test_a_wrapped_reward_reads_as_the_token_that_arrives() -> None:
+    """`ybwcrvUSD` is Merkl's accounting; crvUSD is what a claim delivers.
+
+    The wrapper is not dropped -- Merkl's own page, one click away, calls
+    it by the wrapper's name and the two have to reconcile -- so it goes
+    in the tooltip here and is written out on the pool page.
+    """
+    pool = make_pool().attach_campaigns(
+        by_identifier([MerklCampaign(1, "0x" + "1" * 40, "LP", 0.2, "a", (YBW,))]), {}
+    )
+    row = ft.Column(reward_lines(pool))
+    assert "0.20% crvUSD" in texts(row)
+
+    view = PoolDetailView(
+        StubPage(), api=None, pool=pool, get_contract=lambda: None, on_back=lambda: None
+    )
+    assert any("crvUSD via Merkl" in line for line in texts(view._yields_slot))
+    assert any("paid as ybwcrvUSD" in line for line in texts(view._campaigns_slot))
+
+
+def test_the_pool_page_breaks_out_the_two_sides_of_a_campaign() -> None:
+    """Where there is room to say which, and where the Stake button is."""
+    view = PoolDetailView(
+        StubPage(), api=None, pool=with_campaigns(make_pool()),
+        get_contract=lambda: None, on_back=lambda: None,
+    )
+    shown = texts(view._yields_slot)
+    assert "PIKU via Merkl (unstaked LP)" in shown
+    assert "PIKU via Merkl (staked)" in shown
+
+
+def test_the_pool_page_links_out_for_everything_it_cannot_claim() -> None:
+    view = PoolDetailView(
+        StubPage(), api=None, pool=with_campaigns(make_pool()),
+        get_contract=lambda: None, on_back=lambda: None,
+    )
+    shown = texts(view._campaigns_slot)
+    assert "Provide liquidity" in shown
+    assert "Stake into the gauge" in shown
+    assert "Ethena 30x" in shown
+    assert any("no price and so no rate" in line for line in shown)
+
+    links = urls(view._campaigns_slot)
+    assert "https://app.merkl.xyz/opportunities/a" in links
+    assert "https://app.ethena.fi/liquidity" in links
+
+
+def test_a_pool_with_no_campaigns_shows_no_campaign_section() -> None:
+    view = PoolDetailView(
+        StubPage(), api=None, pool=make_pool(), get_contract=lambda: None,
+        on_back=lambda: None,
+    )
+    assert texts(view._campaigns_slot) == []
+
+
+def test_the_claim_panel_says_the_button_does_not_cover_merkl() -> None:
+    """Claiming the gauge and seeing nothing arrive is the failure here."""
+    tab = ClaimTab(
+        StubPage(), with_campaigns(make_pool()), lambda: None, _noop_refresh
+    )
+    tab.mount()
+    tab._render()
+    assert any(
+        "claimed on Merkl" in line for line in texts(tab.campaign_note)
+    )
+    assert "https://app.merkl.xyz/opportunities/a" in urls(tab.campaign_note)
+
+
+def test_the_claim_panel_stays_quiet_when_there_is_no_campaign() -> None:
+    tab = ClaimTab(StubPage(), make_pool(), lambda: None, _noop_refresh)
+    tab.mount()
+    tab._render()
+    assert tab.campaign_note.content is None
+
+
+async def _noop_refresh() -> None:
+    pass
 
 
 # -- chart -----------------------------------------------------------------
@@ -1072,25 +1262,6 @@ def detail_view(page=None, **kw):
     )
 
 
-def texts(control) -> list[str]:
-    """Every string in a subtree, for asserting on what a panel says."""
-    found: list[str] = []
-
-    def walk(node, seen):
-        if id(node) in seen:
-            return
-        seen.add(id(node))
-        if isinstance(node, ft.Text) and node.value:
-            found.append(node.value)
-        if isinstance(node, ft.Control):
-            for name in node.__dataclass_fields__:
-                walk(getattr(node, name, None), seen)
-        elif isinstance(node, list):
-            for item in node:
-                walk(item, seen)
-
-    walk(control, set())
-    return found
 
 
 def test_the_parameters_start_folded_away() -> None:

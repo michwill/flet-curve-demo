@@ -2422,6 +2422,12 @@ class ClaimTab(ActionTab):
         #: and the panel refreshes after every transaction on the page.
         self._meta: dict[str, tuple[str, int]] = {}
         self.rows = ft.Column(spacing=10)
+        #: Set by `_render` when this pool also has a Merkl campaign. The
+        #: button below claims the gauge and only the gauge -- a merkle
+        #: drop is a different contract with a different proof -- so a
+        #: pool paying both would otherwise let somebody claim, see the
+        #: list empty, and conclude the campaign had paid them nothing.
+        self.campaign_note = ft.Container()
         self.empty_note = ft.Text(
             "Nothing to claim yet.", size=SMALL, color=ft.Colors.ON_SURFACE_VARIANT
         )
@@ -2458,7 +2464,7 @@ class ClaimTab(ActionTab):
                     color=ft.Colors.ON_SURFACE_VARIANT,
                 )
             ]
-        return [self.rows, self.empty_note]
+        return [self.rows, self.campaign_note, self.empty_note]
 
     def _line(self, address: str, symbol: str, decimals: int, amount: int) -> ft.Control:
         """One reward: its mark, its symbol, and what is owed.
@@ -2492,12 +2498,44 @@ class ClaimTab(ActionTab):
             if claimable(amount, decimals):
                 lines.append(self._line(address, symbol, decimals, amount))
         self.rows.controls = lines
+        self.campaign_note.content = self._campaign_note()
         # The reason goes where every other panel puts one. "Nothing to
         # claim yet" is only said when that is actually known -- saying it
         # after a failed read is the lie this whole attribute exists to
         # stop.
         self.show_estimate(self.read_error, problem=bool(self.read_error))
         self.empty_note.visible = not lines and not self.read_error
+
+    def _campaign_note(self) -> ft.Control | None:
+        """Say that the button below does not cover the Merkl side.
+
+        `claim_rewards()` transfers what the gauge holds and the Minter
+        mints the CRV; a Merkl campaign is a merkle drop claimed against
+        a proof on Merkl's own distributor, and no transaction from this
+        panel touches it. The pool page's campaigns block says the same
+        thing, but a claim happens here.
+        """
+        campaign = next(iter(self.pool.merkl.all), None)
+        if campaign is None:
+            return None
+        return ft.Row(
+            [
+                ft.Text(
+                    "Merkl campaign rewards are claimed on Merkl, not here.",
+                    size=SMALL,
+                    color=ft.Colors.ON_SURFACE_VARIANT,
+                    expand=True,
+                ),
+                ft.IconButton(
+                    ft.Icons.OPEN_IN_NEW,
+                    icon_size=14,
+                    tooltip="Open on Merkl",
+                    url=ft.Url(campaign.url, target=ft.UrlTarget.BLANK),
+                ),
+            ],
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            spacing=4,
+        )
 
     async def _meta_for(self, contract: PoolContract, token: str) -> tuple[str, int]:
         key = token.lower()

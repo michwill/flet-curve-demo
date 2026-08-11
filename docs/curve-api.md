@@ -19,6 +19,11 @@ addresses, which nothing else publishes.
 
 All public — no key, no auth.
 
+Two more sources are **not Curve's**, and are the only record of a whole
+class of reward — [Merkl](#merkl--the-campaigns-curve-half-reports) and a
+[directory of JSON files in curve-frontend](#curve-frontends-external-rewards).
+Both are at the end of this file.
+
 ---
 
 ## Prices API v2 — pool data
@@ -305,6 +310,137 @@ Deprecated in favour of `getPools`: `getFactoryV2Pools`, `getFactoryCryptoPools`
 Registry ids (v1 spelling): `main`, `crypto`, `factory`, `factory-crypto`,
 `factory-crvusd`, `factory-tricrypto`, `factory-twocrypto`,
 `factory-stable-ng`, `factory-eywa`.
+
+---
+
+## Merkl — the campaigns Curve half-reports
+
+`https://api.merkl.xyz/v4`, public, no key. Docs at
+[docs.merkl.xyz](https://docs.merkl.xyz/).
+
+```
+GET /v4/opportunities?chainId=&mainProtocolId=curve&status=LIVE&items=100&page=0
+GET /v4/opportunities/count?…          the same filters, just the number
+GET /v4/opportunities?chainId=&identifier=0x…   one address; not repeatable
+GET /v4/users/{address}/rewards?chainId=        claimables, with merkle proofs
+```
+
+`items` caps at 100 (a 400 with a validation body above that) and `page` is
+**0-based**. There were **44 live Curve opportunities across every chain**
+when this was measured, so one request per chain is the whole picture with
+room to spare.
+
+### A pool is usually two opportunities
+
+A campaign watches a *token*. For a Curve pool that is either the LP token,
+which pays whether or not you stake, or the gauge, which pays only what is
+staked into it — and Merkl usually runs both, at slightly different rates:
+
+```
+identifier 0xd50492…0da9   Provide liquidity to Curve frxUSD-USP    325.1121%
+identifier 0xF7F4b8…0A92   Stake into the Curve frxUSP gauge        325.0632%
+```
+
+**Curve's `merkle_apr` is the second one alone.** `325.0632316262278` in
+v2 for that pool, to the digit. So the pool-side campaign is in no Curve
+field at all, and neither number carries the token's name.
+
+`identifier` is checksummed, and the parameter takes **one** value — repeating
+it returns only the first match. So per-pool lookup is a request per address;
+the bulk form above is what a list view wants.
+
+### Points
+
+Merkl types an unpriced reward `POINT` and therefore quotes `apr: 0` and
+`dailyRewards: 0` for it. A points campaign is consequently invisible in
+every APR field on every API here, while being the entire reason some pools
+have liquidity. `PRETGE` is a third type — a token that exists before its
+generation event, which Merkl *does* price, so it has a rate like any other.
+
+Reward tokens are in `rewardsRecord.breakdowns[].token`, **not** in the
+top-level `tokens[]`, which lists what the watched contract holds. For a
+Curve pool that is its own coins, so reading rewards from there reports USDC
+as the reward.
+
+### The token named is not always the token paid
+
+A **token wrapper** is an ERC-20 with an `onClaim` hook: the campaign is
+denominated in the wrapper and the hook delivers something else when
+somebody claims. Merkl publishes four templates — pull-on-claim, aToken
+unwrapper, ERC-4626 auto-vault, and native unwrapper — and their docs say
+the wrapper is invisible to the claimer. So the pyUSD/crvUSD pool advertises
+`ybwcrvUSD` and pays crvUSD.
+
+`underlyingTokenId` on the reward token is the link, and
+**`/v4/tokens?id=…&id=…` resolves every wrapper on a chain in one request** —
+that parameter *does* repeat, unlike `identifier` above. Three of the
+fourteen tokens paying live Curve campaigns were wrappers when measured:
+
+```
+ybwcrvUSD  Yield Basis crvUSD (Merkl wrapper)  ->  crvUSD
+mtwCARROT  Merkl Token Wrapper - Carrot        ->  CARROT
+veMEZO     veMEZO (wrapped)                    ->  MEZO
+```
+
+⚠️ **`underlyingTokenId` is on more tokens than are wrappers.** `WFRAX` and
+`tGBP` both carry it set to their **own** id. Following that prints "WFRAX
+pays WFRAX", and worse, leaves no way to tell the two cases apart. A real
+wrapper is one whose `underlyingTokenId` differs from its `id`.
+
+Merkl's own UI shows the wrapper: `displaySymbol` on `ybwcrvUSD` is
+`ybwcrvUSD`, not `crvUSD`. Anything showing the underlying instead needs to
+name the wrapper somewhere, or the two pages cannot be reconciled.
+
+### Links
+
+`https://app.merkl.xyz/opportunities/{id}` — `id` is in the payload. The
+address form (`/opportunities/{chain}/{type}/{identifier}`, checksummed)
+301s to it; lowercased, it 404s.
+
+### CORS
+
+Merkl **echoes the request's `Origin`** rather than sending `*`, and allows
+GET. Fine for a browser build, which is not obvious from the usual `*`.
+
+---
+
+## curve-frontend's `external-rewards`
+
+<https://github.com/curvefi/curve-frontend/tree/main/packages/external-rewards/src/campaigns>
+
+Not an API: 23 JSON files, one per platform, 51 KB in total, listed by
+`campaign-list.json` beside them. It is the only machine-readable record
+that a protocol counts a Curve position towards its points. The package is
+`private` and not on npm, so raw GitHub is the only route:
+
+```
+https://raw.githubusercontent.com/curvefi/curve-frontend/main/packages/external-rewards/src/campaign-list.json
+                                                                              …/src/campaigns/{Name}.json
+```
+
+`raw.githubusercontent.com` sends `access-control-allow-origin: *` and
+`max-age=300`. The manifest matters: the directory can otherwise only be
+enumerated through the GitHub API, which rate-limits an unauthenticated
+caller at 60 requests an hour.
+
+Each entry is `{action, address, network, multiplier, tags, campaignStart,
+campaignEnd, description, lock}`. `network` is Curve's own chain name and
+`address` is the pool's — checked against the v2 detail endpoint for every
+Ethereum `lp` entry, all of which resolved to a pool.
+
+⚠️ **`campaignEnd` cannot be believed.** 121 of the 122 `lp` entries had an
+end date already in the past when this was measured — 119 of them the same
+round `1770000000` — while Curve's own site showed every one of them. Two
+things in `index.ts` explain it: an entry whose `campaignStart` is `"0"`
+returns early and is never date-checked, and the check the rest get reads
+the seconds as milliseconds (`new Date(+pool.campaignStart)`), putting 2026
+in 1970. Nothing has ever read the field, so nobody has maintained it, and
+a client that started enforcing it would show an empty section where Curve
+shows twenty campaigns.
+
+Two smaller shape notes: `action` is `lp`, `supply` or `borrow` and only the
+first is about a pool; and `multiplier` is free text — `30x` is the common
+case but `15+`, `0-1x`, `crvUSD` and `tangent points` are all in there.
 
 ---
 

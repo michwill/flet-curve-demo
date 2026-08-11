@@ -107,6 +107,16 @@ class FakeApi:
     async def pool_detail(self, chain_id: int, address: str) -> dict[str, Any]:
         return {}
 
+    async def attach_campaigns(
+        self, chain_id: int, chain: str, pools: Any
+    ) -> None:
+        """Merkl and the point campaigns, with neither host reachable.
+
+        Which is the shape that matters here: a third-party outage must
+        cost the campaign lines and nothing else, so this leaves every
+        pool exactly as it found it.
+        """
+
     async def lp_candles(self, *a: Any, **kw: Any) -> list[Any]:
         return []
 

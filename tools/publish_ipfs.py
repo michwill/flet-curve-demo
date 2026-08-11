@@ -242,6 +242,21 @@ PROBE_BINARY_STEM = "gateway-probe-binary"
 #: The refusal is a fresh 404 in ~0.3s with no `Age` header, which is what
 #: distinguishes it from a block that has not propagated yet -- that one is
 #: a 504 after ~17s. See `classify`.
+#:
+#: **This warns rather than stops**, and the reason is worth keeping. The
+#: one file it catches today is `pyodide/python_stdlib.zip`, and the
+#: published app never asks a gateway for it: `flet publish` overwrites its
+#: own template default with
+#: `flet.pyodideUrl="https://cdn.jsdelivr.net/pyodide/v314.0.3/full/pyodide.mjs"`,
+#: so Pyodide and its standard library come from jsDelivr and the whole
+#: pinned `pyodide/` directory is never read. The site loads on
+#: curve.eth.link with that file 404ing throughout -- checked in a browser,
+#: every request 200 and the pool list populated by Python.
+#:
+#: So a refusal here is a fact about a file, not about the app, and
+#: predicting damage from a filename is what turned an observation into a
+#: block that would have stopped a working publish. `verify` measures
+#: instead of predicting; this is a heads-up beside it.
 REFUSED_SUFFIXES = (".zip",)
 
 
@@ -887,11 +902,6 @@ def main() -> int:
         "a gateway will not serve",
     )
     parser.add_argument(
-        "--allow-refused",
-        action="store_true",
-        help="pin even if the build holds files an ENS gateway refuses",
-    )
-    parser.add_argument(
         "--no-verify",
         action="store_true",
         help="skip proving the pin is retrievable before you point ENS at it",
@@ -979,18 +989,14 @@ def main() -> int:
     if options.probe:
         print("probes: " + ", ".join(add_probes(dist)))
 
-    if (found := refused_by_gateway(dist)) and not options.allow_refused:
-        raise SystemExit(
-            "The build carries files an ENS gateway will not serve:\n  "
+    if found := refused_by_gateway(dist):
+        print(
+            "note: eth.limo will not serve these, whatever is in them:\n  "
             + "\n  ".join(found)
-            + "\n\nNothing was uploaded. eth.limo answers a fresh 404 in ~0.3s for "
-            "these -- measured against a wheel in the same directory, which is "
-            "the same zip magic under a different suffix and is served. If "
-            "`pyodide/python_stdlib.zip` is in that list the app cannot boot at "
-            "all: Pyodide fetches it during loadPyodide() as "
-            'indexURL + "python_stdlib.zip", so the shell loads and the Python '
-            "never arrives.\n\nSee REFUSED_SUFFIXES. Use --allow-refused to pin "
-            "anyway, e.g. for a gateway with no such policy."
+            + "\n  They are pinned and reachable through other gateways. Nothing "
+            "in the\n  published app fetches them today -- Pyodide comes from "
+            "jsDelivr, not\n  from the pin -- so this is a heads-up, not a "
+            "problem. See REFUSED_SUFFIXES."
         )
 
     if found := bytecode(dist):

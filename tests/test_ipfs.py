@@ -622,13 +622,18 @@ def test_publishing_compiles_the_marks_first() -> None:
 # wheel and refuses the zip from the same directory in the same pin.
 
 
-def test_the_stdlib_zip_stops_the_upload(tmp_path: Path) -> None:
-    """The one that matters, and it is not ours to rename.
+def test_the_stdlib_zip_is_reported_and_does_not_stop_the_upload(
+    tmp_path: Path,
+) -> None:
+    """Named, not blocked -- and the difference cost a working publish.
 
-    Pyodide fetches it during `loadPyodide()` as
-    `indexURL + "python_stdlib.zip"`, so a gateway refusing it means the
-    shell loads and the Python never arrives -- one 404 among a hundred
-    200s, which reads as a slow site rather than a broken one.
+    `flet publish` overwrites its own template default with
+    `flet.pyodideUrl="https://cdn.jsdelivr.net/pyodide/.../pyodide.mjs"`,
+    so Pyodide and its standard library come from jsDelivr and nothing
+    ever asks a gateway for the copy in the pin. curve.eth.link loads
+    fully with this file 404ing throughout. Predicting damage to the app
+    from a filename is what made this a block; `verify` measures the pin
+    instead.
     """
     root = build(tmp_path, {"index.html": "<html>", "pyodide/python_stdlib.zip": "PK"})
     assert ipfs.refused_by_gateway(root) == ["pyodide/python_stdlib.zip"]

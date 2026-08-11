@@ -177,12 +177,30 @@ Two rules, measured separately, and neither predicts the other:
   `python_stdlib.zip` is, and eth.limo serves `packaging-26.1-py3-none-any.whl`
   and refuses `python_stdlib.zip` from the same directory in the same pin.
 
-The second one bites hard, because that file is not ours: Pyodide fetches it
-during `loadPyodide()` as `indexURL + "python_stdlib.zip"`. A gateway that
-refuses it leaves the shell loading forever with a single 404 among a hundred
-200s to explain it. `refused_by_gateway` now stops the upload rather than
-letting that ship; `--allow-refused` pins anyway for a gateway with no such
-policy.
+The only file that catches today is `pyodide/python_stdlib.zip`, and it is
+**harmless**, for a reason worth knowing on its own: the published app does
+not load Pyodide from the pin at all. `flet publish` overwrites its own
+template default —
+
+```js
+pyodideUrl: "/pyodide/pyodide.mjs",                       // the template
+flet.pyodideUrl="https://cdn.jsdelivr.net/pyodide/…";     // what publish writes
+```
+
+— so Pyodide and its standard library come from **jsDelivr**, and the 15 MB
+`pyodide/` directory in the pin is never read. curve.eth.link loads fully
+with that file 404ing throughout.
+
+`refused_by_gateway` therefore prints a note and does not block. Predicting
+damage to the app from a filename is how an accurate observation about one
+file became a check that would have stopped a working publish; `verify`
+measures the pin instead of guessing from it.
+
+**That CDN dependency is worth its own look.** A build pinned to IPFS for
+censorship-resistance that cannot start without jsDelivr has given most of
+that away, and `flet.noCdn` is the switch. Turning it on would make the
+bundled copy load-bearing — and would make the `.zip` refusal above matter
+for the first time, so the two changes go together.
 
 It builds with `--app-short-name`, which a plain `flet publish` does not:
 the manifest's short name otherwise falls back to the *project's* name, so

@@ -168,16 +168,31 @@ separates them, because only one of them is about time:
 ### What an IPFS gateway will not serve
 
 Archives, broadly — not an eth.limo quirk; gateways decline them generally,
-presumably so a pin cannot be used as a file-distribution host. Two rules
-behind that, measured separately, and neither predicts the other:
+presumably so a pin cannot be used as a file-distribution host. **What
+exactly triggers it is still open**, and it is worth being honest about why,
+because two confident and incompatible answers have been written down here
+already. Everything measured so far moved more than one variable:
 
-- **gzip is caught by its bytes.** A six-byte text file called
-  `gateway-probe.tar.gz` is served; a real archive under the same name is
-  not. No rename avoids it, which is why the app package is base64 inside
-  JSON — see `wrap_package`.
-- **`.zip` is caught by its name.** A wheel is `PK\x03\x04` exactly as
-  `python_stdlib.zip` is, and eth.limo serves `packaging-26.1-py3-none-any.whl`
-  and refuses `python_stdlib.zip` from the same directory in the same pin.
+```
+gateway-probe.tar.gz      6 bytes, text        served
+app.tar.gz              ~400 KB, real gzip     refused
+packaging-*.whl           96 KB, real zip      served
+python_stdlib.zip        2.5 MB, real zip      refused
+```
+
+Read the first pair and the bytes decide. Read the second and the suffix
+does. Read the sizes and neither does — a threshold explains all four on
+its own. Each pair changed the name *and* the content *and* the size at
+once, so none of them settles anything, and a rename that looks free might
+buy nothing.
+
+`--probe` now pins five files that move one variable at a time: a 3 MB
+*text* file named `.zip` (refused ⇒ the suffix), a 3 MB zip named `.bin`
+(refused ⇒ the bytes), the same zip named `.whl`, a 1 KB zip named `.zip`
+(served ⇒ the size), and a 3 MB text `.bin` as the control that must serve
+or the run proves nothing. At most one explanation survives all five. Until
+that has run, the only safe statement is that an archive in a pin may not
+be reachable, and `verify` is what finds out.
 
 The only file that catches today is `pyodide/python_stdlib.zip`, and it is
 **harmless**, for a reason worth knowing on its own: the published app does

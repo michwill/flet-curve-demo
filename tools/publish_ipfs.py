@@ -221,35 +221,70 @@ PACKAGE_TO = "app-package.json"
 #: gzipped tar is reading the file rather than assuming.
 PACKAGE_KEY = "gztar"
 
-#: Probes. `probe` under suffixes that differ only in name, and one real
-#: gzip archive under suffixes that differ in what a gateway makes of the
-#: *content*. Together they separate "this suffix is banned" from "these
-#: bytes are", which is the question a rename kept failing to answer.
-PROBE_SUFFIXES = (".tar.gz", ".tgz", ".zip", ".gz", ".bin", ".txt")
-PROBE_BINARY_SUFFIXES = (".tar.gz", ".wasm", ".png", ".bin")
+#: Probes, as a matrix rather than a handful, because the handful is what
+#: produced two confident and incompatible readings of the same gateway.
+#:
+#: Every earlier probe was a few bytes, and the files that actually got
+#: refused were hundreds of kilobytes to megabytes -- so "small text
+#: served, large archive refused" was read as being about the content when
+#: the size moved with it every time. This varies **one thing at a time**:
+#:
+#:   * `PROBE_CONTENTS` -- text, gzip and zip, at the same size;
+#:   * `PROBE_SIZES` -- small and large, for each of those;
+#:   * `PROBE_SUFFIXES` -- the archive names and two innocent controls.
+#:
+#: The large size is past everything seen refused so far, and the text
+#: rows are the control: if a 3 MB *text* file named `.zip` is refused,
+#: the suffix decides; if a 3 MB zip named `.bin` is refused, the bytes
+#: do; if only the large rows are refused whatever they are called, it is
+#: a threshold. Those three outcomes are mutually exclusive, which is
+#: what the earlier probes could not manage.
+#: Large enough to be past everything seen refused so far, the biggest of
+#: which was the 2.5 MB `python_stdlib.zip`.
+PROBE_LARGE = 3 << 20
+PROBE_SMALL = 1 << 10
 PROBE_STEM = "gateway-probe"
-PROBE_BINARY_STEM = "gateway-probe-binary"
+
+#: `(content, size, suffix, what a refusal here would prove)`. Five files
+#: rather than the full cross product, which came to 42 files and 63 MB --
+#: more than half the size of the site, bolted onto a pin whose
+#: propagation is already the thing being complained about.
+#:
+#: Each row holds two variables still and moves one. Read together they
+#: are mutually exclusive: at most one of "the suffix", "the bytes" and
+#: "the size" survives contact with all five.
+PROBE_MATRIX = (
+    ("text", PROBE_LARGE, ".zip", "the suffix decides -- innocent bytes, banned name"),
+    ("zip", PROBE_LARGE, ".bin", "the bytes decide -- archive under an innocent name"),
+    ("zip", PROBE_LARGE, ".whl", "resolves the whl-vs-zip comparison, at one size"),
+    ("zip", PROBE_SMALL, ".zip", "the size decides -- banned name and bytes, tiny"),
+    ("text", PROBE_LARGE, ".bin", "control: must serve, or the run proves nothing"),
+)
 
 #: Archive suffixes an IPFS gateway will not serve. Not an eth.limo
 #: quirk -- gateways decline archives generally, presumably so that a pin
 #: cannot be used as a file-distribution host, and `.zip`, `.gz` and their
 #: relatives are all in scope.
 #:
-#: The measurements behind the two shapes this build actually hits:
+#: **What exactly triggers it is not known, and the obvious readings are
+#: confounded.** Everything measured so far varies two things at once:
 #:
-#:   * **gzip is caught by its bytes.** A six-byte *text* file called
-#:     `gateway-probe.tar.gz` is served -- and labelled `application/gzip`,
-#:     so the declared type is not what is refused -- while the real
-#:     archive under that same name is not. No rename avoids it, which is
-#:     why the app package is base64 in JSON; see `wrap_package`.
-#:   * **`.zip` is caught by its name.** A wheel is `PK\x03\x04` exactly as
-#:     `python_stdlib.zip` is, and a gateway serves
-#:     `packaging-26.1-py3-none-any.whl` and refuses the zip from the same
-#:     directory in the same pin.
+#:     gateway-probe.tar.gz    6 bytes, text        served
+#:     app.tar.gz            ~400 KB, real gzip     refused
+#:     packaging-*.whl         96 KB, real zip      served
+#:     python_stdlib.zip      2.5 MB, real zip      refused
 #:
-#: Neither rule predicts the other, so both had to be measured, and the
-#: list below is deliberately by suffix: it is a heads-up about what will
-#: not be reachable, not a claim about what the app needs.
+#: Read down the first pair and the bytes decide; read down the second and
+#: the suffix does; read the sizes and neither does -- a threshold explains
+#: all four on its own. No experiment yet run separates them, because each
+#: pair changed the name *and* the size *and* the content together.
+#:
+#: So this list is a heads-up about suffixes worth checking, not a theory
+#: about what a gateway does, and nothing should be built on a prediction
+#: from it. `--probe` is where the experiment belongs: one variable at a
+#: time, at a size that matters. Until that has run, the only safe
+#: statement is that an archive in a pin may not be reachable, and
+#: `verify` is what finds out.
 #:
 #: The refusal is a fresh 404 in ~0.3s with no `Age` header, which is what
 #: distinguishes it from a block that has not propagated yet -- that one is
@@ -333,17 +368,42 @@ def patch_worker(root: Path) -> bool:
     return True
 
 
-def add_probes(root: Path) -> list[str]:
-    """Drop the probe files into the build. Returns their names."""
-    names = [f"{PROBE_STEM}{suffix}" for suffix in PROBE_SUFFIXES]
-    for name in names:
-        (root / name).write_bytes(b"probe\n")
-    blob = gzip.compress(b"gateway probe payload\n" * 4096)
-    for suffix in PROBE_BINARY_SUFFIXES:
-        name = f"{PROBE_BINARY_STEM}{suffix}"
-        (root / name).write_bytes(blob)
-        names.append(name)
-    return names
+def probe_payload(kind: str, size: int) -> bytes:
+    """`size` bytes of text, gzip or zip -- as close to `size` as each gets.
+
+    Incompressible filler inside the archives, so a 3 MB zip really is 3 MB
+    on the wire. Compressible filler would make the large archive rows the
+    same size as the small ones and reintroduce the confound this matrix
+    exists to remove.
+    """
+    filler = secrets.token_bytes(size)
+    if kind == "text":
+        return base64.b64encode(filler)[:size]
+    if kind == "gzip":
+        return gzip.compress(filler)
+    if kind == "zip":
+        import zipfile
+
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr("payload.bin", filler)
+        return buffer.getvalue()
+    raise ValueError(kind)
+
+
+def probe_name(kind: str, size: int, suffix: str) -> str:
+    scale = "large" if size >= PROBE_LARGE else "small"
+    return f"{PROBE_STEM}-{kind}-{scale}{suffix}"
+
+
+def add_probes(root: Path) -> list[tuple[str, str]]:
+    """Write the probe matrix into the build. Returns `(name, what it tests)`."""
+    written = []
+    for kind, size, suffix, decides in PROBE_MATRIX:
+        name = probe_name(kind, size, suffix)
+        (root / name).write_bytes(probe_payload(kind, size))
+        written.append((name, decides))
+    return written
 
 
 # -- the check that matters ------------------------------------------------
@@ -1002,7 +1062,9 @@ def main() -> int:
     if patch_worker(dist):
         print(f"{WORKER}: taught to unwrap it")
     if options.probe:
-        print("probes: " + ", ".join(add_probes(dist)))
+        print("probes -- fetch each of these once the pin is retrievable:")
+        for name, decides in add_probes(dist):
+            print(f"  {name:<34} refused => {decides}")
 
     if found := refused_by_gateway(dist):
         print(

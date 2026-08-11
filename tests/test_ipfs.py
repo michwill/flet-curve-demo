@@ -16,7 +16,6 @@ the only reason the CID that comes back is a directory.
 from __future__ import annotations
 
 import base64
-import gzip
 import io
 import json
 import tarfile
@@ -217,19 +216,59 @@ def test_the_python_injected_into_the_worker_parses() -> None:
     )
 
 
-def test_probes_ask_both_questions(tmp_path: Path) -> None:
-    """Text under each suffix says which *names* are refused; one real
-    archive under several suffixes says whether the *bytes* are."""
-    root = build(tmp_path, {"index.html": "x"})
-    names = ipfs.add_probes(root)
+def test_the_probe_matrix_moves_one_variable_at_a_time(tmp_path: Path) -> None:
+    """The earlier probes could not tell three explanations apart.
 
-    assert f"{ipfs.PROBE_STEM}.tar.gz" in names
-    assert f"{ipfs.PROBE_BINARY_STEM}.wasm" in names
-    assert all((root / name).is_file() for name in names)
-    # The binary ones are a real gzip member, or they answer nothing.
-    blob = (root / f"{ipfs.PROBE_BINARY_STEM}.wasm").read_bytes()
-    assert blob[:2] == b"\x1f\x8b"
-    assert gzip.decompress(blob).startswith(b"gateway probe payload")
+    Every file measured before this varied the name, the bytes *and* the
+    size together -- a 6-byte text `.tar.gz` served against a 400 KB real
+    archive, a 96 KB wheel served against a 2.5 MB zip -- so "the bytes
+    decide" and "the suffix decides" and "the size decides" all fit, and
+    two of them got asserted in this file at different times.
+    """
+    root = build(tmp_path, {"index.html": "x"})
+    written = dict(ipfs.add_probes(root))
+    sizes = {n: (root / n).stat().st_size for n in written}
+    magic = {n: (root / n).read_bytes()[:4] for n in written}
+
+    # Same bytes, same size, different suffix: isolates the name.
+    assert magic["gateway-probe-zip-large.bin"] == b"PK\x03\x04"
+    assert magic["gateway-probe-zip-large.whl"] == b"PK\x03\x04"
+    assert (
+        sizes["gateway-probe-zip-large.bin"] == sizes["gateway-probe-zip-large.whl"]
+    )
+
+    # Same suffix, same size, different bytes: isolates the content.
+    assert magic["gateway-probe-text-large.zip"] != b"PK\x03\x04"
+    assert sizes["gateway-probe-text-large.zip"] >= ipfs.PROBE_LARGE
+
+    # Same suffix, same bytes, different size: isolates the threshold.
+    assert magic["gateway-probe-zip-small.zip"] == b"PK\x03\x04"
+    assert sizes["gateway-probe-zip-small.zip"] < sizes["gateway-probe-zip-large.bin"]
+
+    # And a row that must serve, or the run says nothing about anything.
+    assert "control" in written["gateway-probe-text-large.bin"]
+
+
+def test_the_large_probes_really_are_large(tmp_path: Path) -> None:
+    """Compressible filler would make the large archives the size of the
+    small ones and put the confound straight back."""
+    root = build(tmp_path, {"index.html": "x"})
+    written = dict(ipfs.add_probes(root))
+
+    for name in written:
+        if "large" in name:
+            assert (root / name).stat().st_size >= ipfs.PROBE_LARGE, name
+
+
+def test_the_whole_matrix_stays_small_enough_to_pin(tmp_path: Path) -> None:
+    """It rides along with a 100 MB site whose propagation is the problem
+    being investigated. The full cross product was 42 files and 63 MB."""
+    root = build(tmp_path, {"index.html": "x"})
+    written = ipfs.add_probes(root)
+    total = sum((root / name).stat().st_size for name, _ in written)
+
+    assert len(written) <= 8
+    assert total < (16 << 20), f"{total / (1 << 20):.0f} MB of probes"
 
 
 # -- the check before the upload -------------------------------------------

@@ -611,3 +611,129 @@ def test_publishing_compiles_the_marks_first() -> None:
     assert body.index("compile_assets()") < body.index("publish()"), (
         "the marks have to be compiled before `flet publish` packs src/"
     )
+
+
+# -- what a gateway will not serve ------------------------------------------
+#
+# Two rules, measured separately, and neither predicts the other. gzip is
+# caught by its *bytes* -- a text file named `.tar.gz` is served and a real
+# archive under that name is not. `.zip` is caught by its *name*: a wheel is
+# `PK\x03\x04` exactly as `python_stdlib.zip` is, and eth.limo serves the
+# wheel and refuses the zip from the same directory in the same pin.
+
+
+def test_the_stdlib_zip_stops_the_upload(tmp_path: Path) -> None:
+    """The one that matters, and it is not ours to rename.
+
+    Pyodide fetches it during `loadPyodide()` as
+    `indexURL + "python_stdlib.zip"`, so a gateway refusing it means the
+    shell loads and the Python never arrives -- one 404 among a hundred
+    200s, which reads as a slow site rather than a broken one.
+    """
+    root = build(tmp_path, {"index.html": "<html>", "pyodide/python_stdlib.zip": "PK"})
+    assert ipfs.refused_by_gateway(root) == ["pyodide/python_stdlib.zip"]
+
+
+def test_a_wheel_is_the_same_bytes_and_is_left_alone(tmp_path: Path) -> None:
+    """Which is why the rule is the suffix and not the magic number."""
+    root = build(tmp_path, {"pyodide/packaging-26.1-py3-none-any.whl": "PK\x03\x04"})
+    assert ipfs.refused_by_gateway(root) == []
+
+
+def test_a_build_with_nothing_refused_is_quiet(tmp_path: Path) -> None:
+    root = build(tmp_path, {"index.html": "<html>", "main.dart.js": "//"})
+    assert ipfs.refused_by_gateway(root) == []
+
+
+# -- proving the pin before a name points at it -----------------------------
+
+
+def test_the_lazy_token_art_is_not_verified(tmp_path: Path) -> None:
+    """6,716 files a visitor does not need to boot. Asking a public
+    gateway for all of them is an imposition, not a check."""
+    root = build(
+        tmp_path,
+        {
+            "index.html": "<html>",
+            "pyodide/pyodide.js": "//",
+            "curve/tokens/ethereum/0xabc@20.png": "x",
+        },
+    )
+    assert ipfs.boot_files(root) == ["index.html", "pyodide/pyodide.js"]
+
+
+def test_a_fast_failure_is_a_refusal_and_a_slow_one_is_not_yet() -> None:
+    """The whole point of the gate: only one of these clears by waiting.
+
+    Measured on the pin that prompted this -- a refused file answers 404
+    in ~0.3s, a block whose providers are not announced yet spends the
+    gateway's whole retrieval budget first and comes back 504 at ~17s.
+    """
+    assert ipfs.classify(404, 0.3) == "refused"
+    assert ipfs.classify(504, 17.5) == "unfound"
+    assert ipfs.classify(200, 0.4) == "served"
+    assert ipfs.classify(206, 1.2) == "served"
+    # A timeout has no status code at all, and is still not a refusal.
+    assert ipfs.classify("ReadTimeout", 45.0) == "unfound"
+
+
+class FakeGateway:
+    """Answers each path from a script, one entry per attempt."""
+
+    def __init__(self, answers: dict[str, list[tuple[int, float]]]) -> None:
+        self.answers = {k: list(v) for k, v in answers.items()}
+        self.asked: list[str] = []
+
+    def probe(self, _client, url: str) -> tuple[int, float]:
+        path = url.split(".ipfs.dweb.link/", 1)[-1]
+        self.asked.append(path)
+        queue = self.answers.get(path, [(200, 0.1)])
+        return queue.pop(0) if len(queue) > 1 else queue[0]
+
+
+def run_verify(monkeypatch, gateway: FakeGateway, paths: list[str], **kw) -> dict:
+    monkeypatch.setattr(ipfs, "probe", gateway.probe)
+    return ipfs.verify(
+        "bafyfake", paths, client=object(), sleep=lambda _s: None, **kw
+    )
+
+
+def test_a_pin_that_is_fully_retrievable_passes(monkeypatch) -> None:
+    gateway = FakeGateway({"index.html": [(200, 0.2)], "main.dart.js": [(206, 0.4)]})
+    assert run_verify(monkeypatch, gateway, ["index.html", "main.dart.js"]) == {}
+
+
+def test_a_file_still_propagating_is_retried_until_it_lands(monkeypatch) -> None:
+    """This is the case the deadline exists for, and it must not fail."""
+    gateway = FakeGateway({"slow.js": [(504, 17.0), (504, 17.0), (200, 0.9)]})
+
+    assert run_verify(monkeypatch, gateway, ["slow.js"]) == {}
+    assert gateway.asked == ["slow.js", "slow.js", "slow.js"]
+
+
+def test_a_refusal_is_never_retried(monkeypatch) -> None:
+    """A gateway declining a suffix will decline it for the rest of the day,
+    so retrying is a quarter of an hour spent learning nothing."""
+    gateway = FakeGateway({"pyodide/python_stdlib.zip": [(404, 0.3)]})
+
+    bad = run_verify(monkeypatch, gateway, ["pyodide/python_stdlib.zip"])
+
+    assert bad["pyodide/python_stdlib.zip"][0] == "refused"
+    assert gateway.asked == ["pyodide/python_stdlib.zip"], "asked more than once"
+
+
+def test_the_deadline_ends_a_pin_that_never_propagates(monkeypatch) -> None:
+    gateway = FakeGateway({"never.js": [(504, 17.0)]})
+    ticks = iter([0.0, 0.0, 10.0, 999.0, 999.0])
+
+    bad = run_verify(
+        monkeypatch, gateway, ["never.js"], deadline=60.0, now=lambda: next(ticks)
+    )
+
+    assert bad["never.js"][0] == "unfound"
+
+
+def test_a_file_that_heals_is_dropped_from_the_report(monkeypatch) -> None:
+    """It failed on the first pass; the report is about the end state."""
+    gateway = FakeGateway({"a.js": [(504, 17.0), (200, 0.3)], "b.js": [(200, 0.1)]})
+    assert run_verify(monkeypatch, gateway, ["a.js", "b.js"]) == {}

@@ -113,6 +113,65 @@ python tools/publish_ipfs.py --no-build    # pin the dist/ already there
 python tools/publish_ipfs.py --dry-run     # everything up to the upload
 ```
 
+### Pin, prove, *then* move the name
+
+**Pinning publishes nothing.** Pinata holds the bytes and announces provider
+records into the DHT; no gateway receives a copy. Until those records are
+out, a gateway asked for a block finds nobody to ask and times out. The root
+CID is one record and goes first — which is why a fresh pin serves
+`index.html` in half a second while individual files 504 for a good while
+after, and why that reads as a broken site when it is a healthy one.
+
+The trap is that **the first request through a gateway is what gets cached,
+failures included.** Point ENS at a CID before its records are out and your
+own first visit teaches that gateway a 404 which then outlives the
+propagation that caused it. Waiting does not clear it; only the cache TTL
+does.
+
+So `publish_ipfs.py` will not hand over a CID it cannot prove. After the
+upload it fetches the first byte of every file a visitor needs to boot — 92
+of them, the 6,716 token marks skipped because they are lazy and hammering a
+public gateway for art nobody asked for is not a check — and retries until
+they are all retrievable:
+
+```
+verifying 92 files through https://{cid}.ipfs.dweb.link
+  verify: 88/92 retrievable
+  verify: 92/92 retrievable
+  all 92 retrievable -- safe to point ENS at this CID
+```
+
+It verifies against a **CID** URL, not the ENS name, on purpose: proving it
+must not be what poisons the cache of the hostname you are about to publish.
+Warm that one afterwards, when every request will be a hit.
+
+**A slow failure and a fast one are different diseases**, and the report
+separates them, because only one of them is about time:
+
+```
+504 after ~17s   the block's providers are not announced yet -- retry
+404 in ~0.3s     the gateway is refusing this file -- waiting never helps
+```
+
+### What eth.limo will not serve
+
+Two rules, measured separately, and neither predicts the other:
+
+- **gzip is caught by its bytes.** A six-byte text file called
+  `gateway-probe.tar.gz` is served; a real archive under the same name is
+  not. No rename avoids it, which is why the app package is base64 inside
+  JSON — see `wrap_package`.
+- **`.zip` is caught by its name.** A wheel is `PK\x03\x04` exactly as
+  `python_stdlib.zip` is, and eth.limo serves `packaging-26.1-py3-none-any.whl`
+  and refuses `python_stdlib.zip` from the same directory in the same pin.
+
+The second one bites hard, because that file is not ours: Pyodide fetches it
+during `loadPyodide()` as `indexURL + "python_stdlib.zip"`. A gateway that
+refuses it leaves the shell loading forever with a single 404 among a hundred
+200s to explain it. `refused_by_gateway` now stops the upload rather than
+letting that ship; `--allow-refused` pins anyway for a gateway with no such
+policy.
+
 It builds with `--app-short-name`, which a plain `flet publish` does not:
 the manifest's short name otherwise falls back to the *project's* name, so
 an installed shortcut is labelled "flet-curve" on an Android home screen.

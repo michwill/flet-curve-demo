@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import concurrent.futures
 import gzip
 import io
 import json
@@ -49,6 +50,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import time
 import tomllib
 from collections.abc import Iterator
 from pathlib import Path
@@ -227,6 +229,20 @@ PROBE_SUFFIXES = (".tar.gz", ".tgz", ".zip", ".gz", ".bin", ".txt")
 PROBE_BINARY_SUFFIXES = (".tar.gz", ".wasm", ".png", ".bin")
 PROBE_STEM = "gateway-probe"
 PROBE_BINARY_STEM = "gateway-probe-binary"
+
+#: Suffixes eth.limo will not serve **whatever is inside them**, which is
+#: a separate rule from the gzip one above and was measured separately.
+#:
+#: A wheel is a zip -- `packaging-26.1-py3-none-any.whl` starts `PK\x03\x04`
+#: exactly as `python_stdlib.zip` does -- and eth.limo serves the wheel and
+#: refuses the zip, from the same directory, in the same pin. So for this
+#: family it is the *name* that is caught, where for gzip it was the bytes.
+#: Both findings are needed: neither rule predicts the other.
+#:
+#: The refusal is a fresh 404 in ~0.3s with no `Age` header, which is what
+#: distinguishes it from a block that has not propagated yet -- that one is
+#: a 504 after ~17s. See `classify`.
+REFUSED_SUFFIXES = (".zip",)
 
 
 def wrap_package(root: Path) -> bool:
@@ -409,6 +425,29 @@ def bytecode(root: Path) -> list[str]:
     return found
 
 
+def refused_by_gateway(root: Path) -> list[str]:
+    """Files in the build an ENS gateway will not serve. See REFUSED_SUFFIXES.
+
+    Checked before the upload rather than after, because the alternative is
+    finding out from a page that never finishes loading. `python_stdlib.zip`
+    is the one that matters and it is not ours: Pyodide fetches it during
+    `loadPyodide()` -- `pyodide.mjs` builds the URL as
+    `indexURL + "python_stdlib.zip"` -- so a gateway that refuses it stops
+    the app at the shell, with every other file in the pin serving
+    perfectly and one 404 to explain it.
+
+    That is the same failure `wrap_package` exists for and a different
+    file, which is why this is a check rather than another rewrite: the
+    archive we produce we can rename, and Pyodide's we cannot without also
+    setting `stdLibURL` where the page loads it.
+    """
+    return [
+        path.relative_to(root).as_posix()
+        for path in sorted(root.rglob("*"))
+        if path.is_file() and path.name.endswith(REFUSED_SUFFIXES)
+    ]
+
+
 def clear_bytecode() -> list[str]:
     """Delete every `__pycache__` under `src/`, and say which went."""
     gone = []
@@ -572,7 +611,140 @@ def pin(
     return response.json()
 
 
-# -- putting it together ---------------------------------------------------
+# -- proving the pin before a name points at it ----------------------------
+#
+# Pinning does not publish anything anywhere. Pinata holds the bytes and
+# announces provider records into the DHT, and until those records are out
+# a gateway asking "who has this block" gets no answer and times out. The
+# root CID is one record and goes first, so index.html resolves within
+# seconds while individual files 504 for a good while after -- which reads
+# exactly like "the site is broken" and is not.
+#
+# **The reason to gate on it rather than wait a bit** is that the first
+# request through a gateway is what gets cached, failures included. Point
+# ENS at a CID before its records are out and your own first visit teaches
+# that gateway a 404, which then outlives the propagation that caused it.
+# So: prove retrievability against a CID URL first, and only then move the
+# name that people will actually use.
+
+#: Where to prove it. `{cid}` is filled in. The subdomain form, so this is
+#: a different cache key from the ENS hostname the name will resolve to --
+#: warming happens after, deliberately, once every request will be a hit.
+VERIFY_GATEWAY = "https://{cid}.ipfs.dweb.link"
+
+#: How long to keep retrying the ones that have not propagated. Fifteen
+#: minutes is well past what a few thousand blocks has taken in practice
+#: and short enough to sit and watch.
+VERIFY_DEADLINE = 900.0
+VERIFY_INTERVAL = 20.0
+VERIFY_TIMEOUT = 45.0
+VERIFY_WORKERS = 6
+
+#: A failure faster than this is a decision, not a timeout. A gateway that
+#: cannot find a block spends its whole retrieval budget first -- ~17s in
+#: the case that prompted this -- where one that refuses to serve the file
+#: answers in a third of a second. Waiting fixes the first and never the
+#: second, so they must not be reported as the same thing.
+REFUSAL_SECONDS = 3.0
+
+#: Not verified: the token marks, which are fetched only when a pool that
+#: uses one is drawn. 6,716 files against the 92 a visitor needs to boot,
+#: and hammering a public gateway for art nobody has asked for yet is not
+#: a check, it is an imposition.
+LAZY_DIR = "curve"
+
+
+def boot_files(root: Path) -> list[str]:
+    """The part of the build a visitor needs before the app can paint.
+
+    Derived from the build rather than listed here, for the reason
+    `build_assets` reads the submodule's directory rather than a table: a
+    list kept in the tool goes stale silently, and the failure mode is a
+    file nobody checked being the one that does not serve.
+    """
+    return [
+        path.relative_to(root).as_posix()
+        for path in sorted(root.rglob("*"))
+        if path.is_file() and path.relative_to(root).parts[0] != LAZY_DIR
+    ]
+
+
+def classify(status: int | str, seconds: float) -> str:
+    """`served`, `refused` or `unfound` -- and the difference is the point."""
+    if status in (200, 206):
+        return "served"
+    return "refused" if seconds < REFUSAL_SECONDS else "unfound"
+
+
+def probe(client, url: str) -> tuple[int | str, float]:
+    """Fetch enough of `url` to prove the blocks are there, and time it.
+
+    Streamed and abandoned after the first chunk: proving a 9 MB file is
+    retrievable does not require moving 9 MB, and this runs against
+    somebody else's gateway.
+    """
+    import httpx
+
+    started = time.monotonic()
+    try:
+        with client.stream("GET", url, timeout=VERIFY_TIMEOUT) as response:
+            for _chunk in response.iter_bytes():
+                break
+            return response.status_code, time.monotonic() - started
+    except httpx.HTTPError as exc:
+        return type(exc).__name__, time.monotonic() - started
+
+
+def verify(
+    cid: str,
+    paths: list[str],
+    *,
+    gateway: str = VERIFY_GATEWAY,
+    deadline: float = VERIFY_DEADLINE,
+    interval: float = VERIFY_INTERVAL,
+    client=None,
+    now=time.monotonic,
+    sleep=time.sleep,
+) -> dict[str, tuple[str, int | str, float]]:
+    """Poll until every path is retrievable, or until the deadline.
+
+    Returns only what is still wrong, keyed by path. Anything classified
+    `refused` is returned immediately and never retried: a gateway that
+    declines to serve a suffix will decline for the rest of the day.
+    """
+    import httpx
+
+    base = gateway.format(cid=cid).rstrip("/")
+    owned = client is None
+    client = client or httpx.Client(follow_redirects=True)
+    outstanding = list(paths)
+    bad: dict[str, tuple[str, int | str, float]] = {}
+    started = now()
+    try:
+        while outstanding:
+            with concurrent.futures.ThreadPoolExecutor(VERIFY_WORKERS) as pool:
+                results = list(
+                    pool.map(lambda p: (p, *probe(client, f"{base}/{p}")), outstanding)
+                )
+            retry = []
+            for path, status, seconds in results:
+                verdict = classify(status, seconds)
+                if verdict == "served":
+                    bad.pop(path, None)
+                    continue
+                bad[path] = (verdict, status, seconds)
+                if verdict == "unfound":
+                    retry.append(path)
+            served = len(paths) - len(bad)
+            print(f"  verify: {served}/{len(paths)} retrievable", flush=True)
+            outstanding = retry
+            if not outstanding or now() - started >= deadline:
+                break
+            sleep(interval)
+    finally:
+        if owned:
+            client.close()
+    return bad
 
 
 def flet_cli() -> str:
@@ -665,6 +837,27 @@ def main() -> int:
         help="include tiny files under archive-ish suffixes, to find out what "
         "a gateway will not serve",
     )
+    parser.add_argument(
+        "--allow-refused",
+        action="store_true",
+        help="pin even if the build holds files an ENS gateway refuses",
+    )
+    parser.add_argument(
+        "--no-verify",
+        action="store_true",
+        help="skip proving the pin is retrievable before you point ENS at it",
+    )
+    parser.add_argument(
+        "--verify-gateway",
+        default=VERIFY_GATEWAY,
+        help=f"where to prove it, with {{cid}} filled in (default {VERIFY_GATEWAY})",
+    )
+    parser.add_argument(
+        "--verify-deadline",
+        type=float,
+        default=VERIFY_DEADLINE,
+        help="seconds to keep retrying the ones still propagating",
+    )
     options = parser.parse_args()
 
     if not options.no_build:
@@ -717,6 +910,20 @@ def main() -> int:
     if options.probe:
         print("probes: " + ", ".join(add_probes(dist)))
 
+    if (found := refused_by_gateway(dist)) and not options.allow_refused:
+        raise SystemExit(
+            "The build carries files an ENS gateway will not serve:\n  "
+            + "\n  ".join(found)
+            + "\n\nNothing was uploaded. eth.limo answers a fresh 404 in ~0.3s for "
+            "these -- measured against a wheel in the same directory, which is "
+            "the same zip magic under a different suffix and is served. If "
+            "`pyodide/python_stdlib.zip` is in that list the app cannot boot at "
+            "all: Pyodide fetches it during loadPyodide() as "
+            'indexURL + "python_stdlib.zip", so the shell loads and the Python '
+            "never arrives.\n\nSee REFUSED_SUFFIXES. Use --allow-refused to pin "
+            "anyway, e.g. for a gateway with no such policy."
+        )
+
     if found := bytecode(dist):
         raise SystemExit(
             "The build carries compiled bytecode:\n  "
@@ -751,6 +958,35 @@ def main() -> int:
     print(f"\n  CID  {cid}")
     if answer.get("isDuplicate"):
         print("       (already pinned -- identical to a previous build)")
+
+    if not options.no_verify:
+        paths = boot_files(dist)
+        print(f"\nverifying {len(paths)} files through {options.verify_gateway}")
+        print("  (the token marks are skipped: lazy, and 6,716 of them)")
+        bad = verify(
+            cid,
+            paths,
+            gateway=options.verify_gateway,
+            deadline=options.verify_deadline,
+        )
+        if bad:
+            refused = {p: v for p, v in bad.items() if v[0] == "refused"}
+            unfound = {p: v for p, v in bad.items() if v[0] == "unfound"}
+            for label, group, note in (
+                ("refused", refused, "the gateway declines these; waiting will not help"),
+                ("not found yet", unfound, "provider records still going out; retry later"),
+            ):
+                if group:
+                    print(f"\n  {label} -- {note}:")
+                    for path, (_verdict, status, seconds) in sorted(group.items()):
+                        print(f"    {status!s:>12}  {seconds:6.2f}s  {path}")
+            raise SystemExit(
+                "\nThe pin is not fully retrievable. **Do not point ENS at this "
+                "CID yet.** The first request through a gateway is what gets "
+                "cached, failures included, so publishing now teaches every "
+                "gateway a 404 that outlives the propagation causing it."
+            )
+        print(f"  all {len(paths)} retrievable -- safe to point ENS at this CID")
     # Yours first, if you have one. A dedicated gateway is the only Pinata
     # host that will serve the HTML.
     if gateway := str(config().get("gateway", "")).strip():

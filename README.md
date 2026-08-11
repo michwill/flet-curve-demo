@@ -165,9 +165,11 @@ separates them, because only one of them is about time:
 404 in ~0.3s     the gateway is refusing this file -- waiting never helps
 ```
 
-### What eth.limo will not serve
+### What an IPFS gateway will not serve
 
-Two rules, measured separately, and neither predicts the other:
+Archives, broadly — not an eth.limo quirk; gateways decline them generally,
+presumably so a pin cannot be used as a file-distribution host. Two rules
+behind that, measured separately, and neither predicts the other:
 
 - **gzip is caught by its bytes.** A six-byte text file called
   `gateway-probe.tar.gz` is served; a real archive under the same name is

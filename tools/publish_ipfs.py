@@ -230,14 +230,26 @@ PROBE_BINARY_SUFFIXES = (".tar.gz", ".wasm", ".png", ".bin")
 PROBE_STEM = "gateway-probe"
 PROBE_BINARY_STEM = "gateway-probe-binary"
 
-#: Suffixes eth.limo will not serve **whatever is inside them**, which is
-#: a separate rule from the gzip one above and was measured separately.
+#: Archive suffixes an IPFS gateway will not serve. Not an eth.limo
+#: quirk -- gateways decline archives generally, presumably so that a pin
+#: cannot be used as a file-distribution host, and `.zip`, `.gz` and their
+#: relatives are all in scope.
 #:
-#: A wheel is a zip -- `packaging-26.1-py3-none-any.whl` starts `PK\x03\x04`
-#: exactly as `python_stdlib.zip` does -- and eth.limo serves the wheel and
-#: refuses the zip, from the same directory, in the same pin. So for this
-#: family it is the *name* that is caught, where for gzip it was the bytes.
-#: Both findings are needed: neither rule predicts the other.
+#: The measurements behind the two shapes this build actually hits:
+#:
+#:   * **gzip is caught by its bytes.** A six-byte *text* file called
+#:     `gateway-probe.tar.gz` is served -- and labelled `application/gzip`,
+#:     so the declared type is not what is refused -- while the real
+#:     archive under that same name is not. No rename avoids it, which is
+#:     why the app package is base64 in JSON; see `wrap_package`.
+#:   * **`.zip` is caught by its name.** A wheel is `PK\x03\x04` exactly as
+#:     `python_stdlib.zip` is, and a gateway serves
+#:     `packaging-26.1-py3-none-any.whl` and refuses the zip from the same
+#:     directory in the same pin.
+#:
+#: Neither rule predicts the other, so both had to be measured, and the
+#: list below is deliberately by suffix: it is a heads-up about what will
+#: not be reachable, not a claim about what the app needs.
 #:
 #: The refusal is a fresh 404 in ~0.3s with no `Age` header, which is what
 #: distinguishes it from a block that has not propagated yet -- that one is
@@ -257,7 +269,7 @@ PROBE_BINARY_STEM = "gateway-probe-binary"
 #: predicting damage from a filename is what turned an observation into a
 #: block that would have stopped a working publish. `verify` measures
 #: instead of predicting; this is a heads-up beside it.
-REFUSED_SUFFIXES = (".zip",)
+REFUSED_SUFFIXES = (".zip", ".gz", ".tgz", ".tar", ".bz2", ".xz", ".7z", ".rar")
 
 
 def wrap_package(root: Path) -> bool:
@@ -441,20 +453,23 @@ def bytecode(root: Path) -> list[str]:
 
 
 def refused_by_gateway(root: Path) -> list[str]:
-    """Files in the build an ENS gateway will not serve. See REFUSED_SUFFIXES.
+    """Files in the build an IPFS gateway will not serve. See REFUSED_SUFFIXES.
 
-    Checked before the upload rather than after, because the alternative is
-    finding out from a page that never finishes loading. `python_stdlib.zip`
-    is the one that matters and it is not ours: Pyodide fetches it during
-    `loadPyodide()` -- `pyodide.mjs` builds the URL as
-    `indexURL + "python_stdlib.zip"` -- so a gateway that refuses it stops
-    the app at the shell, with every other file in the pin serving
-    perfectly and one 404 to explain it.
+    Listed before the upload so that a file which will not be reachable is
+    known before it is pinned rather than after somebody reports a page
+    that never finishes loading.
 
-    That is the same failure `wrap_package` exists for and a different
-    file, which is why this is a check rather than another rewrite: the
-    archive we produce we can rename, and Pyodide's we cannot without also
-    setting `stdLibURL` where the page loads it.
+    **It does not stop the run.** Today it catches exactly one file,
+    `pyodide/python_stdlib.zip`, and the published app never asks a gateway
+    for it -- Pyodide is loaded from jsDelivr, so the whole pinned
+    `pyodide/` directory goes unread and curve.eth.link loads with that
+    file 404ing throughout. The refusal is a fact about a file; whether it
+    matters is a fact about the app, and only `verify` and a browser can
+    answer that.
+
+    The one archive this build produces itself is handled rather than
+    reported: `wrap_package` base64s it into JSON, because for gzip no
+    rename is enough.
     """
     return [
         path.relative_to(root).as_posix()

@@ -862,3 +862,21 @@ def test_a_pin_the_network_can_find_reports_the_wait_and_passes(
     assert code == 0
     assert "all 2 retrievable" in out
     assert "safe to point ENS at this CID" in out
+
+
+def test_the_whole_archive_family_is_reported_not_just_zip(tmp_path: Path) -> None:
+    """Gateways decline archives generally, not `.zip` specifically."""
+    root = build(
+        tmp_path,
+        {
+            "a.zip": "x", "b.tar.gz": "x", "c.tgz": "x", "d.tar": "x",
+            "e.bz2": "x", "f.xz": "x", "g.7z": "x",
+            # Not archives, and two of them are the shapes most likely to
+            # be mistaken for one.
+            "main.dart.js": "//", "pyodide/pyodide.asm.wasm": "\0",
+            "packaging-26.1-py3-none-any.whl": "PK\x03\x04",
+        },
+    )
+    assert ipfs.refused_by_gateway(root) == [
+        "a.zip", "b.tar.gz", "c.tgz", "d.tar", "e.bz2", "f.xz", "g.7z",
+    ]

@@ -737,3 +737,123 @@ def test_a_file_that_heals_is_dropped_from_the_report(monkeypatch) -> None:
     """It failed on the first pass; the report is about the end state."""
     gateway = FakeGateway({"a.js": [(504, 17.0), (200, 0.3)], "b.js": [(200, 0.1)]})
     assert run_verify(monkeypatch, gateway, ["a.js", "b.js"]) == {}
+
+
+# -- the CID comes first, and the waiting is its own phase ------------------
+#
+# The upload succeeding and the network being able to find the result are
+# two questions with two answers, and the second can legitimately take a
+# quarter of an hour. Holding the CID back behind it makes a slow network
+# read as a failed publish.
+
+
+def test_the_bar_fills_with_what_is_retrievable() -> None:
+    assert "[" + "-" * 28 + "]" in ipfs.progress_bar(0, 92, 0.0)
+    assert "[" + "#" * 28 + "]" in ipfs.progress_bar(92, 92, 1.0)
+    assert "46/92 retrievable" in ipfs.progress_bar(46, 92, 0.0)
+    assert "4m03s" in ipfs.progress_bar(1, 92, 243.0)
+
+
+def test_an_empty_build_does_not_divide_by_zero() -> None:
+    assert ipfs.progress_bar(0, 0, 0.0)
+
+
+def test_the_bar_redraws_in_place_only_on_a_terminal() -> None:
+    """A `\\r` bar piped to a file is thousands of overwritten lines."""
+
+    class Pipe(io.StringIO):
+        def isatty(self) -> bool:
+            return False
+
+    class Terminal(io.StringIO):
+        def isatty(self) -> bool:
+            return True
+
+    piped, terminal = Pipe(), Terminal()
+    for stream in (piped, terminal):
+        report = ipfs.progress_reporter(stream)
+        report(1, 2, 0.0)
+        report(2, 2, 1.0)
+
+    assert "\r" not in piped.getvalue()
+    assert piped.getvalue().count("\n") == 2
+    assert terminal.getvalue().count("\r") == 2
+    assert "\n" not in terminal.getvalue()
+
+
+def test_the_cid_is_printed_before_any_waiting(capsys) -> None:
+    """The one thing worth having from the run, whatever happens next."""
+    ipfs.show_pin("bafyexample", duplicate=True)
+    out = capsys.readouterr().out
+
+    assert "bafyexample" in out
+    assert "already pinned" in out
+    assert "https://bafyexample.ipfs.dweb.link/" in out
+    assert "ipfs://bafyexample/" in out
+
+
+def waiting_options(**kw):
+    import types
+
+    return types.SimpleNamespace(
+        verify_gateway=ipfs.VERIFY_GATEWAY, verify_deadline=90.0, **kw
+    )
+
+
+def test_interrupting_the_wait_keeps_the_pin_and_says_how_to_resume(
+    monkeypatch, capsys
+) -> None:
+    """Ctrl-C during a long wait must not read as a failed publish."""
+
+    def interrupted(*_a, **_kw):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(ipfs, "verify", interrupted)
+
+    code = ipfs.wait_until_findable("bafyexample", ["index.html"], waiting_options())
+    out = capsys.readouterr().out
+
+    assert code == 130
+    assert "The pin is fine" in out
+    assert "--verify-only bafyexample" in out
+
+
+def test_a_pin_still_propagating_says_to_come_back(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        ipfs, "verify", lambda *a, **kw: {"slow.js": ("unfound", 504, 17.0)}
+    )
+
+    code = ipfs.wait_until_findable("bafyexample", ["slow.js"], waiting_options())
+    out = capsys.readouterr().out
+
+    assert code == 1
+    assert "not found yet" in out
+    assert "Do not point ENS at this CID yet" in out
+    assert "--verify-only bafyexample" in out
+
+
+def test_a_refusal_does_not_suggest_waiting_longer(monkeypatch, capsys) -> None:
+    """Resuming would burn another deadline on a decision already made."""
+    monkeypatch.setattr(
+        ipfs, "verify", lambda *a, **kw: {"a.zip": ("refused", 404, 0.3)}
+    )
+
+    code = ipfs.wait_until_findable("bafyexample", ["a.zip"], waiting_options())
+    out = capsys.readouterr().out
+
+    assert code == 1
+    assert "waiting will not help" in out
+    assert "--verify-only" not in out
+
+
+def test_a_pin_the_network_can_find_reports_the_wait_and_passes(
+    monkeypatch, capsys
+) -> None:
+    monkeypatch.setattr(ipfs, "verify", lambda *a, **kw: {})
+
+    code = ipfs.wait_until_findable("bafyexample", ["a", "b"], waiting_options())
+    out = capsys.readouterr().out
+
+    assert code == 0
+    assert "all 2 retrievable" in out
+    assert "safe to point ENS at this CID" in out

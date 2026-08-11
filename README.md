@@ -128,17 +128,29 @@ own first visit teaches that gateway a 404 which then outlives the
 propagation that caused it. Waiting does not clear it; only the cache TTL
 does.
 
-So `publish_ipfs.py` will not hand over a CID it cannot prove. After the
-upload it fetches the first byte of every file a visitor needs to boot — 92
-of them, the 6,716 token marks skipped because they are lazy and hammering a
-public gateway for art nobody asked for is not a check — and retries until
-they are all retrievable:
+So `publish_ipfs.py` prints the CID the moment the upload lands — that part
+succeeded and is worth having whatever follows — and *then* watches the
+network catch up, fetching the first byte of every file a visitor needs to
+boot. 92 of them; the 6,716 token marks are skipped because they are lazy,
+and hammering a public gateway for art nobody has asked for is not a check.
 
 ```
-verifying 92 files through https://{cid}.ipfs.dweb.link
-  verify: 88/92 retrievable
-  verify: 92/92 retrievable
-  all 92 retrievable -- safe to point ENS at this CID
+  CID  bafybeieq4psvxedxh37qdi3nzflz27varghalxbwgtn3wvci4plbwvbe5i
+       https://bafybeieq4…be5i.ipfs.dweb.link/
+       ipfs://bafybeieq4…be5i/
+
+waiting for the network to find it: 92 files, via
+  https://bafybeieq4…be5i.ipfs.dweb.link
+  [#####################-------]   71/92 retrievable   3m53s
+```
+
+The bar redraws in place on a terminal and prints one line per pass when it
+is piped, so a CI log stays readable. **Ctrl-C is a supported way to leave**
+— the pin is done, only the waiting is not — and it tells you how to pick up
+where you stopped:
+
+```sh
+python tools/publish_ipfs.py --verify-only <cid>
 ```
 
 It verifies against a **CID** URL, not the ENS name, on purpose: proving it

@@ -705,12 +705,21 @@ def verify(
     client=None,
     now=time.monotonic,
     sleep=time.sleep,
+    on_round=None,
 ) -> dict[str, tuple[str, int | str, float]]:
     """Poll until every path is retrievable, or until the deadline.
 
     Returns only what is still wrong, keyed by path. Anything classified
     `refused` is returned immediately and never retried: a gateway that
     declines to serve a suffix will decline for the rest of the day.
+
+    `on_round(served, total, elapsed)` after each pass, so the caller owns
+    the display -- this has to be usable from a test without a terminal,
+    and the bar has to be drawable without reaching into the polling.
+
+    **Interrupting is a supported way to leave.** The pin exists whatever
+    happens here; the caller catches `KeyboardInterrupt` and keeps the CID
+    on screen, and `--verify-only` picks the waiting back up later.
     """
     import httpx
 
@@ -735,8 +744,8 @@ def verify(
                 bad[path] = (verdict, status, seconds)
                 if verdict == "unfound":
                     retry.append(path)
-            served = len(paths) - len(bad)
-            print(f"  verify: {served}/{len(paths)} retrievable", flush=True)
+            if on_round is not None:
+                on_round(len(paths) - len(bad), len(paths), now() - started)
             outstanding = retry
             if not outstanding or now() - started >= deadline:
                 break
@@ -745,6 +754,46 @@ def verify(
         if owned:
             client.close()
     return bad
+
+
+#: How wide the bar is drawn. Narrow enough to leave room for the counts
+#: and the clock on an eighty-column terminal.
+BAR_WIDTH = 28
+
+
+def elapsed_text(seconds: float) -> str:
+    """`4m03s`. Minutes because this is measured in them, not in hours."""
+    return f"{int(seconds) // 60}m{int(seconds) % 60:02d}s"
+
+
+def progress_bar(served: int, total: int, elapsed: float) -> str:
+    """One line of "how much of the pin the network can find yet"."""
+    filled = round(BAR_WIDTH * served / total) if total else BAR_WIDTH
+    return (
+        f"  [{'#' * filled}{'-' * (BAR_WIDTH - filled)}] "
+        f"{served:>4}/{total} retrievable   {elapsed_text(elapsed)}"
+    )
+
+
+def progress_reporter(stream=None):
+    """Draw the bar in place on a terminal, one line per pass otherwise.
+
+    A `\\r` bar piped into a file is thousands of overwritten lines and no
+    way to read what happened, so the redirected case gets plain lines --
+    which is also what a CI log wants.
+    """
+    stream = stream or sys.stdout
+    inline = hasattr(stream, "isatty") and stream.isatty()
+
+    def report(served: int, total: int, elapsed: float) -> None:
+        line = progress_bar(served, total, elapsed)
+        stream.write(f"\r{line}" if inline else f"{line}\n")
+        stream.flush()
+
+    #: Whether the last line still needs closing. A `\r` bar leaves the
+    #: cursor on it; plain lines have already ended.
+    report.inline = inline
+    return report
 
 
 def flet_cli() -> str:
@@ -848,6 +897,11 @@ def main() -> int:
         help="skip proving the pin is retrievable before you point ENS at it",
     )
     parser.add_argument(
+        "--verify-only",
+        metavar="CID",
+        help="skip the build and the upload; just wait on a CID already pinned",
+    )
+    parser.add_argument(
         "--verify-gateway",
         default=VERIFY_GATEWAY,
         help=f"where to prove it, with {{cid}} filled in (default {VERIFY_GATEWAY})",
@@ -859,6 +913,21 @@ def main() -> int:
         help="seconds to keep retrying the ones still propagating",
     )
     options = parser.parse_args()
+
+    # Resuming a wait. Nothing is built, nothing is sent, and no key is
+    # needed -- the pin already exists and this only asks the network
+    # whether it can find it yet. What to ask for still comes from the
+    # build, which is the same build: a CID names exactly one tree.
+    if options.verify_only:
+        if not (options.dist / "index.html").is_file():
+            raise SystemExit(
+                f"{options.dist} holds no index.html, so there is no list of files "
+                "to check. --verify-only needs the build the CID was made from."
+            )
+        show_pin(options.verify_only)
+        return wait_until_findable(
+            options.verify_only, boot_files(options.dist), options
+        )
 
     if not options.no_build:
         # Before either step, because both import from `src/` and
@@ -955,38 +1024,22 @@ def main() -> int:
     if not cid:
         raise SystemExit(f"No CID in Pinata's answer: {answer}")
 
-    print(f"\n  CID  {cid}")
-    if answer.get("isDuplicate"):
-        print("       (already pinned -- identical to a previous build)")
+    # The CID first, and unconditionally. It is the one thing worth having
+    # from this run: the upload succeeded, the content is pinned, and
+    # everything below is about *when* the rest of the world can find it.
+    # Holding it back behind a check that can legitimately take a quarter
+    # of an hour means a slow network reads as a failed publish.
+    show_pin(cid, duplicate=bool(answer.get("isDuplicate")))
+    if options.no_verify:
+        return 0
+    return wait_until_findable(cid, boot_files(dist), options)
 
-    if not options.no_verify:
-        paths = boot_files(dist)
-        print(f"\nverifying {len(paths)} files through {options.verify_gateway}")
-        print("  (the token marks are skipped: lazy, and 6,716 of them)")
-        bad = verify(
-            cid,
-            paths,
-            gateway=options.verify_gateway,
-            deadline=options.verify_deadline,
-        )
-        if bad:
-            refused = {p: v for p, v in bad.items() if v[0] == "refused"}
-            unfound = {p: v for p, v in bad.items() if v[0] == "unfound"}
-            for label, group, note in (
-                ("refused", refused, "the gateway declines these; waiting will not help"),
-                ("not found yet", unfound, "provider records still going out; retry later"),
-            ):
-                if group:
-                    print(f"\n  {label} -- {note}:")
-                    for path, (_verdict, status, seconds) in sorted(group.items()):
-                        print(f"    {status!s:>12}  {seconds:6.2f}s  {path}")
-            raise SystemExit(
-                "\nThe pin is not fully retrievable. **Do not point ENS at this "
-                "CID yet.** The first request through a gateway is what gets "
-                "cached, failures included, so publishing now teaches every "
-                "gateway a 404 that outlives the propagation causing it."
-            )
-        print(f"  all {len(paths)} retrievable -- safe to point ENS at this CID")
+
+def show_pin(cid: str, *, duplicate: bool = False) -> None:
+    """The CID and every way to reach it."""
+    print(f"\n  CID  {cid}")
+    if duplicate:
+        print("       (already pinned -- identical to a previous build)")
     # Yours first, if you have one. A dedicated gateway is the only Pinata
     # host that will serve the HTML.
     if gateway := str(config().get("gateway", "")).strip():
@@ -994,7 +1047,66 @@ def main() -> int:
     print(f"       https://{cid}.ipfs.dweb.link/")
     print(f"       {PUBLIC_GATEWAY}{cid}/")
     print(f"       ipfs://{cid}/")
-    return 0
+
+
+def wait_until_findable(cid: str, paths: list[str], options) -> int:
+    """Watch the pin become retrievable, and say when it is safe to publish.
+
+    Separate from the upload because it is a separate question with a
+    separate answer. The pin is done; this is the network catching up, it
+    is slow, and it is interruptible -- Ctrl-C leaves the CID standing and
+    `--verify-only` resumes.
+    """
+    print(f"\nwaiting for the network to find it: {len(paths)} files, via")
+    print(f"  {options.verify_gateway.format(cid=cid)}")
+    print("  (token marks skipped -- lazily fetched, and there are 6,716)")
+    started = time.monotonic()
+    report = progress_reporter()
+    try:
+        bad = verify(
+            cid,
+            paths,
+            gateway=options.verify_gateway,
+            deadline=options.verify_deadline,
+            on_round=report,
+        )
+    except KeyboardInterrupt:
+        print(
+            f"\n\nstopped after {elapsed_text(time.monotonic() - started)}. The pin "
+            f"is fine -- this was only the waiting.\n"
+            f"  python tools/publish_ipfs.py --verify-only {cid}"
+        )
+        return 130
+    if report.inline:
+        print()  # the bar left the cursor on its own line
+
+    if not bad:
+        print(
+            f"  all {len(paths)} retrievable after "
+            f"{elapsed_text(time.monotonic() - started)}"
+            " -- safe to point ENS at this CID"
+        )
+        return 0
+
+    refused = {p: v for p, v in bad.items() if v[0] == "refused"}
+    unfound = {p: v for p, v in bad.items() if v[0] == "unfound"}
+    for label, group, note in (
+        ("refused", refused, "the gateway declines these; waiting will not help"),
+        ("not found yet", unfound, "provider records still going out"),
+    ):
+        if group:
+            print(f"\n  {label} -- {note}:")
+            for path, (_verdict, status, seconds) in sorted(group.items()):
+                print(f"    {status!s:>12}  {seconds:6.2f}s  {path}")
+    print(
+        "\nThe content is pinned; this is about who can find it. **Do not point"
+        " ENS at this CID yet** -- the first request through a gateway is what"
+        " gets cached, failures included, so publishing now teaches every"
+        " gateway a 404 that outlives the propagation causing it."
+    )
+    if unfound and not refused:
+        print(f"\n  python tools/publish_ipfs.py --verify-only {cid}")
+    return 1
 
 
 if __name__ == "__main__":

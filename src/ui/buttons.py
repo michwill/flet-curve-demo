@@ -144,6 +144,18 @@ class Shadowed(ft.Container):
         of theme switches, so the shadow is recomputed rather than fixed
         at construction. `theme.is_chad` reads the live page, which is
         why holding the page is enough.
+
+    The explicit `clip_behavior` is the one line here that is load-bearing
+    for a theme this class is otherwise a no-op in. A Flet `Container`
+    defaults `clip_behavior` to `ANTI_ALIAS` *as soon as `border_radius`
+    is set*, and the radius is set on every one of these so that Chad's
+    hard shadow has corners to follow. Under Material the wrapper is
+    exactly the size of the button, so that clip lands on the button's own
+    edge -- and Material's elevation shadow is painted **outside** that
+    edge. It came out trimmed: worst on hover, where Material 3 raises the
+    elevation and the shadow reaches further, and invisible in dark, where
+    a near-black shadow on a dark surface has nothing to show. Chad never
+    saw it either, having set `elevation=0` and drawn its own.
     """
 
     def __init__(
@@ -159,7 +171,12 @@ class Shadowed(ft.Container):
         #: a container that is visible around a button that is not still
         #: takes its share of the row's spacing.
         self._when = when
-        super().__init__(button, border_radius=RADIUS)
+        # `clip_behavior` only ever clips `content`; the container's own
+        # shadow is decoration and is painted regardless, so Chad keeps its
+        # corners and loses nothing by turning the clip off.
+        super().__init__(
+            button, border_radius=RADIUS, clip_behavior=ft.ClipBehavior.NONE
+        )
 
     def before_update(self) -> None:
         super().before_update()

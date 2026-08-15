@@ -718,9 +718,55 @@ def pin(
 # name that people will actually use.
 
 #: Where to prove it. `{cid}` is filled in. The subdomain form, so this is
-#: a different cache key from the ENS hostname the name will resolve to --
-#: warming happens after, deliberately, once every request will be a hit.
+#: a different cache key from the ENS hostname the name will resolve to.
+#:
+#: **This proves the content exists. It does not predict eth.limo.** dweb.link
+#: is Cloudflare-fronted and answers `cache-control: public, max-age=29030400,
+#: immutable`; it was caught serving with `age=3266`, i.e. from cache, an hour
+#: after a build it had fetched once. A pass here means "some gateway holds
+#: these bytes", which is worth knowing and is not the question a visitor asks.
+#: eth.limo's own nodes do their own provider lookups over a different path,
+#: and that path fails intermittently -- see `WARM_GATEWAY`.
 VERIFY_GATEWAY = "https://{cid}.ipfs.dweb.link"
+
+#: The gateway people actually use, checked *after* ENS is moved -- which is
+#: the only order available, because eth.limo has no CID gateway at all:
+#:
+#:     https://<cid>.ipfs.eth.limo/   DNS does not resolve
+#:     https://eth.limo/ipfs/<cid>/   404
+#:
+#: It serves ENS names and nothing else, so its retrieval path cannot be
+#: exercised for a CID until the name points at it. Hence two stages rather
+#: than one: `verify` before, against a CID gateway, and this after.
+#:
+#: Fetching is also the fix. A block pulled through an edge lands in that
+#: edge's store, so the same loop that measures the problem removes it, and
+#: the first real visitor gets a warm cache instead of a coin flip. What was
+#: measured on the pin that prompted this, minutes apart on one file:
+#:
+#:     app-package.json   504 unfound (17.4s)  ->  206 served (1.0s)
+#:     app-package.json   206 served  ( 1.0s)  ->  504 unfound (17.4s)
+#:
+#: Not size, either: the 4 KB icon font failed the same way and left every
+#: glyph on the page a tofu box.
+#:
+#: It is a mitigation and not a cure. eth.limo answers `max-age=300` and runs
+#: several edges, so a visitor arriving tomorrow on a cold one gets the same
+#: coin flip. The durable fix is more peers that can answer -- your own node,
+#: or a second pinning service.
+WARM_GATEWAY = "https://curve.eth.limo"
+
+#: Two, not six. Eight parallel probes against eth.limo earned a run of 503s
+#: from its rate limiter, which then looked exactly like the failure being
+#: investigated. Warming is not in a hurry and must not be the reason a
+#: gateway starts refusing.
+WARM_WORKERS = 2
+
+#: The gateway saying "not so fast", which is a fact about the request rate
+#: and not about the content. Retried like `unfound` rather than recorded as
+#: a refusal -- a 503 arrives in well under `REFUSAL_SECONDS` and would
+#: otherwise be filed as a permanent decision and never tried again.
+THROTTLE_STATUSES = (429, 503)
 
 #: How long to keep retrying the ones that have not propagated. Fifteen
 #: minutes is well past what a few thousand blocks has taken in practice
@@ -743,6 +789,24 @@ REFUSAL_SECONDS = 3.0
 #: a check, it is an imposition.
 LAZY_DIR = "curve"
 
+#: Nor this one, which is fetched *never*. `flet publish` overwrites its own
+#: template default with
+#: `flet.pyodideUrl="https://cdn.jsdelivr.net/pyodide/v314.0.3/full/pyodide.mjs"`,
+#: so Pyodide and its standard library come from jsDelivr and the 15 MB
+#: pinned copy is dead weight the app does not know about.
+#:
+#: Measured rather than assumed, twice: a browser load of curve.eth.limo
+#: shows 124 requests, canvaskit from gstatic and rive from jsDelivr, and
+#: not one request under `pyodide/`. The app renders the pool list with live
+#: data while these files 404.
+#:
+#: Left in the list they are permanent noise -- `python_stdlib.zip` is an
+#: archive and gateways decline those outright, `package.json` answered 502
+#: on four attempts in a row -- so every run would end in a failure report
+#: about files nothing reads, which is how you teach someone to stop reading
+#: the report. `refused_by_gateway` still names them.
+UNFETCHED_DIR = "pyodide"
+
 
 def boot_files(root: Path) -> list[str]:
     """The part of the build a visitor needs before the app can paint.
@@ -752,26 +816,40 @@ def boot_files(root: Path) -> list[str]:
     list kept in the tool goes stale silently, and the failure mode is a
     file nobody checked being the one that does not serve.
     """
+    skip = (LAZY_DIR, UNFETCHED_DIR)
     return [
         path.relative_to(root).as_posix()
         for path in sorted(root.rglob("*"))
-        if path.is_file() and path.relative_to(root).parts[0] != LAZY_DIR
+        if path.is_file() and path.relative_to(root).parts[0] not in skip
     ]
 
 
 def classify(status: int | str, seconds: float) -> str:
-    """`served`, `refused` or `unfound` -- and the difference is the point."""
+    """`served`, `throttled`, `refused` or `unfound` -- the difference is the point.
+
+    `throttled` is separated from `refused` because both are fast and only
+    one of them is about the file. A rate-limited 503 lands in a fraction of
+    a second, which is the signature this used to read as a permanent
+    decision, and it would then never be retried -- turning our own request
+    rate into a report that the gateway declines to serve the app.
+    """
     if status in (200, 206):
         return "served"
+    if status in THROTTLE_STATUSES:
+        return "throttled"
     return "refused" if seconds < REFUSAL_SECONDS else "unfound"
 
 
-def probe(client, url: str) -> tuple[int | str, float]:
-    """Fetch enough of `url` to prove the blocks are there, and time it.
+def probe(client, url: str, *, whole: bool = False) -> tuple[int | str, float]:
+    """Fetch `url` and time it.
 
-    Streamed and abandoned after the first chunk: proving a 9 MB file is
-    retrievable does not require moving 9 MB, and this runs against
+    By default streamed and abandoned after the first chunk: proving a 9 MB
+    file is retrievable does not require moving 9 MB, and this runs against
     somebody else's gateway.
+
+    `whole=True` reads to the end, which is what warming needs and checking
+    does not. The first chunk is the first block; leaving after it warms one
+    block of the thirty-seven in `main.dart.js` and reports the file done.
     """
     import httpx
 
@@ -779,7 +857,8 @@ def probe(client, url: str) -> tuple[int | str, float]:
     try:
         with client.stream("GET", url, timeout=VERIFY_TIMEOUT) as response:
             for _chunk in response.iter_bytes():
-                break
+                if not whole:
+                    break
             return response.status_code, time.monotonic() - started
     except httpx.HTTPError as exc:
         return type(exc).__name__, time.monotonic() - started
@@ -792,6 +871,8 @@ def verify(
     gateway: str = VERIFY_GATEWAY,
     deadline: float = VERIFY_DEADLINE,
     interval: float = VERIFY_INTERVAL,
+    workers: int = VERIFY_WORKERS,
+    whole: bool = False,
     client=None,
     now=time.monotonic,
     sleep=time.sleep,
@@ -802,6 +883,13 @@ def verify(
     Returns only what is still wrong, keyed by path. Anything classified
     `refused` is returned immediately and never retried: a gateway that
     declines to serve a suffix will decline for the rest of the day.
+    `throttled` is retried like `unfound` -- it is our request rate talking,
+    not the gateway's opinion of the file.
+
+    `whole=True` pulls each file to the end rather than sampling its first
+    block, which is what makes this warm a gateway as well as measure it.
+    `gateway` needs no `{cid}`: an ENS host is a fixed base and formats to
+    itself, which is how the post-ENS stage reuses all of this.
 
     `on_round(served, total, elapsed)` after each pass, so the caller owns
     the display -- this has to be usable from a test without a terminal,
@@ -821,9 +909,12 @@ def verify(
     started = now()
     try:
         while outstanding:
-            with concurrent.futures.ThreadPoolExecutor(VERIFY_WORKERS) as pool:
+            with concurrent.futures.ThreadPoolExecutor(workers) as pool:
                 results = list(
-                    pool.map(lambda p: (p, *probe(client, f"{base}/{p}")), outstanding)
+                    pool.map(
+                        lambda p: (p, *probe(client, f"{base}/{p}", whole=whole)),
+                        outstanding,
+                    )
                 )
             retry = []
             for path, status, seconds in results:
@@ -832,7 +923,7 @@ def verify(
                     bad.pop(path, None)
                     continue
                 bad[path] = (verdict, status, seconds)
-                if verdict == "unfound":
+                if verdict in ("unfound", "throttled"):
                     retry.append(path)
             if on_round is not None:
                 on_round(len(paths) - len(bad), len(paths), now() - started)
@@ -997,7 +1088,32 @@ def main() -> int:
         default=VERIFY_DEADLINE,
         help="seconds to keep retrying the ones still propagating",
     )
+    parser.add_argument(
+        "--warm",
+        action="store_true",
+        help="after ENS is updated: pull the boot set through the ENS gateway "
+        "until it all serves, which both checks it and leaves it cached",
+    )
+    parser.add_argument(
+        "--warm-gateway",
+        default=WARM_GATEWAY,
+        help=f"the ENS host to warm (default {WARM_GATEWAY})",
+    )
     options = parser.parse_args()
+
+    # Warming needs no CID and no key: it asks the ENS name for the files the
+    # build says a visitor needs, which is the same question a visitor asks.
+    # It reads the list from `dist/` for the same reason `--verify-only` does
+    # -- a CID names exactly one tree, and this is that tree.
+    if options.warm:
+        if not (options.dist / "index.html").is_file():
+            raise SystemExit(
+                f"{options.dist} holds no index.html, so there is no list of files "
+                "to warm. --warm needs the build that was pinned."
+            )
+        return warm(
+            options.warm_gateway.rstrip("/"), boot_files(options.dist), options
+        )
 
     # Resuming a wait. Nothing is built, nothing is sent, and no key is
     # needed -- the pin already exists and this only asks the network
@@ -1169,6 +1285,14 @@ def wait_until_findable(cid: str, paths: list[str], options) -> int:
             f"{elapsed_text(time.monotonic() - started)}"
             " -- safe to point ENS at this CID"
         )
+        print(
+            "\n  This says the content exists and a CID gateway can serve it.\n"
+            "  It does not say eth.limo can: that one has no CID gateway, so\n"
+            "  its retrieval path cannot be exercised until the name moves.\n"
+            "  Once ENS is updated, warm it -- which is also what stops the\n"
+            "  first visitor meeting a cold edge:\n\n"
+            "    python tools/publish_ipfs.py --warm"
+        )
         return 0
 
     refused = {p: v for p, v in bad.items() if v[0] == "refused"}
@@ -1189,6 +1313,61 @@ def wait_until_findable(cid: str, paths: list[str], options) -> int:
     )
     if unfound and not refused:
         print(f"\n  python tools/publish_ipfs.py --verify-only {cid}")
+    return 1
+
+
+def warm(host: str, paths: list[str], options) -> int:
+    """Pull the boot set through the gateway people use, until it all lands.
+
+    Runs *after* ENS is updated, and is the only stage that touches the
+    retrieval path a visitor gets -- see `WARM_GATEWAY` for why that order
+    is forced rather than chosen. Measuring and fixing are the same act
+    here: a block fetched through an edge stays in that edge's store.
+
+    Nothing about it is fast. Two workers and whole files, because the
+    alternative was teaching eth.limo's rate limiter to answer 503 and then
+    reading those 503s back as a broken pin.
+    """
+    print(f"\nwarming the gateway people use: {len(paths)} files, via")
+    print(f"  {host}")
+    print(f"  (whole files, {WARM_WORKERS} at a time -- this is deliberately slow)")
+    started = time.monotonic()
+    report = progress_reporter()
+    try:
+        bad = verify(
+            "",
+            paths,
+            gateway=host,
+            deadline=options.verify_deadline,
+            workers=WARM_WORKERS,
+            whole=True,
+            on_round=report,
+        )
+    except KeyboardInterrupt:
+        print(
+            f"\n\nstopped after {elapsed_text(time.monotonic() - started)}. Whatever "
+            "was fetched stays warm;\nthe rest is where it was. Run it again to "
+            "carry on."
+        )
+        return 130
+    if report.inline:
+        print()
+
+    if not bad:
+        print(
+            f"  all {len(paths)} served by {host} after "
+            f"{elapsed_text(time.monotonic() - started)}"
+        )
+        return 0
+
+    print(f"\n  still not served by {host}:")
+    for path, (verdict, status, seconds) in sorted(bad.items()):
+        print(f"    {verdict:>9}  {status!s:>12}  {seconds:6.2f}s  {path}")
+    print(
+        "\n  Run it again -- each pass leaves behind what it managed to fetch,\n"
+        "  so a file that failed this time is often warm by the next. This is\n"
+        "  a mitigation, not a cure: see WARM_GATEWAY."
+    )
     return 1
 
 

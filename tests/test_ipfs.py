@@ -20,6 +20,7 @@ import io
 import json
 import tarfile
 import textwrap
+import types
 from pathlib import Path
 
 import httpx
@@ -699,11 +700,33 @@ def test_the_lazy_token_art_is_not_verified(tmp_path: Path) -> None:
         tmp_path,
         {
             "index.html": "<html>",
-            "pyodide/pyodide.js": "//",
+            "main.dart.js": "//",
             "curve/tokens/ethereum/0xabc@20.png": "x",
         },
     )
-    assert ipfs.boot_files(root) == ["index.html", "pyodide/pyodide.js"]
+    assert ipfs.boot_files(root) == ["index.html", "main.dart.js"]
+
+
+def test_the_pyodide_copy_nothing_ever_asks_for_is_not_verified(
+    tmp_path: Path,
+) -> None:
+    """`flet publish` points the app at jsDelivr, so the pinned 15 MB is dead
+    weight. A browser load of the published site makes 124 requests and not
+    one of them is under `pyodide/`.
+
+    Left in, they fail every run -- an archive gateways decline, and a
+    `package.json` that answered 502 four times running -- and a report that
+    always ends in failure is a report nobody reads.
+    """
+    root = build(
+        tmp_path,
+        {
+            "index.html": "<html>",
+            "pyodide/python_stdlib.zip": "PK",
+            "pyodide/package.json": "{}",
+        },
+    )
+    assert ipfs.boot_files(root) == ["index.html"]
 
 
 def test_a_fast_failure_is_a_refusal_and_a_slow_one_is_not_yet() -> None:
@@ -728,9 +751,10 @@ class FakeGateway:
         self.answers = {k: list(v) for k, v in answers.items()}
         self.asked: list[str] = []
 
-    def probe(self, _client, url: str) -> tuple[int, float]:
-        path = url.split(".ipfs.dweb.link/", 1)[-1]
+    def probe(self, _client, url: str, *, whole: bool = False) -> tuple[int, float]:
+        path = url.split(".ipfs.dweb.link/", 1)[-1].split("curve.eth.limo/", 1)[-1]
         self.asked.append(path)
+        self.whole = whole
         queue = self.answers.get(path, [(200, 0.1)])
         return queue.pop(0) if len(queue) > 1 else queue[0]
 
@@ -781,6 +805,135 @@ def test_a_file_that_heals_is_dropped_from_the_report(monkeypatch) -> None:
     """It failed on the first pass; the report is about the end state."""
     gateway = FakeGateway({"a.js": [(504, 17.0), (200, 0.3)], "b.js": [(200, 0.1)]})
     assert run_verify(monkeypatch, gateway, ["a.js", "b.js"]) == {}
+
+
+# -- our own request rate is not the gateway's opinion of the file ----------
+
+
+def test_being_rate_limited_is_not_a_refusal() -> None:
+    """Measured: eight parallel probes earned a run of 503s from eth.limo,
+    which arrive in a fraction of a second -- the same shape as a refusal.
+    Filed as one, they would never be retried and the report would say the
+    gateway declines to serve the app."""
+    assert ipfs.classify(503, 0.2) == "throttled"
+    assert ipfs.classify(429, 0.1) == "throttled"
+    assert ipfs.classify(404, 0.3) == "refused", "a real refusal still is one"
+
+
+def test_a_throttled_file_is_retried_until_the_limiter_lets_go(monkeypatch) -> None:
+    gateway = FakeGateway({"main.dart.js": [(503, 0.2), (503, 0.1), (200, 0.9)]})
+
+    assert run_verify(monkeypatch, gateway, ["main.dart.js"]) == {}
+    assert gateway.asked == ["main.dart.js"] * 3, "gave up on a rate limit"
+
+
+# -- warming: the stage that touches the path a visitor actually takes ------
+#
+# eth.limo has no CID gateway (`https://<cid>.ipfs.eth.limo` does not
+# resolve, `https://eth.limo/ipfs/<cid>` 404s), so its retrieval path cannot
+# be exercised until ENS points at the CID. That forces two stages, and this
+# is the second.
+
+
+def test_warming_reads_whole_files_not_just_the_first_block(monkeypatch) -> None:
+    """A file is many blocks. Sampling the first one warms the first one."""
+    gateway = FakeGateway({"main.dart.js": [(200, 0.9)]})
+    monkeypatch.setattr(ipfs, "probe", gateway.probe)
+
+    ipfs.verify(
+        "",
+        ["main.dart.js"],
+        gateway="https://curve.eth.limo",
+        client=object(),
+        sleep=lambda _s: None,
+        whole=True,
+    )
+
+    assert gateway.whole is True
+
+
+def test_an_ens_host_needs_no_cid_and_formats_to_itself() -> None:
+    """`verify` fills `{cid}` in; a fixed ENS base simply has none, which is
+    what lets both stages share one polling loop."""
+    assert ipfs.WARM_GATEWAY.format(cid="bafyfake") == ipfs.WARM_GATEWAY
+
+
+def test_warming_is_paced_so_it_does_not_become_the_problem() -> None:
+    assert ipfs.WARM_WORKERS < ipfs.VERIFY_WORKERS
+
+
+def test_warming_asks_the_ens_host_for_the_boot_set(monkeypatch, capsys) -> None:
+    gateway = FakeGateway({"index.html": [(200, 0.2)], "main.dart.js": [(200, 0.4)]})
+    monkeypatch.setattr(ipfs, "probe", gateway.probe)
+
+    code = ipfs.warm(
+        "https://curve.eth.limo",
+        ["index.html", "main.dart.js"],
+        types.SimpleNamespace(verify_deadline=60.0),
+    )
+
+    assert code == 0
+    assert sorted(gateway.asked) == ["index.html", "main.dart.js"]
+    assert "curve.eth.limo" in capsys.readouterr().out
+
+
+def test_warming_reports_what_is_still_cold_and_says_to_run_again(
+    monkeypatch, capsys
+) -> None:
+    """The 4 KB icon font, which is what left every glyph a tofu box."""
+    font = "assets/fonts/MaterialIcons-Regular.otf"
+    monkeypatch.setattr(ipfs, "verify", lambda *a, **kw: {font: ("unfound", 504, 17.4)})
+
+    code = ipfs.warm(
+        "https://curve.eth.limo", [font], types.SimpleNamespace(verify_deadline=60.0)
+    )
+
+    out = capsys.readouterr().out
+    assert code == 1
+    assert font in out
+    assert "Run it again" in out
+
+
+def test_interrupting_a_warm_keeps_what_it_already_fetched(
+    monkeypatch, capsys
+) -> None:
+    """Ctrl-C is a supported way to leave: the blocks pulled so far stay in
+    the edge's store, so a second run picks up warmer than the first."""
+
+    def interrupted(*_a, **_kw):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(ipfs, "verify", interrupted)
+
+    code = ipfs.warm(
+        "https://curve.eth.limo",
+        ["index.html"],
+        types.SimpleNamespace(verify_deadline=60.0),
+    )
+
+    assert code == 130
+    assert "stays warm" in capsys.readouterr().out
+
+
+def test_the_pre_ens_pass_does_not_claim_to_have_checked_eth_limo(
+    monkeypatch, capsys
+) -> None:
+    """It checks a CID gateway, which is a different question from the one a
+    visitor asks. Saying otherwise is what made a verified pin load badly."""
+    gateway = FakeGateway({"index.html": [(200, 0.2)]})
+    monkeypatch.setattr(ipfs, "probe", gateway.probe)
+
+    ipfs.wait_until_findable(
+        "bafyfake",
+        ["index.html"],
+        types.SimpleNamespace(
+            verify_gateway=ipfs.VERIFY_GATEWAY, verify_deadline=60.0
+        ),
+    )
+
+    out = capsys.readouterr().out
+    assert "does not say eth.limo can" in out
+    assert "--warm" in out
 
 
 # -- the CID comes first, and the waiting is its own phase ------------------

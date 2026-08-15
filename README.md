@@ -155,15 +155,65 @@ python tools/publish_ipfs.py --verify-only <cid>
 
 It verifies against a **CID** URL, not the ENS name, on purpose: proving it
 must not be what poisons the cache of the hostname you are about to publish.
-Warm that one afterwards, when every request will be a hit.
+
+**But a pass there does not mean eth.limo can serve it**, and this is the
+part that bit us. `dweb.link` is Cloudflare-fronted and answers
+`max-age=29030400, immutable`; it was caught serving with `age=3266`, i.e.
+from its own cache, an hour after fetching a build once. So the pre-ENS pass
+proves *some gateway holds these bytes* — worth knowing, and not the question
+a visitor asks. eth.limo's nodes do their own provider lookups over a
+different path, and that path fails intermittently.
+
+You cannot check it earlier, either. eth.limo has **no CID gateway**:
+
+```
+https://<cid>.ipfs.eth.limo/   DNS does not resolve
+https://eth.limo/ipfs/<cid>/   404
+```
+
+It serves ENS names and nothing else, so its retrieval path cannot be
+exercised until the name points at the CID. Hence a second stage, after the
+ENS update:
+
+```sh
+python tools/publish_ipfs.py --warm
+```
+
+Fetching **is** the fix: a block pulled through an edge lands in that edge's
+store, so the loop that measures the problem removes it, and the first real
+visitor gets a warm cache instead of a coin flip. It reads whole files rather
+than first bytes — a file is many blocks, and sampling block one warms block
+one — two at a time, because eight parallel probes earned a run of 503s from
+eth.limo's rate limiter, which then looked exactly like the fault being
+chased.
+
+Measured on one file, minutes apart, on a pin that had verified clean:
+
+```
+app-package.json   504 unfound (17.4s)  ->  206 served (1.0s)  ->  504 unfound
+```
+
+Not size, either: the 4 KB icon font failed the same way and left every glyph
+on the page a tofu box.
+
+**Warming is a mitigation, not a cure.** eth.limo answers `max-age=300` and
+runs several edges, so a visitor arriving tomorrow on a cold one gets the
+same coin flip. The durable fix is more peers that can answer — your own
+node, or a second pinning service.
 
 **A slow failure and a fast one are different diseases**, and the report
 separates them, because only one of them is about time:
 
 ```
 504 after ~17s   the block's providers are not announced yet -- retry
+503 in ~0.2s     the gateway is rate-limiting us -- back off, then retry
 404 in ~0.3s     the gateway is refusing this file -- waiting never helps
 ```
+
+The middle one is separated from the bottom one because both are fast and
+only one is about the file. Filed as a refusal it would never be retried,
+and our own request rate would be reported as the gateway declining to serve
+the app.
 
 ### What an IPFS gateway will not serve
 

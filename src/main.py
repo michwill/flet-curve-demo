@@ -127,6 +127,26 @@ UNKNOWN_CHAIN = 4902
 #: The Curve mark, sized against the wordmark beside it rather than against
 #: the header's height -- the two read as one lockup.
 BRAND_LOGO = 34
+
+#: How tall the bar is, stated once and given to the hover target.
+#:
+#: It used to be nobody's decision: the bar was as tall as the tallest
+#: thing in it plus a band of padding, and the padding was the *bar's*, so
+#: it sat outside the lockup that answers to the pointer. The nav would not
+#: open with the pointer plainly on the header and level with the mark.
+#:
+#: Moving the band onto the lockup fixes the hover and costs the height:
+#: the lockup is only as tall as the mark, where the bar was as tall as the
+#: icon buttons, so it came out visibly thinner. So the height is named
+#: here and handed to the lockup, which is then the tallest thing in the
+#: row and sets the bar to exactly the region that answers to the pointer.
+#:
+#: 68 is what the bar already was: Material gives an `IconButton` a 48px
+#: tap target, and the theme and connect buttons were setting the height,
+#: with 10px of band above and below. Nothing is clipped if a control ever
+#: grows past it -- the row still takes its own height; this is a floor.
+HEADER_HEIGHT = 48 + 2 * 10
+
 #: Below this the header has no room to give, so hovering does nothing --
 #: a chip that grew here would push the chain picker off the row.
 #:
@@ -565,6 +585,9 @@ class CurveApp:
             ),
             on_hover=self._brand_hovered,
             expand=True,
+            # The bar's height lives on the hover target, so the two are
+            # the same rectangle. See `HEADER_HEIGHT`.
+            height=HEADER_HEIGHT,
         )
         # The bar spans the window; what is written on it does not. Past
         # `MAX_CONTENT_WIDTH` this box stops growing and centres, so the
@@ -596,7 +619,7 @@ class CurveApp:
         )
         self.header = ft.Container(
             ft.Row([self._header_box], alignment=ft.MainAxisAlignment.CENTER, spacing=0),
-            padding=ft.Padding.symmetric(horizontal=20, vertical=10),
+            padding=ft.Padding.symmetric(horizontal=20),
             bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
             # Chad only, and hard-edged, like the panels below it.
             shadow=themes.bar_shadow(page),

@@ -827,6 +827,82 @@ def test_a_throttled_file_is_retried_until_the_limiter_lets_go(monkeypatch) -> N
     assert gateway.asked == ["main.dart.js"] * 3, "gave up on a rate limit"
 
 
+# -- waiting for the name to move, so one command covers the whole publish --
+#
+# The script cannot set the contenthash -- that is a wallet signature -- but
+# it can watch for it, which is the difference between warming attached to
+# the publish that needs it and a command you have to remember later.
+
+
+class FakeResolver:
+    """A gateway whose `x-ipfs-roots` changes partway through, as ENS does."""
+
+    def __init__(self, roots: list[str]) -> None:
+        self.roots = list(roots)
+        self.asked = 0
+
+    def get(self, _url, **_kw):
+        self.asked += 1
+        root = self.roots[min(self.asked - 1, len(self.roots) - 1)]
+        return types.SimpleNamespace(headers={"x-ipfs-roots": root} if root else {})
+
+
+def waiting_for_ens(resolver, **kw):
+    return ipfs.wait_for_ens(
+        "https://curve.eth.limo",
+        "bafynew",
+        types.SimpleNamespace(ens_deadline=kw.pop("deadline", 600.0)),
+        client=resolver,
+        sleep=lambda _s: None,
+        **kw,
+    )
+
+
+def test_the_wait_ends_when_the_name_points_at_the_new_build(capsys) -> None:
+    resolver = FakeResolver(["bafyold", "bafyold", "bafynew"])
+
+    assert waiting_for_ens(resolver) is True
+    assert resolver.asked == 3
+    assert "ipfs://bafynew" in capsys.readouterr().out, "must say what to set"
+
+
+def test_the_old_cid_is_never_mistaken_for_the_new_one(capsys) -> None:
+    """The whole point of the gate. Warming while the name still resolves to
+    the previous build would faithfully warm the previous build."""
+    ticks = iter([0.0, 0.0, 10.0, 20.0, 9999.0, 9999.0, 9999.0])
+    resolver = FakeResolver(["bafyold"])
+
+    assert waiting_for_ens(resolver, now=lambda: next(ticks), deadline=60.0) is False
+    assert "--warm" in capsys.readouterr().out, "must say how to pick it up"
+
+
+def test_a_subpath_header_is_read_down_to_its_root() -> None:
+    """`x-ipfs-roots` lists the root and then each node down to the file."""
+    client = types.SimpleNamespace(
+        get=lambda *_a, **_kw: types.SimpleNamespace(
+            headers={"x-ipfs-roots": "bafyroot,bafychild"}
+        )
+    )
+    assert ipfs.resolved_cid(client, "https://curve.eth.limo") == "bafyroot"
+
+
+def test_a_gateway_that_says_nothing_is_not_a_match() -> None:
+    client = types.SimpleNamespace(
+        get=lambda *_a, **_kw: types.SimpleNamespace(headers={})
+    )
+    assert ipfs.resolved_cid(client, "https://curve.eth.limo") == ""
+
+
+def test_interrupting_the_ens_wait_leaves_the_pin_verified(capsys) -> None:
+    def interrupted(*_a, **_kw):
+        raise KeyboardInterrupt
+
+    client = types.SimpleNamespace(get=interrupted)
+
+    assert waiting_for_ens(client) is False
+    assert "Nothing is lost" in capsys.readouterr().out
+
+
 # -- warming: the stage that touches the path a visitor actually takes ------
 #
 # eth.limo has no CID gateway (`https://<cid>.ipfs.eth.limo` does not

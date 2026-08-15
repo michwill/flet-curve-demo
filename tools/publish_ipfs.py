@@ -1099,6 +1099,18 @@ def main() -> int:
         default=WARM_GATEWAY,
         help=f"the ENS host to warm (default {WARM_GATEWAY})",
     )
+    parser.add_argument(
+        "--no-warm",
+        action="store_true",
+        help="stop once the CID is verified, instead of waiting for the ENS "
+        "update and warming the gateway afterwards",
+    )
+    parser.add_argument(
+        "--ens-deadline",
+        type=float,
+        default=ENS_DEADLINE,
+        help="seconds to watch for the contenthash to move before giving up",
+    )
     options = parser.parse_args()
 
     # Warming needs no CID and no key: it asks the ENS name for the files the
@@ -1231,7 +1243,21 @@ def main() -> int:
     show_pin(cid, duplicate=bool(answer.get("isDuplicate")))
     if options.no_verify:
         return 0
-    return wait_until_findable(cid, boot_files(dist), options)
+    paths = boot_files(dist)
+    if code := wait_until_findable(cid, paths, options):
+        return code
+    if options.no_warm:
+        return 0
+
+    # One run, three stages, because the middle one is yours. The script
+    # cannot move the name -- that is a wallet signature -- but it can watch
+    # for it, and waiting here is what keeps the warming attached to the
+    # publish that needs it rather than to a command you have to remember an
+    # hour later.
+    host = options.warm_gateway.rstrip("/")
+    if not wait_for_ens(host, cid, options):
+        return 0
+    return warm(host, paths, options)
 
 
 def show_pin(cid: str, *, duplicate: bool = False) -> None:
@@ -1288,11 +1314,14 @@ def wait_until_findable(cid: str, paths: list[str], options) -> int:
         print(
             "\n  This says the content exists and a CID gateway can serve it.\n"
             "  It does not say eth.limo can: that one has no CID gateway, so\n"
-            "  its retrieval path cannot be exercised until the name moves.\n"
-            "  Once ENS is updated, warm it -- which is also what stops the\n"
-            "  first visitor meeting a cold edge:\n\n"
-            "    python tools/publish_ipfs.py --warm"
+            "  its retrieval path cannot be exercised until the name moves."
         )
+        if getattr(options, "no_warm", True):
+            print(
+                "\n  Once ENS is updated, warm it -- which is also what stops\n"
+                "  the first visitor meeting a cold edge:\n\n"
+                "    python tools/publish_ipfs.py --warm"
+            )
         return 0
 
     refused = {p: v for p, v in bad.items() if v[0] == "refused"}
@@ -1314,6 +1343,89 @@ def wait_until_findable(cid: str, paths: list[str], options) -> int:
     if unfound and not refused:
         print(f"\n  python tools/publish_ipfs.py --verify-only {cid}")
     return 1
+
+
+#: How often to ask the gateway which CID the name points at now, and how
+#: long to keep asking. An hour because the wait is a wallet signature and a
+#: block confirmation, not a network condition -- and because leaving it
+#: running costs one request every half minute.
+ENS_INTERVAL = 30.0
+ENS_DEADLINE = 3600.0
+
+
+def resolved_cid(client, host: str) -> str:
+    """Which CID the gateway is serving that name from, or "".
+
+    Every eth.limo response carries it, which is how ENS was ruled out as
+    the cause of a bad load in the first place:
+
+        x-ipfs-roots: bafybeig4zzt5yofgwdpbval6p3osa3kbf4tidnnxjttjvbtwsyuf3xmlkq
+
+    On a subpath the header lists the root and then each node down to the
+    file, so the root is the first entry. Asking for `/` keeps it to one.
+    """
+    import httpx
+
+    try:
+        response = client.get(f"{host}/", timeout=VERIFY_TIMEOUT)
+    except httpx.HTTPError:
+        return ""
+    roots = response.headers.get("x-ipfs-roots", "")
+    return roots.split(",")[0].strip()
+
+
+def wait_for_ens(
+    host: str,
+    cid: str,
+    options,
+    *,
+    client=None,
+    now=time.monotonic,
+    sleep=time.sleep,
+) -> bool:
+    """Block until `host` resolves to `cid`. True if it got there.
+
+    The one step of a publish this script does not perform -- moving the
+    contenthash is a wallet signature -- so it watches for it instead of
+    asking you to come back afterwards. Warming before the name moves would
+    faithfully warm the *previous* build, which is why this is a gate and
+    not a pause.
+
+    **Ctrl-C is a supported way to leave**, as everywhere else here: the pin
+    is done and verified, and `--warm` picks up whenever you are ready.
+    """
+    import httpx
+
+    owned = client is None
+    client = client or httpx.Client(follow_redirects=True)
+    started = now()
+    print(f"\nset the ENS contenthash to:\n  ipfs://{cid}")
+    print(f"\nwatching {host} for it -- Ctrl-C to stop and warm later")
+    try:
+        while True:
+            live = resolved_cid(client, host)
+            if live == cid:
+                print(f"  {host} is serving it after {elapsed_text(now() - started)}")
+                return True
+            waited = elapsed_text(now() - started)
+            print(f"  still {live or 'unreadable'}   {waited}", flush=True)
+            if now() - started >= options.ens_deadline:
+                print(
+                    f"\n  gave up after {waited}. The pin is fine and verified;"
+                    " only the name has not moved.\n"
+                    "  python tools/publish_ipfs.py --warm"
+                )
+                return False
+            sleep(ENS_INTERVAL)
+    except KeyboardInterrupt:
+        print(
+            "\n\nstopped watching. Nothing is lost -- set the contenthash when"
+            " you like, then:\n  python tools/publish_ipfs.py --warm"
+        )
+        return False
+    finally:
+        if owned:
+            client.close()
 
 
 def warm(host: str, paths: list[str], options) -> int:

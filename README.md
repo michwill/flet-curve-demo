@@ -173,11 +173,33 @@ https://eth.limo/ipfs/<cid>/   404
 
 It serves ENS names and nothing else, so its retrieval path cannot be
 exercised until the name points at the CID. Hence a second stage, after the
-ENS update:
+ENS update — which **the same run waits for**. The script cannot move the
+contenthash, that being a wallet signature, so it watches for it instead:
 
-```sh
-python tools/publish_ipfs.py --warm
 ```
+set the ENS contenthash to:
+  ipfs://bafybeig4zz…mlkq
+
+watching https://curve.eth.limo for it -- Ctrl-C to stop and warm later
+  still bafybeieq4p…be5i   0m30s
+  still bafybeieq4p…be5i   1m00s
+  https://curve.eth.limo is serving it after 1m30s
+
+warming the gateway people use: 77 files, via
+  https://curve.eth.limo
+  [############################]   77/77 retrievable   0m19s
+```
+
+It knows because every eth.limo response says which CID it resolved:
+
+```
+x-ipfs-roots: bafybeig4zzt5yofgwdpbval6p3osa3kbf4tidnnxjttjvbtwsyuf3xmlkq
+```
+
+That is a gate rather than a pause: warming before the name moves would
+faithfully warm the *previous* build. `--no-warm` stops after the verify,
+and `--warm` on its own picks the second stage up later — Ctrl-C during the
+wait says so, and the pin is verified either way.
 
 Fetching **is** the fix: a block pulled through an edge lands in that edge's
 store, so the loop that measures the problem removes it, and the first real

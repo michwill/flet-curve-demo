@@ -222,7 +222,7 @@ class PoolContract:
         contract, which is the rule this file keeps.
 
         Both spellings for every coin go out in **one** `eth_call` through
-        Multicall3, the same way `parameters` asks its eleven questions --
+        Multicall3, the same way `parameters` asks its twelve questions --
         a three-coin pool is six reads, and sequentially that is six round
         trips on every keystroke.
 
@@ -260,11 +260,11 @@ class PoolContract:
         anything but StableSwap-NG. Those are left out rather than
         reported, so the caller shows what exists.
 
-        Eleven questions -- nine parameters, and a second spelling for the
+        Twelve questions -- ten parameters, and a second spelling for the
         two that have one -- asked in a **single** `eth_call` through
         Multicall3, which is why `curve.multicall` exists. Sequentially
-        that is eleven round trips for one panel, and on a public endpoint
-        eleven chances to be rate-limited.
+        that is twelve round trips for one panel, and on a public endpoint
+        twelve chances to be rate-limited.
         """
         plan = _parameter_plan()
         answers = await self._read_many(plan)

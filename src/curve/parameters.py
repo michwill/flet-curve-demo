@@ -29,6 +29,28 @@ and `A` is a plain integer that already includes whatever multiplier its
 family uses -- 4000 for a stable pool, 1707629 for a tricrypto one, and
 both are what Curve's own UI shows.
 
+That table is a snapshot and governance moves under it -- PayPool read
+`A` 50 and `fee` 1500000 the last time this file was touched, not the 5000
+and 1000000 above. It is kept as it was because what it is *for* is the
+scales, and those do not move. Re-read a value before quoting it as
+current.
+
+`get_virtual_price` is the odd one out and is here anyway. It is not a
+parameter of the curve, it is what the curve has *done*: the value of one
+LP token, 1e18 fixed point, starting at exactly one when the pool is
+deployed. Every family answers it, unlike everything above -- read on
+mainnet at block 25766403:
+
+    3pool         1039823717356571085    tricryptoUSDC 1035070122939955419
+    stETH-ng      1078054572865277880    tricrypto2    1071540298809357145
+    PayPool       1044342134767685613    sUSD (old)    1148714008780365037
+
+-- which is why it gets a scale of its own. `Kind.RATIO`'s six significant
+digits render all of those as `1.03982`, `1.07805` and so on, and, worse,
+render three *different* readings of the same pool identically: the whole
+reason to look at this number is the digits six places further out. See
+`PRECISE_PLACES`.
+
 `price_oracle` and `price_scale` are spelled two ways. Tricrypto pools
 hold several prices and take an index, `price_oracle(uint256)`; twocrypto
 and the stable factories hold one and take none. Neither is inferable
@@ -39,6 +61,7 @@ from the pool type as the API reports it, so both are tried -- the same
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal
 from enum import Enum
 
 from .format import percent
@@ -48,6 +71,15 @@ FEE_DENOMINATOR = 10**10
 
 #: Vyper's fixed-point one, for `gamma`, `fee_gamma` and the prices.
 PRECISION = 10**18
+
+#: Decimal places for `Kind.PRECISE`, which in practice means the virtual
+#: price. Twelve, because that is where the movement is: a pool earning 5%
+#: a year gains about 1.9e-8 of virtual price per twelve-second block --
+#: the eighth place -- and a quiet pool far less than that. Not the full
+#: eighteen, which is exact but is twenty characters in a row that has a
+#: label beside it, and the last six of them have never yet been the
+#: reason anybody opened this fold.
+PRECISE_PLACES = 12
 
 
 class Kind(Enum):
@@ -62,6 +94,10 @@ class Kind(Enum):
     RATIO = "ratio"
     #: 1e10 fixed point, shown as "10x".
     MULTIPLIER = "multiplier"
+    #: 1e18 fixed point again, but shown to `PRECISE_PLACES` rather than to
+    #: six significant digits: a number that sits near 1.0 and whose whole
+    #: interest is how far it has crept away from it.
+    PRECISE = "precise"
 
 
 @dataclass(frozen=True)
@@ -75,7 +111,8 @@ class Parameter:
 
 
 #: In the order they are worth reading: the shape of the curve first, then
-#: what it charges, then where it thinks the price is.
+#: what it charges, then where it thinks the price is, and last what all
+#: of that has added up to.
 PARAMETERS: tuple[Parameter, ...] = (
     Parameter("A", "A", Kind.INTEGER, "Amplification: how flat the curve is near balance"),
     Parameter("gamma", "gamma", Kind.RATIO, "How quickly the curve leaves the peg"),
@@ -91,6 +128,12 @@ PARAMETERS: tuple[Parameter, ...] = (
     ),
     Parameter("price_oracle", "Price oracle", Kind.RATIO, "The pool's own moving-average price"),
     Parameter("price_scale", "Price scale", Kind.RATIO, "The price the curve is currently pegged to"),
+    Parameter(
+        "get_virtual_price",
+        "Virtual price",
+        Kind.PRECISE,
+        "What one LP token is worth, from 1.0 at launch",
+    ),
 )
 
 #: Keyed, for the reader.
@@ -107,6 +150,15 @@ def format_value(kind: Kind, raw: int) -> str:
         # "10x", not "x10" with a multiplication sign: the web build's
         # font has no glyph for U+00D7 and would draw a tofu box.
         return f"{raw / FEE_DENOMINATOR:,.4g}x"
+    if kind is Kind.PRECISE:
+        # `Decimal`, not float division. Twelve places of a value near one
+        # is thirteen significant digits and a float carries about sixteen,
+        # so this is a narrow point: measured over 200,000 values, `raw /
+        # PRECISION` lands on the wrong side of the twelfth place about one
+        # time in 25,000 -- when the exact value sits within an ulp of a
+        # rounding boundary. Rare, wrong in exactly the digit this kind
+        # exists to show, and free to avoid on a number read once a panel.
+        return f"{Decimal(raw) / PRECISION:,.{PRECISE_PLACES}f}"
     return f"{raw / PRECISION:,.6g}"
 
 

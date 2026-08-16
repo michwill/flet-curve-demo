@@ -51,10 +51,80 @@ from wallet.base import WalletError
         # 1e10 fixed point, and read as a multiplier rather than a rate.
         (Kind.MULTIPLIER, 100_000_000_000, "10x"),    # PayPool, off peg
         (Kind.MULTIPLIER, 20_000_000_000, "2x"),
+        # 1e18 again, shown to twelve places instead of six digits.
+        (Kind.PRECISE, 1_039_823_717_356_571_085, "1.039823717357"),  # 3pool
+        (Kind.PRECISE, 1_078_054_572_865_277_880, "1.078054572865"),  # stETH-ng
+        (Kind.PRECISE, 1_035_070_122_939_955_419, "1.035070122940"),  # tricryptoUSDC
+        (Kind.PRECISE, 10**18, "1.000000000000"),     # a pool deployed this block
     ],
 )
 def test_each_scale_is_the_one_that_parameter_uses(kind, raw, expected) -> None:
     assert format_value(kind, raw) == expected
+
+
+# -- the virtual price -----------------------------------------------------
+
+
+def test_the_virtual_price_keeps_the_digits_that_move() -> None:
+    """The reason it is not `Kind.RATIO`.
+
+    Six significant digits is what every other 1e18 value gets, and it
+    rounds three real mainnet readings to the same string -- so a fold
+    opened to check whether a pool is earning would show the same number
+    for a pool that is and a pool that stopped a year ago.
+    """
+    readings = (
+        1_039_823_717_356_571_085,  # 3pool
+        1_039_823_717_344_705_400,  # 3pool, an earlier read
+        1_039_823_717_400_000_000,  # and one in between
+    )
+    assert len({format_value(Kind.RATIO, raw) for raw in readings}) == 1
+    assert len({format_value(Kind.PRECISE, raw) for raw in readings}) == 3
+
+
+def test_the_places_are_fixed_rather_than_trimmed() -> None:
+    """Trailing zeros stay. This is a number read twice and compared, and
+    a column that changes width between reads is a column you have to
+    re-read from the left each time."""
+    assert format_value(Kind.PRECISE, 1_100_000_000_000_000_000) == "1.100000000000"
+    assert format_value(Kind.PRECISE, 2 * 10**18) == "2.000000000000"
+
+
+def test_the_twelfth_place_is_exact_rather_than_a_float() -> None:
+    """Why the scaling is `Decimal` and not `raw / PRECISION`.
+
+    Thirteen significant digits out of a float's sixteen is a narrow
+    complaint, and most of the time the two agree. But the value is an
+    exact integer and the twelfth place is the last one shown, so when the
+    quotient falls within an ulp of a rounding boundary the float rounds
+    the wrong way -- about one value in 25,000, and always in the one
+    digit this kind exists to show. Below, the exact value continues
+    `...500073`, so the twelfth place rounds up.
+    """
+    raw = 1_311_012_269_028_500_073
+
+    assert format_value(Kind.PRECISE, raw) == "1.311012269029"
+    assert f"{raw / 10**18:,.12f}" == "1.311012269028"
+
+
+def test_it_is_read_off_the_pool_like_every_other_row() -> None:
+    """`get_virtual_price()`, batched with the rest -- not the value the
+    API reports, which `Pool.virtual_price` already carries and which is
+    not what a fold headed "read from the contract" should show."""
+    assert any(p.key == "get_virtual_price" for p in PARAMETERS)
+    assert abi.encode_parameter("get_virtual_price") == "0xbb7b8b80"
+
+
+def test_every_family_answers_it() -> None:
+    """Unlike `gamma` or `offpeg_fee_multiplier`, this one is on every
+    pool Curve has shipped -- verified on mainnet against the old
+    registry, a factory pool, stableswap-ng and two crypto pools. So the
+    row is expected to be present where the others come and go."""
+    stable = rows({"A": 4_000, "fee": 1_500_000, "get_virtual_price": 10**18})
+    crypto = rows({"A": 1_707_629, "gamma": 11_809_167_828_997, "get_virtual_price": 10**18})
+
+    assert [p.key for p, _ in stable][-1] == "get_virtual_price"
+    assert [p.key for p, _ in crypto][-1] == "get_virtual_price"
 
 
 def test_a_multiplier_stays_ascii() -> None:
@@ -277,7 +347,7 @@ async def test_it_does_not_raise_on_a_pool_call_failure() -> None:
     assert issubclass(PoolCallFailed, WalletError)
 
 
-# -- one round trip instead of eleven --------------------------------------
+# -- one round trip instead of twelve --------------------------------------
 
 
 def word(value: int) -> str:
@@ -387,6 +457,6 @@ def test_a_failed_call_reads_as_no_value() -> None:
 
 
 def test_a_short_answer_is_not_mistaken_for_a_full_batch() -> None:
-    """Better to ask again one at a time than to line up nine answers
-    against eleven questions."""
-    assert decode_uints(aggregate3_response([1, 2]), 11) == [None] * 11
+    """Better to ask again one at a time than to line up two answers
+    against twelve questions."""
+    assert decode_uints(aggregate3_response([1, 2]), 12) == [None] * 12

@@ -170,9 +170,9 @@ def encode_parameter(name: str) -> str:
     """A no-argument `uint256` getter, by name.
 
     All the pool parameters are shaped alike -- `A()`, `gamma()`,
-    `mid_fee()`, `offpeg_fee_multiplier()` -- so they need one encoder
-    rather than nine. Which of them a given pool implements is a question
-    for the pool; see `curve.parameters`.
+    `mid_fee()`, `offpeg_fee_multiplier()`, `get_virtual_price()` -- so
+    they need one encoder rather than ten. Which of them a given pool
+    implements is a question for the pool; see `curve.parameters`.
     """
     return _call(f"{name}()")
 

@@ -742,7 +742,7 @@ class PoolDetailView(ft.Column):
     async def load_parameters(self) -> None:
         """Ask the pool what shape it is.
 
-        Nine reads, and a pool answers between two and eight of them --
+        Ten reads, and a pool answers between three and nine of them --
         which ones is the pool's own answer to what family it belongs to,
         and is not inferable from the registry name. See
         `curve.parameters`.

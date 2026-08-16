@@ -940,20 +940,21 @@ and a label — which is what canvas is for, unlike the candles, which were not.
 
 **Pool parameters come off the pool, in one call.** The fold under the yields
 reads `A`, `gamma`, `fee`, `mid_fee`, `out_fee`, `fee_gamma`,
-`offpeg_fee_multiplier`, `price_oracle` and `price_scale` from the contract —
-the API supplies the pool and gauge addresses and nothing else there. Which of
-them a pool implements is the pool's answer to what family it belongs to, not
-the registry name's, so all of them are asked and whatever answers is shown.
+`offpeg_fee_multiplier`, `price_oracle`, `price_scale` and
+`get_virtual_price` from the contract — the API supplies the pool and gauge
+addresses and nothing else there. Which of them a pool implements is the
+pool's answer to what family it belongs to, not the registry name's, so all of
+them are asked and whatever answers is shown.
 
-That is eleven questions (two have a second, indexed spelling on tricrypto),
+That is twelve questions (two have a second, indexed spelling on tricrypto),
 and they go in **one** `eth_call` through
 [Multicall3](https://github.com/mds1/multicall) — same address on every chain
 that has it, `aggregate3` so that a call which is *expected* to fail does not
 take the batch down with it. Measured against a public endpoint:
 
 ```
-multicall       0.05s   1 request    8 values
-one at a time   0.58s  12 requests   8 values
+multicall       0.05s   1 request    9 values
+one at a time   0.39s  13 requests   9 values
 ```
 
 A chain without Multicall3 is a normal case rather than an error, and nothing
@@ -962,6 +963,13 @@ back to asking one at a time. The scales differ per parameter — fees are
 fractions of 1e10, `gamma`/`fee_gamma`/prices are 1e18 fixed point, the off-peg
 multiplier is 1e10 read as a multiplier — and `curve/parameters.py` carries the
 mainnet readings the table was built from.
+
+The virtual price is the one entry there that is not a parameter of the curve
+but a result of it, and it is shown to twelve decimal places rather than the
+six significant digits the other 1e18 values get. `1.039823717357`, not
+`1.03982`: it leaves 1.0 slowly — about 1.9e-8 per block for a pool earning 5%
+a year — so the digits that would be rounded away are the entire point of
+looking.
 
 **A pair is charted the way it is written.** "WBTC/USDC" is WBTC priced in
 USDC, so it should read ~64,000 and not ~0.0000154. The `/ohlc` endpoint's

@@ -982,28 +982,39 @@ divides by `totalSupply`, so a pool nobody has deposited into reverts, and the
 row is then simply absent.
 
 `stored_rates` is the minority row, and the awkward one. It is the rate the
-pool prices each of its coins at — the precision multiplier alone for most, and
-a cached oracle reading for a coin that has one behind it, which is the number
-worth coming here for:
+pool prices each of its coins at, shown **against the first coin** and labelled
+that way, so it reads as a price rather than a multiplier you divide yourself:
 
 ```
-osETH/rETH   Rate · osETH   1.077150828439      DOLA/sUSDe   Rate · DOLA    1.000000000000
-             Rate · rETH    1.169697850261                   Rate · sUSDe   1.243622171821
+osETH/rETH   rETH/osETH   1.085918349945       DOLA/sUSDe   sUSDe/DOLA   1.243624562186
+sPool        sDAI/sUSDe   0.948314718136       PayPool      (no rows)
+             sFRAX/sUSDe  0.933039820747
 ```
 
-Three things it does not share with any other row. It is **a minority**: of the
-top fourteen pools of four registries probed on mainnet, the fourteen that
-answered were all stableswap-ng and the other forty-two reverted. It answers
-**an array**, in either of the two encodings Vyper produces — a bare
-`uint256[N]` from the stETH-ng pool, an offset-and-length `DynArray` from a
-stableswap-ng one — so `abi.decode_uint_array` sniffs the shape rather than
-trusting a declaration. Decoding it as a single word would return the array's
-*offset*, 32, and print a confident `0.000000000000`. And **each coin has its
-own denominator**: the contract scales everything to 36 decimals, so USDC's
-flat 1.0 arrives as 1e30 where an 18-decimal coin's arrives as 1e18. A shared
-1e18 would print USDC's rate as a trillion. When the rate count and the coin
-count disagree — a metapool's two against the four its coin list decomposes
-into — the rows are dropped rather than paired with the wrong decimals.
+**Dividing is not cosmetic.** `stored_rates` is denominated in the pool's own
+accounting unit, not in coin 0, and the two coincide only where coin 0 has no
+oracle of its own. Across all 2,009 mainnet pools, 1,011 answer this method and
+**298 of them — 29% — have a first rate that is not 1.0**: `osETH/rETH` reads
+`1.0772` and `1.1697`, `ETHx/wstETH` reads `1.2417` and `1.0951`, `wbIB01` reads
+`121.52`. Printing rETH's raw `1.1697` under a `rETH/osETH` label would claim a
+price the pool does not hold — it prices rETH at `1.0859` osETH. Where coin 0
+*is* the numeraire, the other 71%, dividing by one changes nothing.
+
+Coin 0 gets no row: against itself it is 1.0 by construction. And a pool whose
+rates are all identical gets no rows at all — 541 of the 1,011 — because a
+column of `1.000000000000` only restates that this is an ordinary pool.
+
+Two more things it does not share with any other row. It answers **an array**,
+in either of the two encodings Vyper produces — a bare `uint256[N]` from the
+stETH-ng pool, an offset-and-length `DynArray` from a stableswap-ng one — so
+`abi.decode_uint_array` sniffs the shape rather than trusting a declaration.
+Decoding it as a single word would return the array's *offset*, 32, and print a
+confident `0.000000000000`. And **each coin has its own denominator**: the
+contract scales everything to 36 decimals, so USDC's flat 1.0 arrives as 1e30
+where an 18-decimal coin's arrives as 1e18. A shared 1e18 would price WETH at
+1e-12 in USDC. When the rate count and the coin count disagree — a metapool's
+two against the four its coin list decomposes into — the rows are dropped
+rather than paired with the wrong decimals.
 
 **A pair is charted the way it is written.** "WBTC/USDC" is WBTC priced in
 USDC, so it should read ~64,000 and not ~0.0000154. The `/ohlc` endpoint's

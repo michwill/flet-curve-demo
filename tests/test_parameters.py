@@ -532,15 +532,16 @@ def test_unreadable_data_is_no_rates_rather_than_a_guess(junk) -> None:
 
 def test_each_coin_is_scaled_by_its_own_decimals() -> None:
     """The mistake that would look plausible and be wrong by twelve orders
-    of magnitude. `stored_rates` scales every coin to 36 decimals, so
-    USDC's flat 1.0 arrives as 1e30 where an 18-decimal coin's arrives as
-    1e18. Read off PayPool, whose two coins are both six-decimal."""
-    shown = rate_rows([10**30, 10**30], [("PYUSD", 6), ("USDC", 6)])
+    of magnitude. `stored_rates` scales every coin to 36 decimals, so a
+    six-decimal coin's flat 1.0 arrives as 1e30 and an eighteen-decimal
+    coin's as 1e18. Divide those as they come and USDC prices WETH at
+    1e-12; scale each by its own first and the pair is 1.0.
+    """
+    mixed = rate_rows([10**30, 10**18], [("USDC", 6), ("WETH", 18)])
+    oracle = rate_rows([10**30, 1_101_580_158_261_000_000], [("USDC", 6), ("weETH", 18)])
 
-    assert [value for _parameter, value in shown] == [
-        "1.000000000000",
-        "1.000000000000",
-    ]
+    assert mixed == []  # both are exactly 1.0 against each other
+    assert [value for _parameter, value in oracle] == ["1.101580158261"]
 
 
 def test_an_oracle_rate_is_what_the_row_is_for() -> None:
@@ -553,9 +554,65 @@ def test_an_oracle_rate_is_what_the_row_is_for() -> None:
     )
 
     assert [(parameter.label, value) for parameter, value in shown] == [
-        ("Rate · osETH", "1.077150828439"),
-        ("Rate · rETH", "1.169697850261"),
+        ("rETH/osETH", "1.085918349945"),
     ]
+
+
+def test_the_rate_is_divided_by_the_first_coins_own_rate() -> None:
+    """The correction that makes the label true.
+
+    `stored_rates` is denominated in the pool's accounting unit, not in
+    coin 0, and the two coincide only where coin 0 has no oracle. Across
+    all 2,009 mainnet pools, 1,011 answer this method and 298 of them --
+    29% -- have a first rate that is not 1.0. osETH/rETH is one: printing
+    rETH's raw 1.1697 under a `rETH/osETH` label would claim a price the
+    pool does not hold. It prices rETH at 1.0859 osETH.
+    """
+    raw = [1_077_150_828_439_152_538, 1_169_697_850_260_678_664]
+    coins = [("osETH", 18), ("rETH", 18)]
+
+    assert format_value(Kind.PRECISE, raw[1]) == "1.169697850261"
+    assert [value for _parameter, value in rate_rows(raw, coins)] == ["1.085918349945"]
+
+
+def test_dividing_by_one_changes_nothing_for_the_other_71_percent() -> None:
+    """Where coin 0 *is* the numeraire the ratio is the raw rate, which is
+    why this correction costs the common case nothing."""
+    shown = rate_rows(
+        [10**18, 1_243_624_562_186_000_000], [("DOLA", 18), ("sUSDe", 18)]
+    )
+
+    assert [(parameter.label, value) for parameter, value in shown] == [
+        ("sUSDe/DOLA", "1.243624562186"),
+    ]
+
+
+def test_the_first_coin_gets_no_row_of_its_own() -> None:
+    """Against itself it is 1.0 by construction, and a row that can only
+    ever say one thing says nothing."""
+    shown = rate_rows(
+        [10**18, 1_243_624_562_186_000_000], [("DOLA", 18), ("sUSDe", 18)]
+    )
+
+    assert len(shown) == 1
+    assert "DOLA/DOLA" not in [parameter.label for parameter, _value in shown]
+
+
+def test_a_pool_with_no_oracle_between_its_coins_shows_nothing() -> None:
+    """541 of the 1,011 that answer are this: every rate identical, so
+    every ratio is 1.0. The rows would be a column of `1.000000000000`
+    restating that this is an ordinary pool, which the absence of the
+    rows says more briefly."""
+    assert rate_rows([10**30, 10**30], [("PYUSD", 6), ("USDC", 6)]) == []
+    assert rate_rows([10**18, 10**18, 10**18], [("a", 18), ("b", 18), ("c", 18)]) == []
+    # Not 1.0 each, but identical, so still nothing to tell apart.
+    assert rate_rows([12 * 10**17, 12 * 10**17], [("a", 18), ("b", 18)]) == []
+
+
+def test_a_first_rate_of_zero_is_not_divided_by() -> None:
+    """No pool should answer this, and a ZeroDivisionError inside a panel
+    refresh is not how we would want to find out that one did."""
+    assert rate_rows([0, 10**18], [("a", 18), ("b", 18)]) == []
 
 
 def test_a_coin_count_that_does_not_match_shows_nothing() -> None:

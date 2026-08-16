@@ -1688,8 +1688,29 @@ async def test_the_stored_rates_land_under_the_parameters() -> None:
     await asyncio.sleep(0)
 
     shown = texts(view._parameter_rows)
-    assert "Rate · C0" in shown and "1.077150828439" in shown
-    assert "Rate · C1" in shown and "1.169697850261" in shown
+    # Priced against the first coin, and the first coin gets no row.
+    assert "C1/C0" in shown and "1.085918349945" in shown
+    assert "C0/C0" not in shown
+
+
+async def test_a_pool_with_flat_rates_shows_no_rate_rows_at_all() -> None:
+    """More than half of the pools that answer `stored_rates` are this
+    one, and a column of `1.000000000000` under the parameters is noise
+    in the place people came to read numbers."""
+    from curve.parameters import Readings
+
+    contract = CountingContract(Readings({"A": 5_000}, (10**18, 10**18)))
+    view = PoolDetailView(
+        StubPage(), api=None, pool=make_pool(),
+        get_contract=lambda: contract,  # type: ignore[return-value]
+        on_back=lambda: None,
+    )
+
+    toggle(view, expanded=True)
+    await asyncio.sleep(0)
+
+    shown = texts(view._parameter_rows)
+    assert shown == ["A", "5,000"]
 
 
 def test_nothing_in_the_action_panel_is_given_a_height() -> None:

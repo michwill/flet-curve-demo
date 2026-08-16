@@ -75,9 +75,10 @@ produce. stETH-ng answers the first, a stableswap-ng pool the second, and
 for that reason -- see `rate_rows`, and `pool.ARRAY_PARAMETERS` for how it
 still rides in the same batch.
 
-Of the top fourteen pools of each family probed on mainnet, the fourteen
-that answered it were all stableswap-ng and the other forty-two reverted,
-so the row is genuinely a minority one.
+Surveyed across all 2,009 pools the API lists for mainnet, 1,011 answer
+it -- and 541 of those price every coin identically, which is a pool with
+no rate oracle between its coins and shows no rows at all. So the row is
+a minority one twice over.
 """
 
 from __future__ import annotations
@@ -227,16 +228,36 @@ def rows(values: dict[str, int]) -> list[tuple[Parameter, str]]:
 def rate_rows(
     rates: Sequence[int], coins: Sequence[tuple[str, int]]
 ) -> list[tuple[Parameter, str]]:
-    """`stored_rates()`, one row per coin, or nothing.
+    """`stored_rates()` as a price per coin, against the first one.
 
-    The rate a pool prices each of its coins at. For most coins it is the
-    precision multiplier and nothing else and reads as exactly 1.0; for a
-    coin with a rate oracle behind it -- an LST, a yield-bearing
-    stablecoin -- it is that oracle's answer as the pool last cached it,
-    which is the number worth coming here for. Read on mainnet:
+    The rate a pool prices each of its coins at, from whatever oracle sits
+    behind it -- an LST's exchange rate, a yield-bearing stablecoin's share
+    price. Shown as a **ratio to the first coin's rate**, and labelled that
+    way (`sUSDe/DOLA`), which is what makes the number a price you can read
+    rather than a multiplier you have to divide yourself.
 
-        osETH-rETH   osETH  1.077150828439    rETH   1.169697850261
-        DOLA-sUSDe   DOLA   1.000000000000    sUSDe  1.243622171821
+    The ratio matters, and this is the part that is easy to get wrong.
+    `stored_rates` is denominated in the pool's own accounting unit, not in
+    coin 0, and those coincide only when coin 0 has no oracle of its own.
+    Surveyed across all 2,009 mainnet pools, 1,011 answer this method and
+    **298 of them -- 29% -- have a first rate that is not 1.0**:
+
+        osETH-rETH   osETH  1.077151698614    rETH   1.169697850261
+        ETHxwstETH   wstETH 1.241737624641    ETHx   1.095114323123
+        wbIB01-$lp   wbIB01 121.520000000000  FRAX   1.000000000000
+
+    So printing the raw rate under a `rETH/osETH` label would claim rETH is
+    worth 1.1697 osETH when the pool prices it at 1.0859. Dividing makes the
+    label true, and where coin 0 *is* the numeraire -- the other 71% -- it
+    changes nothing, because dividing by one is free.
+
+    Coin 0's own row is dropped: against itself it is 1.0 by construction,
+    and a row that can only ever say one thing says nothing.
+
+    Everything at exactly 1.0 returns nothing at all. That is the 541 pools
+    of the 1,011 whose coins have no rate oracle between them, where the
+    rows would be a column of `1.000000000000` restating that this pool is
+    the ordinary kind.
 
     **Each coin has its own denominator.** The contract scales every coin
     to 36 decimals, so the raw word is `10 ** (36 - decimals) * rate`, and
@@ -249,17 +270,28 @@ def rate_rows(
     each rate with the wrong denominator and produce a number that is
     wrong by orders of magnitude while looking entirely plausible.
     """
-    if not rates or len(rates) != len(coins):
+    if not rates or len(rates) != len(coins) or not rates[0]:
         return []
-    return [
-        (
-            Parameter(
-                f"stored_rates[{index}]",
-                f"Rate · {symbol}",
-                Kind.PRECISE,
-                "stored_rates(): what the pool prices this coin at",
-            ),
-            format_value(Kind.PRECISE, raw * PRECISION // 10 ** (RATE_DECIMALS - decimals)),
+    base, (base_symbol, base_decimals) = rates[0], coins[0]
+    shown: list[tuple[Parameter, str]] = []
+    for index in range(1, len(rates)):
+        symbol, decimals = coins[index]
+        # `rate[i] / 10**(36-di)` over `rate[0] / 10**(36-d0)`, kept in
+        # integers and scaled to 1e18 for `Kind.PRECISE`. The truncation is
+        # at 1e-18, six places past anything shown.
+        scaled = (
+            PRECISION * rates[index] * 10 ** (RATE_DECIMALS - base_decimals)
+        ) // (base * 10 ** (RATE_DECIMALS - decimals))
+        shown.append(
+            (
+                Parameter(
+                    f"stored_rates[{index}]",
+                    f"{symbol}/{base_symbol}",
+                    Kind.PRECISE,
+                    "stored_rates(): what the pool prices this coin at",
+                ),
+                format_value(Kind.PRECISE, scaled),
+            )
         )
-        for index, (raw, (symbol, decimals)) in enumerate(zip(rates, coins, strict=True))
-    ]
+    flat = format_value(Kind.PRECISE, PRECISION)
+    return [] if all(value == flat for _parameter, value in shown) else shown

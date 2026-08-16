@@ -25,7 +25,15 @@ from curve.multicall import (
     decode_uints,
     encode_aggregate3,
 )
-from curve.parameters import PARAMETERS, Kind, Readings, format_value, rate_rows, rows
+from curve.parameters import (
+    BY_KEY,
+    PARAMETERS,
+    Kind,
+    Readings,
+    format_value,
+    rate_rows,
+    rows,
+)
 from curve.pool import (
     ARRAY_PARAMETERS,
     INDEXED_PARAMETERS,
@@ -554,7 +562,7 @@ def test_an_oracle_rate_is_what_the_row_is_for() -> None:
     )
 
     assert [(parameter.label, value) for parameter, value in shown] == [
-        ("rETH/osETH", "1.085918349945"),
+        ("External oracle rETH/osETH", "1.085918349945"),
     ]
 
 
@@ -583,7 +591,7 @@ def test_dividing_by_one_changes_nothing_for_the_other_71_percent() -> None:
     )
 
     assert [(parameter.label, value) for parameter, value in shown] == [
-        ("sUSDe/DOLA", "1.243624562186"),
+        ("External oracle sUSDe/DOLA", "1.243624562186"),
     ]
 
 
@@ -595,7 +603,7 @@ def test_the_first_coin_gets_no_row_of_its_own() -> None:
     )
 
     assert len(shown) == 1
-    assert "DOLA/DOLA" not in [parameter.label for parameter, _value in shown]
+    assert not any("DOLA/DOLA" in parameter.label for parameter, _value in shown)
 
 
 def test_a_pool_with_no_oracle_between_its_coins_shows_nothing() -> None:
@@ -607,6 +615,37 @@ def test_a_pool_with_no_oracle_between_its_coins_shows_nothing() -> None:
     assert rate_rows([10**18, 10**18, 10**18], [("a", 18), ("b", 18), ("c", 18)]) == []
     # Not 1.0 each, but identical, so still nothing to tell apart.
     assert rate_rows([12 * 10**17, 12 * 10**17], [("a", 18), ("b", 18)]) == []
+
+
+def test_the_row_says_where_the_number_came_from() -> None:
+    """A bare `rETH/osETH` does not say what kind of price it is, and the
+    row a line above it is `Price oracle` -- the pool's own moving average
+    of its own trades. Two oracles measuring different things from
+    different places, so each says which it is."""
+    shown = rate_rows(
+        [1_077_150_828_439_152_538, 1_169_697_850_260_678_664],
+        [("osETH", 18), ("rETH", 18)],
+    )
+    internal = BY_KEY["price_oracle"].label
+
+    assert shown[0][0].label == "External oracle rETH/osETH"
+    assert internal == "Price oracle"
+    assert internal not in shown[0][0].label
+
+
+def test_the_label_fits_a_phone() -> None:
+    """Measured, not guessed: rendered at 360px, the widest real pair --
+    `External oracle sFRAX/sUSDe` beside a twelve-place number -- sits on
+    one line inside the 314px the fold has after the page and parameter
+    padding. Symbols long enough to wrap exist (`mwstETH-WPUNKS:15`) and
+    wrap to two lines with the value still aligned, which is why the
+    label is the control that expands and the number is not."""
+    shown = rate_rows(
+        [1_243_624_562_186_000_000, 1_179_347_425_983_000_000, 1_160_351_238_578_000_000],
+        [("sUSDe", 18), ("sDAI", 18), ("sFRAX", 18)],
+    )
+
+    assert max(len(parameter.label) for parameter, _value in shown) == 27
 
 
 def test_a_first_rate_of_zero_is_not_divided_by() -> None:

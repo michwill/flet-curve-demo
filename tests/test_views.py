@@ -1689,8 +1689,8 @@ async def test_the_stored_rates_land_under_the_parameters() -> None:
 
     shown = texts(view._parameter_rows)
     # Priced against the first coin, and the first coin gets no row.
-    assert "C1/C0" in shown and "1.085918349945" in shown
-    assert "C0/C0" not in shown
+    assert "External oracle C1/C0" in shown and "1.085918349945" in shown
+    assert not any("C0/C0" in value for value in shown)
 
 
 async def test_a_pool_with_flat_rates_shows_no_rate_rows_at_all() -> None:

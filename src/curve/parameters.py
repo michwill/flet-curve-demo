@@ -101,6 +101,14 @@ PRECISION = 10**18
 #: `rate_rows`, which is the only thing that gets this right or wrong.
 RATE_DECIMALS = 36
 
+#: What a rate row is called, before the pair. It names where the number
+#: came from, which is the one thing the pair alone does not say -- and it
+#: separates these rows from `price_oracle` directly above them, which is
+#: the pool's *own* moving average of its *own* trades. Two rows a line
+#: apart, both called some kind of oracle, measuring different things from
+#: different places.
+RATE_LABEL = "External oracle"
+
 #: Decimal places for `Kind.PRECISE`, which in practice means the virtual
 #: price. Twelve, because that is where the movement is: a pool earning 5%
 #: a year gains about 1.9e-8 of virtual price per twelve-second block --
@@ -233,8 +241,9 @@ def rate_rows(
     The rate a pool prices each of its coins at, from whatever oracle sits
     behind it -- an LST's exchange rate, a yield-bearing stablecoin's share
     price. Shown as a **ratio to the first coin's rate**, and labelled that
-    way (`sUSDe/DOLA`), which is what makes the number a price you can read
-    rather than a multiplier you have to divide yourself.
+    way (`External oracle sUSDe/DOLA`), which is what makes the number a
+    price you can read rather than a multiplier you have to divide
+    yourself. On the prefix, see `RATE_LABEL`.
 
     The ratio matters, and this is the part that is easy to get wrong.
     `stored_rates` is denominated in the pool's own accounting unit, not in
@@ -286,9 +295,9 @@ def rate_rows(
             (
                 Parameter(
                     f"stored_rates[{index}]",
-                    f"{symbol}/{base_symbol}",
+                    f"{RATE_LABEL} {symbol}/{base_symbol}",
                     Kind.PRECISE,
-                    "stored_rates(): what the pool prices this coin at",
+                    "stored_rates(): the outside price this pool has cached",
                 ),
                 format_value(Kind.PRECISE, scaled),
             )

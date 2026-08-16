@@ -986,10 +986,18 @@ pool prices each of its coins at, shown **against the first coin** and labelled
 that way, so it reads as a price rather than a multiplier you divide yourself:
 
 ```
-osETH/rETH   rETH/osETH   1.085918349945       DOLA/sUSDe   sUSDe/DOLA   1.243624562186
-sPool        sDAI/sUSDe   0.948314718136       PayPool      (no rows)
-             sFRAX/sUSDe  0.933039820747
+osETH/rETH   External oracle rETH/osETH     1.085918349945
+DOLA/sUSDe   External oracle sUSDe/DOLA     1.243624562186
+sPool        External oracle sDAI/sUSDe     0.948314718136
+             External oracle sFRAX/sUSDe    0.933039820747
+PayPool      (no rows)
 ```
+
+The prefix earns its width by separating these from `Price oracle` two rows
+above, which is the pool's *own* moving average of its *own* trades. Both are
+oracles; they measure different things from different places, and a bare
+`rETH/osETH` says which pair but not which kind. Rendered at 360px, the widest
+real pair sits on one line with room to spare.
 
 **Dividing is not cosmetic.** `stored_rates` is denominated in the pool's own
 accounting unit, not in coin 0, and the two coincide only where coin 0 has no

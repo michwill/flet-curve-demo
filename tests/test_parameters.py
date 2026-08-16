@@ -25,8 +25,14 @@ from curve.multicall import (
     decode_uints,
     encode_aggregate3,
 )
-from curve.parameters import PARAMETERS, Kind, format_value, rows
-from curve.pool import INDEXED_PARAMETERS, PoolCallFailed, PoolContract, _parameter_plan
+from curve.parameters import PARAMETERS, Kind, Readings, format_value, rate_rows, rows
+from curve.pool import (
+    ARRAY_PARAMETERS,
+    INDEXED_PARAMETERS,
+    PoolCallFailed,
+    PoolContract,
+    _parameter_plan,
+)
 from wallet.base import WalletError
 
 # -- scales ----------------------------------------------------------------
@@ -115,7 +121,7 @@ def test_it_is_read_off_the_pool_like_every_other_row() -> None:
     assert abi.encode_parameter("get_virtual_price") == "0xbb7b8b80"
 
 
-def test_every_family_answers_it() -> None:
+def test_every_family_implements_it() -> None:
     """Unlike `gamma` or `offpeg_fee_multiplier`, this one is on every
     pool Curve has shipped -- verified on mainnet against the old
     registry, a factory pool, stableswap-ng and two crypto pools. So the
@@ -125,6 +131,14 @@ def test_every_family_answers_it() -> None:
 
     assert [p.key for p, _ in stable][-1] == "get_virtual_price"
     assert [p.key for p, _ in crypto][-1] == "get_virtual_price"
+
+
+def test_an_empty_pool_has_no_virtual_price_rather_than_a_zero() -> None:
+    """Implemented everywhere is not answered everywhere. It divides by
+    `totalSupply`, so a pool nobody has deposited into reverts -- seen on
+    mainnet at DOLA/FRAXPYUSD. Absence is the right answer there, and a
+    `0.000000000000` would read as a pool that had lost everything."""
+    assert [p.key for p, _ in rows({"A": 200, "fee": 4_000_000})] == ["A", "fee"]
 
 
 def test_a_multiplier_stays_ascii() -> None:
@@ -216,7 +230,7 @@ def contract_with(answers: dict[str, int]) -> PoolContract:
 
 async def test_a_stableswap_pool_answers_two_of_them() -> None:
     contract = contract_with({"A": 4_000, "fee": 1_500_000})
-    assert await contract.parameters() == {"A": 4_000, "fee": 1_500_000}
+    assert (await contract.parameters()).values == {"A": 4_000, "fee": 1_500_000}
 
 
 async def test_a_crypto_pool_answers_most_of_them() -> None:
@@ -228,14 +242,14 @@ async def test_a_crypto_pool_answers_most_of_them() -> None:
         "out_fee": 30_000_000,
         "fee_gamma": 500_000_000_000_000,
     }
-    assert await contract_with(answers).parameters() == answers
+    assert (await contract_with(answers).parameters()).values == answers
 
 
 async def test_a_pool_that_answers_nothing_is_empty_not_an_error() -> None:
     """An address with no code on this chain, for instance -- which is
     what browsing one network with a wallet on another used to look
     like."""
-    assert await contract_with({}).parameters() == {}
+    assert not await contract_with({}).parameters()
 
 
 async def test_an_indexed_price_is_found_after_the_plain_one_fails() -> None:
@@ -254,7 +268,7 @@ async def test_an_indexed_price_is_found_after_the_plain_one_fails() -> None:
     contract = PoolContract(OnlyIndexed({}), make_pool(), "")
     values = await contract.parameters()
 
-    assert values == {"price_oracle": 65_003_125_444_859_976_272_179}
+    assert values.values == {"price_oracle": 65_003_125_444_859_976_272_179}
 
 
 async def test_a_chain_without_multicall_asks_one_at_a_time() -> None:
@@ -266,7 +280,7 @@ async def test_a_chain_without_multicall_asks_one_at_a_time() -> None:
 
     asked = contract.provider.asked
     assert asked[0].startswith(abi.selector(AGGREGATE3), 2)
-    assert len(asked) == 1 + len(PARAMETERS) + len(INDEXED_PARAMETERS)
+    assert len(asked) == 1 + len(PARAMETERS) + len(INDEXED_PARAMETERS) + len(ARRAY_PARAMETERS)
 
 
 async def test_a_provider_that_cannot_read_at_all_says_so() -> None:
@@ -292,7 +306,7 @@ async def test_a_pool_that_implements_none_of_them_is_still_empty() -> None:
     """The other half of the distinction above: the chain answered, and
     what it said was that this contract has none of these methods. That
     is absence, not failure, and stays a plain empty result."""
-    assert await contract_with({}).parameters() == {}
+    assert not await contract_with({}).parameters()
 
 
 async def test_a_reverting_read_does_not_stop_the_others() -> None:
@@ -307,7 +321,7 @@ async def test_a_reverting_read_does_not_stop_the_others() -> None:
             return await super().call(to, data)
 
     contract = PoolContract(Reverts({"A": 4_000, "fee": 1_500_000}), make_pool(), "")
-    assert await contract.parameters() == {"A": 4_000, "fee": 1_500_000}
+    assert (await contract.parameters()).values == {"A": 4_000, "fee": 1_500_000}
 
 
 def test_the_reader_and_the_table_agree_on_names() -> None:
@@ -354,18 +368,24 @@ def word(value: int) -> str:
     return f"{value:064x}"
 
 
-def aggregate3_response(answers: list[int | None]) -> str:
+def aggregate3_response(answers: list[int | str | None]) -> str:
     """Encode `(bool success, bytes returnData)[]` as Multicall3 returns it.
 
     Writing the encoder the decoder is tested against is only worth
     anything because the *real* one was checked against mainnet -- see
     `curve/multicall.py`. This is here so the failure modes (a call that
     reverted, a call that answered nothing) can be produced on demand.
+
+    An `int` is one word back, the usual case. A `str` is raw hex, for the
+    one call in the batch that answers several words.
     """
     elements = []
     for value in answers:
         if value is None:
             elements.append(word(0) + word(0x40) + word(0))
+        elif isinstance(value, str):
+            body = value.removeprefix("0x")
+            elements.append(word(1) + word(0x40) + word(len(body) // 2) + body)
         else:
             elements.append(word(1) + word(0x40) + word(32) + word(value))
     heads, position = [], len(elements) * 32
@@ -399,7 +419,7 @@ async def test_the_whole_batch_is_one_call() -> None:
 
     values = await contract.parameters()
 
-    assert values == {"A": 1_707_629, "gamma": 11_809_167_828_997}
+    assert values.values == {"A": 1_707_629, "gamma": 11_809_167_828_997}
     assert len(contract.provider.asked) == 1
     assert contract.provider.asked[0][0] == MULTICALL3
 
@@ -460,3 +480,134 @@ def test_a_short_answer_is_not_mistaken_for_a_full_batch() -> None:
     """Better to ask again one at a time than to line up two answers
     against twelve questions."""
     assert decode_uints(aggregate3_response([1, 2]), 12) == [None] * 12
+
+
+# -- stored_rates ----------------------------------------------------------
+#
+# The one read here that answers an array rather than a word, and the one
+# that most pools do not answer at all. Both raw returns below are the real
+# thing, copied off mainnet: `stored_rates()` on the stETH-ng factory pool
+# and on the osETH/rETH stableswap-ng pool, which encode it differently.
+
+STETH_NG_RATES = (
+    "0x"
+    "0000000000000000000000000000000000000000000000000de0b6b3a7640000"
+    "0000000000000000000000000000000000000000000000000de0b6b3a7640000"
+)
+
+OSETH_RETH_RATES = (
+    "0x"
+    "0000000000000000000000000000000000000000000000000000000000000020"
+    "0000000000000000000000000000000000000000000000000000000000000002"
+    "0000000000000000000000000000000000000000000000000ef2cef8b2a2279a"
+    "000000000000000000000000000000000000000000000000103b99ff5b536808"
+)
+
+
+def test_both_array_encodings_are_read() -> None:
+    """A fixed `uint256[N]` and a `DynArray[uint256, N]` are both in the
+    wild for this same method, so the shape is sniffed rather than
+    declared. The dynamic one carries an offset and a length in front."""
+    assert abi.decode_uint_array(STETH_NG_RATES) == [10**18, 10**18]
+    assert abi.decode_uint_array(OSETH_RETH_RATES) == [
+        1_077_150_828_439_152_538,
+        1_169_697_850_260_678_664,
+    ]
+
+
+def test_the_offset_is_never_mistaken_for_a_rate() -> None:
+    """The bug this decoder exists to prevent. `decode_uint` on the
+    dynamic form returns the first word, which is the offset -- 32 -- and
+    32 wei of a 1e18 rate formats as a confident `0.000000000000`."""
+    assert abi.decode_uint(OSETH_RETH_RATES) == 32
+    assert 32 not in abi.decode_uint_array(OSETH_RETH_RATES)
+
+
+@pytest.mark.parametrize("junk", ["", "0x", "0xabc", "0x" + "11" * 33])
+def test_unreadable_data_is_no_rates_rather_than_a_guess(junk) -> None:
+    """Which is how most pools answer: 3pool, the crypto pools and every
+    old factory pool revert on this one."""
+    assert abi.decode_uint_array(junk) == []
+
+
+def test_each_coin_is_scaled_by_its_own_decimals() -> None:
+    """The mistake that would look plausible and be wrong by twelve orders
+    of magnitude. `stored_rates` scales every coin to 36 decimals, so
+    USDC's flat 1.0 arrives as 1e30 where an 18-decimal coin's arrives as
+    1e18. Read off PayPool, whose two coins are both six-decimal."""
+    shown = rate_rows([10**30, 10**30], [("PYUSD", 6), ("USDC", 6)])
+
+    assert [value for _parameter, value in shown] == [
+        "1.000000000000",
+        "1.000000000000",
+    ]
+
+
+def test_an_oracle_rate_is_what_the_row_is_for() -> None:
+    """osETH/rETH on mainnet: both coins are LSTs and neither reads 1.0.
+    This is the case the row exists for -- everything else here is a coin
+    whose rate is its precision multiplier and nothing more."""
+    shown = rate_rows(
+        [1_077_150_828_439_152_538, 1_169_697_850_260_678_664],
+        [("osETH", 18), ("rETH", 18)],
+    )
+
+    assert [(parameter.label, value) for parameter, value in shown] == [
+        ("Rate · osETH", "1.077150828439"),
+        ("Rate · rETH", "1.169697850261"),
+    ]
+
+
+def test_a_coin_count_that_does_not_match_shows_nothing() -> None:
+    """A metapool's `stored_rates` has the contract's two entries while
+    `coins` lists the four it decomposes into. Zipping those pairs each
+    rate with another coin's decimals, and the result is not a near miss
+    -- it is out by a factor of 1e12 and still looks like a rate. So the
+    rows are dropped entirely rather than shown wrong."""
+    assert rate_rows([10**18, 10**18], [("DAI", 18)]) == []
+    assert rate_rows([10**18], [("DAI", 18), ("USDC", 6)]) == []
+    assert rate_rows([], [("DAI", 18)]) == []
+
+
+async def test_the_rates_ride_in_the_same_batch_as_the_parameters() -> None:
+    """The whole point of `ARRAY_PARAMETERS`: one array-valued read that
+    would otherwise cost a round trip of its own, on a panel whose budget
+    is a stranger's public endpoint."""
+    plan = _parameter_plan()
+    answers = [None] * len(plan)
+    answers[[key for key, _ in plan].index("A")] = 5_000
+    answers[[key for key, _ in plan].index("stored_rates")] = OSETH_RETH_RATES
+
+    class Batching:
+        def __init__(self) -> None:
+            self.asked: list[tuple[str, str]] = []
+
+        async def call(self, to: str, data: str) -> str:
+            self.asked.append((to, data))
+            return aggregate3_response(answers)
+
+    contract = PoolContract(Batching(), make_pool(), "")
+    readings = await contract.parameters()
+
+    assert len(contract.provider.asked) == 1
+    assert readings.values == {"A": 5_000}
+    assert readings.rates == (
+        1_077_150_828_439_152_538,
+        1_169_697_850_260_678_664,
+    )
+
+
+async def test_a_pool_without_them_leaves_the_rates_empty() -> None:
+    """Not an error and not a zero: most pools do not have this method."""
+    readings = await contract_with({"A": 4_000}).parameters()
+
+    assert readings.rates == ()
+    assert readings.values == {"A": 4_000}
+    assert readings  # something answered, so the panel does not say "none"
+
+
+def test_nothing_at_all_is_falsy() -> None:
+    """What the panel checks to decide between rows and a sentence."""
+    assert not Readings()
+    assert Readings({"A": 4_000})
+    assert Readings(rates=(10**18,))

@@ -1,9 +1,10 @@
 """Asking a chain several questions in one round trip.
 
-Reading a pool's parameters is ten calls, and an eleventh and twelfth for
-the two that have a second spelling. Sent one at a time against a public
-endpoint on the other side of the world, that is twelve round trips for a
-panel nobody wants to wait for -- and twelve chances to be rate-limited.
+Reading a pool's parameters is eleven calls, and a twelfth and thirteenth
+for the two that have a second spelling. Sent one at a time against a
+public endpoint on the other side of the world, that is thirteen round
+trips for a panel nobody wants to wait for -- and thirteen chances to be
+rate-limited.
 
 **Multicall3** collapses them into one `eth_call`. It is at
 `0xcA11bde05977b3631167028862bE2a173976CA11` on every chain that has it,

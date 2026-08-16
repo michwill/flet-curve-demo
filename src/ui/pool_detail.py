@@ -56,6 +56,19 @@ def _metric(label: str, value: str) -> ft.Control:
 #: chart's left edge, so the fold reads as one block.
 PARAMETER_PADDING = ft.Padding.only(left=6, bottom=4)
 
+
+def _expanded(event: AnyEvent) -> bool:
+    """Did an `ExpansionTile` just open, from its `on_change` event.
+
+    Flet documents `data` as a bool here and sends one. The string branch
+    is for the version that does not: `bool("false")` is True, so reading
+    it naively would make a *closing* fold trigger the read the whole
+    point of this was to defer -- silently, and only on the surface whose
+    Flet is older.
+    """
+    data = event.data
+    return data if isinstance(data, bool) else str(data).strip().lower() == "true"
+
 class PoolDetailView(ft.Column):
     """The detail page. Owns its own data loading."""
 
@@ -115,6 +128,13 @@ class PoolDetailView(ft.Column):
         # keeps it assignable (see `theme.rows_theme` for what happens to
         # controls that are not).
         self._parameter_rows = ft.Column(spacing=2)
+        #: Whether the fold is open, and whether its read has been made.
+        #: The first survives the rebuild in `set_layout`; the second is
+        #: what keeps the chain to one batch per page. Cleared again if
+        #: the read did not land, so connecting a wallet and opening the
+        #: fold a second time retries rather than showing the old excuse.
+        self._parameters_open = False
+        self._parameters_asked = False
         self._parameters_slot = ft.Container(self._parameters())
 
         # A dropdown rather than a segmented button: nine candle sizes do
@@ -676,6 +696,15 @@ class PoolDetailView(ft.Column):
         that used to sit under the yields, which spent two thirds of its
         width on the registry name and the word "plain" -- neither of
         which anybody can act on.
+
+        And because it is wanted rarely, it is *read* rarely: opening the
+        fold is what asks the chain, not landing on the page. The
+        addresses come from the API and need no node, so a collapsed fold
+        costs nothing at all -- see `_expanded`.
+
+        `expanded` is passed through rather than left to default, because
+        this control is re-made when the layout crosses into card widths
+        and a fold the reader had open would otherwise shut itself.
         """
         rows: list[ft.Control] = [
             self._address_row("Pool", self.pool.address),
@@ -690,7 +719,24 @@ class PoolDetailView(ft.Column):
             controls_padding=ft.Padding.only(bottom=6),
             dense=True,
             min_tile_height=34,
+            expanded=self._parameters_open,
+            on_change=self._parameters_toggled,
         )
+
+    def _parameters_toggled(self, event: ft.Event[ft.ExpansionTile]) -> None:
+        """Read the pool the first time somebody opens the fold.
+
+        Thirteen `eth_call`s ride in that batch, and before this they went
+        out for every pool page anybody landed on, opened or not -- on a
+        public endpoint, where the budget is somebody else's goodwill.
+        Almost nobody opens this fold, so almost all of it was waste.
+        """
+        self._parameters_open = _expanded(event)
+        if self._parameters_open and not self._parameters_asked:
+            self._parameters_asked = True
+            self._parameter_rows.controls = [self._unread("Reading them from the pool…")]
+            safe_update(self._parameter_rows)
+            self._page.run_task(self.load_parameters)
 
     def _address_row(self, label: str, address: str) -> ft.Control:
         """An address, in full where there is room, with a copy and a link.
@@ -742,30 +788,45 @@ class PoolDetailView(ft.Column):
     async def load_parameters(self) -> None:
         """Ask the pool what shape it is.
 
-        Ten reads, and a pool answers between three and nine of them --
+        Eleven reads, and a pool answers between three and ten of them --
         which ones is the pool's own answer to what family it belongs to,
         and is not inferable from the registry name. See
         `curve.parameters`.
 
-        With no wallet these go through a public node, which may not
-        exist for the chain; the section then keeps the addresses and says
-        so, because they are the half that needs no chain at all.
+        Called when the fold is opened, not when the page loads. With no
+        wallet these go through a public node, which may not exist for the
+        chain; the section then keeps the addresses and says so, because
+        they are the half that needs no chain at all.
         """
         contract = self.get_contract()
         if contract is None:
-            self._parameter_rows.controls = [self._unread("Connect a wallet to read them.")]
-            safe_update(self._parameter_rows)
+            self._unreadable("Connect a wallet to read them.")
             return
         try:
-            values = await contract.parameters()
+            readings = await contract.parameters()
         except WalletError as exc:
-            self._parameter_rows.controls = [self._unread(str(exc))]
-            safe_update(self._parameter_rows)
+            self._unreadable(str(exc))
             return
+        # `pool_coins`, not `coins`: a metapool's rates are its own two,
+        # and `rate_rows` refuses the whole list rather than pairing a
+        # rate with another coin's decimals.
+        coins = [(coin.symbol, coin.decimals) for coin in self.pool.pool_coins]
+        shown = parameters.rows(readings.values) + parameters.rate_rows(readings.rates, coins)
         self._parameter_rows.controls = [
-            self._parameter_row(parameter, shown)
-            for parameter, shown in parameters.rows(values)
+            self._parameter_row(parameter, value) for parameter, value in shown
         ] or [self._unread("This pool answered none of them.")]
+        safe_update(self._parameter_rows)
+
+    def _unreadable(self, why: str) -> None:
+        """Say why, and let the next open try again.
+
+        Both cases this serves are about the *provider*, not the pool: no
+        wallet yet, or no node that answered. Both can be fixed from
+        outside this page while it is still on screen, and a reader who
+        connects a wallet and reopens the fold means "try now".
+        """
+        self._parameters_asked = False
+        self._parameter_rows.controls = [self._unread(why)]
         safe_update(self._parameter_rows)
 
     def _parameter_row(self, parameter: parameters.Parameter, shown: str) -> ft.Control:
@@ -1046,4 +1107,5 @@ class PoolDetailView(ft.Column):
         await self._load_detail()
         await self.load_chart()
         await self.refresh_actions()
-        await self.load_parameters()
+        # Not the parameters: those wait for somebody to open the fold.
+        # See `_parameters_toggled`.

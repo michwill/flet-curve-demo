@@ -33,6 +33,7 @@ __all__ = [
     "MAX_UINT256",
     "apply_slippage",
     "decode_uint",
+    "decode_uint_array",
     "encode_add_liquidity",
     "encode_allowance",
     "encode_approve",
@@ -175,6 +176,38 @@ def encode_parameter(name: str) -> str:
     implements is a question for the pool; see `curve.parameters`.
     """
     return _call(f"{name}()")
+
+
+def decode_uint_array(data: str) -> list[int]:
+    """A `uint256[N]` or a `DynArray[uint256, N]` return value.
+
+    Both are in the wild for the same method, which is why this sniffs
+    rather than trusting a declaration. `stored_rates()` on the stETH
+    factory pool answers two bare words:
+
+        0de0b6b3a7640000  0de0b6b3a7640000            -> [1e18, 1e18]
+
+    and on a stableswap-ng pool it answers four, the first two being the
+    offset and the length that a dynamic array carries:
+
+        20  02  0ef2cef8b2a2279a  103b99ff5b536808    -> [1.077e18, 1.170e18]
+
+    So a leading `32` followed by a length that accounts for the rest is
+    read as the dynamic form. Nothing real collides: a fixed array whose
+    first element is 32 would be a rate multiplier of thirty-two wei, and
+    its second would have to equal the number of words left over.
+
+    Returns `[]` for empty or unreadable data -- for this app's purposes
+    the same as a method that is not implemented, which is how most pools
+    answer this one.
+    """
+    body = data[2:] if data.startswith("0x") else data
+    if not body or len(body) % 64:
+        return []
+    words = [int(body[i : i + 64], 16) for i in range(0, len(body), 64)]
+    if len(words) >= 2 and words[0] == 32 and words[1] == len(words) - 2:
+        return words[2:]
+    return words
 
 
 def encode_indexed_parameter(name: str, index: int) -> str:

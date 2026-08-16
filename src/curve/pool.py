@@ -31,8 +31,8 @@ from wallet.base import RpcError, WalletError, WalletProvider
 
 from . import abi
 from .models import Pool
-from .multicall import MULTICALL3, decode_uints, encode_aggregate3
-from .parameters import PARAMETERS
+from .multicall import MULTICALL3, decode_aggregate3, encode_aggregate3
+from .parameters import PARAMETERS, Readings
 from .rewards import rewards_for
 from .stake_zaps import ZERO_ADDRESS, StakeZap, stake_zap_for
 from .zaps import Zap, zap_for
@@ -44,6 +44,14 @@ from .zaps import Zap, zap_for
 #: the first priced coin, the one a single line of a summary should show.
 INDEXED_PARAMETERS = ("price_oracle", "price_scale")
 
+#: Asked in the same batch as the parameters and decoded differently: this
+#: one answers an array, one entry per coin, where every other read here
+#: answers a single word. It rides along rather than costing a round trip
+#: of its own -- but it cannot go in `PARAMETERS`, because `decode_uint`
+#: on a dynamic array returns the *offset*, which is 32, which would be
+#: shown as a rate of 0.000000000000. See `abi.decode_uint_array`.
+ARRAY_PARAMETERS = ("stored_rates",)
+
 #: How many `reward_tokens(i)` to walk before giving up. Gauges cap this
 #: at eight themselves; the bound is here so a gauge answering nonsense
 #: for `reward_count` costs one panel refresh rather than a hang.
@@ -54,6 +62,7 @@ def _parameter_plan() -> list[tuple[str, str]]:
     """What to ask the pool, as `(key, calldata)`, bare spellings first."""
     plan = [(parameter.key, abi.encode_parameter(parameter.key)) for parameter in PARAMETERS]
     plan += [(key, abi.encode_indexed_parameter(key, 0)) for key in INDEXED_PARAMETERS]
+    plan += [(key, abi.encode_parameter(key)) for key in ARRAY_PARAMETERS]
     return plan
 
 
@@ -92,14 +101,18 @@ class PoolContract:
 
     # -- reads ------------------------------------------------------------
 
-    async def _read(
+    async def _read_data(
         self, to: str, data: str, what: str, subject: str = "The pool"
-    ) -> int:
-        """`eth_call` returning one uint256, with the empty-data guard.
+    ) -> str:
+        """`eth_call` returning raw hex, with the empty-data guard.
 
         `subject` names whatever was asked, because a read on the
         underlying route goes to the zap and "the pool did not answer"
         would point at the wrong contract.
+
+        Undecoded because not everything asked here is a uint256:
+        `stored_rates()` answers an array. The guard is the part both
+        shapes need and is the reason this is one function.
         """
         try:
             result = await self.provider.call(to, data)
@@ -111,7 +124,13 @@ class PoolContract:
             raise PoolCallFailed(
                 f"{subject} did not answer {what} — it may not support this action."
             )
-        return abi.decode_uint(result)
+        return result
+
+    async def _read(
+        self, to: str, data: str, what: str, subject: str = "The pool"
+    ) -> int:
+        """The same read, for the usual case of one uint256 back."""
+        return abi.decode_uint(await self._read_data(to, data, what, subject))
 
     async def get_dy(self, i: int, j: int, dx: int) -> int:
         """Quote an in-pool swap of `dx` units of coin `i` into coin `j`."""
@@ -222,7 +241,7 @@ class PoolContract:
         contract, which is the rule this file keeps.
 
         Both spellings for every coin go out in **one** `eth_call` through
-        Multicall3, the same way `parameters` asks its twelve questions --
+        Multicall3, the same way `parameters` asks its thirteen questions --
         a three-coin pool is six reads, and sequentially that is six round
         trips on every keystroke.
 
@@ -252,7 +271,7 @@ class PoolContract:
         """The pool's swap fee, in Curve's 1e10 units."""
         return await self._read(self.pool.address, abi.encode_fee(), "the pool fee")
 
-    async def parameters(self) -> dict[str, int]:
+    async def parameters(self) -> Readings:
         """Every curve parameter this pool will answer, raw and unscaled.
 
         A pool that does not implement one is the normal case, not a
@@ -260,23 +279,40 @@ class PoolContract:
         anything but StableSwap-NG. Those are left out rather than
         reported, so the caller shows what exists.
 
-        Twelve questions -- ten parameters, and a second spelling for the
-        two that have one -- asked in a **single** `eth_call` through
-        Multicall3, which is why `curve.multicall` exists. Sequentially
-        that is twelve round trips for one panel, and on a public endpoint
-        twelve chances to be rate-limited.
+        Thirteen questions -- ten parameters, a second spelling for the two
+        that have one, and `stored_rates` -- asked in a **single**
+        `eth_call` through Multicall3, which is why `curve.multicall`
+        exists. Sequentially that is thirteen round trips for one panel,
+        and on a public endpoint thirteen chances to be rate-limited.
+
+        Two kinds of answer come back, hence `Readings` rather than a
+        dict: twelve of these are one word each and `stored_rates` is an
+        array. Decoding it as a word would yield the array's offset, 32,
+        which is a perfectly plausible-looking wrong number.
         """
         plan = _parameter_plan()
-        answers = await self._read_many(plan)
+        answers = await self._read_many_data(plan)
         found: dict[str, int] = {}
+        rates: tuple[int, ...] = ()
         for (key, _data), value in zip(plan, answers, strict=True):
-            # First spelling that answers wins, and the plan lists the
-            # bare form before the indexed one.
-            if value is not None and key not in found:
-                found[key] = value
-        return found
+            if value is None:
+                continue
+            if key in ARRAY_PARAMETERS:
+                rates = rates or tuple(abi.decode_uint_array(value))
+            elif key not in found:
+                # First spelling that answers wins, and the plan lists the
+                # bare form before the indexed one.
+                found[key] = abi.decode_uint(value)
+        return Readings(found, rates)
 
     async def _read_many(self, plan: list[tuple[str, str]]) -> list[int | None]:
+        """The batch, where every call answers one word."""
+        return [
+            abi.decode_uint(value) if value is not None else None
+            for value in await self._read_many_data(plan)
+        ]
+
+    async def _read_many_data(self, plan: list[tuple[str, str]]) -> list[str | None]:
         """The batch, or one call each where there is no batching.
 
         Multicall3 is at the same address on every chain that has it, and
@@ -285,16 +321,27 @@ class PoolContract:
         there that is cheaper than trying, and nothing distinguishes "no
         multicall" from "the batch answered nothing", so an empty answer
         falls back to asking one at a time.
+
+        Undecoded, because the caller knows which of its questions asked
+        for a word and which for an array; this only knows which ones were
+        answered at all.
         """
         with contextlib.suppress(Exception):
             result = await self.provider.call(
                 MULTICALL3,
                 encode_aggregate3([(self.pool.address, data) for _key, data in plan]),
             )
-            values = decode_uints(result, len(plan))
-            if any(value is not None for value in values):
+            values = decode_aggregate3(result)
+            if len(values) == len(plan) and any(value is not None for value in values):
                 return values
-        return [await self._maybe(data) for _key, data in plan]
+        return [await self._maybe_data(data) for _key, data in plan]
+
+    async def _maybe_data(self, data: str) -> str | None:
+        """`_maybe`, undecoded. The exception policy is documented there."""
+        try:
+            return await self._read_data(self.pool.address, data, "a pool parameter")
+        except PoolCallFailed:
+            return None
 
     async def _maybe(self, data: str) -> int | None:
         """One read, where not being implemented is an expected answer.

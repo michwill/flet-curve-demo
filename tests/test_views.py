@@ -1496,9 +1496,11 @@ async def test_with_no_contract_the_addresses_stay_and_the_values_say_why() -> N
 
 
 async def test_the_values_land_in_the_panel() -> None:
+    from curve.parameters import Readings
+
     class Contract:
         async def parameters(self):
-            return {"A": 4_000, "fee": 1_500_000}
+            return Readings({"A": 4_000, "fee": 1_500_000})
 
     contract = Contract()
     view = PoolDetailView(
@@ -1529,6 +1531,165 @@ async def test_a_chain_that_cannot_be_read_says_so_rather_than_showing_nothing()
     await view.load_parameters()
 
     assert any("No public node" in value for value in texts(view._parameter_rows))
+
+
+# -- the fold is what asks the chain ---------------------------------------
+
+
+class CountingContract:
+    """Records how many times the batch was asked for."""
+
+    def __init__(self, readings=None) -> None:
+        from curve.parameters import Readings
+
+        self.readings = readings if readings is not None else Readings({"A": 4_000})
+        self.calls = 0
+
+    async def parameters(self):
+        self.calls += 1
+        return self.readings
+
+
+def toggle(view, *, expanded: bool) -> None:
+    """Fire the tile's own `on_change`, the way Flet does."""
+    tile = view._parameters_slot.content
+    tile.on_change(ft.Event(control=tile, name="change", data=expanded))
+
+
+async def test_landing_on_the_page_does_not_read_the_pool() -> None:
+    """The point of the whole arrangement. Thirteen `eth_call`s used to go
+    out for every pool page opened, against a public endpoint, for a fold
+    that almost nobody unfolds.
+
+    `load` is what runs on arrival, so `load` is what is driven here --
+    with its other three fetches stubbed out, so what is left is the
+    question of whether it reaches for the chain on its own.
+    """
+
+    class Quiet(PoolDetailView):
+        async def _load_detail(self) -> None: ...
+        async def load_chart(self) -> None: ...
+        async def refresh_actions(self) -> None: ...
+
+    contract = CountingContract()
+    view = Quiet(
+        StubPage(), api=None, pool=make_pool(),
+        get_contract=lambda: contract,  # type: ignore[return-value]
+        on_back=lambda: None,
+    )
+    await view.load()
+
+    assert contract.calls == 0
+    assert not view._parameters_asked
+
+
+async def test_opening_the_fold_reads_it_once() -> None:
+    contract = CountingContract()
+    page = StubPage()
+    view = PoolDetailView(
+        page, api=None, pool=make_pool(),
+        get_contract=lambda: contract,  # type: ignore[return-value]
+        on_back=lambda: None,
+    )
+
+    toggle(view, expanded=True)
+    await asyncio.sleep(0)
+
+    assert contract.calls == 1
+    assert "4,000" in texts(view._parameter_rows)
+
+
+async def test_closing_and_reopening_does_not_ask_again() -> None:
+    """The values do not change on the timescale of a fold being fiddled
+    with, and the reader who opens it twice did not ask for two batches."""
+    contract = CountingContract()
+    view = PoolDetailView(
+        StubPage(), api=None, pool=make_pool(),
+        get_contract=lambda: contract,  # type: ignore[return-value]
+        on_back=lambda: None,
+    )
+
+    toggle(view, expanded=True)
+    await asyncio.sleep(0)
+    toggle(view, expanded=False)
+    toggle(view, expanded=True)
+    await asyncio.sleep(0)
+
+    assert contract.calls == 1
+
+
+async def test_closing_the_fold_never_starts_a_read() -> None:
+    """`bool("false")` is True, and reading Flet's event data naively
+    would make *collapsing* an unread fold fire the read this defers."""
+    contract = CountingContract()
+    view = PoolDetailView(
+        StubPage(), api=None, pool=make_pool(),
+        get_contract=lambda: contract,  # type: ignore[return-value]
+        on_back=lambda: None,
+    )
+
+    for data in (False, "false"):
+        tile = view._parameters_slot.content
+        tile.on_change(ft.Event(control=tile, name="change", data=data))
+    await asyncio.sleep(0)
+
+    assert contract.calls == 0
+
+
+async def test_a_read_that_did_not_land_is_tried_again() -> None:
+    """Both failures here are about the provider, not the pool -- no
+    wallet yet, or no node that answered -- and both can be fixed from
+    outside this page while it is still open. Reopening means "try now"."""
+    view = detail_view()  # `get_contract` returns None: no wallet
+
+    toggle(view, expanded=True)
+    await asyncio.sleep(0)
+
+    assert "Connect a wallet to read them." in texts(view._parameter_rows)
+    assert not view._parameters_asked
+
+
+async def test_a_fold_left_open_survives_the_layout_crossing() -> None:
+    """`set_layout` re-makes this control so the addresses can change
+    length, and a fold that shut itself mid-read would be a bug the reader
+    sees as the page throwing their place away."""
+    contract = CountingContract()
+    view = PoolDetailView(
+        StubPage(), api=None, pool=make_pool(),
+        get_contract=lambda: contract,  # type: ignore[return-value]
+        on_back=lambda: None,
+    )
+    view.set_layout(layout_for(1400))
+
+    toggle(view, expanded=True)
+    await asyncio.sleep(0)
+    view.set_layout(layout_for(420))
+
+    assert view._parameters_slot.content.expanded
+    assert contract.calls == 1
+
+
+async def test_the_stored_rates_land_under_the_parameters() -> None:
+    from curve.parameters import Readings
+
+    contract = CountingContract(
+        Readings(
+            {"A": 5_000},
+            (1_077_150_828_439_152_538, 1_169_697_850_260_678_664),
+        )
+    )
+    view = PoolDetailView(
+        StubPage(), api=None, pool=make_pool(),
+        get_contract=lambda: contract,  # type: ignore[return-value]
+        on_back=lambda: None,
+    )
+
+    toggle(view, expanded=True)
+    await asyncio.sleep(0)
+
+    shown = texts(view._parameter_rows)
+    assert "Rate · C0" in shown and "1.077150828439" in shown
+    assert "Rate · C1" in shown and "1.169697850261" in shown
 
 
 def test_nothing_in_the_action_panel_is_given_a_height() -> None:

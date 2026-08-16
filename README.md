@@ -938,15 +938,23 @@ and a label — which is what canvas is for, unlike the candles, which were not.
   `(agg_number, agg_units)` on `lp_ohlc`; `agg_units` accepts only `minute`,
   `hour`, `day`.
 
-**Pool parameters come off the pool, in one call.** The fold under the yields
-reads `A`, `gamma`, `fee`, `mid_fee`, `out_fee`, `fee_gamma`,
-`offpeg_fee_multiplier`, `price_oracle`, `price_scale` and
-`get_virtual_price` from the contract — the API supplies the pool and gauge
+**Pool parameters come off the pool, in one call, when you open the fold.**
+It reads `A`, `gamma`, `fee`, `mid_fee`, `out_fee`, `fee_gamma`,
+`offpeg_fee_multiplier`, `price_oracle`, `price_scale`, `get_virtual_price`
+and `stored_rates` from the contract — the API supplies the pool and gauge
 addresses and nothing else there. Which of them a pool implements is the
 pool's answer to what family it belongs to, not the registry name's, so all of
 them are asked and whatever answers is shown.
 
-That is twelve questions (two have a second, indexed spelling on tricrypto),
+*When you open the fold*, because this is reference material and almost nobody
+unfolds it. The batch used to go out for every pool page anybody landed on,
+against a public endpoint whose budget is a stranger's goodwill; now the
+addresses paint from the API for free and the chain is asked once, on the first
+expand. Reopening does not ask again — but a read that failed for want of a
+wallet or a node is retried, because both can be fixed from outside the page
+while it is still on screen.
+
+That is thirteen questions (two have a second, indexed spelling on tricrypto),
 and they go in **one** `eth_call` through
 [Multicall3](https://github.com/mds1/multicall) — same address on every chain
 that has it, `aggregate3` so that a call which is *expected* to fail does not
@@ -954,7 +962,7 @@ take the batch down with it. Measured against a public endpoint:
 
 ```
 multicall       0.05s   1 request    9 values
-one at a time   0.39s  13 requests   9 values
+one at a time   0.52s  14 requests   9 values
 ```
 
 A chain without Multicall3 is a normal case rather than an error, and nothing
@@ -969,7 +977,33 @@ but a result of it, and it is shown to twelve decimal places rather than the
 six significant digits the other 1e18 values get. `1.039823717357`, not
 `1.03982`: it leaves 1.0 slowly — about 1.9e-8 per block for a pool earning 5%
 a year — so the digits that would be rounded away are the entire point of
-looking.
+looking. Implemented on every family, but not answered by every pool: it
+divides by `totalSupply`, so a pool nobody has deposited into reverts, and the
+row is then simply absent.
+
+`stored_rates` is the minority row, and the awkward one. It is the rate the
+pool prices each of its coins at — the precision multiplier alone for most, and
+a cached oracle reading for a coin that has one behind it, which is the number
+worth coming here for:
+
+```
+osETH/rETH   Rate · osETH   1.077150828439      DOLA/sUSDe   Rate · DOLA    1.000000000000
+             Rate · rETH    1.169697850261                   Rate · sUSDe   1.243622171821
+```
+
+Three things it does not share with any other row. It is **a minority**: of the
+top fourteen pools of four registries probed on mainnet, the fourteen that
+answered were all stableswap-ng and the other forty-two reverted. It answers
+**an array**, in either of the two encodings Vyper produces — a bare
+`uint256[N]` from the stETH-ng pool, an offset-and-length `DynArray` from a
+stableswap-ng one — so `abi.decode_uint_array` sniffs the shape rather than
+trusting a declaration. Decoding it as a single word would return the array's
+*offset*, 32, and print a confident `0.000000000000`. And **each coin has its
+own denominator**: the contract scales everything to 36 decimals, so USDC's
+flat 1.0 arrives as 1e30 where an 18-decimal coin's arrives as 1e18. A shared
+1e18 would print USDC's rate as a trillion. When the rate count and the coin
+count disagree — a metapool's two against the four its coin list decomposes
+into — the rows are dropped rather than paired with the wrong decimals.
 
 **A pair is charted the way it is written.** "WBTC/USDC" is WBTC priced in
 USDC, so it should read ~64,000 and not ~0.0000154. The `/ohlc` endpoint's

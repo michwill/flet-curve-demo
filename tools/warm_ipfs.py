@@ -109,20 +109,6 @@ CHUNK = 64
 #: the script runs, which is the entire premise.
 CHUNK_DEADLINE = 120.0
 
-#: Files a second, for the estimate printed before a run starts, and it is
-#: a *range* because the two ends are four times apart and which one you
-#: get is the whole question this script exists about.
-#:
-#: Both measured through eth.limo. The fast end is the boot set, warmed at
-#: publish four days earlier: 77 files in 1m16s. The slow end is 122 token
-#: marks that nothing had ever warmed: 4m27s, because a cold block costs
-#: seventeen seconds and a warm one costs half of one.
-#:
-#: So a first full run is hours and a later one is about an hour, and
-#: quoting only the fast number would turn a working job into a
-#: broken-looking one all over again.
-FILES_PER_SECOND = (1.7, 0.46)
-
 
 def mark_files(root: Path, tiers: tuple[int, ...], chains: list[str]) -> list[str]:
     """Every compiled token mark, as paths relative to the site root.
@@ -148,13 +134,27 @@ def mark_files(root: Path, tiers: tuple[int, ...], chains: list[str]) -> list[st
 
 
 def plan(root: Path, options) -> list[str]:
-    """What to ask for, boot set first.
+    """What to ask for. The marks, unless the boot set is asked for too.
 
-    Order matters on an interrupted run: the boot set is what decides
-    whether the site loads at all, and the marks only decide whether it
-    looks right. Ctrl-C after ten minutes should have bought the first.
+    **The marks are the default and the boot set is not**, which is the
+    opposite of what this script started with, and the reason is bytes
+    rather than taste. Measured on this build:
+
+        boot set     77 files   60.7 MB
+        marks      3,358 files  10.9 MB
+
+    The boot set is 85% of the weight, it is warmed on every publish, and
+    77 files of it are large enough that one slow gateway turns the run
+    into an overnight job -- observed at 2 KB/s, which is eight hours for
+    the boot set alone and ninety minutes for every mark on every chain.
+    The marks are the half nothing else ever warms. So this warms those,
+    and `--boot` adds the rest when that is what you want.
+
+    Boot files still come first when they are included: they decide whether
+    the site loads at all, where the marks only decide whether it looks
+    right, and an interrupted run should have bought the first.
     """
-    paths: list[str] = [] if options.marks_only else boot_files(root)
+    paths: list[str] = boot_files(root) if options.boot else []
     if not options.boot_only:
         paths += mark_files(root, options.tiers, options.chains)
     return paths
@@ -178,22 +178,31 @@ def remaining_text(done: int, total: int, elapsed: float) -> str:
     return f"  ~{elapsed_text(left)} left"
 
 
-def estimate_text(requests: int) -> str:
-    """How long this will take, as a range, before anybody has to wait.
+def weight(root: Path, paths: list[str]) -> int:
+    """How many bytes this run will pull, per gateway.
 
-    A range rather than a number because the ends are four times apart:
-    see `FILES_PER_SECOND`. The wide end is a first run over blocks nothing
-    has fetched, which is exactly when somebody is most likely to conclude
-    the script has hung.
+    Bytes rather than files, because files are a poor proxy here: 77 boot
+    files outweigh 3,358 marks six to one, so a run reported purely in
+    files sits at "0/3435" through the slowest part of its work and looks
+    stuck. It is the number this script is actually rate-limited by.
     """
-    fast, slow = FILES_PER_SECOND
-    quick, long = requests / fast / 60, requests / slow / 60
-    if long < 2:
-        return "under two minutes"
-    return (
-        f"{quick:.0f}-{long:.0f} minutes -- the long end if most of it is "
-        "still cold"
-    )
+    return sum((root / p).stat().st_size for p in paths if (root / p).exists())
+
+
+def rate_text(done_bytes: int, total_bytes: int, elapsed: float) -> str:
+    """Throughput so far and what is left of it, measured not predicted.
+
+    No estimate is printed before a run any more. Two measurements of the
+    same gateway, hours apart, came in at 686 KB/s and 2 KB/s -- a spread
+    of three hundred times -- and a prediction drawn from either would be
+    a confident lie about the other. What it can honestly say is how fast
+    it is going *now*, which self-corrects.
+    """
+    if elapsed <= 0 or not done_bytes:
+        return ""
+    rate = done_bytes / elapsed
+    left = (total_bytes - done_bytes) / rate if rate else 0
+    return f"  {rate / 1024:,.0f} KB/s  ~{elapsed_text(left)} left"
 
 
 def warm_one(host: str, paths: list[str], options) -> dict:
@@ -204,11 +213,15 @@ def warm_one(host: str, paths: list[str], options) -> dict:
     the ones behind it, which at three thousand files is the difference
     between a slow job and a stalled one.
     """
-    print(f"\n{host}: {len(paths)} files, {WARM_WORKERS} at a time")
+    total_bytes = weight(options.dist, paths)
+    print(
+        f"\n{host}: {len(paths)} files, {total_bytes / 1e6:.1f} MB, "
+        f"{WARM_WORKERS} at a time"
+    )
     started = time.monotonic()
     report = progress_reporter()
     bad: dict = {}
-    done = 0
+    done = done_bytes = 0
     for batch in batched(paths, options.chunk):
         bad.update(
             verify(
@@ -221,10 +234,11 @@ def warm_one(host: str, paths: list[str], options) -> dict:
             )
         )
         done += len(batch)
+        done_bytes += weight(options.dist, batch)
         elapsed = time.monotonic() - started
         report(done - len(bad), len(paths), elapsed)
         if report.inline:
-            sys.stdout.write(remaining_text(done, len(paths), elapsed))
+            sys.stdout.write(rate_text(done_bytes, total_bytes, elapsed))
             sys.stdout.flush()
         if elapsed >= options.deadline:
             print(f"\n  stopping at the {elapsed_text(options.deadline)} deadline, "
@@ -269,8 +283,12 @@ def main() -> int:
     parser.add_argument(
         "--chains", default="", help="only these chains' marks, comma separated"
     )
-    parser.add_argument("--boot-only", action="store_true", help="skip the marks")
-    parser.add_argument("--marks-only", action="store_true", help="skip the boot set")
+    parser.add_argument(
+        "--boot",
+        action="store_true",
+        help="warm the boot set too (60 MB, and publishing already warms it)",
+    )
+    parser.add_argument("--boot-only", action="store_true", help="only the boot set")
     parser.add_argument(
         "--deadline",
         type=float,
@@ -283,8 +301,8 @@ def main() -> int:
     parser.add_argument("--show", type=int, default=20, help="failures to list")
     options = parser.parse_args()
 
-    if options.boot_only and options.marks_only:
-        parser.error("--boot-only and --marks-only ask for nothing at all")
+    if options.boot_only:
+        options.boot = True
 
     options.tiers = parse_tiers(options.tiers)
     options.chains = [c for c in options.chains.replace(",", " ").split() if c]
@@ -300,10 +318,12 @@ def main() -> int:
         print(f"nothing to warm under {root}")
         return 2
 
-    print(f"warming {len(paths)} files from {root} through {len(hosts)} gateway(s)")
-    # Two workers by design, and the rate is what it is. Saying so up front
-    # is the difference between a long job and an apparently broken one.
-    print(f"expect roughly {estimate_text(len(paths) * len(hosts))}.")
+    options.dist = root
+    total = weight(root, paths)
+    print(
+        f"warming {len(paths)} files ({total / 1e6:.1f} MB) from {root} "
+        f"through {len(hosts)} gateway(s)"
+    )
     print("Ctrl-C is safe: whatever has been fetched stays fetched.")
     started = time.monotonic()
     left = 0

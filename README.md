@@ -232,11 +232,24 @@ that does nothing but warm, safe to run at any time and as often as
 patience allows, because it only asks for files that are already published:
 
 ```
-python tools/warm_ipfs.py                 # boot set + token marks, both gateways
-python tools/warm_ipfs.py --marks-only    # just the logos
+python tools/warm_ipfs.py                 # the token marks, both gateways
+python tools/warm_ipfs.py --boot          # and the boot set as well
 python tools/warm_ipfs.py --tiers all     # every compiled size
 python tools/warm_ipfs.py --chains xdai   # one chain's marks
 ```
+
+**The marks are the default and the boot set is not**, which is a decision
+about bytes rather than taste:
+
+```
+boot set      77 files   60.7 MB     warmed on every publish already
+marks      3,358 files   10.9 MB     warmed by nothing else, ever
+```
+
+The boot set is 85% of the weight and is the half publishing already covers.
+Measured on one bad afternoon, a gateway serving at 2 KB/s turned it into an
+eight-hour job on its own, where every mark on every chain was ninety
+minutes. So the default run is the part that is actually neglected.
 
 It differs from `publish_ipfs --warm` in two ways, both deliberate.
 
@@ -266,25 +279,25 @@ non-zero exit means something is still cold, so a scheduled run can be
 noticed when it stops being enough — except for a 404, which means `dist/`
 has drifted from what is pinned and you are warming the wrong list.
 
-**A full run takes hours, and it says so before you wait.** Two workers is
-deliberate — eight earned a run of 503s from eth.limo's rate limiter — so
-the throughput is what it is, and the two ends of it are four times apart:
+**It reports every 64 files rather than once per pass.** A pass over the
+77-file boot set is 45 seconds and reporting per pass is right; a pass over
+3,435 files is **34 minutes** of an apparently frozen terminal, which is
+exactly how the first version of this got reported as a hang.
+
+**And it measures its rate rather than predicting it**, because two
+readings of the same gateway hours apart came in at 686 KB/s and 2 KB/s — a
+spread of three hundred times, where a prediction from either end would be
+a confident lie about the other. So the line shows throughput and a
+remaining time drawn from it, and both self-correct:
 
 ```
-1.70 files/s   the boot set, warmed at publish four days earlier
-0.46 files/s   token marks nothing had ever fetched
+https://curve.eth.limo: 3358 files, 10.9 MB, 2 at a time
+  [####------------------------]   512/3358 retrievable   3m20s   84 KB/s  ~14m left
 ```
 
-A cold block costs seventeen seconds and a warm one costs half of one, so
-the first full pass over 3,435 files on both gateways is around four hours
-and a later one is around an hour. It reports every 64 files rather than
-once per pass: a pass over the 77-file boot set is 45 seconds and reporting
-per pass is right, while a pass over 3,435 files is **34 minutes** of an
-apparently frozen terminal, which is how the first version of this got
-reported as a hang.
-
-`--deadline` bounds each gateway rather than the run, and says how many
-files it did not reach.
+Two workers is deliberate — eight earned a run of 503s from eth.limo's rate
+limiter. `--deadline` bounds each gateway rather than the whole run, and
+says how many files it did not reach.
 
 **A slow failure and a fast one are different diseases**, and the report
 separates them, because only one of them is about time:

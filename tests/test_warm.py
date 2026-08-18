@@ -38,7 +38,8 @@ def options(**kw):
         "tiers": warm.DEFAULT_TIERS,
         "chains": [],
         "boot_only": False,
-        "marks_only": False,
+        "boot": False,
+        "dist": Path("."),
         "chunk": warm.CHUNK,
         "deadline": warm.WARM_DEADLINE,
         "show": 20,
@@ -97,12 +98,22 @@ def test_a_build_with_no_marks_compiled_is_not_an_error(tmp_path: Path) -> None:
     assert warm.mark_files(build(tmp_path), (80,), []) == []
 
 
-def test_the_boot_set_is_asked_for_first(tmp_path: Path) -> None:
-    """Ctrl-C after ten minutes should have bought the files that decide
-    whether the site loads, not a scatter of coin logos."""
+def test_the_marks_are_the_default_and_the_boot_set_is_not(tmp_path: Path) -> None:
+    """Bytes, not taste. On this build the boot set is 60.7 MB against the
+    marks' 10.9 -- 85% of the weight, warmed on every publish already, and
+    at an observed 2 KB/s it is eight hours on its own. The marks are the
+    half nothing else ever warms."""
     root = build(tmp_path, {"xdai": ["0xaa@80.png"]})
 
-    paths = warm.plan(root, options())
+    assert warm.plan(root, options()) == ["curve/tokens/xdai/0xaa@80.png"]
+
+
+def test_the_boot_set_can_be_added_and_comes_first(tmp_path: Path) -> None:
+    """It decides whether the site loads, where the marks only decide
+    whether it looks right, so an interrupted run should buy it first."""
+    root = build(tmp_path, {"xdai": ["0xaa@80.png"]})
+
+    paths = warm.plan(root, options(boot=True))
 
     assert paths[:2] == ["index.html", "main.dart.js"]
     assert paths[-1] == "curve/tokens/xdai/0xaa@80.png"
@@ -111,8 +122,10 @@ def test_the_boot_set_is_asked_for_first(tmp_path: Path) -> None:
 def test_either_half_can_be_asked_for_alone(tmp_path: Path) -> None:
     root = build(tmp_path, {"xdai": ["0xaa@80.png"]})
 
-    assert warm.plan(root, options(boot_only=True)) == ["index.html", "main.dart.js"]
-    assert warm.plan(root, options(marks_only=True)) == ["curve/tokens/xdai/0xaa@80.png"]
+    assert warm.plan(root, options(boot=True, boot_only=True)) == [
+        "index.html", "main.dart.js"
+    ]
+    assert warm.plan(root, options()) == ["curve/tokens/xdai/0xaa@80.png"]
 
 
 # -- tiers -----------------------------------------------------------------
@@ -306,32 +319,36 @@ def test_the_run_stops_at_its_own_deadline(monkeypatch, capsys) -> None:
     assert "not reached" in capsys.readouterr().out
 
 
-def test_the_estimate_is_offered_before_the_wait_not_after(monkeypatch, tmp_path, capsys) -> None:
-    """Two workers is deliberate and the rate is what it is; saying so up
-    front is the difference between a long job and a broken-looking one."""
+def test_the_size_is_stated_up_front(monkeypatch, tmp_path, capsys) -> None:
+    """Files alone hide the shape of this: 77 boot files outweigh 3,358
+    marks six to one, so a run reported purely in files sits at 0/3435
+    through the slowest part of its work."""
     root = build(tmp_path)
     monkeypatch.setattr("sys.argv", ["warm_ipfs.py", "--dist", str(root), "--boot-only"])
     monkeypatch.setattr(warm, "verify", lambda _c, _p, **_k: {})
 
     warm.main()
 
-    assert "expect roughly" in capsys.readouterr().out
+    assert "MB" in capsys.readouterr().out
 
 
-def test_the_estimate_is_a_range_because_cold_is_four_times_slower() -> None:
-    """Measured, both through eth.limo: the boot set warmed four days
-    earlier ran at 1.7 files a second, and marks nothing had ever fetched
-    at 0.46. Quoting only the fast end is how a four-hour job gets
-    reported as a hang."""
-    text = warm.estimate_text(3435 * 2)
+def test_the_rate_is_measured_rather_than_predicted() -> None:
+    """Two readings of the same gateway hours apart came in at 686 KB/s and
+    2 KB/s. A prediction from either would be a confident lie about the
+    other, so nothing is predicted -- it reports what it is achieving."""
+    assert warm.rate_text(0, 100, 5.0) == ""
+    assert warm.rate_text(100, 100, 0.0) == ""
 
-    assert "67-249 minutes" in text
-    fast, slow = warm.FILES_PER_SECOND
-    assert fast > slow
+    text = warm.rate_text(1024 * 60, 1024 * 120, 60.0)
+
+    assert "1 KB/s" in text and "left" in text
 
 
-def test_a_short_run_is_not_given_a_solemn_range() -> None:
-    assert warm.estimate_text(50) == "under two minutes"
+def test_the_weight_is_what_the_run_will_actually_pull(tmp_path: Path) -> None:
+    root = build(tmp_path)
+
+    assert warm.weight(root, ["index.html", "main.dart.js"]) > 0
+    assert warm.weight(root, ["not-in-this-build.png"]) == 0
 
 
 def test_no_time_left_is_no_estimate() -> None:

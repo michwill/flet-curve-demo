@@ -200,13 +200,42 @@ CHAINS = "chains"
 def token_bundle(chain: str) -> str:
     return f"{TOKENS}/{chain}"
 
-#: Which `(chain, tier, rest)` have already been fetched, successfully or
-#: not. Separate from `_BUNDLES` because the two halves share one entry
-#: there, so "is it cached" cannot be asked of the store: with only that
-#: check the tail was re-fetched every time the page reloaded a chain --
-#: 2.2 MB on Ethereum, twice per visit, because `load_pools` runs once at
-#: startup and again when the deep link is applied.
+#: Which `(chain, tier, rest)` are settled: fetched, or asked for as often
+#: as they are going to be. Separate from `_BUNDLES` because the two halves
+#: share one entry there, so "is it cached" cannot be asked of the store:
+#: with only that check the tail was re-fetched every time the page reloaded
+#: a chain -- 2.2 MB on Ethereum, twice per visit, because `load_pools` runs
+#: once at startup and again when the deep link is applied.
+#:
+#: A key goes in when the fetch *starts*, not when it succeeds, so two
+#: overlapping `load_pools` cannot both pull the same megabytes; a failure
+#: takes it back out again while an attempt is still owed.
 _FETCHED: set[tuple[str, int, bool]] = set()
+
+#: How many times each has been asked for, so a failure can be asked again
+#: and a success never is.
+_TRIES: dict[tuple[str, int, bool], int] = {}
+
+#: How many times a bundle is asked for before the page settles for
+#: individual marks.
+#:
+#: Two, for exactly the reason `logos.MARK_ATTEMPTS` is two, and measured
+#: on the published site rather than reasoned about. An IPFS gateway that
+#: cannot find a block inside its retrieval budget answers 504 after about
+#: seventeen seconds -- and the ask is itself what warms it. On
+#: curve.eth.limo, `curve/tokens/ethereum/marks@80.bin` answered 504 after
+#: 17.7s and then served in 1.07s when asked again.
+#:
+#: **That tier is the one every phone asks for.** A mark is drawn at 27
+#: logical pixels, so a 1x desktop wants tier 40 and every phone wants 80 --
+#: which is how one cold block reads as "the icons are missing on mobile
+#: and fine on the laptop beside it". A single bundle failing takes every
+#: mark on the page down with it, so it is worth one more request.
+#:
+#: The second ask is deliberately *behind* the first paint rather than in
+#: front of it: 17 seconds of blank rows is the other way this failure
+#: shows up, and waiting twice for it would be 35.
+BUNDLE_ATTEMPTS = 2
 
 
 #: Which tiers a build actually bundles, and the source of truth for it --
@@ -284,6 +313,7 @@ def forget_bundles() -> None:
     wants the memory back."""
     _BUNDLES.clear()
     _FETCHED.clear()
+    _TRIES.clear()
 
 
 async def load_bundle(
@@ -307,9 +337,11 @@ async def load_bundle(
     putting this in front of a working path.
     """
     tier = bundle_tier(device_pixels)
-    if (directory, tier, rest) in _FETCHED:
+    key = (directory, tier, rest)
+    if key in _FETCHED:
         return len(_BUNDLES.get((directory, tier), {}))
-    _FETCHED.add((directory, tier, rest))
+    _FETCHED.add(key)
+    tries = _TRIES[key] = _TRIES.get(key, 0) + 1
     try:
         blob = await fetch(bundle_url(directory, tier, ".bin", rest=rest))
         raw = await fetch(bundle_url(directory, tier, ".json", rest=rest))
@@ -317,10 +349,16 @@ async def load_bundle(
     except asyncio.CancelledError:
         # The page gave up on this chain. Not a failure of the bundle, and
         # swallowing it would leave the task looking like it succeeded --
-        # nor a reason to never ask again, so the note is taken back.
-        _FETCHED.discard((directory, tier, rest))
+        # nor a reason to never ask again, so the notes are taken back.
+        _FETCHED.discard(key)
+        _TRIES[key] = tries - 1
         raise
     except Exception:
+        # A 404 for a tail that was never written, or a 504 for a block the
+        # gateway could not find inside its budget -- and this cannot tell
+        # them apart, so both are worth one more ask. See `BUNDLE_ATTEMPTS`.
+        if tries < BUNDLE_ATTEMPTS:
+            _FETCHED.discard(key)
         return 0
     return remember_bundle(directory, tier, bytes(blob), index)
 

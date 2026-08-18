@@ -1144,42 +1144,67 @@ class CurveApp:
         wanted = MARK_SIZE * pixel_ratio()
         # Every network's mark in one file, fetched once for the session --
         # `load_bundle` remembers it, so a chain switch does not re-ask.
-        if await load_bundle(CHAINS, wanted, http.get_bytes):
-            # **And then the picker is built again**, which is the half
-            # that was missing and the whole reason a network logo could
-            # still go blank after the marks were bundled.
-            #
-            # The picker exists before this coroutine does: its options
-            # are built in `__init__` and again by `_sync_chain_options`
-            # the moment the API names its chains, which is one request
-            # racing the two this makes. When the API wins -- it usually
-            # does, being one small JSON against 118 KB of art -- every
-            # option is built while the bundle is not yet in hand, so
-            # each of the forty asks for its own file. Those files are
-            # cold: `tools/warm_ipfs.py` warms the bundle, and nothing
-            # warms `curve/chains/*.png`. One of forty cold blocks
-            # missing its retrieval budget is a 504 and a missing logo,
-            # which is exactly what the open menu showed.
-            #
-            # Rebuilding costs one control tree and no requests, and
-            # every mark in it now comes out of the bytes just fetched.
-            self._sync_chain_picker()
-            safe_update(self.chain_picker)
+        chains = await load_bundle(CHAINS, wanted, http.get_bytes)
+        if chains:
+            self._draw_chain_marks()
         count = await load_bundle(token_bundle(self.chain), wanted, http.get_bytes)
         if count:
             print(f"marks: {count} for {self.chain} in one request")
-        # The big chains ship a second half. Not awaited: the first covers
-        # the rows on screen, and this one fills in behind them as the list
-        # is scrolled. A chain that was never split 404s here and returns
-        # zero, which costs one request and no correctness.
-        async def tail() -> None:
+
+        async def behind() -> None:
+            """What is worth asking for once the rows are on screen.
+
+            The second ask for anything that failed, and the second half
+            of a split chain. Neither is awaited above, for the same
+            reason: the first paint is already paid for and these only
+            improve on it.
+
+            A bundle that failed is asked exactly once more -- see
+            `BUNDLE_ATTEMPTS`, where the measurement is. It is cheap when
+            the file was never there (a 404 for a chain with no tail) and
+            it is the whole fix when the file is there but cold, which is
+            the case that took mobile down: the tier a phone asks for
+            answered 504 after 17.7 seconds on the published site and
+            served in 1.07 the next time.
+            """
+            if not chains and await load_bundle(CHAINS, wanted, http.get_bytes):
+                print("marks: the network bundle landed on the second ask")
+                self._draw_chain_marks()
+            head = count or await load_bundle(
+                token_bundle(self.chain), wanted, http.get_bytes
+            )
+            if not count and head:
+                print(f"marks: {head} for {self.chain} on the second ask")
+            # The big chains ship a second half. The first covers the rows
+            # on screen and this one fills in behind them as the list is
+            # scrolled. A chain that was never split 404s here and returns
+            # zero, which costs one request and no correctness.
             more = await load_bundle(
                 token_bundle(self.chain), wanted, http.get_bytes, rest=True
             )
-            if more > count:
-                print(f"marks: {more - count} more for {self.chain}, filled in behind")
+            if more > head:
+                print(f"marks: {more - head} more for {self.chain}, filled in behind")
 
-        self._marks_rest = asyncio.create_task(tail())
+        self._marks_rest = asyncio.create_task(behind())
+
+    def _draw_chain_marks(self) -> None:
+        """Build the picker again, now that its marks are in memory.
+
+        **The picker exists before the bundle does**, which is the half
+        that was missing and the whole reason a network logo could still
+        go blank after the marks were bundled. Its options are built in
+        `__init__` and again by `_sync_chain_options` the moment the API
+        names its chains -- one small request racing the two this fetch
+        makes, and when the API wins every option is built holding a URL
+        and keeps it for the session. Each of those is then an individual
+        file, cold, and one that misses its gateway's retrieval budget is
+        a blank circle in the one list whose job is choosing a network.
+
+        Rebuilding costs one control tree and no requests, and every mark
+        in it now comes out of the bytes just fetched.
+        """
+        self._sync_chain_picker()
+        safe_update(self.chain_picker)
 
     async def load_pools(self) -> None:
         """Point the list at a fresh feed for the current chain.

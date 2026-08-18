@@ -2059,6 +2059,54 @@ async def test_the_picker_is_built_again_once_the_network_marks_arrive(
         forget_bundles()
 
 
+async def test_a_cold_network_bundle_is_asked_for_again_behind_the_page(
+    monkeypatch,
+) -> None:
+    """One 504 must not cost the session its network logos.
+
+    A gateway that cannot find a block inside its retrieval budget
+    answers 504 after about seventeen seconds, and the ask is what warms
+    it -- measured on the published site, where the tier every phone asks
+    for failed at 17.7s and served at 1.07s the next time. So the second
+    ask happens behind the first paint rather than in front of it, and
+    the picker is drawn from whichever ask lands.
+    """
+    import main as app_module
+    from ui.assets import CHAINS, bundle_url, forget_bundles
+
+    forget_bundles()
+    app = header_app(LAPTOP)
+    blob, index = _chain_bundle(["ethereum", "arbitrum", "base",
+                                 "optimism", "polygon", "fraxtal"])
+    asked: list[str] = []
+
+    async def cold_once(url: str) -> bytes:
+        asked.append(url)
+        if url == bundle_url(CHAINS, 80, ".bin"):
+            if sum(u == url for u in asked) == 1:
+                raise OSError("504 unfound")
+            return blob
+        if url == bundle_url(CHAINS, 80, ".json"):
+            return json.dumps(index).encode()
+        raise OSError("cold")
+
+    monkeypatch.setattr(app_module.http, "is_browser", lambda: True)
+    monkeypatch.setattr(app_module.http, "get_bytes", cold_once)
+    try:
+        await app._load_marks()
+        assert all(isinstance(src, str) for src in _picker_marks(app)), (
+            "nothing has landed yet, so the picker is still on the files"
+        )
+
+        await app._marks_rest
+
+        assert all(isinstance(src, bytes) for src in _picker_marks(app)), (
+            "the second ask landed, so the picker is drawn from it"
+        )
+    finally:
+        forget_bundles()
+
+
 def _chain_bundle(names: list[str]) -> tuple[bytes, dict]:
     """The `chains` bundle as `build_assets` writes it: the PNGs end to
     end, keyed by network name rather than by token address."""

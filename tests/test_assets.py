@@ -1009,12 +1009,11 @@ def test_no_ranking_means_one_bundle_rather_than_a_bad_split(tmp_path) -> None:
     assert not (tmp_path / "marks@80-rest.bin").exists()
 
 
-async def test_neither_half_is_fetched_twice() -> None:
+async def test_a_bundle_in_hand_is_never_fetched_twice() -> None:
     """`load_pools` runs once at startup and again when a deep link is
     applied, and the tail has no entry of its own in the store -- so
     asking the store "is it cached" refetched 2.2 MB of Ethereum on every
-    visit. A failed fetch counts as done too: a 404 for a chain with no
-    tail must not be retried on every reload."""
+    visit."""
     from ui.assets import load_bundle, token_bundle
 
     hot_blob, hot_index = make_bundle({"0xaa": PNG_A})
@@ -1030,8 +1029,77 @@ async def test_neither_half_is_fetched_twice() -> None:
         await load_bundle(token_bundle("ethereum"), 80, fetch)
         await load_bundle(token_bundle("ethereum"), 80, fetch, rest=True)
 
-    assert sum("-rest" in url for url in asked) == 1
     assert sum("-rest" not in url for url in asked) == 2  # the blob and its index
+
+
+async def test_a_failed_bundle_is_asked_for_once_more_and_then_left() -> None:
+    """The ask is what warms the block, and one bundle failing takes every
+    mark on the page with it.
+
+    Measured on the published site: `curve/tokens/ethereum/marks@80.bin`
+    -- the tier every phone asks for, where a 1x desktop asks for 40 --
+    answered 504 after 17.7s and served in 1.07s the next time. So a
+    second ask, and only a second: a chain with no tail 404s here and
+    must not re-ask on every reload.
+    """
+    from ui.assets import BUNDLE_ATTEMPTS, load_bundle, token_bundle
+
+    asked = []
+
+    async def cold(url):
+        asked.append(url)
+        raise OSError("504")
+
+    for _ in range(4):
+        await load_bundle(token_bundle("ethereum"), 80, cold)
+
+    assert BUNDLE_ATTEMPTS == 2
+    assert sum(url.endswith(".bin") for url in asked) == BUNDLE_ATTEMPTS
+
+
+async def test_the_second_ask_is_the_one_that_lands() -> None:
+    """Which is the whole point of making it -- the cold-block pattern is
+    a 504 and then the file."""
+    from ui.assets import bundled_mark, load_bundle, token_bundle
+
+    blob, index = make_bundle({"0xaa": PNG_A})
+    tries = []
+
+    async def warming(url):
+        tries.append(url)
+        if len(tries) == 1:
+            # The first ask is what warms the block, and it is the `.bin`
+            # that goes first -- so the index is never even reached.
+            raise OSError("504")
+        return json.dumps(index).encode() if url.endswith(".json") else blob
+
+    assert await load_bundle(token_bundle("xdai"), 80, warming) == 0
+    assert await load_bundle(token_bundle("xdai"), 80, warming) == 1
+    assert bundled_mark("xdai", "0xaa", 80) == PNG_A
+
+
+async def test_two_page_loads_do_not_pull_the_same_bundle_at_once() -> None:
+    """The note is taken when the fetch *starts*, not when it lands: the
+    deep link runs `load_pools` a second time while the first is still in
+    flight, and both pulling 2.2 MB is the bug the note exists to stop."""
+    import asyncio
+
+    from ui.assets import load_bundle, token_bundle
+
+    blob, index = make_bundle({"0xaa": PNG_A})
+    asked = []
+
+    async def slow(url):
+        asked.append(url)
+        await asyncio.sleep(0)
+        return json.dumps(index).encode() if url.endswith(".json") else blob
+
+    await asyncio.gather(
+        load_bundle(token_bundle("ethereum"), 80, slow),
+        load_bundle(token_bundle("ethereum"), 80, slow),
+    )
+
+    assert sum(url.endswith(".bin") for url in asked) == 1
 
 
 # -- the tier a phone actually asks for ------------------------------------

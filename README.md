@@ -447,6 +447,28 @@ Those two are what `mark_tier` rounds up to for a 22–34px mark at 1×, 2× or
 3×. A 4× screen and the 14px marks fall back to individual files and lose
 nothing but the single request.
 
+**A cold bundle takes every mark on the page with it**, so it is asked for
+twice. One request replacing 627 is also one request that can fail, and a
+gateway which cannot find a block inside its retrieval budget answers 504
+after about seventeen seconds — where the ask is itself what warms it.
+Measured on the published site:
+
+```
+/curve/tokens/ethereum/marks@80.bin   504 unfound  17.7s   <- every phone
+/curve/tokens/ethereum/marks@40.bin   200 served    1.0s   <- a 1x desktop
+/curve/tokens/ethereum/marks@80.bin   200 served    1.1s   <- asked again
+```
+
+A mark is drawn at 27 logical pixels, so **the tier depends on the screen**:
+a 1x desktop asks for 40 and every phone asks for 80. One cold block in the
+tier nobody's laptop touches reads as "the icons are missing on mobile and
+fine on the desktop beside it", which is exactly how it was reported.
+
+The second ask is *behind* the first paint, not in front of it — seventeen
+seconds of blank rows is the other way this shows up, and waiting twice
+would be thirty-four. It is also bounded at two: a chain with no tail 404s
+there, and that must not be re-asked on every reload.
+
 **Nothing here may break a page.** A build with no bundles, a gateway that
 will not serve one, a truncated index, a token that is not in it — all of
 them return zero and every mark fetches its own file exactly as before, with

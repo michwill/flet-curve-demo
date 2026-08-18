@@ -238,6 +238,11 @@ python tools/warm_ipfs.py --tiers all     # every compiled size
 python tools/warm_ipfs.py --chains xdai   # one chain's marks
 ```
 
+**It warms the bundles, not the loose marks.** A browser fetches one pair
+per chain now, so that pair is what needs to be warm — 136 files and 11 MB,
+against 3,358 marks and 22 MB behind them. The loose files stay reachable as
+the fallback and `--all-marks` warms those too, eventually rather than first.
+
 **The marks are the default and the boot set is not**, which is a decision
 about bytes rather than taste:
 

@@ -154,6 +154,29 @@ def mark_files(root: Path, tiers: tuple[int, ...], chains: list[str]) -> list[st
     return found
 
 
+def bundle_files(root: Path, tiers: tuple[int, ...], chains: list[str]) -> list[str]:
+    """Each chain's packed marks and its index, as site-root paths.
+
+    These are what a browser actually fetches now -- one pair per chain
+    instead of up to 627 files -- so they are what warming is for. The
+    individual marks stay reachable as the fallback and are warmed only
+    when asked for; there are 3,358 of them against 136 of these.
+    """
+    base = root.joinpath(*MARKS_DIR)
+    if not base.is_dir():
+        return []
+    found = []
+    for chain in sorted(p for p in base.iterdir() if p.is_dir()):
+        if chains and chain.name not in chains:
+            continue
+        for tier in tiers:
+            for suffix in (".bin", ".json"):
+                path = chain / f"marks@{tier}{suffix}"
+                if path.is_file():
+                    found.append(path.relative_to(root).as_posix())
+    return found
+
+
 def plan(root: Path, options) -> list[str]:
     """What to ask for. The marks, unless the boot set is asked for too.
 
@@ -176,7 +199,14 @@ def plan(root: Path, options) -> list[str]:
     right, and an interrupted run should have bought the first.
     """
     paths: list[str] = boot_files(root) if options.boot else []
-    if not options.boot_only:
+    if options.boot_only:
+        return paths
+    # Bundles first: they are what a visitor fetches, and there are 136 of
+    # them against 3,358 individual marks. The marks are the fallback for a
+    # bundle that will not load and for the tiers that have none, so they
+    # are worth warming eventually and not worth warming first.
+    paths += bundle_files(root, options.tiers, options.chains)
+    if options.all_marks:
         paths += mark_files(root, options.tiers, options.chains)
     return paths
 
@@ -317,6 +347,11 @@ def main() -> int:
         help="warm the boot set too (60 MB, and publishing already warms it)",
     )
     parser.add_argument("--boot-only", action="store_true", help="only the boot set")
+    parser.add_argument(
+        "--all-marks",
+        action="store_true",
+        help="also warm the 3,358 individual marks behind the bundles",
+    )
     parser.add_argument(
         "--deadline",
         type=float,

@@ -39,6 +39,7 @@ def options(**kw):
         "chains": [],
         "boot_only": False,
         "boot": False,
+        "all_marks": False,
         "dist": Path("."),
         "chunk": warm.CHUNK,
         "workers": warm.MARK_WORKERS,
@@ -106,7 +107,31 @@ def test_the_marks_are_the_default_and_the_boot_set_is_not(tmp_path: Path) -> No
     half nothing else ever warms."""
     root = build(tmp_path, {"xdai": ["0xaa@80.png"]})
 
-    assert warm.plan(root, options()) == ["curve/tokens/xdai/0xaa@80.png"]
+    assert warm.plan(root, options(all_marks=True)) == ["curve/tokens/xdai/0xaa@80.png"]
+
+
+def test_the_bundles_are_warmed_and_the_loose_marks_are_not(tmp_path: Path) -> None:
+    """A browser fetches one pair per chain now, not up to 627 files, so
+    that pair is what warming is for. The loose marks stay reachable as
+    the fallback -- 3,358 of them against 136 bundles -- and are worth
+    warming eventually rather than first."""
+    root = build(tmp_path, {"xdai": ["0xaa@80.png", "marks@80.bin", "marks@80.json"]})
+
+    assert warm.plan(root, options()) == [
+        "curve/tokens/xdai/marks@80.bin",
+        "curve/tokens/xdai/marks@80.json",
+    ]
+    assert "curve/tokens/xdai/0xaa@80.png" in warm.plan(root, options(all_marks=True))
+
+
+def test_the_bundles_come_before_the_marks_they_back(tmp_path: Path) -> None:
+    root = build(tmp_path, {"xdai": ["0xaa@80.png", "marks@80.bin", "marks@80.json"]})
+
+    paths = warm.plan(root, options(all_marks=True))
+
+    assert paths.index("curve/tokens/xdai/marks@80.bin") < paths.index(
+        "curve/tokens/xdai/0xaa@80.png"
+    )
 
 
 def test_the_boot_set_can_be_added_and_comes_first(tmp_path: Path) -> None:
@@ -114,7 +139,7 @@ def test_the_boot_set_can_be_added_and_comes_first(tmp_path: Path) -> None:
     whether it looks right, so an interrupted run should buy it first."""
     root = build(tmp_path, {"xdai": ["0xaa@80.png"]})
 
-    paths = warm.plan(root, options(boot=True))
+    paths = warm.plan(root, options(boot=True, all_marks=True))
 
     assert paths[:2] == ["index.html", "main.dart.js"]
     assert paths[-1] == "curve/tokens/xdai/0xaa@80.png"
@@ -126,7 +151,7 @@ def test_either_half_can_be_asked_for_alone(tmp_path: Path) -> None:
     assert warm.plan(root, options(boot=True, boot_only=True)) == [
         "index.html", "main.dart.js"
     ]
-    assert warm.plan(root, options()) == ["curve/tokens/xdai/0xaa@80.png"]
+    assert warm.plan(root, options(all_marks=True)) == ["curve/tokens/xdai/0xaa@80.png"]
 
 
 # -- tiers -----------------------------------------------------------------
@@ -359,7 +384,7 @@ def test_the_marks_get_more_workers_than_the_boot_set(monkeypatch, tmp_path) -> 
     marks ran at 0.59, 0.71 and 1.11 files/s on 2, 4 and 8 workers, and
     nothing was throttled at any of them. The two-worker limit was earned
     pulling multi-megabyte boot files, which is a different load."""
-    root = build(tmp_path, {"xdai": ["0xaa@80.png"]})
+    root = build(tmp_path, {"xdai": ["marks@80.bin", "marks@80.json"]})
     seen = {}
     monkeypatch.setattr(warm, "verify", lambda _c, _p, **kw: seen.update(kw) or {})
 
@@ -373,7 +398,7 @@ def test_the_marks_get_more_workers_than_the_boot_set(monkeypatch, tmp_path) -> 
 
 
 def test_the_worker_count_can_be_overridden(monkeypatch, tmp_path) -> None:
-    root = build(tmp_path, {"xdai": ["0xaa@80.png"]})
+    root = build(tmp_path, {"xdai": ["marks@80.bin", "marks@80.json"]})
     seen = {}
     monkeypatch.setattr(warm, "verify", lambda _c, _p, **kw: seen.update(kw) or {})
     monkeypatch.setattr("sys.argv", ["warm_ipfs.py", "--dist", str(root), "--workers", "3"])

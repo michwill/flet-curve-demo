@@ -40,7 +40,6 @@ from __future__ import annotations
 import argparse
 import base64
 import concurrent.futures
-import gzip
 import io
 import json
 import os
@@ -213,78 +212,75 @@ def make_relative(index: Path) -> bool:
 #: still same-origin -- where a gateway URL baked into the page would tie
 #: the build to one host, and this has to work on any of them.
 #:
-#: It costs a third more bytes on 400 KB. `--probe` pins real gzip under
-#: several suffixes so a later build can drop this if a cheaper one works.
+#: It costs a third more bytes on 400 KB, and it may now be more than is
+#: needed: `--probe` shows `.gz` being served, so a rename alone might do
+#: after all. That was written when `.gz` was believed refused. Untested
+#: against a real pin, and the wrapping works, so it stands until somebody
+#: measures the cheaper route rather than assuming it.
 PACKAGE_FROM = "app.tar.gz"
 PACKAGE_TO = "app-package.json"
 #: The JSON key, named for what it holds -- so the worker unpacking it as a
 #: gzipped tar is reading the file rather than assuming.
 PACKAGE_KEY = "gztar"
 
-#: Probes, as a matrix rather than a handful, because the handful is what
-#: produced two confident and incompatible readings of the same gateway.
+#: How a suffix is tested, and why it costs nothing.
 #:
-#: Every earlier probe was a few bytes, and the files that actually got
-#: refused were hundreds of kilobytes to megabytes -- so "small text
-#: served, large archive refused" was read as being about the content when
-#: the size moved with it every time. This varies **one thing at a time**:
+#: The old answer here was a matrix: five files, 9 MB of them, bolted onto
+#: every publish, because every earlier probe had varied the name *and* the
+#: size *and* the content together and so could not say which mattered.
 #:
-#:   * `PROBE_CONTENTS` -- text, gzip and zip, at the same size;
-#:   * `PROBE_SIZES` -- small and large, for each of those;
-#:   * `PROBE_SUFFIXES` -- the archive names and two innocent controls.
+#: The matrix was never needed. Ask a gateway for a file that **does not
+#: exist**, and the confound disappears on its own -- a file that is not
+#: there has no bytes and no size, so anything that tells two of them apart
+#: can only be the name:
 #:
-#: The large size is past everything seen refused so far, and the text
-#: rows are the control: if a 3 MB *text* file named `.zip` is refused,
-#: the suffix decides; if a 3 MB zip named `.bin` is refused, the bytes
-#: do; if only the large rows are refused whatever they are called, it is
-#: a threshold. Those three outcomes are mutually exclusive, which is
-#: what the earlier probes could not manage.
-#: Large enough to be past everything seen refused so far, the biggest of
-#: which was the 2.5 MB `python_stdlib.zip`.
-PROBE_LARGE = 3 << 20
-PROBE_SMALL = 1 << 10
-PROBE_STEM = "gateway-probe"
+#:     definitely-absent.zip    18B   "Resource Not Found"
+#:     definitely-absent.bin   220B   "failed to resolve /ipfs/<cid>/...:
+#:                                     no link named"
+#:
+#: The first is a canned refusal delivered before the path is resolved at
+#: all; the second is the IPFS resolver reporting honestly that nothing of
+#: that name is there. So the gateway short-circuits on the extension, and
+#: finding that out takes a second and no pin at all.
+#:
+#: It explains all four observations that used to look contradictory:
+#:
+#:     gateway-probe.tar.gz   served    final extension `.gz`, allowed
+#:     app.tar.gz             refused   renamed to `.tgz` before pinning
+#:     packaging-*.whl        served    `.whl` allowed -- and a real zip
+#:     python_stdlib.zip      refused   `.zip` denied
+#:
+#: The third row settles it: a genuine zip under an allowed suffix is
+#: served, so **the content is never sniffed**. Nor the size -- 9.5 MB of
+#: `main.dart.js` serves fine.
+PROBE_ABSENT = "definitely-absent-file"
 
-#: `(content, size, suffix, what a refusal here would prove)`. Five files
-#: rather than the full cross product, which came to 42 files and 63 MB --
-#: more than half the size of the site, bolted onto a pin whose
-#: propagation is already the thing being complained about.
-#:
-#: Each row holds two variables still and moves one. Read together they
-#: are mutually exclusive: at most one of "the suffix", "the bytes" and
-#: "the size" survives contact with all five.
-PROBE_MATRIX = (
-    ("text", PROBE_LARGE, ".zip", "the suffix decides -- innocent bytes, banned name"),
-    ("zip", PROBE_LARGE, ".bin", "the bytes decide -- archive under an innocent name"),
-    ("zip", PROBE_LARGE, ".whl", "resolves the whl-vs-zip comparison, at one size"),
-    ("zip", PROBE_SMALL, ".zip", "the size decides -- banned name and bytes, tiny"),
-    ("text", PROBE_LARGE, ".bin", "control: must serve, or the run proves nothing"),
+#: What a gateway says when it refuses a suffix outright, as opposed to
+#: resolving the path and finding nothing there. Short and canned, where
+#: the honest miss quotes the CID and the path back at you.
+REFUSAL_BODY = "Resource Not Found"
+
+#: Suffixes worth checking, for `--probe`. The allowed ones are in here as
+#: controls: a run where *nothing* is allowed is a broken run rather than a
+#: strict gateway, and without them there would be no way to tell.
+PROBE_SUFFIXES = (
+    ".bin", ".png", ".json", ".dat", ".pack", ".whl", ".gz", ".tar.gz",
+    ".zip", ".tar", ".tgz", ".7z", ".rar", ".bz2", ".xz", ".zst", ".jar",
 )
 
-#: Archive suffixes an IPFS gateway will not serve. Not an eth.limo
-#: quirk -- gateways decline archives generally, presumably so that a pin
-#: cannot be used as a file-distribution host, and `.zip`, `.gz` and their
-#: relatives are all in scope.
+#: Suffixes an IPFS gateway refuses outright. Measured with `--probe`
+#: against eth.limo and eth.link, which agree exactly.
 #:
-#: **What exactly triggers it is not known, and the obvious readings are
-#: confounded.** Everything measured so far varies two things at once:
+#: **`.gz` is not among them**, which is a correction. It was listed here
+#: for as long as the question stayed open, on the strength of `app.tar.gz`
+#: being refused -- but that file is renamed to `.tgz` before it is pinned,
+#: and `.tgz` is what the gateway declines. A plain `.gz` serves, and so
+#: does `.tar.gz`: the *final* extension is what decides.
 #:
-#:     gateway-probe.tar.gz    6 bytes, text        served
-#:     app.tar.gz            ~400 KB, real gzip     refused
-#:     packaging-*.whl         96 KB, real zip      served
-#:     python_stdlib.zip      2.5 MB, real zip      refused
-#:
-#: Read down the first pair and the bytes decide; read down the second and
-#: the suffix does; read the sizes and neither does -- a threshold explains
-#: all four on its own. No experiment yet run separates them, because each
-#: pair changed the name *and* the size *and* the content together.
-#:
-#: So this list is a heads-up about suffixes worth checking, not a theory
-#: about what a gateway does, and nothing should be built on a prediction
-#: from it. `--probe` is where the experiment belongs: one variable at a
-#: time, at a size that matters. Until that has run, the only safe
-#: statement is that an archive in a pin may not be reachable, and
-#: `verify` is what finds out.
+#: The refusal arrives before the path is resolved, so it is not a fact
+#: about any file -- a suffix on this list is refused whether or not
+#: anything of that name was ever pinned. That is what makes `--probe`
+#: free.
 #:
 #: The refusal is a fresh 404 in ~0.3s with no `Age` header, which is what
 #: distinguishes it from a block that has not propagated yet -- that one is
@@ -304,7 +300,7 @@ PROBE_MATRIX = (
 #: predicting damage from a filename is what turned an observation into a
 #: block that would have stopped a working publish. `verify` measures
 #: instead of predicting; this is a heads-up beside it.
-REFUSED_SUFFIXES = (".zip", ".gz", ".tgz", ".tar", ".bz2", ".xz", ".7z", ".rar")
+REFUSED_SUFFIXES = (".zip", ".tgz", ".tar", ".bz2", ".xz", ".7z", ".rar", ".zst", ".jar")
 
 
 def wrap_package(root: Path) -> bool:
@@ -368,42 +364,37 @@ def patch_worker(root: Path) -> bool:
     return True
 
 
-def probe_payload(kind: str, size: int) -> bytes:
-    """`size` bytes of text, gzip or zip -- as close to `size` as each gets.
+def suffix_served(client, gateway: str, suffix: str) -> bool:
+    """Would this gateway serve a file ending `suffix`, if one existed?
 
-    Incompressible filler inside the archives, so a 3 MB zip really is 3 MB
-    on the wire. Compressible filler would make the large archive rows the
-    same size as the small ones and reintroduce the confound this matrix
-    exists to remove.
+    Asked of a path that is deliberately not in the pin, because that is
+    what removes the confound -- see `PROBE_ABSENT`. A refusal is canned
+    and arrives before the path is resolved; a miss quotes the CID back.
+
+    Anything unreadable counts as served, because the question this answers
+    is "will the suffix stop it", and a gateway that cannot be reached has
+    not stopped anything. The caller is publishing either way.
     """
-    filler = secrets.token_bytes(size)
-    if kind == "text":
-        return base64.b64encode(filler)[:size]
-    if kind == "gzip":
-        return gzip.compress(filler)
-    if kind == "zip":
-        import zipfile
-
-        buffer = io.BytesIO()
-        with zipfile.ZipFile(buffer, "w") as archive:
-            archive.writestr("payload.bin", filler)
-        return buffer.getvalue()
-    raise ValueError(kind)
+    url = f"{gateway.rstrip('/')}/{PROBE_ABSENT}{suffix}"
+    try:
+        body = client.get(url, timeout=VERIFY_TIMEOUT).text
+    except Exception:
+        return True
+    return REFUSAL_BODY not in body
 
 
-def probe_name(kind: str, size: int, suffix: str) -> str:
-    scale = "large" if size >= PROBE_LARGE else "small"
-    return f"{PROBE_STEM}-{kind}-{scale}{suffix}"
+def probe_suffixes(gateway: str, suffixes=PROBE_SUFFIXES) -> dict[str, bool]:
+    """Which of `suffixes` a gateway will serve. Costs one request each.
 
+    Nothing is written and nothing is pinned. The matrix this replaced put
+    9 MB of probe files into every publish to answer the same question, and
+    could not answer it even then, because a file that exists carries a
+    size and a content along with its name.
+    """
+    import httpx
 
-def add_probes(root: Path) -> list[tuple[str, str]]:
-    """Write the probe matrix into the build. Returns `(name, what it tests)`."""
-    written = []
-    for kind, size, suffix, decides in PROBE_MATRIX:
-        name = probe_name(kind, size, suffix)
-        (root / name).write_bytes(probe_payload(kind, size))
-        written.append((name, decides))
-    return written
+    with httpx.Client(follow_redirects=True) as client:
+        return {s: suffix_served(client, gateway, s) for s in suffixes}
 
 
 # -- the check that matters ------------------------------------------------
@@ -1064,8 +1055,8 @@ def main() -> int:
     parser.add_argument(
         "--probe",
         action="store_true",
-        help="include tiny files under archive-ish suffixes, to find out what "
-        "a gateway will not serve",
+        help="ask the gateways which suffixes they refuse, and print the answer. "
+        "Adds nothing to the build.",
     )
     parser.add_argument(
         "--no-verify",
@@ -1190,9 +1181,12 @@ def main() -> int:
     if patch_worker(dist):
         print(f"{WORKER}: taught to unwrap it")
     if options.probe:
-        print("probes -- fetch each of these once the pin is retrievable:")
-        for name, decides in add_probes(dist):
-            print(f"  {name:<34} refused => {decides}")
+        # Nothing is added to the build for this. See `PROBE_ABSENT`.
+        for host in (options.warm_gateway, "https://curve.eth.link"):
+            served = probe_suffixes(host.rstrip("/"))
+            refused = sorted(s for s, ok in served.items() if not ok)
+            print(f"{host} refuses: {' '.join(refused) or 'nothing'}")
+            print(f"  and serves: {' '.join(sorted(set(served) - set(refused)))}")
 
     if found := refused_by_gateway(dist):
         print(

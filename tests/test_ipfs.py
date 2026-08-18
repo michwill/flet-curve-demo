@@ -217,59 +217,88 @@ def test_the_python_injected_into_the_worker_parses() -> None:
     )
 
 
-def test_the_probe_matrix_moves_one_variable_at_a_time(tmp_path: Path) -> None:
-    """The earlier probes could not tell three explanations apart.
+class FakeSuffixGateway:
+    """A gateway that refuses some suffixes before resolving anything.
 
-    Every file measured before this varied the name, the bytes *and* the
-    size together -- a 6-byte text `.tar.gz` served against a 400 KB real
-    archive, a 96 KB wheel served against a 2.5 MB zip -- so "the bytes
-    decide" and "the suffix decides" and "the size decides" all fit, and
-    two of them got asserted in this file at different times.
+    Which is what the real ones do: the refusal is canned and arrives
+    without the path being looked up, where a genuine miss quotes the CID
+    and the path back.
     """
+
+    def __init__(self, refuses: tuple[str, ...]) -> None:
+        self.refuses = refuses
+        self.asked: list[str] = []
+
+    def get(self, url: str, **_kw):
+        self.asked.append(url)
+        refused = url.endswith(self.refuses)
+        body = "Resource Not Found" if refused else (
+            "failed to resolve /ipfs/bafyfake/x: no link named"
+        )
+        return types.SimpleNamespace(text=body, status_code=404)
+
+
+def test_a_file_that_does_not_exist_is_what_removes_the_confound() -> None:
+    """The trick the whole probe rests on.
+
+    Every earlier measurement varied the name, the bytes *and* the size
+    together -- a 6-byte text `.tar.gz` served against a 400 KB real
+    archive, a 96 KB wheel against a 2.5 MB zip -- so "the bytes decide",
+    "the suffix decides" and "the size decides" all fit, and two of them
+    were asserted in this file at different times.
+
+    A file that is not in the pin has no bytes and no size. Anything that
+    tells two of them apart can only be the name, and no experiment needs
+    designing around it.
+    """
+    gateway = FakeSuffixGateway((".zip", ".tgz"))
+
+    assert not ipfs.suffix_served(gateway, "https://curve.eth.limo", ".zip")
+    assert ipfs.suffix_served(gateway, "https://curve.eth.limo", ".bin")
+    assert all(ipfs.PROBE_ABSENT in url for url in gateway.asked)
+
+
+def test_the_probe_pins_nothing_and_writes_nothing(tmp_path: Path) -> None:
+    """It replaced a matrix that put five files and 9 MB into every
+    publish, onto a pin whose propagation was the thing being complained
+    about -- and which could not answer the question even then."""
     root = build(tmp_path, {"index.html": "x"})
-    written = dict(ipfs.add_probes(root))
-    sizes = {n: (root / n).stat().st_size for n in written}
-    magic = {n: (root / n).read_bytes()[:4] for n in written}
+    before = sorted(p.name for p in root.rglob("*"))
 
-    # Same bytes, same size, different suffix: isolates the name.
-    assert magic["gateway-probe-zip-large.bin"] == b"PK\x03\x04"
-    assert magic["gateway-probe-zip-large.whl"] == b"PK\x03\x04"
-    assert (
-        sizes["gateway-probe-zip-large.bin"] == sizes["gateway-probe-zip-large.whl"]
-    )
+    ipfs.suffix_served(FakeSuffixGateway(()), "https://curve.eth.limo", ".zip")
 
-    # Same suffix, same size, different bytes: isolates the content.
-    assert magic["gateway-probe-text-large.zip"] != b"PK\x03\x04"
-    assert sizes["gateway-probe-text-large.zip"] >= ipfs.PROBE_LARGE
-
-    # Same suffix, same bytes, different size: isolates the threshold.
-    assert magic["gateway-probe-zip-small.zip"] == b"PK\x03\x04"
-    assert sizes["gateway-probe-zip-small.zip"] < sizes["gateway-probe-zip-large.bin"]
-
-    # And a row that must serve, or the run says nothing about anything.
-    assert "control" in written["gateway-probe-text-large.bin"]
+    assert sorted(p.name for p in root.rglob("*")) == before
 
 
-def test_the_large_probes_really_are_large(tmp_path: Path) -> None:
-    """Compressible filler would make the large archives the size of the
-    small ones and put the confound straight back."""
-    root = build(tmp_path, {"index.html": "x"})
-    written = dict(ipfs.add_probes(root))
+def test_an_unreachable_gateway_does_not_read_as_a_refusal() -> None:
+    """The question is whether the suffix stops the file. A gateway that
+    cannot be reached has not stopped anything, and the caller is
+    publishing either way."""
 
-    for name in written:
-        if "large" in name:
-            assert (root / name).stat().st_size >= ipfs.PROBE_LARGE, name
+    class Dead:
+        def get(self, url: str, **_kw):
+            raise OSError("no route to host")
+
+    assert ipfs.suffix_served(Dead(), "https://curve.eth.limo", ".zip")
 
 
-def test_the_whole_matrix_stays_small_enough_to_pin(tmp_path: Path) -> None:
-    """It rides along with a 100 MB site whose propagation is the problem
-    being investigated. The full cross product was 42 files and 63 MB."""
-    root = build(tmp_path, {"index.html": "x"})
-    written = ipfs.add_probes(root)
-    total = sum((root / name).stat().st_size for name, _ in written)
+def test_the_allowed_suffixes_are_probed_as_controls() -> None:
+    """A run where nothing at all is allowed is a broken run rather than a
+    strict gateway, and without controls there is no way to tell."""
+    assert ".bin" in ipfs.PROBE_SUFFIXES
+    assert set(ipfs.REFUSED_SUFFIXES) < set(ipfs.PROBE_SUFFIXES)
 
-    assert len(written) <= 8
-    assert total < (16 << 20), f"{total / (1 << 20):.0f} MB of probes"
+
+def test_gz_is_not_refused_and_that_is_a_correction() -> None:
+    """It was on the refused list for as long as the question was open, on
+    the strength of `app.tar.gz` being refused -- but that file is renamed
+    to `.tgz` before it is pinned, and `.tgz` is what is declined. Measured
+    against both gateways: `.gz` and `.tar.gz` serve, the final extension
+    decides."""
+    assert ".gz" not in ipfs.REFUSED_SUFFIXES
+    assert ".tgz" in ipfs.REFUSED_SUFFIXES
+    assert not "x.tar.gz".endswith(ipfs.REFUSED_SUFFIXES)
+    assert "x.tar.bz2".endswith(ipfs.REFUSED_SUFFIXES)
 
 
 # -- the check before the upload -------------------------------------------
@@ -1137,8 +1166,10 @@ def test_the_whole_archive_family_is_reported_not_just_zip(tmp_path: Path) -> No
     root = build(
         tmp_path,
         {
-            "a.zip": "x", "b.tar.gz": "x", "c.tgz": "x", "d.tar": "x",
-            "e.bz2": "x", "f.xz": "x", "g.7z": "x",
+            "a.zip": "x", "c.tgz": "x", "d.tar": "x",
+            "e.bz2": "x", "f.xz": "x", "g.7z": "x", "h.zst": "x", "i.jar": "x",
+            # Served: the final extension decides, and `.gz` is allowed.
+            "b.tar.gz": "x", "j.gz": "x",
             # Not archives, and two of them are the shapes most likely to
             # be mistaken for one.
             "main.dart.js": "//", "pyodide/pyodide.asm.wasm": "\0",
@@ -1146,5 +1177,5 @@ def test_the_whole_archive_family_is_reported_not_just_zip(tmp_path: Path) -> No
         },
     )
     assert ipfs.refused_by_gateway(root) == [
-        "a.zip", "b.tar.gz", "c.tgz", "d.tar", "e.bz2", "f.xz", "g.7z",
+        "a.zip", "c.tgz", "d.tar", "e.bz2", "f.xz", "g.7z", "h.zst", "i.jar",
     ]

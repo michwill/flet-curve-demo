@@ -338,10 +338,19 @@ the app.
 ### What an IPFS gateway will not serve
 
 Archives, broadly — not an eth.limo quirk; gateways decline them generally,
-presumably so a pin cannot be used as a file-distribution host. **What
-exactly triggers it is still open**, and it is worth being honest about why,
-because two confident and incompatible answers have been written down here
-already. Everything measured so far moved more than one variable:
+presumably so a pin cannot be used as a file-distribution host. **The rule is
+the final extension, from a deny-list**, and nothing else:
+
+```
+refused:  .zip .tar .tgz .7z .rar .bz2 .xz .zst .jar
+served:   .bin .png .json .dat .pack .gz .tar.gz .whl
+```
+
+Measured against eth.limo and eth.link, which agree exactly. `.tar.gz` serves
+because its final extension is `.gz`; `.tar.bz2` and `.bin.tar` do not.
+
+That question stood open for a long time, because every measurement moved
+more than one variable at once:
 
 ```
 gateway-probe.tar.gz      6 bytes, text        served
@@ -350,19 +359,38 @@ packaging-*.whl           96 KB, real zip      served
 python_stdlib.zip        2.5 MB, real zip      refused
 ```
 
-Read the first pair and the bytes decide. Read the second and the suffix
-does. Read the sizes and neither does — a threshold explains all four on
-its own. Each pair changed the name *and* the content *and* the size at
-once, so none of them settles anything, and a rename that looks free might
-buy nothing.
+Read the first pair and the bytes decide; read the second and the suffix
+does; read the sizes and a threshold explains all four. The answer was to
+stop designing an experiment and **ask for a file that does not exist**:
 
-`--probe` now pins five files that move one variable at a time: a 3 MB
-*text* file named `.zip` (refused ⇒ the suffix), a 3 MB zip named `.bin`
-(refused ⇒ the bytes), the same zip named `.whl`, a 1 KB zip named `.zip`
-(served ⇒ the size), and a 3 MB text `.bin` as the control that must serve
-or the run proves nothing. At most one explanation survives all five. Until
-that has run, the only safe statement is that an archive in a pin may not
-be reachable, and `verify` is what finds out.
+```
+definitely-absent.zip    18B   "Resource Not Found"
+definitely-absent.bin   220B   "failed to resolve /ipfs/<cid>/…: no link named"
+```
+
+A file that is not in the pin has no bytes and no size, so the only thing
+that can tell those two apart is the name. The first response is canned and
+arrives before the path is resolved at all; the second is the IPFS resolver
+reporting honestly. And all four rows above fall out of it: `app.tar.gz` is
+renamed to **`.tgz`** before pinning, which is denied, while the wheel is a
+genuine zip under an allowed suffix and is served — so the **content is
+never sniffed**, and neither is the size (`main.dart.js` is 9.5 MB).
+
+This replaced a probe matrix that bolted five files and 9 MB onto every
+publish and still could not separate the three explanations, because a file
+that exists carries a size and a content along with its name. `--probe` now
+asks both gateways directly, writes nothing, pins nothing, and takes a
+second:
+
+```
+python tools/publish_ipfs.py --probe
+https://curve.eth.limo refuses: .7z .bz2 .jar .rar .tar .tgz .xz .zip .zst
+  and serves: .bin .dat .gz .json .pack .png .tar.gz .whl
+```
+
+One correction fell out of it: `.gz` had been on the refused list for as
+long as the question was open, on the strength of `app.tar.gz` — and `.gz`
+is served.
 
 The only file that catches today is `pyodide/python_stdlib.zip`, and it is
 **harmless**, for a reason worth knowing on its own: the published app does

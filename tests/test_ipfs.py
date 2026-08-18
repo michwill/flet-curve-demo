@@ -1179,3 +1179,84 @@ def test_the_whole_archive_family_is_reported_not_just_zip(tmp_path: Path) -> No
     assert ipfs.refused_by_gateway(root) == [
         "a.zip", "c.tgz", "d.tar", "e.bz2", "f.xz", "g.7z", "h.zst", "i.jar",
     ]
+
+
+# -- half the pin nobody fetches -------------------------------------------
+
+
+def test_a_cdn_build_drops_the_copies_it_will_never_serve(tmp_path: Path) -> None:
+    """38.5 MB of canvaskit and 15.3 of Pyodide, against 108 MB in total,
+    and a real page load requests neither: canvaskit comes from gstatic and
+    Pyodide from jsDelivr."""
+    root = build(
+        tmp_path,
+        {
+            "index.html": "<script>flet.noCdn=false;</script>",
+            "canvaskit/canvaskit.wasm": "x" * 500,
+            "pyodide/pyodide.mjs": "y" * 300,
+            "main.dart.js": "//",
+        },
+    )
+
+    freed = dict(ipfs.drop_cdn_copies(root))
+
+    assert set(freed) == {"canvaskit", "pyodide"}
+    assert not (root / "canvaskit").exists()
+    assert not (root / "pyodide").exists()
+    assert (root / "main.dart.js").exists()
+
+
+def test_a_no_cdn_build_keeps_them_because_it_serves_them(tmp_path: Path) -> None:
+    """`flet publish --no-cdn` is what makes the pin self-contained, and
+    then these directories are the app rather than dead weight. Dropping
+    them on that build is the one way this could break a site, so it is
+    read out of the build rather than assumed."""
+    root = build(
+        tmp_path,
+        {
+            "index.html": "<script>flet.noCdn=true;</script>",
+            "canvaskit/canvaskit.wasm": "x" * 500,
+            "pyodide/pyodide.mjs": "y" * 300,
+        },
+    )
+
+    assert ipfs.drop_cdn_copies(root) == []
+    assert (root / "canvaskit").is_dir()
+    assert (root / "pyodide").is_dir()
+
+
+@pytest.mark.parametrize(
+    "text,is_cdn",
+    [
+        ("flet.noCdn=false;", True),
+        ("flet.noCdn = false;", True),
+        ("flet.noCdn=true;", False),
+        ("flet.noCdn = true ;", False),
+        ("", True),  # Flet's own default
+    ],
+)
+def test_the_cdn_question_is_read_out_of_the_build(tmp_path: Path, text, is_cdn) -> None:
+    index = tmp_path / "index.html"
+    index.write_text(text)
+    assert ipfs.cdn_build(index) is is_cdn
+
+
+def test_a_missing_index_reads_as_a_cdn_build(tmp_path: Path) -> None:
+    """Which is Flet's default, and the reading that deletes rather than
+    keeps -- so it is worth being sure. `main` refuses to publish a build
+    with no index.html long before this is reached."""
+    assert ipfs.cdn_build(tmp_path / "nothing-here.html") is True
+
+
+def test_main_dart_wasm_is_not_treated_as_cdn_served() -> None:
+    """The build ships two targets and a WasmGC browser fetches
+    `main.dart.wasm` from our own origin -- only the skwasm renderer beside
+    it comes from the CDN. It 504'd once, which is what warming is for."""
+    assert not any("wasm" in name for name in ipfs.CDN_SERVED)
+    assert ipfs.CDN_SERVED == ("canvaskit", "pyodide")
+
+
+def test_dropping_is_measured_so_the_run_can_say_what_it_saved(tmp_path: Path) -> None:
+    root = build(tmp_path, {"index.html": "x", "canvaskit/a.wasm": "z" * 1000})
+
+    assert dict(ipfs.drop_cdn_copies(root))["canvaskit"] == 1000

@@ -223,6 +223,35 @@ PACKAGE_TO = "app-package.json"
 #: gzipped tar is reading the file rather than assuming.
 PACKAGE_KEY = "gztar"
 
+#: Directories a CDN serves, so pinning them ships bytes nobody fetches.
+#:
+#: Half the pin. Measured on this build: `canvaskit/` is 38.5 MB and
+#: `pyodide/` is 15.3, against 108 MB in total, and a real page load
+#: requests neither -- 124 requests, canvaskit from gstatic and Pyodide
+#: from jsDelivr.
+#:
+#: This is not read off the network but out of the build, because Flet
+#: decides it and says so. `flutter_bootstrap.js`:
+#:
+#:     if (flet.noCdn) {
+#:         flutterConfig.canvasKitBaseUrl = flet.canvasKitBaseUrl;
+#:         flutterConfig.fontFallbackBaseUrl = flet.fontFallbackBaseUrl;
+#:     }
+#:
+#: With `noCdn` false that branch never runs, so the `canvasKitBaseUrl:
+#: "/canvaskit/"` sitting in `index.html` is inert and Flutter falls
+#: through to gstatic. `flet publish --no-cdn` flips it, and then both
+#: directories *are* fetched from the pin and must stay -- which is why
+#: `cdn_build` asks the build rather than assuming. Publishing self-
+#: contained is a real choice: an app on IPFS that needs gstatic is not
+#: reachable where gstatic is blocked.
+#:
+#: `main.dart.wasm` is deliberately not here. The build ships two targets
+#: and a WasmGC browser takes `{"compileTarget":"dart2wasm",
+#: "mainWasmPath":"main.dart.wasm"}` from *our* origin -- only the skwasm
+#: renderer beside it comes from the CDN.
+CDN_SERVED = ("canvaskit", "pyodide")
+
 #: How a suffix is tested, and why it costs nothing.
 #:
 #: The old answer here was a matrix: five files, 9 MB of them, bolted onto
@@ -362,6 +391,39 @@ def patch_worker(root: Path) -> bool:
         encoding="utf-8",
     )
     return True
+
+
+def cdn_build(index: Path) -> bool:
+    """Does this build load canvaskit and Pyodide from a CDN?
+
+    Read from `index.html`, where `flet publish` writes its answer, rather
+    than assumed: `--no-cdn` produces a build that needs those directories
+    and dropping them would break it. Absent or unreadable reads as CDN,
+    which is Flet's own default.
+    """
+    try:
+        text = index.read_text(errors="ignore")
+    except OSError:
+        return True
+    return "flet.noCdn=true" not in text.replace(" ", "")
+
+
+def drop_cdn_copies(root: Path) -> list[tuple[str, int]]:
+    """Delete the directories a CDN serves. Returns `(name, bytes)` freed.
+
+    Does nothing to a `--no-cdn` build, which fetches them from the pin.
+    """
+    if not cdn_build(root / "index.html"):
+        return []
+    freed = []
+    for name in CDN_SERVED:
+        directory = root / name
+        if not directory.is_dir():
+            continue
+        size = sum(p.stat().st_size for p in directory.rglob("*") if p.is_file())
+        shutil.rmtree(directory)
+        freed.append((name, size))
+    return freed
 
 
 def suffix_served(client, gateway: str, suffix: str) -> bool:
@@ -1053,6 +1115,11 @@ def main() -> int:
     parser.add_argument("--name", default="flet-curve", help="the pin's name")
     parser.add_argument("--timeout", type=float, default=1800.0, help="seconds")
     parser.add_argument(
+        "--keep-cdn-copies",
+        action="store_true",
+        help="pin canvaskit/ and pyodide/ even though a CDN serves them",
+    )
+    parser.add_argument(
         "--probe",
         action="store_true",
         help="ask the gateways which suffixes they refuse, and print the answer. "
@@ -1176,6 +1243,18 @@ def main() -> int:
             f"{subset_icons.FONT_RELATIVE}: {was / 1024:,.0f} KB -> "
             f"{now / 1024:,.0f} KB, {glyphs} glyphs actually drawn"
         )
+    if options.keep_cdn_copies:
+        print("keeping the CDN-served directories, as asked")
+    elif freed := drop_cdn_copies(dist):
+        total = sum(size for _name, size in freed)
+        detail = ", ".join(f"{name}/ {size / 1e6:.1f} MB" for name, size in freed)
+        print(
+            f"dropped {detail} -- {total / 1e6:.0f} MB the CDN serves and "
+            "nothing fetches from the pin"
+        )
+    elif not cdn_build(dist / "index.html"):
+        print("built --no-cdn, so canvaskit/ and pyodide/ stay: this pin serves them")
+
     if wrap_package(dist):
         print(f"{PACKAGE_FROM} -> {PACKAGE_TO}: base64, so no gateway reads it as an archive")
     if patch_worker(dist):

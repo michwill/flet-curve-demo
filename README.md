@@ -335,6 +335,49 @@ only one is about the file. Filed as a refusal it would never be retried,
 and our own request rate would be reported as the gateway declining to serve
 the app.
 
+### Half the pin was never fetched
+
+```
+before   6971 files   108.3 MB
+after    6938 files    54.5 MB     canvaskit/ 38.5 MB, pyodide/ 15.3 MB
+```
+
+Neither is reached from the pin. A real page load makes 124 requests and
+takes canvaskit from **gstatic** and Pyodide from **jsDelivr**. That is not
+read off the network but out of the build, because Flet decides it and
+writes the decision down — `flutter_bootstrap.js`:
+
+```js
+if (flet.noCdn) {
+    flutterConfig.canvasKitBaseUrl = flet.canvasKitBaseUrl;
+    flutterConfig.fontFallbackBaseUrl = flet.fontFallbackBaseUrl;
+}
+```
+
+With `noCdn` false that branch never runs, so the `canvasKitBaseUrl:
+"/canvaskit/"` sitting in `index.html` is inert and Flutter falls through
+to the CDN. Halving the pin halves propagation, verification, warming, and
+the surface on which a cold block can fail.
+
+**`flet publish --no-cdn` reverses it**, and `cdn_build` asks the build
+rather than assuming, so a self-contained publish keeps both directories
+automatically. That is a real choice rather than a fallback: an app on IPFS
+that needs gstatic is not reachable where gstatic is blocked. Right now the
+pin has neither property — 54 MB pinned that nothing can reach for.
+`--keep-cdn-copies` forces the old behaviour.
+
+**`main.dart.wasm` stays**, which is the one that looks droppable and is
+not. The build ships two targets:
+
+```json
+{"compileTarget":"dart2wasm","renderer":"skwasm","mainWasmPath":"main.dart.wasm"},
+{"compileTarget":"dart2js","renderer":"canvaskit","mainJsPath":"main.dart.js"}
+```
+
+A WasmGC-capable browser takes the first and fetches that 8.4 MB from *our*
+origin; only the skwasm renderer beside it comes from the CDN. It answered
+504 once during this work, which is exactly what the warmer is for.
+
 ### What an IPFS gateway will not serve
 
 Archives, broadly — not an eth.limo quirk; gateways decline them generally,

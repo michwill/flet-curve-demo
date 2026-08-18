@@ -39,6 +39,9 @@ def options(**kw):
         "chains": [],
         "boot_only": False,
         "marks_only": False,
+        "chunk": warm.CHUNK,
+        "deadline": warm.WARM_DEADLINE,
+        "show": 20,
     }
     base.update(kw)
     return type("Options", (), base)()
@@ -232,3 +235,107 @@ def test_an_interrupt_is_a_supported_way_to_leave(monkeypatch, tmp_path: Path, c
 
     assert warm.main() == 130
     assert "stays warm" in capsys.readouterr().out
+
+
+# -- reporting while it works ----------------------------------------------
+
+
+def test_progress_is_reported_while_it_works_not_at_the_end(monkeypatch, capsys) -> None:
+    """The bug this cadence exists for. `verify` reports once per pass,
+    which is right for the 77-file boot set at forty-five seconds a pass
+    and wrong for 3,435 files at thirty-four minutes: the first version
+    printed its header and then nothing for half an hour, which is
+    indistinguishable from a hang and was reported as one.
+    """
+    monkeypatch.setattr(warm, "verify", lambda _c, _p, **_k: {})
+    paths = [f"f{i}.png" for i in range(200)]
+
+    warm.warm_one("https://x", paths, options(chunk=64))
+
+    bars = [line for line in capsys.readouterr().out.splitlines() if "retrievable" in line]
+    assert len(bars) >= 4  # 200 files in batches of 64, not one line at the end
+
+
+def test_the_batches_cover_every_file_exactly_once() -> None:
+    assert warm.batched([1, 2, 3, 4, 5], 2) == [[1, 2], [3, 4], [5]]
+    assert warm.batched([], 64) == []
+    assert sum(len(b) for b in warm.batched(list(range(3435)), 64)) == 3435
+
+
+def test_every_batch_is_asked_for(monkeypatch) -> None:
+    """Batching is a reporting change, not a sampling one."""
+    asked: list[str] = []
+
+    def fake_verify(_cid, paths, **_kw):
+        asked.extend(paths)
+        return {}
+
+    monkeypatch.setattr(warm, "verify", fake_verify)
+    paths = [f"f{i}.png" for i in range(150)]
+
+    warm.warm_one("https://x", paths, options(chunk=64))
+
+    assert asked == paths
+
+
+def test_one_unfindable_file_does_not_hold_up_the_rest(monkeypatch) -> None:
+    """A batch retries on its own budget, not the run's. Otherwise a single
+    block nobody can find keeps three thousand warm ones waiting behind
+    it for the whole deadline."""
+    seen: list[float] = []
+
+    def fake_verify(_cid, _paths, **kw):
+        seen.append(kw["deadline"])
+        return {}
+
+    monkeypatch.setattr(warm, "verify", fake_verify)
+    warm.warm_one("https://x", ["a", "b"], options(chunk=1, deadline=7200.0))
+
+    assert seen == [warm.CHUNK_DEADLINE, warm.CHUNK_DEADLINE]
+    assert warm.CHUNK_DEADLINE < 7200.0
+
+
+def test_the_run_stops_at_its_own_deadline(monkeypatch, capsys) -> None:
+    """Otherwise a job meant to run between publishes runs into the next."""
+    clock = iter([0.0, 0.0, 10_000.0, 10_000.0, 10_000.0])
+    monkeypatch.setattr(warm.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(warm, "verify", lambda _c, _p, **_k: {})
+
+    warm.warm_one("https://x", ["a", "b", "c", "d"], options(chunk=2, deadline=60.0))
+
+    assert "not reached" in capsys.readouterr().out
+
+
+def test_the_estimate_is_offered_before_the_wait_not_after(monkeypatch, tmp_path, capsys) -> None:
+    """Two workers is deliberate and the rate is what it is; saying so up
+    front is the difference between a long job and a broken-looking one."""
+    root = build(tmp_path)
+    monkeypatch.setattr("sys.argv", ["warm_ipfs.py", "--dist", str(root), "--boot-only"])
+    monkeypatch.setattr(warm, "verify", lambda _c, _p, **_k: {})
+
+    warm.main()
+
+    assert "expect roughly" in capsys.readouterr().out
+
+
+def test_the_estimate_is_a_range_because_cold_is_four_times_slower() -> None:
+    """Measured, both through eth.limo: the boot set warmed four days
+    earlier ran at 1.7 files a second, and marks nothing had ever fetched
+    at 0.46. Quoting only the fast end is how a four-hour job gets
+    reported as a hang."""
+    text = warm.estimate_text(3435 * 2)
+
+    assert "67-249 minutes" in text
+    fast, slow = warm.FILES_PER_SECOND
+    assert fast > slow
+
+
+def test_a_short_run_is_not_given_a_solemn_range() -> None:
+    assert warm.estimate_text(50) == "under two minutes"
+
+
+def test_no_time_left_is_no_estimate() -> None:
+    """A finished run does not advertise how long it has to go."""
+    assert warm.remaining_text(0, 100, 10.0) == ""
+    assert warm.remaining_text(100, 100, 10.0) == ""
+    assert "left" in warm.remaining_text(50, 100, 60.0)

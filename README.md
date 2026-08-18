@@ -266,6 +266,26 @@ non-zero exit means something is still cold, so a scheduled run can be
 noticed when it stops being enough — except for a 404, which means `dist/`
 has drifted from what is pinned and you are warming the wrong list.
 
+**A full run takes hours, and it says so before you wait.** Two workers is
+deliberate — eight earned a run of 503s from eth.limo's rate limiter — so
+the throughput is what it is, and the two ends of it are four times apart:
+
+```
+1.70 files/s   the boot set, warmed at publish four days earlier
+0.46 files/s   token marks nothing had ever fetched
+```
+
+A cold block costs seventeen seconds and a warm one costs half of one, so
+the first full pass over 3,435 files on both gateways is around four hours
+and a later one is around an hour. It reports every 64 files rather than
+once per pass: a pass over the 77-file boot set is 45 seconds and reporting
+per pass is right, while a pass over 3,435 files is **34 minutes** of an
+apparently frozen terminal, which is how the first version of this got
+reported as a hang.
+
+`--deadline` bounds each gateway rather than the run, and says how many
+files it did not reach.
+
 **A slow failure and a fast one are different diseases**, and the report
 separates them, because only one of them is about time:
 

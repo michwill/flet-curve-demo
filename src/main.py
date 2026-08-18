@@ -1144,7 +1144,27 @@ class CurveApp:
         wanted = MARK_SIZE * pixel_ratio()
         # Every network's mark in one file, fetched once for the session --
         # `load_bundle` remembers it, so a chain switch does not re-ask.
-        await load_bundle(CHAINS, wanted, http.get_bytes)
+        if await load_bundle(CHAINS, wanted, http.get_bytes):
+            # **And then the picker is built again**, which is the half
+            # that was missing and the whole reason a network logo could
+            # still go blank after the marks were bundled.
+            #
+            # The picker exists before this coroutine does: its options
+            # are built in `__init__` and again by `_sync_chain_options`
+            # the moment the API names its chains, which is one request
+            # racing the two this makes. When the API wins -- it usually
+            # does, being one small JSON against 118 KB of art -- every
+            # option is built while the bundle is not yet in hand, so
+            # each of the forty asks for its own file. Those files are
+            # cold: `tools/warm_ipfs.py` warms the bundle, and nothing
+            # warms `curve/chains/*.png`. One of forty cold blocks
+            # missing its retrieval budget is a 504 and a missing logo,
+            # which is exactly what the open menu showed.
+            #
+            # Rebuilding costs one control tree and no requests, and
+            # every mark in it now comes out of the bytes just fetched.
+            self._sync_chain_picker()
+            safe_update(self.chain_picker)
         count = await load_bundle(token_bundle(self.chain), wanted, http.get_bytes)
         if count:
             print(f"marks: {count} for {self.chain} in one request")

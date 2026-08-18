@@ -753,6 +753,14 @@ def make_bundle(marks: dict) -> tuple[bytes, dict]:
     return bytes(blob), index
 
 
+def remember_bundle_at(directory: str, tier: int, blob: bytes, index: dict) -> int:
+    """`remember_bundle`, imported where it is used rather than at the top:
+    this file loads `ui.assets` lazily inside each test."""
+    from ui.assets import remember_bundle
+
+    return remember_bundle(directory, tier, blob, index)
+
+
 PNG_A = b"\x89PNG" + b"aaaa"
 PNG_B = b"\x89PNG" + b"bbbbbb"
 
@@ -1135,3 +1143,58 @@ def test_a_network_mark_from_the_bundle_needs_no_retry() -> None:
 
     assert mark.src == PNG_A
     assert isinstance(mark.src, bytes)
+
+
+def test_a_bundle_is_read_at_the_tier_it_was_fetched_at() -> None:
+    """One directory is fetched at one tier and read at several, and this
+    is the gap that let a network logo go missing after the marks were
+    bundled.
+
+    `_load_marks` picks the tier from `MARK_SIZE` -- 27, a coin in the
+    list -- and the picker reads the same store for a mark drawn at 18.
+    At a device pixel ratio of 2 that is tier 80 written and tier 40
+    asked for: an exact lookup misses, every network falls back to its
+    own unwarmed file, and one cold block is a blank circle in the open
+    menu. A ratio of 1 or 3 happens to agree, which is what made it look
+    like weather.
+    """
+    from ui.assets import CHAINS, bundle_tier, bundled_chain
+    from ui.logos import MARK_SIZE, chain_mark, set_pixel_ratio
+
+    set_pixel_ratio(2.0)
+    try:
+        blob, index = make_bundle({"ethereum": PNG_A})
+        fetched = bundle_tier(MARK_SIZE * 2.0)
+        remember_bundle_at(CHAINS, fetched, blob, index)
+
+        assert bundle_tier(18 * 2.0) != fetched, "the sizes must disagree"
+        assert bundled_chain("ethereum", 18 * 2.0) == PNG_A
+        assert chain_mark("ethereum", 18).src == PNG_A
+    finally:
+        set_pixel_ratio(2.0)
+
+
+def test_a_mark_wanted_larger_than_anything_fetched_uses_the_largest() -> None:
+    """The picker's own field asks for the top tier, because a decoration
+    box stretches it. Art in hand beats a request every time -- see
+    `chain_mark`'s `sized_by_parent`."""
+    from ui.assets import CHAINS, bundled_chain
+
+    blob, index = make_bundle({"ethereum": PNG_A})
+    remember_bundle_at(CHAINS, 40, blob, index)
+
+    assert bundled_chain("ethereum", 400) == PNG_A
+
+
+def test_a_tier_that_covers_it_is_preferred_to_a_larger_one() -> None:
+    """Rounding up is still rounding up: the smallest fetched tier that
+    covers the mark, so the renderer is left the reduction it does well."""
+    from ui.assets import CHAINS, bundled_chain
+
+    small, small_index = make_bundle({"ethereum": PNG_A})
+    large, large_index = make_bundle({"ethereum": PNG_B})
+    remember_bundle_at(CHAINS, 40, small, small_index)
+    remember_bundle_at(CHAINS, 80, large, large_index)
+
+    assert bundled_chain("ethereum", 30) == PNG_A
+    assert bundled_chain("ethereum", 70) == PNG_B

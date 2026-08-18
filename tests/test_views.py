@@ -21,6 +21,7 @@ Python-side control tree.
 from __future__ import annotations
 
 import asyncio
+import json
 from types import SimpleNamespace
 
 import flet as ft
@@ -1997,6 +1998,77 @@ def test_a_laptop_header_keeps_them() -> None:
     assert app.chain_picker.border == ft.InputBorder.OUTLINE
     assert app.theme_button.visible
     assert not app.menu.visible
+
+
+def _picker_marks(app) -> list:
+    """What every option in the open menu draws its logo from."""
+    found = []
+    for option in app.chain_picker.options:
+        content = option.content
+        if isinstance(content, ft.Row):
+            found += [c.src for c in content.controls if isinstance(c, ft.Image)]
+    return found
+
+
+async def test_the_picker_is_built_again_once_the_network_marks_arrive(
+    monkeypatch,
+) -> None:
+    """Otherwise the bundle it fetches is never the one it draws.
+
+    The picker's options are built before `_load_marks` can finish -- in
+    `__init__`, and again the moment the API names its chains, which is
+    one small request racing the two the bundle needs. Whichever wins,
+    the options built first ask for forty individual files, and those are
+    exactly the ones nothing warms: one cold block, one 504, one blank
+    network logo in the open menu. Reported from a published build.
+    """
+    import main as app_module
+    from ui.assets import CHAINS, bundle_url, forget_bundles
+
+    forget_bundles()
+    app = header_app(LAPTOP)
+    before = _picker_marks(app)
+    assert before and all(isinstance(src, str) for src in before), (
+        "the picker should start on the files, having no bundle yet"
+    )
+
+    blob, index = _chain_bundle(["ethereum", "arbitrum", "base",
+                                 "optimism", "polygon", "fraxtal"])
+
+    async def served(url: str) -> bytes:
+        if url == bundle_url(CHAINS, 80, ".bin"):
+            return blob
+        if url == bundle_url(CHAINS, 80, ".json"):
+            return json.dumps(index).encode()
+        raise OSError("cold")
+
+    monkeypatch.setattr(app_module.http, "is_browser", lambda: True)
+    monkeypatch.setattr(app_module.http, "get_bytes", served)
+    try:
+        await app._load_marks()
+        await app._marks_rest
+
+        after = _picker_marks(app)
+        assert after and all(isinstance(src, bytes) for src in after), (
+            "every network's logo should now come out of the bundle"
+        )
+        assert isinstance(app.chain_picker.leading_icon.content.src, bytes), (
+            "including the selected one, which the field draws"
+        )
+    finally:
+        forget_bundles()
+
+
+def _chain_bundle(names: list[str]) -> tuple[bytes, dict]:
+    """The `chains` bundle as `build_assets` writes it: the PNGs end to
+    end, keyed by network name rather than by token address."""
+    blob, index, at = bytearray(), {}, 0
+    for name in names:
+        data = b"\x89PNG" + name.encode()
+        index[name] = (at, len(data))
+        blob += data
+        at += len(data)
+    return bytes(blob), index
 
 
 def test_every_theme_in_the_menu_carries_its_own_face() -> None:

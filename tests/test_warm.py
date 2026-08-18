@@ -449,3 +449,62 @@ def test_a_chain_with_no_tail_is_not_asked_for_one(tmp_path: Path) -> None:
         "curve/tokens/xdai/marks@80.bin",
         "curve/tokens/xdai/marks@80.json",
     ]
+
+
+def with_chain_marks(root: Path, names: list[str]) -> Path:
+    """The network marks as `build_assets` writes them: one file per
+    network per tier, beside the bundle they are the fallback for."""
+    directory = root / "curve" / "chains"
+    directory.mkdir(parents=True, exist_ok=True)
+    for name in names:
+        for tier in (20, 40, 80, 160):
+            (directory / f"{name}@{tier}.png").write_bytes(b"\x89PNG")
+    for tier in (40, 80):
+        (directory / f"marks@{tier}.bin").write_bytes(b"\x89PNG")
+        (directory / f"marks@{tier}.json").write_text("{}")
+    return root
+
+
+def test_the_network_marks_are_warmed_at_every_tier(tmp_path: Path) -> None:
+    """Not just the two `DEFAULT_TIERS` picks, because the fallback here
+    is on the path of every visit: the picker's field is built before any
+    bundle exists and asks for the *top* tier, and its menu asks for
+    whichever tier the screen's ratio lands on."""
+    root = with_chain_marks(build(tmp_path), ["ethereum", "xdai"])
+
+    assert warm.chain_files(root) == [
+        "curve/chains/ethereum@160.png",
+        "curve/chains/ethereum@20.png",
+        "curve/chains/ethereum@40.png",
+        "curve/chains/ethereum@80.png",
+        "curve/chains/xdai@160.png",
+        "curve/chains/xdai@20.png",
+        "curve/chains/xdai@40.png",
+        "curve/chains/xdai@80.png",
+    ]
+
+
+def test_the_network_marks_are_warmed_without_being_asked_for(tmp_path: Path) -> None:
+    """Unlike the 3,358 token marks behind `--all-marks`. 160 files for
+    the one family that appears on every screen, and the family a blank
+    circle in the network menu was traced to."""
+    root = with_chain_marks(build(tmp_path), ["ethereum"])
+
+    paths = warm.plan(root, options())
+
+    assert "curve/chains/ethereum@160.png" in paths
+    assert "curve/chains/marks@80.bin" in paths
+    # Bundles still lead: they are what a browser actually fetches.
+    assert paths.index("curve/chains/marks@80.bin") < paths.index(
+        "curve/chains/ethereum@160.png"
+    )
+
+
+def test_naming_chains_still_means_those_chains_marks(tmp_path: Path) -> None:
+    """`--chains xdai` is a way to warm one network's coins, and pulling
+    every network's own logo in on top of that would ignore it."""
+    root = with_chain_marks(build(tmp_path, {"xdai": ["marks@80.bin"]}), ["ethereum"])
+
+    paths = warm.plan(root, options(chains=["xdai"]))
+
+    assert paths == ["curve/tokens/xdai/marks@80.bin"]

@@ -163,16 +163,19 @@ def bundle_files(root: Path, tiers: tuple[int, ...], chains: list[str]) -> list[
     when asked for; there are 3,358 of them against 136 of these.
     """
     base = root.joinpath(*MARKS_DIR)
-    if not base.is_dir():
-        return []
     found = []
     # The network marks ride in one bundle of their own beside the coins',
     # in `curve/chains/`. Every page draws one and the picker draws all of
-    # them, so leaving it cold is a missing logo on every screen.
+    # them, so leaving it cold is a missing logo on every screen -- which
+    # is why it is listed before the coins are looked for rather than
+    # inside a walk of `tokens/` that a build without one leaves empty.
     directories = [root / MARKS_DIR[0] / "chains"] if not chains else []
-    directories += [p for p in sorted(base.iterdir()) if p.is_dir()]
+    if base.is_dir():
+        directories += [p for p in sorted(base.iterdir()) if p.is_dir()]
     for chain in directories:
         if chains and chain.name not in chains:
+            continue
+        if not chain.is_dir():
             continue
         for tier in tiers:
             # Both halves of a split chain. The `-rest` pair only exists
@@ -185,6 +188,31 @@ def bundle_files(root: Path, tiers: tuple[int, ...], chains: list[str]) -> list[
                     if path.is_file():
                         found.append(path.relative_to(root).as_posix())
     return found
+
+
+def chain_files(root: Path) -> list[str]:
+    """Every network mark's own file, at every tier.
+
+    Warmed by default, unlike the token marks, and at every size rather
+    than the two `DEFAULT_TIERS` picks. Both of those are about the one
+    mark this app draws before it has fetched anything: the picker's
+    `leading_icon` is built in `CurveApp.__init__`, long before the
+    `chains` bundle exists, and it asks for the **top** tier because a
+    decoration box stretches it -- see `chain_mark`'s `sized_by_parent`.
+    So the fallback here is not a rainy-day path, it is what every visit
+    touches for a moment, and `mark_tier` can land it on any of the four.
+
+    The whole family is 160 files and 444 KB, against 3,358 token marks
+    and 10.9 MB. There is no version of this worth being clever about.
+    """
+    base = root / MARKS_DIR[0] / "chains"
+    if not base.is_dir():
+        return []
+    return [
+        path.relative_to(root).as_posix()
+        for path in sorted(base.iterdir())
+        if path.suffix == ".png"
+    ]
 
 
 def plan(root: Path, options) -> list[str]:
@@ -214,8 +242,12 @@ def plan(root: Path, options) -> list[str]:
     # Bundles first: they are what a visitor fetches, and there are 136 of
     # them against 3,358 individual marks. The marks are the fallback for a
     # bundle that will not load and for the tiers that have none, so they
-    # are worth warming eventually and not worth warming first.
+    # are worth warming eventually and not worth warming first -- with the
+    # network marks the exception, because that fallback is on the path of
+    # every visit. See `chain_files`.
     paths += bundle_files(root, options.tiers, options.chains)
+    if not options.chains:
+        paths += chain_files(root)
     if options.all_marks:
         paths += mark_files(root, options.tiers, options.chains)
     return paths

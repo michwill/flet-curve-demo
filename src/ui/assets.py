@@ -346,13 +346,46 @@ def bundled_chain(name: str, device_pixels: float) -> bytes | None:
     return _bundled(CHAINS, name, device_pixels)
 
 
+def _held(directory: str, tier: int) -> dict[str, bytes] | None:
+    """The bundle to serve this tier from, out of what was actually fetched.
+
+    Not `_BUNDLES[(directory, tier)]`, and the difference is a bug that
+    survived the bundles being right. **One directory is fetched at one
+    tier and read at several.** `CurveApp._load_marks` picks the tier from
+    `MARK_SIZE`, the 27px a coin is drawn at in the list, because that is
+    what the fetch is mostly for -- but the network marks come out of the
+    same store at 18px, and the picker's own field asks for the top tier
+    because a decoration box stretches it.
+
+    At a device pixel ratio of 1.5 or 2 those disagree: 27x2 rounds up to
+    tier 80 and 18x2 rounds up to tier 40, so every network logo in the
+    open menu asked a store that held nothing under that key, missed, and
+    fell back to its own file -- cold, unwarmed, and a 504 away from a
+    blank circle in the one list whose job is choosing a network. Ratios
+    of 1, 2.25 and 3 happen to agree, which is why this looked like an
+    intermittent gateway fault rather than a lookup that could not hit.
+
+    So: the smallest fetched tier that still covers what is wanted, and
+    the largest fetched one when none does. Both are art in hand, and the
+    worst case is a reduction slightly past 2:1 rather than a request.
+    """
+    loaded = sorted(
+        held for (held_directory, held) in _BUNDLES if held_directory == directory
+    )
+    if not loaded:
+        return None
+    covering = [held for held in loaded if held >= tier]
+    return _BUNDLES[(directory, covering[0] if covering else loaded[-1])]
+
+
 def _bundled(directory: str, name: str, device_pixels: float) -> bytes | None:
     if not directory or not name:
         return None
-    # `bundle_tier`, the same call the loader made -- an exact `mark_tier`
-    # here would miss the bundle it just fetched on any screen whose ideal
-    # tier is not bundled.
-    marks = _BUNDLES.get((directory, bundle_tier(device_pixels)))
+    # `bundle_tier`, not `mark_tier`: an exact size here would ask for a
+    # tier no build bundles. And `_held` rather than the store directly,
+    # because asking for the right tier is not the same as it being the
+    # one that was fetched.
+    marks = _held(directory, bundle_tier(device_pixels))
     return marks.get(name.strip().lower()) if marks else None
 
 

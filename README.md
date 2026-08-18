@@ -243,6 +243,12 @@ per chain now, so that pair is what needs to be warm — 136 files and 11 MB,
 against 3,358 marks and 22 MB behind them. The loose files stay reachable as
 the fallback and `--all-marks` warms those too, eventually rather than first.
 
+**With the network marks the exception**, at every tier and without being
+asked. Their fallback is not a rainy-day path: the picker's field is built
+in `CurveApp.__init__`, before any bundle can exist, and it asks for the top
+tier because a decoration box stretches it. 160 files and 444 KB, for the
+one family that appears on every screen.
+
 **The marks are the default and the boot set is not**, which is a decision
 about bytes rather than taste:
 
@@ -366,6 +372,13 @@ and 444 KB down to two, 115 KB at tier 80. Same machinery, no ranking and no
 split — the picker draws all 34 the moment it opens, and one file that size
 is not worth two requests.
 
+**And the picker is built again once it lands.** Its options are built in
+`__init__` and again the moment the API names its chains, which is one small
+request racing the two the bundle needs; whichever wins, the options built
+first hold URLs and keep them for the session. Rebuilding costs one control
+tree and no requests, and it is the difference between fetching the bundle
+and drawing it.
+
 **Ethereum ships two bundles**, because one of them was the first paint. It
 has 627 marks where the next largest chain has 151, and nothing drew until
 all 2,852 KB had landed:
@@ -388,8 +401,8 @@ The fetch 404s, every mark drops back to its own file, and one cold block is
 a missing logo: which is exactly how a USDC icon went missing on Gnosis on a
 phone while the desktop beside it was fine.
 
-`bundle_tier` clamps to the largest tier that exists, and both the fetch and
-the lookup go through it so they cannot disagree:
+`bundle_tier` clamps to the largest tier that exists, so a fetch always asks
+for a bundle that is there:
 
 ```
 ratio   device px   wants   gets
@@ -402,6 +415,21 @@ ratio   device px   wants   gets
 At 3× — most phones — tier 80 art on 81 device pixels is essentially 1:1. A
 true 4× screen is softer than ideal and far better than an absent logo.
 Bundling 160 as well would serve both exactly and cost 19.1 MB of pin.
+
+**Going through the same function is not the same as agreeing**, which is
+the next form the same bug took. One directory is fetched at one tier and
+read at several: the fetch picks its tier from `MARK_SIZE`, the 27px a coin
+is drawn at in the list, while the network marks come out of that store at
+18px and the picker's own field asks for the top tier because a decoration
+box stretches it. At a ratio of 1.5 or 2 those round to different tiers — 80
+written, 40 asked for — so an exact lookup missed, every network logo fell
+back to its own unwarmed file, and one cold block was a blank circle in the
+open menu. Ratios of 1, 2.25 and 3 happen to agree, which is what made it
+look like weather.
+
+So a mark is served from the smallest tier *that was actually fetched* and
+still covers it, and from the largest fetched one when none does. Art in
+hand beats a request, and the worst case is a reduction slightly past 2:1.
 
 **Only tiers 40 and 80 are bundled**, and that is the whole design tension: a
 bundle is a second copy, so bundling all four would double 31.4 MB of marks

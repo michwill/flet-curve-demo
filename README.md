@@ -223,6 +223,49 @@ runs several edges, so a visitor arriving tomorrow on a cold one gets the
 same coin flip. The durable fix is more peers that can answer — your own
 node, or a second pinning service.
 
+### Warming again, later
+
+Warming *decays*, and that is measured rather than feared: `main.dart.wasm`
+is in the boot set and was warmed on the 15th, and on the 18th eth.limo
+answered 504 for it after seventeen seconds. So there is a second script
+that does nothing but warm, safe to run at any time and as often as
+patience allows, because it only asks for files that are already published:
+
+```
+python tools/warm_ipfs.py                 # boot set + token marks, both gateways
+python tools/warm_ipfs.py --marks-only    # just the logos
+python tools/warm_ipfs.py --tiers all     # every compiled size
+python tools/warm_ipfs.py --chains xdai   # one chain's marks
+```
+
+It differs from `publish_ipfs --warm` in two ways, both deliberate.
+
+**Both gateways.** `eth.limo` and `eth.link` are separate infrastructure
+with separate caches behind one name, and a visitor does not choose between
+them, so warming one leaves half the audience where it started. Measured on
+the boot set, they fail and recover independently:
+
+```
+https://curve.eth.limo: 77 files       https://curve.eth.link: 77 files
+  76/77 retrievable   0m45s              76/77 retrievable   0m35s
+  77/77 retrievable   1m16s              76/77 retrievable   1m17s
+                                         77/77 retrievable   1m40s
+```
+
+**The token marks**, which publishing deliberately skips. `LAZY_DIR` is
+right that 6,716 files is an imposition to check on *every publish* — but
+that reasoning is about publishing, and a job that runs occasionally can
+afford what a deploy-time check cannot. Those files are also the ones
+nothing had ever warmed, which is why a missing coin logo was the most
+visible form this bug took. Marks are asked for at the two tiers real
+screens land on (see `MARK_TIERS`); `--tiers all` does the other two.
+
+The boot set goes first, so a run stopped after ten minutes has bought the
+files that decide whether the site loads rather than a scatter of logos. A
+non-zero exit means something is still cold, so a scheduled run can be
+noticed when it stops being enough — except for a 404, which means `dist/`
+has drifted from what is pinned and you are warming the wrong list.
+
 **A slow failure and a fast one are different diseases**, and the report
 separates them, because only one of them is about time:
 

@@ -291,13 +291,35 @@ a confident lie about the other. So the line shows throughput and a
 remaining time drawn from it, and both self-correct:
 
 ```
-https://curve.eth.limo: 3358 files, 10.9 MB, 2 at a time
-  [####------------------------]   512/3358 retrievable   3m20s   84 KB/s  ~14m left
+https://curve.eth.limo: 3358 files, 10.9 MB, 8 at a time
+  [####------------------------]   512/3358 retrievable   3m20s  4.5 files/s  15 KB/s  ~10m left
 ```
 
-Two workers is deliberate — eight earned a run of 503s from eth.limo's rate
-limiter. `--deadline` bounds each gateway rather than the whole run, and
-says how many files it did not reach.
+**Files a second leads, and that is not cosmetic.** A mark is 3.2 KB and
+its transfer takes 0.0001s against a 0.6s time-to-first-byte — the whole
+cost is the gateway's lookup, so you would need 308 files a second to show
+1 MB/s. A perfectly healthy run reported only in bytes advertised
+"8 KB/s", which reads as a broken connection.
+
+**The marks get eight workers, the boot set two.** Two was measured pulling
+multi-megabyte boot files, where eight at once earned a run of 503s. A 3.2
+KB mark is a different load, so it was re-measured — three disjoint slices
+of forty cold marks, one per setting:
+
+```
+2 workers   0.59 files/s   67.9s   throttled 0
+4 workers   0.71 files/s   56.3s   throttled 0
+8 workers   1.11 files/s   35.9s   throttled 0
+```
+
+Nothing was throttled at any of them, and eight is nearly twice as fast. It
+scales less than linearly because a fifth of cold marks answer 504 after
+seventeen seconds whatever the concurrency — that is the block not being
+found, and asking harder does not find it. `--workers` overrides either
+default.
+
+`--deadline` bounds each gateway rather than the whole run, and says how
+many files it did not reach.
 
 **A slow failure and a fast one are different diseases**, and the report
 separates them, because only one of them is about time:

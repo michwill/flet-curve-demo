@@ -41,6 +41,7 @@ def options(**kw):
         "boot": False,
         "dist": Path("."),
         "chunk": warm.CHUNK,
+        "workers": warm.MARK_WORKERS,
         "deadline": warm.WARM_DEADLINE,
         "show": 20,
     }
@@ -171,7 +172,7 @@ def test_it_pulls_whole_files_rather_than_sampling(monkeypatch) -> None:
     warm.warm_one("https://curve.eth.limo", ["index.html"], options(deadline=1, show=5))
 
     assert seen["whole"] is True
-    assert seen["workers"] == ipfs.WARM_WORKERS == 2
+    assert seen["workers"] == warm.MARK_WORKERS
     assert seen["gateway"] == "https://curve.eth.limo"
 
 
@@ -336,12 +337,50 @@ def test_the_rate_is_measured_rather_than_predicted() -> None:
     """Two readings of the same gateway hours apart came in at 686 KB/s and
     2 KB/s. A prediction from either would be a confident lie about the
     other, so nothing is predicted -- it reports what it is achieving."""
-    assert warm.rate_text(0, 100, 5.0) == ""
-    assert warm.rate_text(100, 100, 0.0) == ""
+    assert warm.rate_text(0, 100, 0, 5.0) == ""
+    assert warm.rate_text(100, 100, 1000, 0.0) == ""
 
-    text = warm.rate_text(1024 * 60, 1024 * 120, 60.0)
+    assert "left" in warm.rate_text(50, 100, 1024 * 50, 60.0)
 
-    assert "1 KB/s" in text and "left" in text
+
+def test_files_a_second_leads_because_the_byte_rate_is_meaningless() -> None:
+    """A mark is 3.2 KB and its transfer takes 0.0001s against a 0.6s
+    time-to-first-byte, so the cost is all lookup: you would need 308
+    files a second to show 1 MB/s. Reporting KB/s alone produced a healthy
+    run advertising "8 KB/s", which reads as a broken connection."""
+    text = warm.rate_text(128, 3358, 8 * 1024 * 54, 54.0)
+
+    assert text.index("files/s") < text.index("KB/s")
+    assert "2.4 files/s" in text
+
+
+def test_the_marks_get_more_workers_than_the_boot_set(monkeypatch, tmp_path) -> None:
+    """Measured rather than inherited: three disjoint slices of forty cold
+    marks ran at 0.59, 0.71 and 1.11 files/s on 2, 4 and 8 workers, and
+    nothing was throttled at any of them. The two-worker limit was earned
+    pulling multi-megabyte boot files, which is a different load."""
+    root = build(tmp_path, {"xdai": ["0xaa@80.png"]})
+    seen = {}
+    monkeypatch.setattr(warm, "verify", lambda _c, _p, **kw: seen.update(kw) or {})
+
+    monkeypatch.setattr("sys.argv", ["warm_ipfs.py", "--dist", str(root)])
+    warm.main()
+    assert seen["workers"] == warm.MARK_WORKERS == 8
+
+    monkeypatch.setattr("sys.argv", ["warm_ipfs.py", "--dist", str(root), "--boot"])
+    warm.main()
+    assert seen["workers"] == ipfs.WARM_WORKERS == 2
+
+
+def test_the_worker_count_can_be_overridden(monkeypatch, tmp_path) -> None:
+    root = build(tmp_path, {"xdai": ["0xaa@80.png"]})
+    seen = {}
+    monkeypatch.setattr(warm, "verify", lambda _c, _p, **kw: seen.update(kw) or {})
+    monkeypatch.setattr("sys.argv", ["warm_ipfs.py", "--dist", str(root), "--workers", "3"])
+
+    warm.main()
+
+    assert seen["workers"] == 3
 
 
 def test_the_weight_is_what_the_run_will_actually_pull(tmp_path: Path) -> None:

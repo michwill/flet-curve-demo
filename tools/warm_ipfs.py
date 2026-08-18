@@ -85,6 +85,27 @@ DEFAULT_TIERS = (40, 80)
 #: of a slow round is that it is still going.
 WARM_DEADLINE = 7200.0
 
+#: Workers for the marks, against `publish_ipfs`'s two.
+#:
+#: Two is right where it was measured -- eight parallel pulls of
+#: multi-megabyte boot files earned a run of 503s from eth.limo's rate
+#: limiter. A mark is 3.2 KB, which is a different kind of load entirely,
+#: and the number is worth re-measuring rather than inheriting. Three
+#: disjoint slices of forty cold marks, one per setting:
+#:
+#:     2 workers   0.59 files/s   67.9s   throttled 0
+#:     4 workers   0.71 files/s   56.3s   throttled 0
+#:     8 workers   1.11 files/s   35.9s   throttled 0
+#:
+#: Nothing was throttled at any of them, and eight is nearly twice as fast.
+#: It scales less than linearly because a fifth of cold marks answer 504
+#: after seventeen seconds whatever the concurrency -- that is the block
+#: not being found, and no amount of asking at once fixes it.
+#:
+#: The boot set keeps two, because that is where the 503s were earned and
+#: nothing here re-measured it.
+MARK_WORKERS = 8
+
 #: How many files to ask for between progress lines.
 #:
 #: `verify` reports once per *pass*, which is the right grain when the pass
@@ -189,20 +210,27 @@ def weight(root: Path, paths: list[str]) -> int:
     return sum((root / p).stat().st_size for p in paths if (root / p).exists())
 
 
-def rate_text(done_bytes: int, total_bytes: int, elapsed: float) -> str:
+def rate_text(done: int, total: int, done_bytes: int, elapsed: float) -> str:
     """Throughput so far and what is left of it, measured not predicted.
 
-    No estimate is printed before a run any more. Two measurements of the
-    same gateway, hours apart, came in at 686 KB/s and 2 KB/s -- a spread
-    of three hundred times -- and a prediction drawn from either would be
-    a confident lie about the other. What it can honestly say is how fast
-    it is going *now*, which self-corrects.
+    **Files a second first, bytes second**, because for the marks the byte
+    rate is meaningless and alarming: a mark is 3.2 KB and the transfer
+    takes 0.0001s against a 0.6s time-to-first-byte, so the whole cost is
+    the gateway's lookup and you would need 308 files a second to show
+    1 MB/s. Reporting only KB/s produced a reasonable-looking run
+    advertising "8 KB/s", which reads as a broken connection.
+
+    Nothing is predicted before a run. Two readings of the same gateway
+    hours apart came in at 686 KB/s and 2 KB/s -- three hundred times
+    apart -- so it reports what it is achieving, which self-corrects.
     """
-    if elapsed <= 0 or not done_bytes:
+    if elapsed <= 0 or not done:
         return ""
-    rate = done_bytes / elapsed
-    left = (total_bytes - done_bytes) / rate if rate else 0
-    return f"  {rate / 1024:,.0f} KB/s  ~{elapsed_text(left)} left"
+    left = (total - done) / (done / elapsed)
+    return (
+        f"  {done / elapsed:.1f} files/s  {done_bytes / elapsed / 1024:,.0f} KB/s"
+        f"  ~{elapsed_text(left)} left"
+    )
 
 
 def warm_one(host: str, paths: list[str], options) -> dict:
@@ -216,7 +244,7 @@ def warm_one(host: str, paths: list[str], options) -> dict:
     total_bytes = weight(options.dist, paths)
     print(
         f"\n{host}: {len(paths)} files, {total_bytes / 1e6:.1f} MB, "
-        f"{WARM_WORKERS} at a time"
+        f"{options.workers} at a time"
     )
     started = time.monotonic()
     report = progress_reporter()
@@ -229,7 +257,7 @@ def warm_one(host: str, paths: list[str], options) -> dict:
                 batch,
                 gateway=host,
                 deadline=min(CHUNK_DEADLINE, options.deadline),
-                workers=WARM_WORKERS,
+                workers=options.workers,
                 whole=True,
             )
         )
@@ -238,7 +266,7 @@ def warm_one(host: str, paths: list[str], options) -> dict:
         elapsed = time.monotonic() - started
         report(done - len(bad), len(paths), elapsed)
         if report.inline:
-            sys.stdout.write(rate_text(done_bytes, total_bytes, elapsed))
+            sys.stdout.write(rate_text(done, len(paths), done_bytes, elapsed))
             sys.stdout.flush()
         if elapsed >= options.deadline:
             print(f"\n  stopping at the {elapsed_text(options.deadline)} deadline, "
@@ -298,11 +326,22 @@ def main() -> int:
     parser.add_argument(
         "--chunk", type=int, default=CHUNK, help="files between progress lines"
     )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=0,
+        help=f"parallel requests (default {MARK_WORKERS}, or "
+        f"{WARM_WORKERS} when the boot set is included)",
+    )
     parser.add_argument("--show", type=int, default=20, help="failures to list")
     options = parser.parse_args()
 
     if options.boot_only:
         options.boot = True
+    # The 503s were earned pulling big boot files eight at a time, so that
+    # is the case that keeps the cautious number. See `MARK_WORKERS`.
+    if not options.workers:
+        options.workers = WARM_WORKERS if options.boot else MARK_WORKERS
 
     options.tiers = parse_tiers(options.tiers)
     options.chains = [c for c in options.chains.replace(",", " ").split() if c]

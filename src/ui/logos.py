@@ -17,7 +17,7 @@ import flet as ft
 
 from curve.models import Coin, Pool
 
-from .assets import MARK_PIXELS, chain_logo, token_logo
+from .assets import MARK_PIXELS, bundled_mark, chain_logo, token_logo
 
 #: How a logo gets from 200-280px of source art down to the 22-34px it is
 #: drawn at. Two knobs, and the answer is not the intuitive one.
@@ -100,6 +100,12 @@ def set_pixel_ratio(ratio: float | None) -> None:
     """
     if ratio and ratio > 0:
         _pixel_ratio[0] = float(ratio)
+
+
+#: The size a mark is drawn at in the pool list, and so the size the
+#: bundle is chosen for. The others on the page are 22 to 38, all of which
+#: round to the same tier as this at any ratio a real screen reports.
+MARK_SIZE = 24
 
 
 def pixel_ratio() -> float:
@@ -240,12 +246,33 @@ def token_mark(coin: Coin, chain: str, size: float = 24) -> ft.Container:
     failed load: a mark that 404s has no image upstream and lettering is
     correct, but one that times out has an image and simply was not
     reached. See `MARK_ATTEMPTS`.
+
+    Three sources, in order of how little they cost: a slice of this
+    chain's bundle if one has been fetched, the mark's own file if not,
+    and lettering if there is no art at all. The first is why the bundle
+    exists -- one request for a chain instead of one per coin, and no
+    per-mark chance of the cold-block 504 that leaves a hole.
     """
-    source = token_logo(chain, coin.address, size * pixel_ratio())
+    wanted = size * pixel_ratio()
     letters = initials_mark(coin.symbol, size)
-    content: ft.Control = (
-        _mark_image(source, size, letters, ft.BoxFit.COVER) if source else letters
-    )
+    content: ft.Control
+
+    if packed := bundled_mark(chain, coin.address, wanted):
+        # Already in hand, out of the one file this chain's marks came in.
+        # No request, so nothing to retry: `error_content` is here for a
+        # corrupt slice, which `remember_bundle` should have caught.
+        content = ft.Image(
+            src=packed,
+            width=size,
+            height=size,
+            fit=ft.BoxFit.COVER,
+            filter_quality=SAMPLING,
+            error_content=letters,
+        )
+    elif source := token_logo(chain, coin.address, wanted):
+        content = _mark_image(source, size, letters, ft.BoxFit.COVER)
+    else:
+        content = letters
 
     return ft.Container(
         content,

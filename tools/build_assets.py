@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import shutil
 import sys
 from functools import lru_cache
@@ -311,6 +312,77 @@ def copy_tree(source: Path, target: Path, *, tokens: bool = False) -> tuple[int,
     return files, size
 
 
+#: The per-chain bundle: every mark of one chain at one tier, end to end.
+#:
+#: 6,718 mark files are 96% of the build's file count and the reason a
+#: coin logo goes missing. Each is fetched cold from a gateway on first
+#: demand, roughly a fifth of cold fetches answer 504 after seventeen
+#: seconds, and warming six thousand files is the imposition that made
+#: `LAZY_DIR` skip them in the first place. One file per chain per tier is
+#: 136, which can be warmed on a coffee break.
+#:
+#: **The PNGs are concatenated unchanged**, so every slice is already a
+#: valid PNG: no decoding at build time, no decoder in Pyodide, and
+#: `ft.Image` takes the bytes directly. The index beside it says where
+#: each one starts.
+#:
+#: `.bin` because gateways refuse archives by suffix -- see
+#: `REFUSED_SUFFIXES` in `tools/publish_ipfs.py`. `.zip` or `.tar` here
+#: would be silently unreachable; `.bin` is served, measured.
+BUNDLE_STEM = "marks"
+
+#: Which tiers get a bundle, against all four for the individual files.
+#:
+#: A bundle is a second copy, so bundling everything doubles 31.4 MB of
+#: marks and hands back most of what dropping canvaskit/ and pyodide/ just
+#: won. These two are 10.9 MB of the 31.4:
+#:
+#:     tier    marks    bundle
+#:       20     1.4       --
+#:       40     3.2      3.2
+#:       80     7.7      7.7
+#:      160    19.1       --
+#:
+#: 40 and 80 are what `mark_tier` rounds up to for a 22-34px mark on a 1x,
+#: 2x or 3x screen, which is nearly every visitor. A 4x screen wants 160
+#: and a 14px mark on 1x wants 20; both fall back to the individual files
+#: and lose nothing but the single request. 160 is not worth 19 MB of pin
+#: for the rarest ratio.
+BUNDLE_TIERS = (40, 80)
+
+
+def bundle_name(tier: int, suffix: str) -> str:
+    """`marks@80.bin` and `marks@80.json`."""
+    return f"{BUNDLE_STEM}@{tier}{suffix}"
+
+
+def bundle_marks(target: Path) -> list[tuple[int, int, int]]:
+    """Bundle one chain's marks, per tier. Returns `(tier, count, bytes)`.
+
+    Writes nothing for a tier with no marks, and leaves the individual
+    files in place: they are the fallback when a bundle cannot be fetched,
+    and the only thing desktop uses.
+    """
+    written = []
+    for tier in BUNDLE_TIERS:
+        marks = sorted(target.glob(f"*@{tier}.png"))
+        if not marks:
+            continue
+        blob, index, at = bytearray(), {}, 0
+        for mark in marks:
+            data = mark.read_bytes()
+            # Keyed by address, which is what `token_logo` has to hand.
+            index[mark.name.split("@")[0]] = (at, len(data))
+            blob += data
+            at += len(data)
+        (target / bundle_name(tier, ".bin")).write_bytes(blob)
+        (target / bundle_name(tier, ".json")).write_text(
+            json.dumps(index, separators=(",", ":"))
+        )
+        written.append((tier, len(marks), len(blob)))
+    return written
+
+
 #: What this script cannot run without, as `(module, what to install)`.
 #: Both do the actual work -- Pillow opens and writes every mark, numpy
 #: averages the resampling -- so neither has a degraded mode worth having.
@@ -401,7 +473,12 @@ def main() -> int:
         )
         total += size
         if files:
-            print(f"  tokens/{chain:<12} {files} files, {size / 1024 / 1024:.1f} MB")
+            bundles = bundle_marks(TARGET / "tokens" / chain)
+            packed = sum(count for _tier, count, _bytes in bundles)
+            print(
+                f"  tokens/{chain:<12} {files} files, {size / 1024 / 1024:.1f} MB"
+                + (f"  -> {len(bundles)} bundles of {packed}" if bundles else "")
+            )
         else:
             print(f"  tokens/{chain:<12} nothing upstream — will draw initials")
 

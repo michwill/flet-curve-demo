@@ -25,7 +25,16 @@ from typing import Any
 
 import flet as ft
 
-from curve import ApiError, CurveApi, Pool, PoolContract, earnings, portfolio, rewards
+from curve import (
+    ApiError,
+    CurveApi,
+    Pool,
+    PoolContract,
+    earnings,
+    http,
+    portfolio,
+    rewards,
+)
 from curve.api import PoolFeed
 from curve.confirm import wait_for_confirmation
 from curve.format import compact_usd
@@ -1117,6 +1126,27 @@ class CurveApp:
     def _route_changed(self, event) -> None:
         self.page.run_task(self.apply_route, getattr(event, "route", None))
 
+    async def _load_marks(self) -> None:
+        """Fetch this chain's mark bundle, if the build has one.
+
+        Desktop reads the marks off its own disk, so there is nothing to
+        save and one more file to open; the bundle is a browser
+        optimisation and is skipped there.
+        """
+        if not http.is_browser():
+            return
+        from ui.assets import load_bundle
+        from ui.logos import MARK_SIZE, pixel_ratio
+
+        # The tier this screen will actually ask for, not the largest one:
+        # `MARK_PIXELS` is 160, which is 19 MB of art no ordinary ratio
+        # draws. See `mark_tier`, and `BUNDLE_TIERS` in build_assets.
+        count = await load_bundle(
+            self.chain, MARK_SIZE * pixel_ratio(), http.get_bytes
+        )
+        if count:
+            print(f"marks: {count} for {self.chain} in one request")
+
     async def load_pools(self) -> None:
         """Point the list at a fresh feed for the current chain.
 
@@ -1152,6 +1182,12 @@ class CurveApp:
             )
             self.list_view.attach(self.feed)
             self.page.update()
+            # One request for this chain's coin logos instead of one per
+            # coin, before any row asks for them. Failure is silent and
+            # costs nothing: every mark then fetches its own file, which
+            # is what happened before bundles existed. See
+            # `ui.assets.load_bundle`.
+            await self._load_marks()
             await self.list_view.load_more()
             totals = await self.api.chain_totals(chain_id)
             if not self._route_applied:

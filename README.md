@@ -335,6 +335,56 @@ only one is about the file. Filed as a refusal it would never be retried,
 and our own request rate would be reported as the gateway declining to serve
 the app.
 
+### One request per chain, not one per coin
+
+The 6,716 mark files were 96% of the build's file count and the reason a coin
+logo goes missing: each is fetched cold from a gateway on first demand, and
+about a fifth of cold fetches answer 504 after seventeen seconds. So they are
+also shipped concatenated, one file per chain per tier:
+
+```
+curve/tokens/xdai/marks@80.bin     105 KB, 25 marks end to end
+curve/tokens/xdai/marks@80.json    where each one starts
+```
+
+**The PNGs are concatenated unchanged**, so every slice is already a valid
+PNG — nothing is decoded at build time, nothing needs a decoder in Pyodide,
+and `ft.Image` takes the bytes directly (`src` is typed `str | bytes`, and
+Flet's transport is msgpack over `postMessage`, so they cross as binary).
+Verified byte-for-byte against the originals: 627/627 on Ethereum.
+
+`.bin`, because gateways refuse archives **by suffix** — `.zip` or `.tar`
+here would be silently unreachable.
+
+**Only tiers 40 and 80 are bundled**, and that is the whole design tension: a
+bundle is a second copy, so bundling all four would double 31.4 MB of marks
+and hand back most of what dropping canvaskit/ won.
+
+```
+tier    marks    bundle
+  20     1.4       --
+  40     3.2      3.2
+  80     7.7      7.7
+ 160    19.1       --      19 MB for the rarest device ratio
+```
+
+Those two are what `mark_tier` rounds up to for a 22–34px mark at 1×, 2× or
+3×. A 4× screen and the 14px marks fall back to individual files and lose
+nothing but the single request.
+
+**Nothing here may break a page.** A build with no bundles, a gateway that
+will not serve one, a truncated index, a token that is not in it — all of
+them return zero and every mark fetches its own file exactly as before, with
+its retry intact. Desktop skips bundles entirely; it reads marks off its own
+disk, where there is nothing to save.
+
+```
+                              files      MB
+started at                     6971   108.3
+after dropping CDN copies      6938    54.5
+plus mark bundles              7074    65.6
+```
+
 ### Half the pin was never fetched
 
 ```

@@ -8,6 +8,7 @@ answer instead.
 
 from __future__ import annotations
 
+import json
 import struct
 from pathlib import Path
 
@@ -736,3 +737,153 @@ def test_the_build_refuses_before_it_deletes_anything(monkeypatch, capsys) -> No
     message = capsys.readouterr().err
     assert "Pillow" in message
     assert "--group dev" in message, "say how to fix it, not just what broke"
+
+
+# -- one file per chain instead of one per coin ----------------------------
+
+
+def make_bundle(marks: dict) -> tuple[bytes, dict]:
+    """A bundle the way `tools/build_assets.bundle_marks` writes one:
+    the PNGs end to end, and where each one starts."""
+    blob, index, at = bytearray(), {}, 0
+    for address, data in marks.items():
+        index[address] = (at, len(data))
+        blob += data
+        at += len(data)
+    return bytes(blob), index
+
+
+PNG_A = b"\x89PNG" + b"aaaa"
+PNG_B = b"\x89PNG" + b"bbbbbb"
+
+
+@pytest.fixture(autouse=True)
+def _clean_bundles():
+    from ui.assets import forget_bundles
+
+    forget_bundles()
+    yield
+    forget_bundles()
+
+
+def test_a_slice_is_the_original_file_byte_for_byte() -> None:
+    """The bundle is a concatenation, not a container, which is what lets
+    Pyodide use it with no decoder and no image library."""
+    from ui.assets import bundled_mark, remember_bundle
+
+    blob, index = make_bundle({"0xaa": PNG_A, "0xbb": PNG_B})
+
+    assert remember_bundle("xdai", 80, blob, index) == 2
+    assert bundled_mark("xdai", "0xAA", 80) == PNG_A
+    assert bundled_mark("xdai", "0xbb", 80) == PNG_B
+
+
+def test_a_token_not_in_the_bundle_falls_back_rather_than_blanking() -> None:
+    from ui.assets import bundled_mark, remember_bundle
+
+    blob, index = make_bundle({"0xaa": PNG_A})
+    remember_bundle("xdai", 80, blob, index)
+
+    assert bundled_mark("xdai", "0xffff", 80) is None
+    assert bundled_mark("ethereum", "0xaa", 80) is None  # another chain
+    assert bundled_mark("xdai", "0xaa", 160) is None  # another tier
+
+
+def test_a_truncated_slice_is_dropped_rather_than_shown() -> None:
+    """A short slice is not a PNG, and `ft.Image` would draw nothing where
+    asking for the file would have drawn a logo."""
+    from ui.assets import bundled_mark, remember_bundle
+
+    blob, index = make_bundle({"0xaa": PNG_A})
+    index["0xbb"] = (0, len(blob) + 999)  # runs off the end
+    index["0xcc"] = (2, 4)  # lands mid-file, so no PNG magic
+
+    assert remember_bundle("xdai", 80, blob, index) == 1
+    assert bundled_mark("xdai", "0xbb", 80) is None
+    assert bundled_mark("xdai", "0xcc", 80) is None
+
+
+async def test_a_missing_bundle_is_zero_rather_than_an_error() -> None:
+    """Nothing here may break a page. A build with no bundles, a gateway
+    that will not serve one, a truncated index -- all come back as zero
+    and every mark asks for its own file, exactly as before bundles."""
+    from ui.assets import bundled_mark, load_bundle
+
+    async def dead(_url):
+        raise OSError("404")
+
+    assert await load_bundle("xdai", 80, dead) == 0
+    assert bundled_mark("xdai", "0xaa", 80) is None
+
+
+async def test_a_bundle_is_fetched_once_per_chain_and_tier() -> None:
+    """The point of it: one request for a chain, not one per coin."""
+    from ui.assets import load_bundle
+
+    blob, index = make_bundle({"0xaa": PNG_A, "0xbb": PNG_B})
+    asked = []
+
+    async def fetch(url):
+        asked.append(url)
+        return json.dumps(index).encode() if url.endswith(".json") else blob
+
+    assert await load_bundle("xdai", 80, fetch) == 2
+    assert await load_bundle("xdai", 80, fetch) == 2  # cached, no new requests
+
+    assert len(asked) == 2  # the blob and its index, once
+    assert asked[0].endswith("marks@80.bin")
+    assert asked[1].endswith("marks@80.json")
+
+
+async def test_the_tier_asked_for_is_the_one_the_screen_needs() -> None:
+    from ui.assets import load_bundle, mark_tier
+
+    asked = []
+
+    async def fetch(url):
+        asked.append(url)
+        raise OSError("stop here")
+
+    await load_bundle("xdai", 24 * 3, fetch)
+
+    assert f"marks@{mark_tier(72)}.bin" in asked[0]
+
+
+def test_a_bundled_mark_needs_no_retry_chain() -> None:
+    """It is already in memory, so there is no request to fail and nothing
+    to ask twice. The retry exists for files fetched from a gateway."""
+    from ui.assets import remember_bundle
+
+    blob, index = make_bundle({USDC.lower(): PNG_A})
+    remember_bundle("ethereum", 80, blob, index)
+
+    mark = token_mark(coin("USDC", USDC), "ethereum", 24)
+    urls = [src for src in attempts(mark) if isinstance(src, str)]
+
+    assert urls == []  # nothing is fetched, so nothing can fail
+    assert mark.content.src == PNG_A
+    assert mark.content.error_content is not None  # still guards a bad slice
+
+
+def test_only_the_tiers_screens_use_are_bundled() -> None:
+    """A bundle is a second copy, so bundling all four tiers doubles 31.4
+    MB of marks and hands back most of what dropping canvaskit/ and
+    pyodide/ won. 40 and 80 are 10.9 MB of that and cover a 22-34px mark
+    at 1x, 2x and 3x; 160 alone would be 19.1 MB for the rarest ratio."""
+    from tools.build_assets import BUNDLE_TIERS
+    from ui.assets import MARK_TIERS, mark_tier
+    from ui.logos import MARK_SIZE
+
+    assert set(BUNDLE_TIERS) < set(MARK_TIERS)
+    assert {mark_tier(MARK_SIZE * r) for r in (1, 2, 3)} <= set(BUNDLE_TIERS)
+    assert 160 not in BUNDLE_TIERS
+
+
+def test_the_bundle_asked_for_is_the_tier_the_screen_draws() -> None:
+    """Not `MARK_PIXELS`, which is 160 and 19 MB of art no ordinary ratio
+    draws -- asking for that was the first version of this and would have
+    fetched the largest bundle on every visit."""
+    from ui.assets import MARK_PIXELS, mark_tier
+    from ui.logos import MARK_SIZE
+
+    assert mark_tier(MARK_SIZE * 2) != MARK_PIXELS

@@ -22,6 +22,7 @@ an error, so callers get `None` and draw initials instead.
 
 from __future__ import annotations
 
+import json
 import sys
 from functools import lru_cache
 from pathlib import Path
@@ -177,6 +178,87 @@ def _exists(relative: str) -> bool:
     if is_browser():
         return True
     return (_LOCAL_ROOT / relative).is_file()
+
+
+#: One chain's marks at one tier, once fetched: `(chain, tier)` -> bytes
+#: per address. Empty until something calls `remember_bundle`, and a miss
+#: is not an error -- `token_logo` falls back to the file's own URL, which
+#: is what every build did before bundles existed and what desktop still
+#: does.
+_BUNDLES: dict[tuple[str, int], dict[str, bytes]] = {}
+
+
+def bundle_url(chain: str, tier: int, suffix: str) -> str:
+    """Where one chain's bundle lives. See `BUNDLE_STEM` in build_assets."""
+    return asset_url("tokens", chain, f"marks@{tier}{suffix}")
+
+
+def remember_bundle(chain: str, tier: int, blob: bytes, index: dict) -> int:
+    """Cut a fetched bundle into one PNG per address. Returns how many.
+
+    The slices are the original files byte for byte -- the bundle is a
+    concatenation, not a container -- so nothing is decoded here and no
+    image library is needed in Pyodide.
+
+    A truncated or mismatched entry is dropped rather than stored: a short
+    slice is not a PNG, and `ft.Image` would render nothing where the URL
+    fallback would have rendered a logo.
+    """
+    marks = {}
+    for address, span in (index or {}).items():
+        try:
+            start, length = int(span[0]), int(span[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        chunk = blob[start : start + length]
+        if len(chunk) == length and chunk[:4] == b"\x89PNG":
+            marks[str(address).lower()] = chunk
+    if marks:
+        _BUNDLES[(chain, tier)] = marks
+    return len(marks)
+
+
+def forget_bundles() -> None:
+    """Drop every cached bundle. For tests, and for a chain switch that
+    wants the memory back."""
+    _BUNDLES.clear()
+
+
+async def load_bundle(chain: str, device_pixels: float, fetch) -> int:
+    """Fetch one chain's mark bundle and remember it. Returns how many.
+
+    `fetch(url)` returns the bytes at a URL, or raises. Injected rather
+    than imported so this is testable without a network and so the browser
+    and desktop transports stay where they already live.
+
+    **Nothing here is allowed to break a page.** A build with no bundles,
+    a gateway that will not serve one, a truncated index: all of them come
+    back as zero, and every mark then asks for its own file exactly as it
+    did before bundles existed. That is the whole safety argument for
+    putting this in front of a working path.
+    """
+    tier = mark_tier(device_pixels)
+    if (chain, tier) in _BUNDLES:
+        return len(_BUNDLES[(chain, tier)])
+    try:
+        blob = await fetch(bundle_url(chain, tier, ".bin"))
+        raw = await fetch(bundle_url(chain, tier, ".json"))
+        index = json.loads(bytes(raw))
+    except Exception:
+        return 0
+    return remember_bundle(chain, tier, bytes(blob), index)
+
+
+def bundled_mark(chain: str, address: str, device_pixels: float) -> bytes | None:
+    """One mark's PNG out of a fetched bundle, or None if it is not there.
+
+    None covers both "no bundle for this chain" and "this token is not in
+    it", which the caller treats the same way: ask for the file.
+    """
+    if not chain or not address:
+        return None
+    marks = _BUNDLES.get((chain, mark_tier(device_pixels)))
+    return marks.get(address.strip().lower()) if marks else None
 
 
 def chain_logo(chain: str, device_pixels: float = MARK_PIXELS) -> str | None:

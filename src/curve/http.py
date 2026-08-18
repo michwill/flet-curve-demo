@@ -161,6 +161,37 @@ def _post_blocking(url: str, body: str, timeout: float) -> Any:
         raise ApiError(f"Response was not valid JSON: {url}") from exc
 
 
+async def get_bytes(url: str, timeout: float = DEFAULT_TIMEOUT) -> bytes:
+    """Raw bytes at a URL. For files that are not JSON and not images.
+
+    The one caller is the mark bundle (`ui.assets.load_bundle`), which is a
+    concatenation of PNGs and an index beside it -- so the browser fetches
+    it the same way it fetches everything else, and desktop reads it off
+    disk through the same `file:`-less path as the API.
+    """
+    if is_browser():
+        from js import fetch as js_fetch
+
+        response = await js_fetch(url)
+        if not response.ok:
+            raise ApiError(f"HTTP {response.status} from {url}")
+        buffer = await response.arrayBuffer()
+        return bytes(buffer.to_py())
+    return await asyncio.to_thread(_read_blocking, url, timeout)
+
+
+def _read_blocking(url: str, timeout: float) -> bytes:
+    import urllib.error
+    import urllib.request
+
+    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.read()
+    except (urllib.error.HTTPError, urllib.error.URLError, OSError) as exc:
+        raise ApiError(f"could not read {url}: {exc}") from exc
+
+
 async def _get_json_browser(url: str, timeout: float) -> Any:
     from pyodide.http import pyfetch
 

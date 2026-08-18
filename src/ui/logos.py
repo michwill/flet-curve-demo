@@ -103,9 +103,14 @@ def set_pixel_ratio(ratio: float | None) -> None:
 
 
 #: The size a mark is drawn at in the pool list, and so the size the
-#: bundle is chosen for. The others on the page are 22 to 38, all of which
-#: round to the same tier as this at any ratio a real screen reports.
-MARK_SIZE = 24
+#: bundle tier is chosen for.
+#:
+#: 27, which is what `pool_list._name_cell` actually passes -- it used to
+#: say 24 here and 27 there, and that gap is not cosmetic: at 27 a 3x
+#: screen wants tier 160 and at 24 it wants 80, so the app prefetched one
+#: bundle and every row looked up another. `bundle_tier` now makes the two
+#: agree whatever this says, but they should agree here first.
+MARK_SIZE = 27
 
 
 def pixel_ratio() -> float:

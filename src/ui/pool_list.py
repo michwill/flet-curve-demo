@@ -25,7 +25,7 @@ from curve.rewards import crv_token
 from curve.sort import DEFAULT_SORT, SORTS
 
 from . import AnyEvent, safe_update, theme
-from .logos import pool_stack, token_mark
+from .logos import MARK_SIZE, pool_stack, token_mark
 from .responsive import Layout, layout_for
 from .typography import BODY, LABEL, ROW_TITLE, SMALL
 
@@ -283,7 +283,7 @@ def reward_lines(pool: Pool) -> list[ft.Control]:
     return lines
 
 
-def _name_cell(pool: Pool, logo_size: float = 27) -> ft.Control:
+def _name_cell(pool: Pool, logo_size: float = MARK_SIZE) -> ft.Control:
     """Overlapping coin logos, then the pool's name and its assets."""
     return ft.Row(
         [

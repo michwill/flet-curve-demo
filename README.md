@@ -376,6 +376,28 @@ is what a visitor is most likely to see rather than what is most valuable.
 Only chains past `SPLIT_ABOVE` are split; everything else is one file, and a
 build that cannot reach the API to rank tokens says so and bundles whole.
 
+**The tier a phone asks for is not always one that exists**, and getting
+that wrong meant mobile had no bundles at all. A mark is drawn at 27 logical
+pixels, so `mark_tier` rounds a 3× screen up to 160 — which is not bundled.
+The fetch 404s, every mark drops back to its own file, and one cold block is
+a missing logo: which is exactly how a USDC icon went missing on Gnosis on a
+phone while the desktop beside it was fine.
+
+`bundle_tier` clamps to the largest tier that exists, and both the fetch and
+the lookup go through it so they cannot disagree:
+
+```
+ratio   device px   wants   gets
+    1          27      40     40
+    2          54      80     80
+    3          81     160     80      <- clamped, 1.01x magnification
+    4         108     160     80      <- clamped, 1.35x
+```
+
+At 3× — most phones — tier 80 art on 81 device pixels is essentially 1:1. A
+true 4× screen is softer than ideal and far better than an absent logo.
+Bundling 160 as well would serve both exactly and cost 19.1 MB of pin.
+
 **Only tiers 40 and 80 are bundled**, and that is the whole design tension: a
 bundle is a second copy, so bundling all four would double 31.4 MB of marks
 and hand back most of what dropping canvaskit/ won.

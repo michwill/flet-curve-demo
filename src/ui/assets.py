@@ -197,6 +197,35 @@ _BUNDLES: dict[tuple[str, int], dict[str, bytes]] = {}
 _FETCHED: set[tuple[str, int, bool]] = set()
 
 
+#: Which tiers a build actually bundles, and the source of truth for it --
+#: `tools/build_assets.py` imports this rather than keeping its own copy,
+#: because the two drifting apart is invisible: the build would write one
+#: set and the app would ask for another, every mark would miss, and the
+#: only symptom is that the bundles quietly stop being used.
+BUNDLED_TIERS = (40, 80)
+
+
+def bundle_tier(device_pixels: float) -> int:
+    """The bundled tier to use for a mark of this size on this screen.
+
+    Not `mark_tier`, which answers what art the mark *wants*: past the
+    largest bundled tier there is no bundle to want, and asking for one
+    404s and drops every mark on the page back to its own file. That is
+    not hypothetical -- it is what mobile was doing. A mark is drawn at 27
+    logical pixels in the list, so a 3x phone asks `mark_tier` for 160,
+    which is not bundled, and no phone was getting a bundle at all.
+
+    Clamping costs almost nothing where it bites hardest. At 3x the mark
+    is 81 device pixels and tier 80 art is 1.01x magnification, which is
+    nothing; a true 4x screen gets 1.35x, which is softer than ideal and a
+    great deal better than a missing logo. Bundling 160 as well would fix
+    that exactly and cost 19.1 MB of pin, which is not the trade.
+    """
+    wanted = mark_tier(device_pixels)
+    covered = [tier for tier in BUNDLED_TIERS if tier >= wanted]
+    return min(covered) if covered else max(BUNDLED_TIERS)
+
+
 #: What the second half of a split bundle is called. Only the largest
 #: chains have one -- see `SPLIT_ABOVE` in `tools/build_assets.py` -- and
 #: asking for one that does not exist costs a 404 and nothing else.
@@ -265,7 +294,7 @@ async def load_bundle(
     did before bundles existed. That is the whole safety argument for
     putting this in front of a working path.
     """
-    tier = mark_tier(device_pixels)
+    tier = bundle_tier(device_pixels)
     if (chain, tier, rest) in _FETCHED:
         return len(_BUNDLES.get((chain, tier), {}))
     _FETCHED.add((chain, tier, rest))
@@ -292,7 +321,10 @@ def bundled_mark(chain: str, address: str, device_pixels: float) -> bytes | None
     """
     if not chain or not address:
         return None
-    marks = _BUNDLES.get((chain, mark_tier(device_pixels)))
+    # `bundle_tier`, the same call the loader made -- an exact `mark_tier`
+    # here would miss the bundle it just fetched on any screen whose ideal
+    # tier is not bundled.
+    marks = _BUNDLES.get((chain, bundle_tier(device_pixels)))
     return marks.get(address.strip().lower()) if marks else None
 
 

@@ -786,7 +786,6 @@ def test_a_token_not_in_the_bundle_falls_back_rather_than_blanking() -> None:
 
     assert bundled_mark("xdai", "0xffff", 80) is None
     assert bundled_mark("ethereum", "0xaa", 80) is None  # another chain
-    assert bundled_mark("xdai", "0xaa", 160) is None  # another tier
 
 
 def test_a_truncated_slice_is_dropped_rather_than_shown() -> None:
@@ -875,8 +874,11 @@ def test_only_the_tiers_screens_use_are_bundled() -> None:
     from ui.logos import MARK_SIZE
 
     assert set(BUNDLE_TIERS) < set(MARK_TIERS)
-    assert {mark_tier(MARK_SIZE * r) for r in (1, 2, 3)} <= set(BUNDLE_TIERS)
     assert 160 not in BUNDLE_TIERS
+    # A 3x screen's *ideal* tier is past the top of this, which is what
+    # `bundle_tier` exists to absorb -- see the mobile bug below. Bundling
+    # 160 as well would serve it exactly and cost 19.1 MB.
+    assert mark_tier(MARK_SIZE * 3) == 160
 
 
 def test_the_bundle_asked_for_is_the_tier_the_screen_draws() -> None:
@@ -1022,3 +1024,61 @@ async def test_neither_half_is_fetched_twice() -> None:
 
     assert sum("-rest" in url for url in asked) == 1
     assert sum("-rest" not in url for url in asked) == 2  # the blob and its index
+
+
+# -- the tier a phone actually asks for ------------------------------------
+
+
+def test_a_screen_past_the_largest_bundle_still_gets_one() -> None:
+    """The mobile bug. A mark is drawn at 27 logical pixels in the list,
+    so a 3x phone's ideal tier is 160 -- which is not bundled. Asking for
+    it 404s and drops every mark on the page back to its own file, which
+    is how a USDC logo went missing on Gnosis on a phone while the desktop
+    beside it was fine."""
+    from ui.assets import BUNDLED_TIERS, bundle_tier, mark_tier
+    from ui.logos import MARK_SIZE
+
+    assert mark_tier(MARK_SIZE * 3) not in BUNDLED_TIERS  # the trap
+    assert bundle_tier(MARK_SIZE * 3) in BUNDLED_TIERS  # and the way out
+    assert bundle_tier(MARK_SIZE * 4) in BUNDLED_TIERS
+
+
+@pytest.mark.parametrize("ratio", [1, 2, 2.625, 3, 4])
+def test_every_ratio_a_real_screen_reports_gets_a_bundle(ratio) -> None:
+    from ui.assets import BUNDLED_TIERS, bundle_tier
+    from ui.logos import MARK_SIZE
+
+    assert bundle_tier(MARK_SIZE * ratio) in BUNDLED_TIERS
+
+
+def test_the_clamp_never_asks_for_art_smaller_than_it_must() -> None:
+    """It rounds up while there is a tier to round up to, so the common
+    ratios are unchanged -- only the ones past the top are clamped."""
+    from ui.assets import bundle_tier
+
+    assert bundle_tier(20) == 40
+    assert bundle_tier(41) == 80
+    assert bundle_tier(80) == 80
+    assert bundle_tier(81) == 80  # past the top: the largest there is
+    assert bundle_tier(400) == 80
+
+
+def test_the_loader_and_the_lookup_agree_on_the_tier() -> None:
+    """They must, or the app fetches one bundle and reads another. That is
+    silent: every mark misses and the bundles simply stop being used."""
+    from ui.assets import bundle_tier, bundled_mark, remember_bundle
+    from ui.logos import MARK_SIZE
+
+    drawn = MARK_SIZE * 3
+    blob, index = make_bundle({"0xaa": PNG_A})
+    remember_bundle("xdai", bundle_tier(drawn), blob, index)
+
+    assert bundled_mark("xdai", "0xaa", drawn) == PNG_A
+
+
+def test_the_build_and_the_app_share_one_list_of_tiers() -> None:
+    """Two copies drifting apart would write bundles nothing loads."""
+    from tools.build_assets import BUNDLE_TIERS
+    from ui.assets import BUNDLED_TIERS
+
+    assert BUNDLE_TIERS is BUNDLED_TIERS

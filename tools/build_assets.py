@@ -83,7 +83,12 @@ BLEED_PAD = 0.20
 #: this step did not produce -- see `ui.assets.MARK_PIXELS`.
 sys.path.insert(0, str(ROOT / "src"))
 from curve.http import USER_AGENT  # noqa: E402
-from ui.assets import MARK_PIXELS, MARK_TIERS, tiered  # noqa: E402
+from ui.assets import (  # noqa: E402
+    BUNDLED_TIERS,
+    MARK_PIXELS,
+    MARK_TIERS,
+    tiered,
+)
 
 
 def tier_paths(target: Path) -> list[tuple[int, Path]]:
@@ -349,7 +354,10 @@ BUNDLE_STEM = "marks"
 #: and a 14px mark on 1x wants 20; both fall back to the individual files
 #: and lose nothing but the single request. 160 is not worth 19 MB of pin
 #: for the rarest ratio.
-BUNDLE_TIERS = (40, 80)
+#: The app's own list, not a second copy: `ui.assets.BUNDLED_TIERS` is
+#: what the runtime asks for, and a build that wrote a different set would
+#: produce bundles nothing ever loads.
+BUNDLE_TIERS = BUNDLED_TIERS
 
 #: Split a chain's bundle in two once it is worth splitting.
 #:

@@ -1158,6 +1158,11 @@ class CurveApp:
         self.progress.visible = True
         self.error.visible = False
         self.page.update()
+        # Started here rather than awaited below, because the chain is
+        # already known and the API round trips that follow are dead time
+        # this can use. Awaited just before the rows are built, by which
+        # point it has usually landed for free -- see `_load_marks`.
+        marks = asyncio.create_task(self._load_marks())
         try:
             if not self.chains:
                 self.chains = await self.api.chains()
@@ -1183,11 +1188,13 @@ class CurveApp:
             self.list_view.attach(self.feed)
             self.page.update()
             # One request for this chain's coin logos instead of one per
-            # coin, before any row asks for them. Failure is silent and
-            # costs nothing: every mark then fetches its own file, which
-            # is what happened before bundles existed. See
-            # `ui.assets.load_bundle`.
-            await self._load_marks()
+            # coin, and it has to be in hand before a row asks for one --
+            # a row built without it fetches every mark individually,
+            # which is the thing being avoided. Overlapped with the API
+            # above rather than run after it, because serial it was the
+            # whole first paint: 2.9 MB of Ethereum marks between
+            # attaching the feed and drawing a single row.
+            await marks
             await self.list_view.load_more()
             totals = await self.api.chain_totals(chain_id)
             if not self._route_applied:
@@ -1197,6 +1204,9 @@ class CurveApp:
                 self._route_applied = True
                 self.page.run_task(self.apply_route, self.page.route)
         except ApiError as exc:
+            # The marks task outlives the failure it did not cause, and an
+            # un-awaited task is a warning on the console at best.
+            marks.cancel()
             self.error.value = str(exc)
             self.error.visible = True
             self.progress.visible = False

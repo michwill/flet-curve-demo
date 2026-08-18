@@ -2904,3 +2904,23 @@ def test_a_theme_change_reaches_both_tables() -> None:
     assert app.portfolio_view._table.border is not None
     assert app.portfolio_view._header.bgcolor == theme.RULE
     assert app.portfolio_view._rows_box.theme.hover_color == theme.HOVER
+
+
+# -- the bundle must not be the first paint --------------------------------
+
+
+async def test_a_cancelled_bundle_does_not_report_success() -> None:
+    """`load_bundle` swallows every failure so a page cannot break on it,
+    and cancellation is the one thing that must travel: a page that gave
+    up on this chain has not found zero marks, it has stopped asking."""
+    from ui.assets import load_bundle
+
+    async def never(_url):
+        await asyncio.sleep(10)
+
+    task = asyncio.create_task(load_bundle("xdai", 80, never))
+    await asyncio.sleep(0)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task

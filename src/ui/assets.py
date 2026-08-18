@@ -22,6 +22,7 @@ an error, so callers get `None` and draw initials instead.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 from functools import lru_cache
@@ -244,6 +245,10 @@ async def load_bundle(chain: str, device_pixels: float, fetch) -> int:
         blob = await fetch(bundle_url(chain, tier, ".bin"))
         raw = await fetch(bundle_url(chain, tier, ".json"))
         index = json.loads(bytes(raw))
+    except asyncio.CancelledError:
+        # The page gave up on this chain. Not a failure of the bundle, and
+        # swallowing it would leave the task looking like it succeeded.
+        raise
     except Exception:
         return 0
     return remember_bundle(chain, tier, bytes(blob), index)

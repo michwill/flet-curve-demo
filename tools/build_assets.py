@@ -82,6 +82,7 @@ BLEED_PAD = 0.20
 #: reads them back, so the decoder cannot be told to ask for resolution
 #: this step did not produce -- see `ui.assets.MARK_PIXELS`.
 sys.path.insert(0, str(ROOT / "src"))
+from curve.http import USER_AGENT  # noqa: E402
 from ui.assets import MARK_PIXELS, MARK_TIERS, tiered  # noqa: E402
 
 
@@ -350,36 +351,140 @@ BUNDLE_STEM = "marks"
 #: for the rarest ratio.
 BUNDLE_TIERS = (40, 80)
 
+#: Split a chain's bundle in two once it is worth splitting.
+#:
+#: Ethereum is the only chain this catches and the reason the rule exists:
+#: 627 marks and 2,852 KB at tier 80, where the next largest chain is 649
+#: and every other is under half of that. One file that big is the whole
+#: first paint -- nothing draws until it lands -- so it becomes a small
+#: one that covers the visible rows and a large one that arrives behind
+#: it, and the marks show incrementally instead of all at once or not yet.
+SPLIT_ABOVE = 1 << 20
 
-def bundle_name(tier: int, suffix: str) -> str:
-    """`marks@80.bin` and `marks@80.json`."""
-    return f"{BUNDLE_STEM}@{tier}{suffix}"
+#: How many tokens go in the hot half. Measured against the top 50 pools
+#: on Ethereum, which is the first page anybody sees:
+#:
+#:     100 tokens   460 KB   86.4% of the marks on that page
+#:     150 tokens   657 KB   93.2%
+#:     200 tokens   883 KB   96.1%
+#:     627 tokens  2852 KB   100%
+#:
+#: 150 buys most of the page for a quarter of the bytes. What it misses
+#: is not missing -- it is in the second bundle, or failing that in the
+#: token's own file.
+HOT_TOKENS = 150
+
+#: Where the second half goes. `marks@80.bin` stays the name of the one
+#: that must arrive, so a chain that is not split needs no special case
+#: and neither does a reader.
+REST_INFIX = "-rest"
 
 
-def bundle_marks(target: Path) -> list[tuple[int, int, int]]:
+def bundle_name(tier: int, suffix: str, *, rest: bool = False) -> str:
+    """`marks@80.bin`, `marks@80.json`, and the `-rest` pair beside them."""
+    return f"{BUNDLE_STEM}@{tier}{REST_INFIX if rest else ''}{suffix}"
+
+
+def hot_order(chain: str) -> list[str]:
+    """Token addresses for one chain, most-used first, or `[]`.
+
+    Ranked by how many pools hold them, over pools ordered by volume, so
+    "hot" means what a visitor is most likely to see rather than what is
+    most valuable. Empty on any failure, and an empty ranking means the
+    chain is bundled whole -- a build must not need the API to be up.
+    """
+    import urllib.request
+    from collections import Counter
+
+    registries = (
+        "main", "factory-stable-ng", "factory-crypto",
+        "factory-twocrypto", "factory-tricrypto", "crypto", "factory",
+    )
+    pools = []
+    for registry in registries:
+        url = f"https://api.curve.finance/api/getPools/{chain}/{registry}"
+        # With urllib's default agent the API answers 403, and the ranking
+        # comes back empty and silently un-split -- the same trap
+        # `curve.http.USER_AGENT` documents for the endpoint directory.
+        request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                pools += json.load(response).get("data", {}).get("poolData", []) or []
+        except Exception:
+            continue
+    if not pools:
+        return []
+    pools.sort(key=lambda p: -(p.get("volumeUSD") or p.get("usdTotal") or 0))
+    seen: Counter = Counter()
+    for pool in pools:
+        for coin in pool.get("coins") or []:
+            if address := (coin.get("address") or "").lower():
+                seen[address] += 1
+    return [address for address, _count in seen.most_common()]
+
+
+def pack(marks: list[Path]) -> tuple[bytes, dict]:
+    """The PNGs end to end, and where each one starts. Keyed by address,
+    which is what `token_logo` has to hand."""
+    blob, index, at = bytearray(), {}, 0
+    for mark in marks:
+        data = mark.read_bytes()
+        index[mark.name.split("@")[0]] = (at, len(data))
+        blob += data
+        at += len(data)
+    return bytes(blob), index
+
+
+def write_bundle(target: Path, tier: int, marks: list[Path], *, rest: bool = False) -> int:
+    blob, index = pack(marks)
+    (target / bundle_name(tier, ".bin", rest=rest)).write_bytes(blob)
+    (target / bundle_name(tier, ".json", rest=rest)).write_text(
+        json.dumps(index, separators=(",", ":"))
+    )
+    return len(blob)
+
+
+def split_marks(marks: list[Path], order: list[str]) -> tuple[list[Path], list[Path]]:
+    """The hot half and the rest, in `order`'s ranking.
+
+    Anything the ranking does not mention goes in the rest, keeping its
+    own order -- an unranked token is one no pool on this chain holds, and
+    guessing about it is not better than putting it last.
+    """
+    rank = {address: i for i, address in enumerate(order)}
+    hot = sorted(
+        (m for m in marks if m.name.split("@")[0] in rank),
+        key=lambda m: rank[m.name.split("@")[0]],
+    )[:HOT_TOKENS]
+    chosen = set(hot)
+    return hot, [m for m in marks if m not in chosen]
+
+
+def bundle_marks(target: Path, order: list[str] | None = None) -> list[tuple[int, int, int]]:
     """Bundle one chain's marks, per tier. Returns `(tier, count, bytes)`.
+
+    Split in two past `SPLIT_ABOVE`, when a ranking is available: a small
+    bundle that has to arrive before the first row draws, and a second one
+    that fills in behind it. Below that, or with no ranking, one bundle --
+    a chain small enough is not worth two requests.
 
     Writes nothing for a tier with no marks, and leaves the individual
     files in place: they are the fallback when a bundle cannot be fetched,
-    and the only thing desktop uses.
+    the source for the tiers that have none, and all desktop uses.
     """
     written = []
     for tier in BUNDLE_TIERS:
         marks = sorted(target.glob(f"*@{tier}.png"))
         if not marks:
             continue
-        blob, index, at = bytearray(), {}, 0
-        for mark in marks:
-            data = mark.read_bytes()
-            # Keyed by address, which is what `token_logo` has to hand.
-            index[mark.name.split("@")[0]] = (at, len(data))
-            blob += data
-            at += len(data)
-        (target / bundle_name(tier, ".bin")).write_bytes(blob)
-        (target / bundle_name(tier, ".json")).write_text(
-            json.dumps(index, separators=(",", ":"))
+        total = sum(m.stat().st_size for m in marks)
+        hot, rest = (
+            split_marks(marks, order) if order and total > SPLIT_ABOVE else (marks, [])
         )
-        written.append((tier, len(marks), len(blob)))
+        size = write_bundle(target, tier, hot)
+        if rest:
+            size += write_bundle(target, tier, rest, rest=True)
+        written.append((tier, len(marks), size))
     return written
 
 
@@ -473,11 +578,28 @@ def main() -> int:
         )
         total += size
         if files:
-            bundles = bundle_marks(TARGET / "tokens" / chain)
+            directory = TARGET / "tokens" / chain
+            # Only asked for where it changes the answer -- see SPLIT_ABOVE.
+            biggest = max(
+                (
+                    sum(m.stat().st_size for m in directory.glob(f"*@{tier}.png"))
+                    for tier in BUNDLE_TIERS
+                ),
+                default=0,
+            )
+            order = hot_order(chain) if biggest > SPLIT_ABOVE else []
+            if biggest > SPLIT_ABOVE and not order:
+                # Said out loud, because the failure is otherwise a build
+                # that quietly ships the one chain that needed splitting as
+                # a single 2.9 MB file -- which is how a 403 from the API
+                # got past me once already.
+                print(f"  ! no ranking for {chain}: bundling it whole")
+            bundles = bundle_marks(directory, order)
             packed = sum(count for _tier, count, _bytes in bundles)
+            split = " (split)" if order else ""
             print(
                 f"  tokens/{chain:<12} {files} files, {size / 1024 / 1024:.1f} MB"
-                + (f"  -> {len(bundles)} bundles of {packed}" if bundles else "")
+                + (f"  -> {len(bundles)} bundles of {packed}{split}" if bundles else "")
             )
         else:
             print(f"  tokens/{chain:<12} nothing upstream — will draw initials")

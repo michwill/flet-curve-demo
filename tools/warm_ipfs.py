@@ -170,10 +170,15 @@ def bundle_files(root: Path, tiers: tuple[int, ...], chains: list[str]) -> list[
         if chains and chain.name not in chains:
             continue
         for tier in tiers:
-            for suffix in (".bin", ".json"):
-                path = chain / f"marks@{tier}{suffix}"
-                if path.is_file():
-                    found.append(path.relative_to(root).as_posix())
+            # Both halves of a split chain. The `-rest` pair only exists
+            # for the largest -- see `SPLIT_ABOVE` in build_assets -- and
+            # leaving it out would warm the half that gates the first
+            # paint and none of what fills in behind it.
+            for infix in ("", "-rest"):
+                for suffix in (".bin", ".json"):
+                    path = chain / f"marks@{tier}{infix}{suffix}"
+                    if path.is_file():
+                        found.append(path.relative_to(root).as_posix())
     return found
 
 

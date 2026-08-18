@@ -420,3 +420,32 @@ def test_no_time_left_is_no_estimate() -> None:
     assert warm.remaining_text(0, 100, 10.0) == ""
     assert warm.remaining_text(100, 100, 10.0) == ""
     assert "left" in warm.remaining_text(50, 100, 60.0)
+
+
+def test_both_halves_of_a_split_chain_are_warmed(tmp_path: Path) -> None:
+    """Ethereum ships its marks in two: 658 KB that gates the first paint
+    and 2,194 KB that fills in behind it. Warming only the first would
+    leave every mark past the hottest 150 cold."""
+    root = build(
+        tmp_path,
+        {"ethereum": ["marks@80.bin", "marks@80.json",
+                      "marks@80-rest.bin", "marks@80-rest.json"]},
+    )
+
+    paths = warm.bundle_files(root, (80,), [])
+
+    assert paths == [
+        "curve/tokens/ethereum/marks@80.bin",
+        "curve/tokens/ethereum/marks@80.json",
+        "curve/tokens/ethereum/marks@80-rest.bin",
+        "curve/tokens/ethereum/marks@80-rest.json",
+    ]
+
+
+def test_a_chain_with_no_tail_is_not_asked_for_one(tmp_path: Path) -> None:
+    root = build(tmp_path, {"xdai": ["marks@80.bin", "marks@80.json"]})
+
+    assert warm.bundle_files(root, (80,), []) == [
+        "curve/tokens/xdai/marks@80.bin",
+        "curve/tokens/xdai/marks@80.json",
+    ]

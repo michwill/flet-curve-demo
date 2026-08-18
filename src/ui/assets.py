@@ -188,10 +188,25 @@ def _exists(relative: str) -> bool:
 #: does.
 _BUNDLES: dict[tuple[str, int], dict[str, bytes]] = {}
 
+#: Which `(chain, tier, rest)` have already been fetched, successfully or
+#: not. Separate from `_BUNDLES` because the two halves share one entry
+#: there, so "is it cached" cannot be asked of the store: with only that
+#: check the tail was re-fetched every time the page reloaded a chain --
+#: 2.2 MB on Ethereum, twice per visit, because `load_pools` runs once at
+#: startup and again when the deep link is applied.
+_FETCHED: set[tuple[str, int, bool]] = set()
 
-def bundle_url(chain: str, tier: int, suffix: str) -> str:
+
+#: What the second half of a split bundle is called. Only the largest
+#: chains have one -- see `SPLIT_ABOVE` in `tools/build_assets.py` -- and
+#: asking for one that does not exist costs a 404 and nothing else.
+REST_INFIX = "-rest"
+
+
+def bundle_url(chain: str, tier: int, suffix: str, *, rest: bool = False) -> str:
     """Where one chain's bundle lives. See `BUNDLE_STEM` in build_assets."""
-    return asset_url("tokens", chain, f"marks@{tier}{suffix}")
+    infix = REST_INFIX if rest else ""
+    return asset_url("tokens", chain, f"marks@{tier}{infix}{suffix}")
 
 
 def remember_bundle(chain: str, tier: int, blob: bytes, index: dict) -> int:
@@ -201,11 +216,15 @@ def remember_bundle(chain: str, tier: int, blob: bytes, index: dict) -> int:
     concatenation, not a container -- so nothing is decoded here and no
     image library is needed in Pyodide.
 
+    Merges into what is already held for this chain and tier, because a
+    split chain arrives in two halves and the second must not evict the
+    first.
+
     A truncated or mismatched entry is dropped rather than stored: a short
     slice is not a PNG, and `ft.Image` would render nothing where the URL
     fallback would have rendered a logo.
     """
-    marks = {}
+    marks = dict(_BUNDLES.get((chain, tier), {}))
     for address, span in (index or {}).items():
         try:
             start, length = int(span[0]), int(span[1])
@@ -223,14 +242,22 @@ def forget_bundles() -> None:
     """Drop every cached bundle. For tests, and for a chain switch that
     wants the memory back."""
     _BUNDLES.clear()
+    _FETCHED.clear()
 
 
-async def load_bundle(chain: str, device_pixels: float, fetch) -> int:
+async def load_bundle(
+    chain: str, device_pixels: float, fetch, *, rest: bool = False
+) -> int:
     """Fetch one chain's mark bundle and remember it. Returns how many.
 
     `fetch(url)` returns the bytes at a URL, or raises. Injected rather
     than imported so this is testable without a network and so the browser
     and desktop transports stay where they already live.
+
+    `rest=True` asks for the second half of a split chain, which only the
+    largest have. It merges into whatever the first half left rather than
+    replacing it, and a 404 for a chain that was never split is one of the
+    failures that reads as zero.
 
     **Nothing here is allowed to break a page.** A build with no bundles,
     a gateway that will not serve one, a truncated index: all of them come
@@ -239,15 +266,18 @@ async def load_bundle(chain: str, device_pixels: float, fetch) -> int:
     putting this in front of a working path.
     """
     tier = mark_tier(device_pixels)
-    if (chain, tier) in _BUNDLES:
-        return len(_BUNDLES[(chain, tier)])
+    if (chain, tier, rest) in _FETCHED:
+        return len(_BUNDLES.get((chain, tier), {}))
+    _FETCHED.add((chain, tier, rest))
     try:
-        blob = await fetch(bundle_url(chain, tier, ".bin"))
-        raw = await fetch(bundle_url(chain, tier, ".json"))
+        blob = await fetch(bundle_url(chain, tier, ".bin", rest=rest))
+        raw = await fetch(bundle_url(chain, tier, ".json", rest=rest))
         index = json.loads(bytes(raw))
     except asyncio.CancelledError:
         # The page gave up on this chain. Not a failure of the bundle, and
-        # swallowing it would leave the task looking like it succeeded.
+        # swallowing it would leave the task looking like it succeeded --
+        # nor a reason to never ask again, so the note is taken back.
+        _FETCHED.discard((chain, tier, rest))
         raise
     except Exception:
         return 0

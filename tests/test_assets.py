@@ -887,3 +887,138 @@ def test_the_bundle_asked_for_is_the_tier_the_screen_draws() -> None:
     from ui.logos import MARK_SIZE
 
     assert mark_tier(MARK_SIZE * 2) != MARK_PIXELS
+
+
+# -- the big chains arrive in two halves -----------------------------------
+
+
+def test_the_second_half_adds_to_the_first_rather_than_replacing_it() -> None:
+    """A split chain arrives twice, and the tail must not evict the head:
+    the head is what the visible rows were drawn from."""
+    from ui.assets import bundled_mark, remember_bundle
+
+    hot_blob, hot_index = make_bundle({"0xaa": PNG_A})
+    rest_blob, rest_index = make_bundle({"0xbb": PNG_B})
+
+    assert remember_bundle("ethereum", 80, hot_blob, hot_index) == 1
+    assert remember_bundle("ethereum", 80, rest_blob, rest_index) == 2
+
+    assert bundled_mark("ethereum", "0xaa", 80) == PNG_A
+    assert bundled_mark("ethereum", "0xbb", 80) == PNG_B
+
+
+async def test_the_tail_is_asked_for_under_its_own_name() -> None:
+    from ui.assets import REST_INFIX, load_bundle
+
+    asked = []
+
+    async def fetch(url):
+        asked.append(url)
+        raise OSError("404")
+
+    await load_bundle("ethereum", 80, fetch, rest=True)
+
+    assert asked[0].endswith(f"marks@80{REST_INFIX}.bin")
+
+
+async def test_a_chain_that_was_never_split_just_returns_zero() -> None:
+    """Most chains have no tail, so asking for one is a 404 and that has
+    to be ordinary rather than an error."""
+    from ui.assets import load_bundle
+
+    async def missing(_url):
+        raise OSError("404")
+
+    assert await load_bundle("xdai", 80, missing, rest=True) == 0
+
+
+async def test_the_tail_is_fetched_even_though_the_head_is_cached() -> None:
+    """The head-is-cached short circuit must not skip the tail, or a split
+    chain would only ever show its hottest 150 marks."""
+    from ui.assets import load_bundle
+
+    hot_blob, hot_index = make_bundle({"0xaa": PNG_A})
+    rest_blob, rest_index = make_bundle({"0xbb": PNG_B})
+    asked = []
+
+    async def fetch(url):
+        asked.append(url)
+        blob, index = (rest_blob, rest_index) if "-rest" in url else (hot_blob, hot_index)
+        return json.dumps(index).encode() if url.endswith(".json") else blob
+
+    assert await load_bundle("ethereum", 80, fetch) == 1
+    assert await load_bundle("ethereum", 80, fetch, rest=True) == 2
+    assert sum("-rest" in url for url in asked) == 2
+
+
+def test_the_hot_half_is_ranked_and_capped() -> None:
+    """Ranked by how many pools hold a token, over pools ordered by volume,
+    so "hot" is what a visitor is most likely to see. 150 buys 93% of the
+    first page's marks for a quarter of Ethereum's bytes."""
+    from pathlib import Path
+
+    from tools.build_assets import HOT_TOKENS, split_marks
+
+    marks = [Path(f"0x{i:02x}@80.png") for i in range(200)]
+    order = [f"0x{i:02x}" for i in reversed(range(200))]
+
+    hot, rest = split_marks(marks, order)
+
+    assert len(hot) == HOT_TOKENS == 150
+    assert hot[0].name.startswith("0xc7")  # the top of the ranking
+    assert len(rest) == 50
+    assert not set(hot) & set(rest)
+
+
+def test_a_token_no_pool_holds_goes_in_the_tail() -> None:
+    """An unranked token is one no pool on this chain holds. Guessing
+    about it is not better than putting it last."""
+    from pathlib import Path
+
+    from tools.build_assets import split_marks
+
+    marks = [Path("0xaa@80.png"), Path("0xzz@80.png")]
+
+    hot, rest = split_marks(marks, ["0xaa"])
+
+    assert [m.name for m in hot] == ["0xaa@80.png"]
+    assert [m.name for m in rest] == ["0xzz@80.png"]
+
+
+def test_no_ranking_means_one_bundle_rather_than_a_bad_split(tmp_path) -> None:
+    """A build must not need the API to be up. With no ranking the chain
+    is bundled whole, which is what every small chain gets anyway."""
+    from tools.build_assets import bundle_marks
+
+    for i in range(3):
+        (tmp_path / f"0x{i:02x}@80.png").write_bytes(b"\x89PNG" + b"x" * 100)
+
+    bundle_marks(tmp_path, [])
+
+    assert (tmp_path / "marks@80.bin").is_file()
+    assert not (tmp_path / "marks@80-rest.bin").exists()
+
+
+async def test_neither_half_is_fetched_twice() -> None:
+    """`load_pools` runs once at startup and again when a deep link is
+    applied, and the tail has no entry of its own in the store -- so
+    asking the store "is it cached" refetched 2.2 MB of Ethereum on every
+    visit. A failed fetch counts as done too: a 404 for a chain with no
+    tail must not be retried on every reload."""
+    from ui.assets import load_bundle
+
+    hot_blob, hot_index = make_bundle({"0xaa": PNG_A})
+    asked = []
+
+    async def fetch(url):
+        asked.append(url)
+        if "-rest" in url:
+            raise OSError("404")
+        return json.dumps(hot_index).encode() if url.endswith(".json") else hot_blob
+
+    for _ in range(3):
+        await load_bundle("ethereum", 80, fetch)
+        await load_bundle("ethereum", 80, fetch, rest=True)
+
+    assert sum("-rest" in url for url in asked) == 1
+    assert sum("-rest" not in url for url in asked) == 2  # the blob and its index

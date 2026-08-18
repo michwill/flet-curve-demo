@@ -361,6 +361,21 @@ Verified byte-for-byte against the originals: 627/627 on Ethereum.
 `.bin`, because gateways refuse archives **by suffix** — `.zip` or `.tar`
 here would be silently unreachable.
 
+**Ethereum ships two bundles**, because one of them was the first paint. It
+has 627 marks where the next largest chain has 151, and nothing drew until
+all 2,852 KB had landed:
+
+```
+marks@80.bin       658 KB   the 150 hottest tokens -- awaited
+marks@80-rest.bin 2194 KB   the other 477 -- arrives behind it
+```
+
+Hot means how many pools hold a token, over pools ordered by volume, so it
+is what a visitor is most likely to see rather than what is most valuable.
+150 covers 93% of the marks on the first page for a quarter of the bytes.
+Only chains past `SPLIT_ABOVE` are split; everything else is one file, and a
+build that cannot reach the API to rank tokens says so and bundles whole.
+
 **Only tiers 40 and 80 are bundled**, and that is the whole design tension: a
 bundle is a second copy, so bundling all four would double 31.4 MB of marks
 and hand back most of what dropping canvaskit/ won.

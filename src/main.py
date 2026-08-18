@@ -1141,11 +1141,20 @@ class CurveApp:
         # The tier this screen will actually ask for, not the largest one:
         # `MARK_PIXELS` is 160, which is 19 MB of art no ordinary ratio
         # draws. See `mark_tier`, and `BUNDLE_TIERS` in build_assets.
-        count = await load_bundle(
-            self.chain, MARK_SIZE * pixel_ratio(), http.get_bytes
-        )
+        wanted = MARK_SIZE * pixel_ratio()
+        count = await load_bundle(self.chain, wanted, http.get_bytes)
         if count:
             print(f"marks: {count} for {self.chain} in one request")
+        # The big chains ship a second half. Not awaited: the first covers
+        # the rows on screen, and this one fills in behind them as the list
+        # is scrolled. A chain that was never split 404s here and returns
+        # zero, which costs one request and no correctness.
+        async def tail() -> None:
+            more = await load_bundle(self.chain, wanted, http.get_bytes, rest=True)
+            if more > count:
+                print(f"marks: {more - count} more for {self.chain}, filled in behind")
+
+        self._marks_rest = asyncio.create_task(tail())
 
     async def load_pools(self) -> None:
         """Point the list at a fresh feed for the current chain.
@@ -1207,6 +1216,8 @@ class CurveApp:
             # The marks task outlives the failure it did not cause, and an
             # un-awaited task is a warning on the console at best.
             marks.cancel()
+            if rest := getattr(self, "_marks_rest", None):
+                rest.cancel()
             self.error.value = str(exc)
             self.error.visible = True
             self.progress.visible = False

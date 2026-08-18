@@ -361,6 +361,11 @@ Verified byte-for-byte against the originals: 627/627 on Ethereum.
 `.bin`, because gateways refuse archives **by suffix** — `.zip` or `.tar`
 here would be silently unreachable.
 
+**The network marks share one bundle too**, at `curve/chains/`: 160 files
+and 444 KB down to two, 115 KB at tier 80. Same machinery, no ranking and no
+split — the picker draws all 34 the moment it opens, and one file that size
+is not worth two requests.
+
 **Ethereum ships two bundles**, because one of them was the first paint. It
 has 627 marks where the next largest chain has 151, and nothing drew until
 all 2,852 KB had landed:

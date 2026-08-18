@@ -1135,14 +1135,17 @@ class CurveApp:
         """
         if not http.is_browser():
             return
-        from ui.assets import load_bundle
+        from ui.assets import CHAINS, load_bundle, token_bundle
         from ui.logos import MARK_SIZE, pixel_ratio
 
         # The tier this screen will actually ask for, not the largest one:
         # `MARK_PIXELS` is 160, which is 19 MB of art no ordinary ratio
         # draws. See `mark_tier`, and `BUNDLE_TIERS` in build_assets.
         wanted = MARK_SIZE * pixel_ratio()
-        count = await load_bundle(self.chain, wanted, http.get_bytes)
+        # Every network's mark in one file, fetched once for the session --
+        # `load_bundle` remembers it, so a chain switch does not re-ask.
+        await load_bundle(CHAINS, wanted, http.get_bytes)
+        count = await load_bundle(token_bundle(self.chain), wanted, http.get_bytes)
         if count:
             print(f"marks: {count} for {self.chain} in one request")
         # The big chains ship a second half. Not awaited: the first covers
@@ -1150,7 +1153,9 @@ class CurveApp:
         # is scrolled. A chain that was never split 404s here and returns
         # zero, which costs one request and no correctness.
         async def tail() -> None:
-            more = await load_bundle(self.chain, wanted, http.get_bytes, rest=True)
+            more = await load_bundle(
+                token_bundle(self.chain), wanted, http.get_bytes, rest=True
+            )
             if more > count:
                 print(f"marks: {more - count} more for {self.chain}, filled in behind")
 

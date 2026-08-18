@@ -578,7 +578,15 @@ def main() -> int:
 
     files, size = copy_tree(SOURCE / "chains", TARGET / "chains")
     total += size
-    print(f"  chains/            {files} files, {size / 1024:.0f} KB")
+    # One bundle for every network rather than one file each: the picker
+    # draws all 34 the moment it opens, and this was the last multi-file
+    # family left. No ranking and no split -- 115 KB at tier 80 is not
+    # worth two requests.
+    chain_bundles = bundle_marks(TARGET / "chains")
+    print(
+        f"  chains/            {files} files, {size / 1024:.0f} KB"
+        + (f"  -> {len(chain_bundles)} bundles" if chain_bundles else "")
+    )
 
     for chain in chains:
         files, size = copy_tree(

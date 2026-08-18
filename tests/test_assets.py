@@ -769,20 +769,20 @@ def _clean_bundles():
 def test_a_slice_is_the_original_file_byte_for_byte() -> None:
     """The bundle is a concatenation, not a container, which is what lets
     Pyodide use it with no decoder and no image library."""
-    from ui.assets import bundled_mark, remember_bundle
+    from ui.assets import bundled_mark, remember_bundle, token_bundle
 
     blob, index = make_bundle({"0xaa": PNG_A, "0xbb": PNG_B})
 
-    assert remember_bundle("xdai", 80, blob, index) == 2
+    assert remember_bundle(token_bundle("xdai"), 80, blob, index) == 2
     assert bundled_mark("xdai", "0xAA", 80) == PNG_A
     assert bundled_mark("xdai", "0xbb", 80) == PNG_B
 
 
 def test_a_token_not_in_the_bundle_falls_back_rather_than_blanking() -> None:
-    from ui.assets import bundled_mark, remember_bundle
+    from ui.assets import bundled_mark, remember_bundle, token_bundle
 
     blob, index = make_bundle({"0xaa": PNG_A})
-    remember_bundle("xdai", 80, blob, index)
+    remember_bundle(token_bundle("xdai"), 80, blob, index)
 
     assert bundled_mark("xdai", "0xffff", 80) is None
     assert bundled_mark("ethereum", "0xaa", 80) is None  # another chain
@@ -791,13 +791,13 @@ def test_a_token_not_in_the_bundle_falls_back_rather_than_blanking() -> None:
 def test_a_truncated_slice_is_dropped_rather_than_shown() -> None:
     """A short slice is not a PNG, and `ft.Image` would draw nothing where
     asking for the file would have drawn a logo."""
-    from ui.assets import bundled_mark, remember_bundle
+    from ui.assets import bundled_mark, remember_bundle, token_bundle
 
     blob, index = make_bundle({"0xaa": PNG_A})
     index["0xbb"] = (0, len(blob) + 999)  # runs off the end
     index["0xcc"] = (2, 4)  # lands mid-file, so no PNG magic
 
-    assert remember_bundle("xdai", 80, blob, index) == 1
+    assert remember_bundle(token_bundle("xdai"), 80, blob, index) == 1
     assert bundled_mark("xdai", "0xbb", 80) is None
     assert bundled_mark("xdai", "0xcc", 80) is None
 
@@ -806,18 +806,18 @@ async def test_a_missing_bundle_is_zero_rather_than_an_error() -> None:
     """Nothing here may break a page. A build with no bundles, a gateway
     that will not serve one, a truncated index -- all come back as zero
     and every mark asks for its own file, exactly as before bundles."""
-    from ui.assets import bundled_mark, load_bundle
+    from ui.assets import bundled_mark, load_bundle, token_bundle
 
     async def dead(_url):
         raise OSError("404")
 
-    assert await load_bundle("xdai", 80, dead) == 0
+    assert await load_bundle(token_bundle("xdai"), 80, dead) == 0
     assert bundled_mark("xdai", "0xaa", 80) is None
 
 
 async def test_a_bundle_is_fetched_once_per_chain_and_tier() -> None:
     """The point of it: one request for a chain, not one per coin."""
-    from ui.assets import load_bundle
+    from ui.assets import load_bundle, token_bundle
 
     blob, index = make_bundle({"0xaa": PNG_A, "0xbb": PNG_B})
     asked = []
@@ -826,8 +826,8 @@ async def test_a_bundle_is_fetched_once_per_chain_and_tier() -> None:
         asked.append(url)
         return json.dumps(index).encode() if url.endswith(".json") else blob
 
-    assert await load_bundle("xdai", 80, fetch) == 2
-    assert await load_bundle("xdai", 80, fetch) == 2  # cached, no new requests
+    assert await load_bundle(token_bundle("xdai"), 80, fetch) == 2
+    assert await load_bundle(token_bundle("xdai"), 80, fetch) == 2  # cached, no new requests
 
     assert len(asked) == 2  # the blob and its index, once
     assert asked[0].endswith("marks@80.bin")
@@ -835,7 +835,7 @@ async def test_a_bundle_is_fetched_once_per_chain_and_tier() -> None:
 
 
 async def test_the_tier_asked_for_is_the_one_the_screen_needs() -> None:
-    from ui.assets import load_bundle, mark_tier
+    from ui.assets import load_bundle, mark_tier, token_bundle
 
     asked = []
 
@@ -843,7 +843,7 @@ async def test_the_tier_asked_for_is_the_one_the_screen_needs() -> None:
         asked.append(url)
         raise OSError("stop here")
 
-    await load_bundle("xdai", 24 * 3, fetch)
+    await load_bundle(token_bundle("xdai"), 24 * 3, fetch)
 
     assert f"marks@{mark_tier(72)}.bin" in asked[0]
 
@@ -851,10 +851,10 @@ async def test_the_tier_asked_for_is_the_one_the_screen_needs() -> None:
 def test_a_bundled_mark_needs_no_retry_chain() -> None:
     """It is already in memory, so there is no request to fail and nothing
     to ask twice. The retry exists for files fetched from a gateway."""
-    from ui.assets import remember_bundle
+    from ui.assets import remember_bundle, token_bundle
 
     blob, index = make_bundle({USDC.lower(): PNG_A})
-    remember_bundle("ethereum", 80, blob, index)
+    remember_bundle(token_bundle("ethereum"), 80, blob, index)
 
     mark = token_mark(coin("USDC", USDC), "ethereum", 24)
     urls = [src for src in attempts(mark) if isinstance(src, str)]
@@ -897,20 +897,20 @@ def test_the_bundle_asked_for_is_the_tier_the_screen_draws() -> None:
 def test_the_second_half_adds_to_the_first_rather_than_replacing_it() -> None:
     """A split chain arrives twice, and the tail must not evict the head:
     the head is what the visible rows were drawn from."""
-    from ui.assets import bundled_mark, remember_bundle
+    from ui.assets import bundled_mark, remember_bundle, token_bundle
 
     hot_blob, hot_index = make_bundle({"0xaa": PNG_A})
     rest_blob, rest_index = make_bundle({"0xbb": PNG_B})
 
-    assert remember_bundle("ethereum", 80, hot_blob, hot_index) == 1
-    assert remember_bundle("ethereum", 80, rest_blob, rest_index) == 2
+    assert remember_bundle(token_bundle("ethereum"), 80, hot_blob, hot_index) == 1
+    assert remember_bundle(token_bundle("ethereum"), 80, rest_blob, rest_index) == 2
 
     assert bundled_mark("ethereum", "0xaa", 80) == PNG_A
     assert bundled_mark("ethereum", "0xbb", 80) == PNG_B
 
 
 async def test_the_tail_is_asked_for_under_its_own_name() -> None:
-    from ui.assets import REST_INFIX, load_bundle
+    from ui.assets import REST_INFIX, load_bundle, token_bundle
 
     asked = []
 
@@ -918,7 +918,7 @@ async def test_the_tail_is_asked_for_under_its_own_name() -> None:
         asked.append(url)
         raise OSError("404")
 
-    await load_bundle("ethereum", 80, fetch, rest=True)
+    await load_bundle(token_bundle("ethereum"), 80, fetch, rest=True)
 
     assert asked[0].endswith(f"marks@80{REST_INFIX}.bin")
 
@@ -926,18 +926,18 @@ async def test_the_tail_is_asked_for_under_its_own_name() -> None:
 async def test_a_chain_that_was_never_split_just_returns_zero() -> None:
     """Most chains have no tail, so asking for one is a 404 and that has
     to be ordinary rather than an error."""
-    from ui.assets import load_bundle
+    from ui.assets import load_bundle, token_bundle
 
     async def missing(_url):
         raise OSError("404")
 
-    assert await load_bundle("xdai", 80, missing, rest=True) == 0
+    assert await load_bundle(token_bundle("xdai"), 80, missing, rest=True) == 0
 
 
 async def test_the_tail_is_fetched_even_though_the_head_is_cached() -> None:
     """The head-is-cached short circuit must not skip the tail, or a split
     chain would only ever show its hottest 150 marks."""
-    from ui.assets import load_bundle
+    from ui.assets import load_bundle, token_bundle
 
     hot_blob, hot_index = make_bundle({"0xaa": PNG_A})
     rest_blob, rest_index = make_bundle({"0xbb": PNG_B})
@@ -948,8 +948,8 @@ async def test_the_tail_is_fetched_even_though_the_head_is_cached() -> None:
         blob, index = (rest_blob, rest_index) if "-rest" in url else (hot_blob, hot_index)
         return json.dumps(index).encode() if url.endswith(".json") else blob
 
-    assert await load_bundle("ethereum", 80, fetch) == 1
-    assert await load_bundle("ethereum", 80, fetch, rest=True) == 2
+    assert await load_bundle(token_bundle("ethereum"), 80, fetch) == 1
+    assert await load_bundle(token_bundle("ethereum"), 80, fetch, rest=True) == 2
     assert sum("-rest" in url for url in asked) == 2
 
 
@@ -1007,7 +1007,7 @@ async def test_neither_half_is_fetched_twice() -> None:
     asking the store "is it cached" refetched 2.2 MB of Ethereum on every
     visit. A failed fetch counts as done too: a 404 for a chain with no
     tail must not be retried on every reload."""
-    from ui.assets import load_bundle
+    from ui.assets import load_bundle, token_bundle
 
     hot_blob, hot_index = make_bundle({"0xaa": PNG_A})
     asked = []
@@ -1019,8 +1019,8 @@ async def test_neither_half_is_fetched_twice() -> None:
         return json.dumps(hot_index).encode() if url.endswith(".json") else hot_blob
 
     for _ in range(3):
-        await load_bundle("ethereum", 80, fetch)
-        await load_bundle("ethereum", 80, fetch, rest=True)
+        await load_bundle(token_bundle("ethereum"), 80, fetch)
+        await load_bundle(token_bundle("ethereum"), 80, fetch, rest=True)
 
     assert sum("-rest" in url for url in asked) == 1
     assert sum("-rest" not in url for url in asked) == 2  # the blob and its index
@@ -1066,12 +1066,12 @@ def test_the_clamp_never_asks_for_art_smaller_than_it_must() -> None:
 def test_the_loader_and_the_lookup_agree_on_the_tier() -> None:
     """They must, or the app fetches one bundle and reads another. That is
     silent: every mark misses and the bundles simply stop being used."""
-    from ui.assets import bundle_tier, bundled_mark, remember_bundle
+    from ui.assets import bundle_tier, bundled_mark, remember_bundle, token_bundle
     from ui.logos import MARK_SIZE
 
     drawn = MARK_SIZE * 3
     blob, index = make_bundle({"0xaa": PNG_A})
-    remember_bundle("xdai", bundle_tier(drawn), blob, index)
+    remember_bundle(token_bundle("xdai"), bundle_tier(drawn), blob, index)
 
     assert bundled_mark("xdai", "0xaa", drawn) == PNG_A
 
@@ -1082,3 +1082,56 @@ def test_the_build_and_the_app_share_one_list_of_tiers() -> None:
     from ui.assets import BUNDLED_TIERS
 
     assert BUNDLE_TIERS is BUNDLED_TIERS
+
+
+# -- the network marks, 160 files down to two ------------------------------
+
+
+def test_the_network_marks_share_one_bundle() -> None:
+    """34 chains, and the picker draws all of them the moment it opens.
+    One file for every network rather than one each -- 160 files and 444
+    KB was the last multi-file family in the build."""
+    from ui.assets import CHAINS, bundled_chain, remember_bundle
+
+    blob, index = make_bundle({"ethereum": PNG_A, "xdai": PNG_B})
+    remember_bundle(CHAINS, 80, blob, index)
+
+    assert bundled_chain("ethereum", 80) == PNG_A
+    assert bundled_chain("xdai", 80) == PNG_B
+    assert bundled_chain("nowhere", 80) is None
+
+
+def test_the_two_families_do_not_collide() -> None:
+    """`chains` and `tokens/<chain>` are different bundles, and a chain
+    named the same as nothing in particular must not read one for the
+    other -- they are keyed by the directory the marks live in."""
+    from ui.assets import (
+        CHAINS,
+        bundled_chain,
+        bundled_mark,
+        remember_bundle,
+        token_bundle,
+    )
+
+    chain_blob, chain_index = make_bundle({"ethereum": PNG_A})
+    token_blob, token_index = make_bundle({"ethereum": PNG_B})
+    remember_bundle(CHAINS, 80, chain_blob, chain_index)
+    remember_bundle(token_bundle("ethereum"), 80, token_blob, token_index)
+
+    assert bundled_chain("ethereum", 80) == PNG_A
+    assert bundled_mark("ethereum", "ethereum", 80) == PNG_B
+
+
+def test_a_network_mark_from_the_bundle_needs_no_retry() -> None:
+    """Same reasoning as a coin's: it is in memory, so there is no request
+    to fail and nothing to ask twice."""
+    from ui.assets import CHAINS, bundle_tier, remember_bundle
+    from ui.logos import chain_mark, pixel_ratio
+
+    blob, index = make_bundle({"ethereum": PNG_A})
+    remember_bundle(CHAINS, bundle_tier(18 * pixel_ratio()), blob, index)
+
+    mark = chain_mark("ethereum", 18)
+
+    assert mark.src == PNG_A
+    assert isinstance(mark.src, bytes)

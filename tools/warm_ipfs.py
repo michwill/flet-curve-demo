@@ -166,7 +166,12 @@ def bundle_files(root: Path, tiers: tuple[int, ...], chains: list[str]) -> list[
     if not base.is_dir():
         return []
     found = []
-    for chain in sorted(p for p in base.iterdir() if p.is_dir()):
+    # The network marks ride in one bundle of their own beside the coins',
+    # in `curve/chains/`. Every page draws one and the picker draws all of
+    # them, so leaving it cold is a missing logo on every screen.
+    directories = [root / MARKS_DIR[0] / "chains"] if not chains else []
+    directories += [p for p in sorted(base.iterdir()) if p.is_dir()]
+    for chain in directories:
         if chains and chain.name not in chains:
             continue
         for tier in tiers:

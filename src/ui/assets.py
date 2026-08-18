@@ -181,12 +181,24 @@ def _exists(relative: str) -> bool:
     return (_LOCAL_ROOT / relative).is_file()
 
 
-#: One chain's marks at one tier, once fetched: `(chain, tier)` -> bytes
-#: per address. Empty until something calls `remember_bundle`, and a miss
-#: is not an error -- `token_logo` falls back to the file's own URL, which
-#: is what every build did before bundles existed and what desktop still
-#: does.
+#: One bundle at one tier, once fetched: `(directory, tier)` -> bytes per
+#: name. The directory is the one the marks live in relative to the assets
+#: root -- `tokens/xdai` for a chain's coins, `chains` for the network
+#: marks -- because those are the same shape and want the same treatment,
+#: and keying by it is what lets one loader serve both.
+#:
+#: Empty until something calls `remember_bundle`, and a miss is not an
+#: error: the caller falls back to the file's own URL, which is what every
+#: build did before bundles existed and what desktop still does.
 _BUNDLES: dict[tuple[str, int], dict[str, bytes]] = {}
+
+#: Where a chain's coin marks live, and where the network marks do.
+TOKENS = "tokens"
+CHAINS = "chains"
+
+
+def token_bundle(chain: str) -> str:
+    return f"{TOKENS}/{chain}"
 
 #: Which `(chain, tier, rest)` have already been fetched, successfully or
 #: not. Separate from `_BUNDLES` because the two halves share one entry
@@ -232,13 +244,13 @@ def bundle_tier(device_pixels: float) -> int:
 REST_INFIX = "-rest"
 
 
-def bundle_url(chain: str, tier: int, suffix: str, *, rest: bool = False) -> str:
-    """Where one chain's bundle lives. See `BUNDLE_STEM` in build_assets."""
+def bundle_url(directory: str, tier: int, suffix: str, *, rest: bool = False) -> str:
+    """Where a bundle lives. See `BUNDLE_STEM` in build_assets."""
     infix = REST_INFIX if rest else ""
-    return asset_url("tokens", chain, f"marks@{tier}{infix}{suffix}")
+    return asset_url(*directory.split("/"), f"marks@{tier}{infix}{suffix}")
 
 
-def remember_bundle(chain: str, tier: int, blob: bytes, index: dict) -> int:
+def remember_bundle(directory: str, tier: int, blob: bytes, index: dict) -> int:
     """Cut a fetched bundle into one PNG per address. Returns how many.
 
     The slices are the original files byte for byte -- the bundle is a
@@ -253,7 +265,7 @@ def remember_bundle(chain: str, tier: int, blob: bytes, index: dict) -> int:
     slice is not a PNG, and `ft.Image` would render nothing where the URL
     fallback would have rendered a logo.
     """
-    marks = dict(_BUNDLES.get((chain, tier), {}))
+    marks = dict(_BUNDLES.get((directory, tier), {}))
     for address, span in (index or {}).items():
         try:
             start, length = int(span[0]), int(span[1])
@@ -263,7 +275,7 @@ def remember_bundle(chain: str, tier: int, blob: bytes, index: dict) -> int:
         if len(chunk) == length and chunk[:4] == b"\x89PNG":
             marks[str(address).lower()] = chunk
     if marks:
-        _BUNDLES[(chain, tier)] = marks
+        _BUNDLES[(directory, tier)] = marks
     return len(marks)
 
 
@@ -275,7 +287,7 @@ def forget_bundles() -> None:
 
 
 async def load_bundle(
-    chain: str, device_pixels: float, fetch, *, rest: bool = False
+    directory: str, device_pixels: float, fetch, *, rest: bool = False
 ) -> int:
     """Fetch one chain's mark bundle and remember it. Returns how many.
 
@@ -295,22 +307,22 @@ async def load_bundle(
     putting this in front of a working path.
     """
     tier = bundle_tier(device_pixels)
-    if (chain, tier, rest) in _FETCHED:
-        return len(_BUNDLES.get((chain, tier), {}))
-    _FETCHED.add((chain, tier, rest))
+    if (directory, tier, rest) in _FETCHED:
+        return len(_BUNDLES.get((directory, tier), {}))
+    _FETCHED.add((directory, tier, rest))
     try:
-        blob = await fetch(bundle_url(chain, tier, ".bin", rest=rest))
-        raw = await fetch(bundle_url(chain, tier, ".json", rest=rest))
+        blob = await fetch(bundle_url(directory, tier, ".bin", rest=rest))
+        raw = await fetch(bundle_url(directory, tier, ".json", rest=rest))
         index = json.loads(bytes(raw))
     except asyncio.CancelledError:
         # The page gave up on this chain. Not a failure of the bundle, and
         # swallowing it would leave the task looking like it succeeded --
         # nor a reason to never ask again, so the note is taken back.
-        _FETCHED.discard((chain, tier, rest))
+        _FETCHED.discard((directory, tier, rest))
         raise
     except Exception:
         return 0
-    return remember_bundle(chain, tier, bytes(blob), index)
+    return remember_bundle(directory, tier, bytes(blob), index)
 
 
 def bundled_mark(chain: str, address: str, device_pixels: float) -> bytes | None:
@@ -321,11 +333,27 @@ def bundled_mark(chain: str, address: str, device_pixels: float) -> bytes | None
     """
     if not chain or not address:
         return None
+    return _bundled(token_bundle(chain), address, device_pixels)
+
+
+def bundled_chain(name: str, device_pixels: float) -> bytes | None:
+    """A network's mark out of the `chains` bundle, or None.
+
+    One bundle for every chain rather than one each: there are 34 of them,
+    the picker draws all of them at once when it opens, and 160 files for
+    444 KB was the last multi-file family left in the build.
+    """
+    return _bundled(CHAINS, name, device_pixels)
+
+
+def _bundled(directory: str, name: str, device_pixels: float) -> bytes | None:
+    if not directory or not name:
+        return None
     # `bundle_tier`, the same call the loader made -- an exact `mark_tier`
     # here would miss the bundle it just fetched on any screen whose ideal
     # tier is not bundled.
-    marks = _BUNDLES.get((chain, bundle_tier(device_pixels)))
-    return marks.get(address.strip().lower()) if marks else None
+    marks = _BUNDLES.get((directory, bundle_tier(device_pixels)))
+    return marks.get(name.strip().lower()) if marks else None
 
 
 def chain_logo(chain: str, device_pixels: float = MARK_PIXELS) -> str | None:

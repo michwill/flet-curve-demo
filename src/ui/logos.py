@@ -17,7 +17,7 @@ import flet as ft
 
 from curve.models import Coin, Pool
 
-from .assets import MARK_PIXELS, bundled_mark, chain_logo, token_logo
+from .assets import MARK_PIXELS, bundled_chain, bundled_mark, chain_logo, token_logo
 
 #: How a logo gets from 200-280px of source art down to the 22-34px it is
 #: drawn at. Two knobs, and the answer is not the intuitive one.
@@ -389,6 +389,16 @@ def chain_mark(
     selected network's, once.
     """
     wanted = MARK_PIXELS if sized_by_parent else size * pixel_ratio()
+    if packed := bundled_chain(chain, wanted):
+        # Out of the one file every network mark ships in. No request, so
+        # nothing to retry -- see `token_mark`.
+        return ft.Image(
+            src=packed,
+            width=size,
+            height=size,
+            fit=ft.BoxFit.CONTAIN,
+            filter_quality=SAMPLING,
+        )
     source = chain_logo(chain, wanted)
     if not source:
         return None

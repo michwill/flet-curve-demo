@@ -14,8 +14,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from tools import publish_ipfs as ipfs
 from tools import warm_ipfs as warm
 
@@ -38,7 +36,7 @@ def options(**kw):
         "tiers": warm.DEFAULT_TIERS,
         "chains": [],
         "boot_only": False,
-        "boot": False,
+        "boot": True,
         "all_marks": False,
         "dist": Path("."),
         "chunk": warm.CHUNK,
@@ -100,14 +98,27 @@ def test_a_build_with_no_marks_compiled_is_not_an_error(tmp_path: Path) -> None:
     assert warm.mark_files(build(tmp_path), (80,), []) == []
 
 
-def test_the_marks_are_the_default_and_the_boot_set_is_not(tmp_path: Path) -> None:
-    """Bytes, not taste. On this build the boot set is 60.7 MB against the
-    marks' 10.9 -- 85% of the weight, warmed on every publish already, and
-    at an observed 2 KB/s it is eight hours on its own. The marks are the
-    half nothing else ever warms."""
+def test_the_boot_set_is_part_of_the_default_run(tmp_path: Path) -> None:
+    """It was left out on two arguments that have both since expired.
+
+    It was 77 files and 60.7 MB -- 85% of the weight -- until canvaskit/
+    and pyodide/ stopped being pinned, which took 54 MB of that away; and
+    publishing was said to warm it, which it does only when the run
+    reaches its warm stage, behind `wait_for_ens` and on one gateway.
+
+    Measured on a build that was published *and* warmed: a 4 KB icon font
+    answering 504 after 17.6 seconds, one browser drawing a page full of
+    holes and another not loading at all."""
     root = build(tmp_path, {"xdai": ["0xaa@80.png"]})
 
-    assert warm.plan(root, options(all_marks=True)) == ["curve/tokens/xdai/0xaa@80.png"]
+    assert warm.plan(root, options(all_marks=True)) == [
+        "index.html",
+        "main.dart.js",
+        "curve/tokens/xdai/0xaa@80.png",
+    ]
+    assert warm.plan(root, options(boot=False, all_marks=True)) == [
+        "curve/tokens/xdai/0xaa@80.png"
+    ]
 
 
 def test_the_bundles_are_warmed_and_the_loose_marks_are_not(tmp_path: Path) -> None:
@@ -117,7 +128,7 @@ def test_the_bundles_are_warmed_and_the_loose_marks_are_not(tmp_path: Path) -> N
     warming eventually rather than first."""
     root = build(tmp_path, {"xdai": ["0xaa@80.png", "marks@80.bin", "marks@80.json"]})
 
-    assert warm.plan(root, options()) == [
+    assert warm.plan(root, options(boot=False)) == [
         "curve/tokens/xdai/marks@80.bin",
         "curve/tokens/xdai/marks@80.json",
     ]
@@ -134,12 +145,12 @@ def test_the_bundles_come_before_the_marks_they_back(tmp_path: Path) -> None:
     )
 
 
-def test_the_boot_set_can_be_added_and_comes_first(tmp_path: Path) -> None:
+def test_the_boot_set_comes_first(tmp_path: Path) -> None:
     """It decides whether the site loads, where the marks only decide
     whether it looks right, so an interrupted run should buy it first."""
     root = build(tmp_path, {"xdai": ["0xaa@80.png"]})
 
-    paths = warm.plan(root, options(boot=True, all_marks=True))
+    paths = warm.plan(root, options(all_marks=True))
 
     assert paths[:2] == ["index.html", "main.dart.js"]
     assert paths[-1] == "curve/tokens/xdai/0xaa@80.png"
@@ -148,10 +159,10 @@ def test_the_boot_set_can_be_added_and_comes_first(tmp_path: Path) -> None:
 def test_either_half_can_be_asked_for_alone(tmp_path: Path) -> None:
     root = build(tmp_path, {"xdai": ["0xaa@80.png"]})
 
-    assert warm.plan(root, options(boot=True, boot_only=True)) == [
-        "index.html", "main.dart.js"
+    assert warm.plan(root, options(boot_only=True)) == ["index.html", "main.dart.js"]
+    assert warm.plan(root, options(boot=False, all_marks=True)) == [
+        "curve/tokens/xdai/0xaa@80.png"
     ]
-    assert warm.plan(root, options(all_marks=True)) == ["curve/tokens/xdai/0xaa@80.png"]
 
 
 # -- tiers -----------------------------------------------------------------
@@ -226,14 +237,43 @@ def test_a_long_failure_list_is_truncated(monkeypatch, capsys) -> None:
 # -- the script itself -----------------------------------------------------
 
 
-def test_asking_for_nothing_is_refused(monkeypatch, tmp_path: Path) -> None:
-    """`--boot-only --marks-only` is not an empty warm, it is a mistake."""
-    monkeypatch.setattr(
-        "sys.argv", ["warm_ipfs.py", "--dist", str(build(tmp_path)), "--boot-only", "--marks-only"]
-    )
-    with pytest.raises(SystemExit) as caught:
-        warm.main()
-    assert caught.value.code == 2
+def _warmed_by(monkeypatch, root: Path, *flags: str) -> list[str]:
+    """Every path one run of the CLI actually asks for."""
+    asked: list[str] = []
+
+    def watch(_cid, paths, **_kw):
+        asked.extend(paths)
+        return {}
+
+    monkeypatch.setattr(warm, "verify", watch)
+    monkeypatch.setattr("sys.argv", ["warm_ipfs.py", "--dist", str(root), *flags])
+    warm.main()
+    return asked
+
+
+def test_running_it_with_no_flags_warms_what_a_visitor_fetches(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """Which is the whole lesson of a build that was published, warmed,
+    and still would not load: the warm had been told to skip exactly the
+    files that decide whether it does."""
+    root = with_chain_marks(build(tmp_path, {"xdai": ["marks@80.bin"]}), ["ethereum"])
+
+    warmed = _warmed_by(monkeypatch, root)
+
+    assert "index.html" in warmed                     # it loads at all
+    assert "curve/tokens/xdai/marks@80.bin" in warmed  # the coins
+    assert "curve/chains/marks@80.bin" in warmed       # the networks
+
+
+def test_the_boot_set_can_still_be_skipped(monkeypatch, tmp_path: Path) -> None:
+    """`--no-boot` is the old default, for a run that only wants the logos."""
+    root = with_chain_marks(build(tmp_path), ["ethereum"])
+
+    warmed = _warmed_by(monkeypatch, root, "--no-boot")
+
+    assert "curve/chains/marks@80.bin" in warmed, "it still warms the marks"
+    assert "index.html" not in warmed
 
 
 def test_no_build_says_so_rather_than_warming_nothing(monkeypatch, tmp_path: Path, capsys) -> None:
@@ -388,11 +428,11 @@ def test_the_marks_get_more_workers_than_the_boot_set(monkeypatch, tmp_path) -> 
     seen = {}
     monkeypatch.setattr(warm, "verify", lambda _c, _p, **kw: seen.update(kw) or {})
 
-    monkeypatch.setattr("sys.argv", ["warm_ipfs.py", "--dist", str(root)])
+    monkeypatch.setattr("sys.argv", ["warm_ipfs.py", "--dist", str(root), "--no-boot"])
     warm.main()
     assert seen["workers"] == warm.MARK_WORKERS == 8
 
-    monkeypatch.setattr("sys.argv", ["warm_ipfs.py", "--dist", str(root), "--boot"])
+    monkeypatch.setattr("sys.argv", ["warm_ipfs.py", "--dist", str(root)])
     warm.main()
     assert seen["workers"] == ipfs.WARM_WORKERS == 2
 
@@ -484,6 +524,18 @@ def test_the_network_marks_are_warmed_at_every_tier(tmp_path: Path) -> None:
     ]
 
 
+def test_the_curve_mark_is_warmed_too(tmp_path: Path) -> None:
+    """It lives under `LAZY_DIR` with the 3,358 token marks, so publishing
+    skips it -- and it is the logo in the header of every screen, not a
+    long tail. Watched loading as a wordmark with no mark beside it."""
+    root = build(tmp_path)
+    branding = root / "curve" / "branding"
+    branding.mkdir(parents=True)
+    (branding / "logo.svg").write_text("<svg/>")
+
+    assert "curve/branding/logo.svg" in warm.plan(root, options())
+
+
 def test_the_network_marks_are_warmed_without_being_asked_for(tmp_path: Path) -> None:
     """Unlike the 3,358 token marks behind `--all-marks`. 160 files for
     the one family that appears on every screen, and the family a blank
@@ -505,6 +557,6 @@ def test_naming_chains_still_means_those_chains_marks(tmp_path: Path) -> None:
     every network's own logo in on top of that would ignore it."""
     root = with_chain_marks(build(tmp_path, {"xdai": ["marks@80.bin"]}), ["ethereum"])
 
-    paths = warm.plan(root, options(chains=["xdai"]))
+    paths = warm.plan(root, options(chains=["xdai"], boot=False))
 
     assert paths == ["curve/tokens/xdai/marks@80.bin"]

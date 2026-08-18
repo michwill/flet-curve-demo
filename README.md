@@ -232,10 +232,30 @@ that does nothing but warm, safe to run at any time and as often as
 patience allows, because it only asks for files that are already published:
 
 ```
-python tools/warm_ipfs.py                 # the token marks, both gateways
-python tools/warm_ipfs.py --boot          # and the boot set as well
+python tools/warm_ipfs.py                 # everything a visitor fetches
+python tools/warm_ipfs.py --no-boot       # just the logos
+python tools/warm_ipfs.py --boot-only     # just what decides it loads at all
 python tools/warm_ipfs.py --tiers all     # every compiled size
 python tools/warm_ipfs.py --chains xdai   # one chain's marks
+```
+
+**"Warmed" has to mean everything a visitor fetches**, which this did not
+mean for one release and cost an afternoon. The boot set used to be opt-in
+here on the grounds that it was 85% of the weight and that publishing warmed
+it anyway. Both stopped being true: dropping canvaskit/ and pyodide/ took
+54 MB out of it, and publishing only warms it if the run reached its warm
+stage — which sits behind `wait_for_ens`, on one gateway, so a name moved by
+hand after the script gave up leaves it cold.
+
+What that looked like: a build published *and* warmed, with a 4 KB icon font
+answering 504 after 17.6 seconds. Chrome drew the app with holes where every
+glyph should be; Falkon did not load it at all. So the boot set is back in
+the default run, and `publish_ipfs.py` now ends by naming this script.
+
+```
+boot set      59 files   21.2 MB    decides whether it loads
+bundles      140 files   11.0 MB    decides whether it looks right
+loose marks 3,358 files  10.9 MB    --all-marks, the fallback behind those
 ```
 
 **It warms the bundles, not the loose marks.** A browser fetches one pair
@@ -249,18 +269,11 @@ in `CurveApp.__init__`, before any bundle can exist, and it asks for the top
 tier because a decoration box stretches it. 160 files and 444 KB, for the
 one family that appears on every screen.
 
-**The marks are the default and the boot set is not**, which is a decision
-about bytes rather than taste:
-
-```
-boot set      77 files   60.7 MB     warmed on every publish already
-marks      3,358 files   10.9 MB     warmed by nothing else, ever
-```
-
-The boot set is 85% of the weight and is the half publishing already covers.
-Measured on one bad afternoon, a gateway serving at 2 KB/s turned it into an
-eight-hour job on its own, where every mark on every chain was ninety
-minutes. So the default run is the part that is actually neglected.
+Boot files come first within a run: they decide whether the site loads,
+where the marks only decide whether it looks right, so an interrupted run
+should have bought the first. `--no-boot` skips them for a run that only
+wants the logos, and `--boot-only` is the fastest way back from a publish
+that left the site dark.
 
 It differs from `publish_ipfs --warm` in two ways, both deliberate.
 

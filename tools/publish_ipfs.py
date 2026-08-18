@@ -1501,6 +1501,24 @@ def wait_for_ens(
             client.close()
 
 
+#: What this stage does *not* cover, said where it is noticed.
+#:
+#: This warms the boot set, through one gateway, and that is by design --
+#: see `LAZY_DIR` for why 6,716 marks are not checked on every publish, and
+#: `WARM_GATEWAY` for why the warming is attached to the name people use.
+#: But a visitor fetches more than the boot set, and there are two gateways.
+#:
+#: Saying so here is the fix for a real afternoon: a build was published,
+#: warmed, and still would not load in one browser and drew a page full of
+#: holes in another, because nothing had asked for the mark bundles or for
+#: the second gateway at all.
+NEXT_WARM = (
+    "\n  Then warm what a visitor fetches beyond the boot set -- the mark\n"
+    "  bundles, and the other gateway:\n\n"
+    "      python tools/warm_ipfs.py\n"
+)
+
+
 def warm(host: str, paths: list[str], options) -> int:
     """Pull the boot set through the gateway people use, until it all lands.
 
@@ -1543,6 +1561,7 @@ def warm(host: str, paths: list[str], options) -> int:
             f"  all {len(paths)} served by {host} after "
             f"{elapsed_text(time.monotonic() - started)}"
         )
+        print(NEXT_WARM)
         return 0
 
     print(f"\n  still not served by {host}:")
@@ -1553,6 +1572,7 @@ def warm(host: str, paths: list[str], options) -> int:
         "  so a file that failed this time is often warm by the next. This is\n"
         "  a mitigation, not a cure: see WARM_GATEWAY."
     )
+    print(NEXT_WARM)
     return 1
 
 

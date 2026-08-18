@@ -19,7 +19,14 @@ and pointed at more of the site:
     that reasoning is about *publishing*. A job that runs occasionally can
     afford what a job that runs on every deploy cannot -- and those files
     are precisely the ones nobody has ever warmed, which is why a missing
-    coin logo is the most visible form this bug takes.
+    coin logo is the most visible form this bug takes;
+  * **and the boot set, unless told not to.** Publishing warms it only if
+    the run got that far -- the warm stage sits behind `wait_for_ens`, on
+    one gateway -- so a name moved by hand after the script gave up leaves
+    it cold. A build published and then warmed by a run that skipped the
+    boot set still had a 4 KB icon font answering 504 after 17.6 seconds:
+    one browser drew a page with holes in it and another would not load at
+    all. "Warmed" has to mean the whole of what a visitor fetches.
 
 Nothing here changes what is published. It only asks for files that are
 already there, which is why it is safe to run at any time, as often as
@@ -33,9 +40,11 @@ published site rather than a fault here -- but it means the honest way to
 read a 404 from this script is "rebuild, or you are warming the wrong
 list".
 
-    tools/warm_ipfs.py                    # boot set + marks, both gateways
-    tools/warm_ipfs.py --marks-only       # just the logos
+    tools/warm_ipfs.py                    # everything a visitor fetches
+    tools/warm_ipfs.py --no-boot          # just the logos
+    tools/warm_ipfs.py --boot-only        # just what decides it loads at all
     tools/warm_ipfs.py --tiers all        # every compiled size
+    tools/warm_ipfs.py --all-marks        # the loose marks behind the bundles
     tools/warm_ipfs.py --gateway https://curve.eth.limo
 """
 
@@ -215,26 +224,51 @@ def chain_files(root: Path) -> list[str]:
     ]
 
 
+def brand_files(root: Path) -> list[str]:
+    """The Curve mark itself, and anything else committed under `branding/`.
+
+    One file, 428 KB, drawn in the header of every screen -- and a member
+    of `LAZY_DIR`, so publishing skips it exactly as it skips 3,358 token
+    marks. That grouping is right for the marks and wrong for this: it is
+    not a long tail, it is the logo.
+    """
+    base = root / MARKS_DIR[0] / "branding"
+    if not base.is_dir():
+        return []
+    return [
+        path.relative_to(root).as_posix() for path in sorted(base.iterdir())
+        if path.is_file()
+    ]
+
+
 def plan(root: Path, options) -> list[str]:
-    """What to ask for. The marks, unless the boot set is asked for too.
+    """What to ask for: the boot set and the mark bundles, in that order.
 
-    **The marks are the default and the boot set is not**, which is the
-    opposite of what this script started with, and the reason is bytes
-    rather than taste. Measured on this build:
+    **The boot set is back in the default run**, and both halves of the
+    reasoning that took it out have since stopped being true.
 
-        boot set     77 files   60.7 MB
-        marks      3,358 files  10.9 MB
+    It was excluded because it was 77 files and 60.7 MB -- 85% of the
+    weight -- and because publishing warms it anyway. Dropping canvaskit/
+    and pyodide/ from the pin took 54 MB of that away:
 
-    The boot set is 85% of the weight, it is warmed on every publish, and
-    77 files of it are large enough that one slow gateway turns the run
-    into an overnight job -- observed at 2 KB/s, which is eight hours for
-    the boot set alone and ninety minutes for every mark on every chain.
-    The marks are the half nothing else ever warms. So this warms those,
-    and `--boot` adds the rest when that is what you want.
+        boot set      59 files   21.2 MB
+        bundles      140 files   11.0 MB
+        loose marks 3,358 files  10.9 MB    --all-marks
 
-    Boot files still come first when they are included: they decide whether
-    the site loads at all, where the marks only decide whether it looks
-    right, and an interrupted run should have bought the first.
+    And publishing only warms it if the run got that far: the warm stage
+    sits behind `wait_for_ens`, on one gateway, and a name moved by hand
+    after the script gave up leaves the whole boot set cold. That is not
+    hypothetical -- it is what a published build looked like: the icon
+    font 504ing after 17.6s, `app-package.json` the same, one browser
+    showing a page with holes in it and another not loading at all, after
+    a warm run that had been told to skip exactly those files.
+
+    So the default is now everything a visitor touches, and `--no-boot`
+    is there for a run that only wants the marks.
+
+    Boot files come first: they decide whether the site loads at all,
+    where the marks only decide whether it looks right, and an interrupted
+    run should have bought the first.
     """
     paths: list[str] = boot_files(root) if options.boot else []
     if options.boot_only:
@@ -247,6 +281,7 @@ def plan(root: Path, options) -> list[str]:
     # every visit. See `chain_files`.
     paths += bundle_files(root, options.tiers, options.chains)
     if not options.chains:
+        paths += brand_files(root)
         paths += chain_files(root)
     if options.all_marks:
         paths += mark_files(root, options.tiers, options.chains)
@@ -384,9 +419,10 @@ def main() -> int:
         "--chains", default="", help="only these chains' marks, comma separated"
     )
     parser.add_argument(
-        "--boot",
-        action="store_true",
-        help="warm the boot set too (60 MB, and publishing already warms it)",
+        "--no-boot",
+        dest="boot",
+        action="store_false",
+        help="skip the boot set (59 files, 21 MB) and warm only the marks",
     )
     parser.add_argument("--boot-only", action="store_true", help="only the boot set")
     parser.add_argument(

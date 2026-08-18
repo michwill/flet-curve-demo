@@ -119,13 +119,66 @@ def test_the_initials_mark_only_tints_with_its_hue() -> None:
     assert mark.bgcolor != fallback_color("WOOF")
 
 
+def last_resort(mark):
+    """Walk a mark's retry chain to whatever it settles for."""
+    node = mark.content
+    while isinstance(node, ft.Image):
+        node = node.error_content
+    return node
+
+
+def attempts(mark) -> list[str]:
+    """The URLs a mark will ask for, in order."""
+    urls, node = [], mark.content
+    while isinstance(node, ft.Image):
+        urls.append(node.src)
+        node = node.error_content
+    return urls
+
+
 def test_a_missing_image_falls_back_to_the_same_mark() -> None:
     """A logo that 404s and a logo that was never compiled should look
     identical -- the subset can lag the API either way."""
     from ui.logos import initials_mark
 
     with_image = token_mark(coin("USDC", USDC), "ethereum", 24)
-    assert isinstance(with_image.content.error_content, type(initials_mark("USDC", 24)))
+    assert isinstance(last_resort(with_image), type(initials_mark("USDC", 24)))
+
+
+def test_a_mark_is_asked_for_twice_before_giving_up() -> None:
+    """The marks are not warmed at publish, so each is fetched cold and an
+    IPFS gateway that cannot find the block answers 504 after ~17s. Two of
+    25 Gnosis marks did that on one measured pass and all of them served
+    on the next, so one retry is the difference between a missing logo and
+    a slow one."""
+    from ui.logos import MARK_ATTEMPTS
+
+    urls = attempts(token_mark(coin("USDC", USDC), "ethereum", 24))
+
+    assert len(urls) == MARK_ATTEMPTS == 2
+
+
+def test_the_retry_asks_for_a_different_url() -> None:
+    """Flutter's `ImageCache` is keyed by URL and caches *failures*, so a
+    retry on the same string is answered from that cache without a request
+    -- which is why one failed fetch blanks a logo for the whole session.
+    The query is ignored by the gateway; it exists to be a new cache key."""
+    urls = attempts(token_mark(coin("USDC", USDC), "ethereum", 24))
+
+    assert len(set(urls)) == len(urls)
+    assert urls[0].endswith(".png")  # the file's own address, untouched
+    assert urls[1].startswith(urls[0] + "?")
+
+
+def test_a_token_with_no_art_at_all_never_asks_twice() -> None:
+    """No image was compiled, so there is nothing to retry and the
+    initials are not a fallback but the answer."""
+    from ui.logos import initials_mark
+
+    mark = token_mark(coin("NOPE", "0x" + "99" * 20), "ethereum", 24)
+
+    assert attempts(mark) == []
+    assert isinstance(mark.content, type(initials_mark("NOPE", 24)))
 
 
 def test_the_fallback_colour_is_stable_per_symbol() -> None:

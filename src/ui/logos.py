@@ -169,29 +169,83 @@ def initials_mark(symbol: str, size: float) -> ft.Container:
     )
 
 
+#: How many times a mark is asked for before it settles for its fallback.
+#:
+#: Two, and the second attempt is the whole of a real bug fix rather than
+#: optimism. The marks are deliberately not warmed when the site is
+#: published -- 6,716 files, see `LAZY_DIR` in `tools/publish_ipfs.py` --
+#: so each one is retrieved *cold* by whichever visitor looks first, and an
+#: IPFS gateway that cannot find a block inside its retrieval budget
+#: answers 504 after about seventeen seconds.
+#:
+#: Measured against curve.eth.limo rather than reasoned about: 2 of the 25
+#: Gnosis marks failed that way on one pass, a different one failed in a
+#: browser a minute earlier, and all three served in under two seconds when
+#: asked again. Which marks fail is a property of what is cold at that edge
+#: at that moment, which is why the same page is missing different logos
+#: for different people -- and why it had looked like a bug in the build.
+#:
+#: The first request is itself what warms the block, so asking twice is
+#: close to asking once and then succeeding.
+MARK_ATTEMPTS = 2
+
+
+def _attempt_src(source: str, attempt: int) -> str:
+    """The URL for one attempt. Attempt 0 is the file's own address.
+
+    Later attempts add a query string, which the gateway ignores -- checked
+    against curve.eth.limo, which serves the identical 2,250 bytes with and
+    without it. It is not there for the server. Flutter's `ImageCache` is
+    keyed by URL and **caches failures**, so asking for the same string
+    again is answered from that cache without a request ever being made,
+    which is precisely why a mark that fails once stays blank for the rest
+    of the session. A different key is a different entry, and a real
+    request.
+    """
+    return source if attempt == 0 else f"{source}?retry={attempt}"
+
+
+def _mark_image(
+    source: str, size: float, fallback: ft.Control, fit: ft.BoxFit
+) -> ft.Control:
+    """A mark, with each retry nested in the previous attempt's failure slot.
+
+    `error_content` is the only failure hook Flet's `Image` has -- there is
+    no `on_error` to hang a callback on, and `error_content` is a passive
+    Control rather than an event. But it is a Control that Flutter builds
+    *at the moment the load fails*, so putting an `Image` in there is a
+    retry that costs nothing until it is needed: no request is made, and no
+    time is spent, except by the marks that actually failed.
+    """
+    content = fallback
+    for attempt in reversed(range(MARK_ATTEMPTS)):
+        content = ft.Image(
+            src=_attempt_src(source, attempt),
+            width=size,
+            height=size,
+            fit=fit,
+            filter_quality=SAMPLING,
+            error_content=content,
+        )
+    return content
+
+
 def token_mark(coin: Coin, chain: str, size: float = 24) -> ft.Container:
     """One coin's logo, or its initials when there is no image.
 
     Always a `Container` with an explicit size, so it can be dropped
     straight into a `Stack` with `left`/`top` and needs no extra wrapper.
+
+    The initials are the last resort rather than the first answer to a
+    failed load: a mark that 404s has no image upstream and lettering is
+    correct, but one that times out has an image and simply was not
+    reached. See `MARK_ATTEMPTS`.
     """
     source = token_logo(chain, coin.address, size * pixel_ratio())
     letters = initials_mark(coin.symbol, size)
-    content: ft.Control
-    if source:
-        content = ft.Image(
-            src=source,
-            width=size,
-            height=size,
-            fit=ft.BoxFit.COVER,
-            filter_quality=SAMPLING,
-            # A logo that 404s falls back rather than leaving a hole. The
-            # compiled subset can lag the API, and plenty of long-tail
-            # tokens have no image upstream at all.
-            error_content=letters,
-        )
-    else:
-        content = letters
+    content: ft.Control = (
+        _mark_image(source, size, letters, ft.BoxFit.COVER) if source else letters
+    )
 
     return ft.Container(
         content,
@@ -306,10 +360,8 @@ def chain_mark(
     source = chain_logo(chain, wanted)
     if not source:
         return None
-    return ft.Image(
-        src=source,
-        width=size,
-        height=size,
-        fit=ft.BoxFit.CONTAIN,
-        filter_quality=SAMPLING,
-    )
+    # The same retry as a token's, for the same reason -- this one is
+    # fetched from the same gateway and goes cold the same way. There is no
+    # lettered stand-in for a network, so the last resort is the empty box
+    # that a failure would have left anyway.
+    return _mark_image(source, size, ft.Container(width=size, height=size), ft.BoxFit.CONTAIN)

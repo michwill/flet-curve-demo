@@ -818,6 +818,36 @@ def deposit_tab(provider):
     return tab
 
 
+async def test_a_refresh_during_a_send_leaves_submit_held_down() -> None:
+    """A refresh runs on its own task, and `_sync_approval` sets Submit
+    from the allowance alone -- so a MAX click or an edited amount while
+    the wallet prompt was open re-enabled the button under a transaction
+    that had already been built, and a second press builds a second one."""
+    tab = deposit_tab(FakeProvider())
+    tab.fields[0].value = "1"
+    tab._busy(True)
+
+    await tab.refresh()
+
+    assert tab._sending is True
+    assert tab.submit_button.disabled is True
+    assert tab.approve_button.disabled is True
+
+
+async def test_the_buttons_come_back_when_the_action_is_over() -> None:
+    tab = deposit_tab(FakeProvider())
+    tab.fields[0].value = "1"
+    tab._busy(True)
+    tab._busy(False)
+
+    await tab.refresh()
+
+    assert tab._sending is False
+    # Back under the allowance's control, which is what disables it here:
+    # this pool has no approval yet, so Submit is step 2.
+    assert tab.submit_button.disabled is (tab._pending_approval is not None)
+
+
 async def test_an_approval_waits_to_be_mined_before_reading_back() -> None:
     provider = MinedProvider(pending=2)
     tab = deposit_tab(provider)

@@ -244,6 +244,10 @@ class ActionTab:
         )
         self._slippage_is_theirs = False
         self._fee_read_for: object = _NOT_READ
+        #: True from the moment a transaction is built until the last one
+        #: in the action has confirmed. Read by everything that touches the
+        #: buttons, because a refresh runs concurrently with a send.
+        self._sending = False
         self.status_panel = StatusPanel(page)
         self.status = self.status_panel.text
         self.status_spinner = self.status_panel.spinner
@@ -599,6 +603,16 @@ class ActionTab:
         self._say("" if error.rejected_by_user else str(error), FAILED)
 
     def _busy(self, busy: bool) -> None:
+        """Hold the buttons down for the length of an action.
+
+        The flag outlives this call because a `refresh` can land in the
+        middle of one: it runs on its own task, and `_sync_approval` sets
+        `submit_button.disabled` from the allowance alone. A MAX click or
+        an edited amount while the wallet prompt is open was enough to
+        re-enable Submit under a transaction that had already been built,
+        and the second press builds a second one.
+        """
+        self._sending = busy
         self.submit_button.disabled = busy
         self.approve_button.disabled = busy
         self.page.update()
@@ -687,11 +701,11 @@ class ActionTab:
             pending = None
         self._pending_approval = pending
         self.approve_button.visible = pending is not None
-        self.approve_button.disabled = pending is None
+        self.approve_button.disabled = pending is None or self._sending
         self.submit_button.content = (
             f"2. {self.submit_label}" if pending is not None else self.submit_label
         )
-        self.submit_button.disabled = pending is not None
+        self.submit_button.disabled = pending is not None or self._sending
 
 
 def _max_button(on_click) -> ft.TextButton:
@@ -1886,7 +1900,9 @@ class ClaimTab(ActionTab):
 
         self._render()
         self.approve_button.visible = False
-        self.submit_button.disabled = contract is None or not self.available
+        self.submit_button.disabled = (
+            contract is None or not self.available or self._sending
+        )
         await self.show_gas(contract)
         self.page.update()
 
@@ -2029,7 +2045,7 @@ class StakeTab(ActionTab):
             await self._sync_approval(contract)
         else:
             self.approve_button.visible = False
-            self.submit_button.disabled = contract is None
+            self.submit_button.disabled = contract is None or self._sending
         if contract is not None and amount <= 0:
             self.submit_button.disabled = True
         await self.show_gas(contract)

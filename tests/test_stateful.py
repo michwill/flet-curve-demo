@@ -219,8 +219,7 @@ class AppMachine(RuleBasedStateMachine):
 
     @rule(chain=st.sampled_from(sorted(CHAINS)))
     def switch_chain(self, chain: str) -> None:
-        self.app.chain_picker.value = chain
-        self.app._chain_changed(Event())
+        self.app._chain_picked(chain)
         self.pump()
 
     @rule()
@@ -228,8 +227,7 @@ class AppMachine(RuleBasedStateMachine):
         """Open the picker on the network you are already on, and pick it."""
         before = self.app._detail
         route = self.session.route
-        self.app.chain_picker.value = self.app.chain
-        self.app._chain_changed(Event())
+        self.app._chain_picked(self.app.chain)
         self.pump()
         assert self.app._detail is before
         assert self.session.route == route

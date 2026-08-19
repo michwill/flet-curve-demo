@@ -147,7 +147,9 @@ def make_app(route: str = "/", *, pool=_DEFAULT, chain: str = "ethereum"):
     app.list_view = ft.Container()
     app.progress = ft.ProgressBar(visible=False)
     app.error = ft.Text("", visible=False)
-    app.chain_picker = ft.Dropdown(options=[], value=chain)
+    app.chain_picker = ft.SearchBar(value=chain)
+    app._chain_tvls = {}
+    app._chain_order = [chain, "xdai", "ethereum"]
     app.nav = ft.Container()          # the header's page links
     app.menu = ft.PopupMenuButton()
     app._icons = False
@@ -174,7 +176,8 @@ async def test_a_chain_url_shows_that_chain() -> None:
     app.load_pools = _noop_loader(app)
     await app.apply_route("/xdai")
     assert app.chain == "xdai"
-    assert app.chain_picker.value == "xdai"
+    # The bar names the network; the slug belongs to the app, not the label.
+    assert app.chain_picker.value == "Gnosis"
 
 
 def _noop_loader(app):
@@ -248,12 +251,13 @@ def test_picking_the_chain_you_are_already_on_does_nothing() -> None:
     app.page.tasks.clear()
     detail = app._detail
 
-    app.chain_picker.value = "ethereum"          # the one already selected
-    app._chain_changed(None)
+    app._chain_picked("ethereum")                 # the one already selected
 
     assert app._detail is detail                  # still on the pool
     assert app.page.pushed == []                  # no history entry
-    assert app.page.tasks == []                   # and nothing refetched
+    # Nothing refetched. Closing the view is a task of its own -- it waits
+    # on the client -- so this asks what was *reloaded*.
+    assert [t for t, _a in app.page.tasks if "load" in getattr(t, "__name__", "")] == []
 
 
 def test_picking_a_different_chain_does_switch() -> None:
@@ -261,8 +265,7 @@ def test_picking_a_different_chain_does_switch() -> None:
     app.open_pool(make_pool())
     app.page.tasks.clear()
 
-    app.chain_picker.value = "xdai"
-    app._chain_changed(None)
+    app._chain_picked("xdai")
 
     assert app.chain == "xdai"
     assert app._detail is None                    # back to the list

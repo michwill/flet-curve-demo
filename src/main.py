@@ -156,6 +156,11 @@ CHAIN_MENU_WIDTH = 200
 #: networks and a menu that long covers the page it is over.
 CHAIN_MENU_HEIGHT = 420
 
+#: The closed bar, sized and cornered like the form field it replaced
+#: rather than like a search bar with a page to itself.
+CHAIN_BAR_HEIGHT = 40
+CHAIN_BAR_RADIUS = 6
+
 #: How big a theme's face is drawn on the button, and in the menu it moves
 #: into on a phone.
 BUTTON_MARK = 22
@@ -164,6 +169,24 @@ MENU_MARK = 20
 #: The network mark inside the picker. Smaller than a token mark elsewhere:
 #: a dense dropdown's field is barely taller than its text.
 CHAIN_ICON = 14
+
+
+def matching_chains(order: list[str], query: str) -> list[str]:
+    """The networks a search box's contents should leave on screen.
+
+    Matched against the name that is *drawn* as well as the API's slug,
+    because they differ for exactly the networks people search for:
+    Gnosis is `xdai` upstream and BNB Chain is `bsc`. Order is kept, so
+    the biggest still comes first; an empty query matches everything.
+    """
+    wanted = query.strip().lower()
+    if not wanted:
+        return list(order)
+    return [
+        chain
+        for chain in order
+        if wanted in chain.lower() or wanted in chain_name(chain).lower()
+    ]
 
 
 def chain_icon(chain: str) -> ft.Control | None:
@@ -259,19 +282,54 @@ class CurveApp:
         self._chain_tvls: dict[str, float] = {}
         self._totals: list[tuple[str, str]] = []
 
-        self.chain_picker = ft.Dropdown(
-            options=[self._chain_option(c) for c in PREFERRED_CHAINS],
-            value=self.chain,
+        #: The network picker: a bar naming the network, and a view that
+        #: opens on it with an empty search box.
+        #:
+        #: A `SearchBar` rather than a `Dropdown`, which is what this was.
+        #: An editable Dropdown puts the selected network's name in its
+        #: own text box and offers nothing to clear it with -- clicking
+        #: the middle of "Ethereum" and typing put the letters *into* the
+        #: word. Its `on_focus` and `on_blur` never arrive, a
+        #: `GestureDetector` around it never sees the tap, and assigning
+        #: `text` from `on_text_change` fights the field's controller.
+        #: A SearchBar is two controls: the name lives on the bar and the
+        #: search box belongs to the view, so the box a click opens is
+        #: empty to begin with.
+        self.chain_picker = ft.SearchBar(
+            value=chain_name(self.chain),
+            bar_leading=chain_icon(self.chain),
+            bar_text_style=ft.TextStyle(size=BODY),
+            bar_hint_text=chain_name(self.chain),
             width=CHAIN_PICKER_WIDTH,
-            menu_width=CHAIN_MENU_WIDTH,
-            menu_height=CHAIN_MENU_HEIGHT,
-            dense=True,
-            border=ft.InputBorder.OUTLINE,
-            # Type to narrow the list, which is Material's own filter.
-            editable=True,
-            enable_filter=True,
-            leading_icon=chain_icon(self.chain),
-            on_select=self._chain_changed,
+            view_hint_text="Search networks",
+            # Dressed as the form field it replaced, not as the standalone
+            # search bar Material draws by default: that one is a raised
+            # pill the height of a page header, which in a 56px bar beside
+            # a dropdown-sized wallet button reads as a mistake.
+            bar_shape=ft.RoundedRectangleBorder(radius=CHAIN_BAR_RADIUS),
+            bar_elevation=0,
+            # Transparent, so it reads as an outlined field on the header
+            # rather than a lighter box sitting on it.
+            bar_bgcolor=ft.Colors.TRANSPARENT,
+            bar_border_side=ft.BorderSide(1, ft.Colors.OUTLINE),
+            # The caret a dropdown has and a search bar does not: without
+            # it nothing says the thing opens a list.
+            bar_trailing=[
+                ft.Icon(ft.Icons.ARROW_DROP_DOWN, size=20, color=ft.Colors.ON_SURFACE_VARIANT)
+            ],
+            bar_size_constraints=ft.BoxConstraints(
+                min_height=CHAIN_BAR_HEIGHT, max_height=CHAIN_BAR_HEIGHT
+            ),
+            bar_padding=ft.Padding.only(left=8, right=4),
+            view_size_constraints=ft.BoxConstraints(
+                max_width=CHAIN_MENU_WIDTH, max_height=CHAIN_MENU_HEIGHT
+            ),
+            view_shape=ft.RoundedRectangleBorder(radius=CHAIN_BAR_RADIUS),
+            controls=[self._chain_row(c) for c in PREFERRED_CHAINS],
+            on_tap=self._chain_search_opened,
+            on_change=self._chain_search_typed,
+            on_tap_outside_bar=self._chain_search_left,
+            on_tap_outside_view=self._chain_search_left,
         )
         self.totals = ft.Text(
             "",
@@ -479,30 +537,65 @@ class CurveApp:
 
     def _sync_chain_picker(self) -> None:
         """Draw the picker for the width there is: named, or a mark alone."""
-        labelled = not self._icons
-        self.chain_picker.options = [
-            self._chain_option(chain, labelled) for chain in self._chain_order
-        ]
-        self.chain_picker.value = self.chain
-        # An editable dropdown keeps the field's text apart from the
-        # selection, and nothing puts it back on its own: Flet 0.86 fires
-        # neither `on_focus` nor `on_blur` here, so a search that was typed
-        # and abandoned would otherwise leave the field reading "gno" over
-        # a page that is still on Ethereum. Backspacing to empty brings the
-        # whole list back, so it is untidy rather than a trap -- but every
-        # path that sets the chain says the name again.
-        self.chain_picker.text = chain_name(self.chain) if labelled else ""
+        self.chain_picker.controls = self._chain_rows()
+        self.chain_picker.bar_leading = chain_icon(self.chain)
+        self._show_chain_name()
         self.chain_picker.width = (
-            CHAIN_PICKER_WIDTH if labelled else CHAIN_PICKER_NARROW_WIDTH
+            CHAIN_PICKER_WIDTH if not self._icons else CHAIN_PICKER_NARROW_WIDTH
         )
-        self.chain_picker.border = (
-            ft.InputBorder.OUTLINE if labelled else ft.InputBorder.NONE
+
+    def _chain_rows(self, query: str = "") -> list[ft.Control]:
+        """The networks the open view should list, biggest first."""
+        return [
+            self._chain_row(chain)
+            for chain in matching_chains(self._chain_order, query)
+        ]
+
+    def _show_chain_name(self) -> None:
+        """Name the network on the bar -- or say nothing, on a phone."""
+        self.chain_picker.value = "" if self._icons else chain_name(self.chain)
+
+    def _chain_search_opened(self, _e: AnyEvent) -> None:
+        """Open the view on an empty box, offering every network.
+
+        The empty box is the point of the control: the bar's text and the
+        view's search box are separate things, so nothing has to be
+        cleared out of the way before a search can be typed. Opening is
+        ours to do -- a `SearchBar` reports the tap and waits.
+        """
+        self.chain_picker.value = ""
+        self.chain_picker.controls = self._chain_rows()
+        safe_update(self.chain_picker)
+        self.page.run_task(self.chain_picker.open_view)
+
+    def _chain_search_typed(self, event: AnyEvent) -> None:
+        """Narrow the list to what has been typed."""
+        typed = getattr(event, "data", None)
+        self.chain_picker.controls = self._chain_rows(
+            typed if isinstance(typed, str) else ""
         )
-        # No typing into a field that is 78px of mark and arrow, and the
-        # narrow layout drops the labels the filter would match on.
-        self.chain_picker.editable = labelled
-        self.chain_picker.enable_filter = labelled
-        self.chain_picker.leading_icon = chain_icon(self.chain)
+        safe_update(self.chain_picker)
+
+    def _chain_search_left(self, _e: AnyEvent) -> None:
+        """Dismissed without choosing: the network is what it was."""
+        self._show_chain_name()
+        self.chain_picker.controls = self._chain_rows()
+        safe_update(self.chain_picker)
+
+    def _chain_picked(self, chain: str) -> None:
+        """A network was chosen from the open view.
+
+        The view closes either way -- picking the network you are already
+        on is a way of saying "never mind" -- and only a real change costs
+        a reload. `close_view` waits on the client, so it is started as a
+        task: this runs from a click handler, which cannot await.
+        """
+        self.page.run_task(self.chain_picker.close_view, chain_name(chain))
+        if chain == self.chain:
+            self._show_chain_name()
+            safe_update(self.chain_picker)
+            return
+        self._chain_changed(chain)
 
     def _resized(self, e: ft.PageResizeEvent) -> None:
         self._apply_layout(e.width)
@@ -543,14 +636,20 @@ class CurveApp:
         if self._detail is not None:
             self._detail.set_layout(layout)
 
-    def _chain_option(self, chain: str, labelled: bool = True) -> ft.DropdownOption:
-        """A network's mark beside its proper name, not its API slug."""
-        mark = chain_mark(chain)
-        label = ft.Text(chain_name(chain), size=BODY)
-        return ft.DropdownOption(
-            key=chain,
-            content=ft.Row([mark, label], spacing=8, tight=True) if mark else label,
-            text=chain_name(chain) if labelled else "",
+    def _chain_row(self, chain: str) -> ft.Control:
+        """One network in the open view: its mark, its name, its size."""
+        tvl = getattr(self, "_chain_tvls", {}).get(chain)
+        return ft.ListTile(
+            leading=chain_mark(chain, MENU_MARK),
+            title=ft.Text(chain_name(chain), size=BODY),
+            trailing=(
+                ft.Text(compact_usd(tvl), size=SMALL, color=ft.Colors.ON_SURFACE_VARIANT)
+                if tvl
+                else None
+            ),
+            dense=True,
+            selected=chain == self.chain,
+            on_click=lambda _e, picked=chain: self._chain_picked(picked),
         )
 
     def _sync_theme_button(self, update: bool = False) -> None:
@@ -632,13 +731,13 @@ class CurveApp:
 
     # -- data -------------------------------------------------------------
 
-    def _chain_changed(self, _e: AnyEvent) -> None:
-        picked = self.chain_picker.value or DEFAULT_CHAIN
-        if picked == self.chain:
-            return
-        self.chain = picked
-        self.chain_picker.text = chain_name(self.chain)
-        self.chain_picker.leading_icon = chain_icon(self.chain)
+    def _chain_changed(self, chain: str) -> None:
+        """Move the page to a network: redraw the picker, reload the list."""
+        self.chain = chain
+        self.chain_picker.bar_leading = chain_icon(chain)
+        self._show_chain_name()
+        self.chain_picker.controls = self._chain_rows()
+        safe_update(self.chain_picker)
         self.show_list()
         self.page.run_task(self.load_pools)
         self.page.run_task(self.align_wallet_chain)
@@ -1154,9 +1253,7 @@ class CurveApp:
         route = routing.parse(raw)
         if route.chain and route.chain != self.chain and route.chain in self.chains:
             self.chain = route.chain
-            self.chain_picker.value = route.chain
-            self.chain_picker.text = chain_name(route.chain)
-            self.chain_picker.leading_icon = chain_icon(route.chain)
+            self._sync_chain_picker()
             self.show_list()
             await self.load_pools()
 
@@ -1377,9 +1474,7 @@ class CurveApp:
         if name == self.chain:
             return False
         self.chain = name
-        self.chain_picker.value = name
-        self.chain_picker.text = chain_name(name)
-        self.chain_picker.leading_icon = chain_icon(name)
+        self._sync_chain_picker()
         self.show_list()
         await self.load_pools()
         return True

@@ -1769,22 +1769,18 @@ def test_a_phone_header_drops_every_label() -> None:
     app = header_app(PHONE)
 
     assert app._icons is True
-    assert [option.text for option in app.chain_picker.options] == [""] * len(
-        app.chain_picker.options
-    )
+    # The bar keeps its mark and loses the name.
+    assert app.chain_picker.value == ""
+    assert app.chain_picker.bar_leading is not None
     assert app.chain_picker.width < 100
-    assert app.chain_picker.border == ft.InputBorder.NONE
     assert not app.theme_button.visible
     assert app.menu.visible
 
 
-def _option_label(option: ft.DropdownOption) -> str:
-    """The name the open menu draws for one network."""
-    content = option.content
-    if isinstance(content, ft.Row):
-        texts = [c.value for c in content.controls if isinstance(c, ft.Text)]
-        return texts[0] if texts else ""
-    return content.value if isinstance(content, ft.Text) else ""
+def _row_label(row) -> str:
+    """The name the open view draws for one network."""
+    title = getattr(row, "title", None)
+    return title.value if isinstance(title, ft.Text) else ""
 
 
 def test_the_address_chip_is_built_without_a_width() -> None:
@@ -1797,35 +1793,35 @@ def test_the_address_chip_is_built_without_a_width() -> None:
 def test_the_open_menu_still_names_every_network_on_a_phone() -> None:
     app = header_app(PHONE)
 
-    assert app.chain_picker.menu_width > app.chain_picker.width
-    assert all(_option_label(option) for option in app.chain_picker.options)
-    assert "Ethereum" in [_option_label(o) for o in app.chain_picker.options]
+    assert all(_row_label(row) for row in app.chain_picker.controls)
+    assert "Ethereum" in [_row_label(r) for r in app.chain_picker.controls]
 
 
-def test_the_menu_is_the_same_width_whatever_the_header_does() -> None:
-    assert header_app(PHONE).chain_picker.menu_width == (
-        header_app(LAPTOP).chain_picker.menu_width
-    )
+def test_only_the_bar_narrows_when_the_header_does() -> None:
+    """The bar follows the header in and out of icons; what the view
+    lists does not, because you are reading names in it either way."""
+    phone, laptop = header_app(PHONE), header_app(LAPTOP)
+
+    assert phone.chain_picker.width < laptop.chain_picker.width
+    assert len(phone.chain_picker.controls) == len(laptop.chain_picker.controls)
 
 
 def test_a_laptop_header_keeps_them() -> None:
     app = header_app(LAPTOP)
 
     assert app._icons is False
-    assert all(option.text for option in app.chain_picker.options)
-    assert app.chain_picker.border == ft.InputBorder.OUTLINE
+    assert app.chain_picker.value == "Ethereum"
     assert app.theme_button.visible
     assert not app.menu.visible
 
 
 def _picker_marks(app) -> list:
-    """What every option in the open menu draws its logo from."""
-    found = []
-    for option in app.chain_picker.options:
-        content = option.content
-        if isinstance(content, ft.Row):
-            found += [c.src for c in content.controls if isinstance(c, ft.Image)]
-    return found
+    """What every row in the open view draws its logo from."""
+    return [
+        row.leading.src
+        for row in app.chain_picker.controls
+        if isinstance(getattr(row, "leading", None), ft.Image)
+    ]
 
 
 async def test_the_picker_is_built_again_once_the_network_marks_arrive(
@@ -1861,8 +1857,8 @@ async def test_the_picker_is_built_again_once_the_network_marks_arrive(
         assert after and all(isinstance(src, bytes) for src in after), (
             "every network's logo should now come out of the bundle"
         )
-        assert isinstance(app.chain_picker.leading_icon.content.src, bytes), (
-            "including the selected one, which the field draws"
+        assert isinstance(app.chain_picker.bar_leading.content.src, bytes), (
+            "including the selected one, which the bar draws"
         )
     finally:
         forget_bundles()
@@ -2913,7 +2909,10 @@ async def test_the_totals_reorder_the_picker_when_they_land() -> None:
     await app.load_chain_tvls()
 
     assert app._chain_order[:2] == ["xdai", "ethereum"]
-    assert [o.key for o in app.chain_picker.options][:2] == ["xdai", "ethereum"]
+    assert [_row_label(r) for r in app.chain_picker.controls][:2] == [
+        "Gnosis",
+        "Ethereum",
+    ]
 
 
 async def test_totals_that_will_not_load_leave_the_order_alone() -> None:
@@ -2931,37 +2930,72 @@ async def test_totals_that_will_not_load_leave_the_order_alone() -> None:
     assert app._chain_order == before
 
 
-def test_the_picker_can_be_typed_into_to_narrow_the_list() -> None:
-    """Material's own filter, so there is no second control in a header
-    that has no room for one."""
+def test_opening_the_picker_clears_the_box_and_offers_everything() -> None:
+    """The reported bug, fixed by the control rather than around it:
+    clicking the middle of "Ethereum" in the old Dropdown typed into the
+    word -- "Ethegnoreum" -- because the name *was* the text box. The
+    bar's name and the view's search box are separate things."""
+    app = picker_app({"ethereum": 1.4e9, "xdai": 2.9e6})
+
+    app._chain_search_opened(None)
+
+    assert app.chain_picker.value == "", "the box is clear to type in"
+    assert len(app.chain_picker.controls) == len(app._chain_order)
+
+
+def test_typing_narrows_the_list_to_what_matches() -> None:
+    """Matched on the drawn name as well as the slug, because they differ
+    for the networks people search for: Gnosis is `xdai` upstream."""
     app = picker_app()
 
-    assert app.chain_picker.editable is True
-    assert app.chain_picker.enable_filter is True
+    app._chain_search_typed(SimpleNamespace(data="gno"))
+
+    assert [_row_label(r) for r in app.chain_picker.controls] == ["Gnosis"]
 
 
-def test_a_phone_picker_is_not_a_text_field() -> None:
-    """At 78px it is a mark and an arrow, and the narrow layout drops the
-    labels the filter would have matched on."""
-    app = header_app(PHONE)
-
-    assert app.chain_picker.editable is False
-    assert app.chain_picker.enable_filter is False
-
-
-def test_choosing_a_network_puts_its_name_back_in_the_field() -> None:
-    """An editable dropdown keeps the field's text apart from the
-    selection, and Flet 0.86 fires no focus or blur event to tidy it --
-    so every path that sets the chain has to say the name again."""
+def test_leaving_without_choosing_puts_the_name_back() -> None:
+    """`on_tap_outside_bar` and `on_tap_outside_view` -- the events the
+    Dropdown declared and never delivered."""
     app = picker_app()
-    app.chain_picker.text = "gno"  # typed, then narrowed to one
-    app.chain_picker.value = "xdai"
+    app._chain_search_opened(None)
+    app._chain_search_typed(SimpleNamespace(data="gno"))
+
+    app._chain_search_left(None)
+
+    assert app.chain_picker.value == "Ethereum"
+    assert len(app.chain_picker.controls) == len(app._chain_order)
+
+
+def test_choosing_a_network_switches_to_it_and_names_it() -> None:
+    app = picker_app()
     app.show_list = lambda: None
+    app._chain_search_opened(None)
 
-    app._chain_changed(None)
+    app._chain_picked("xdai")
 
     assert app.chain == "xdai"
-    assert app.chain_picker.text == "Gnosis"
+    assert app.chain_picker.value == "Gnosis"
+
+
+def test_choosing_the_network_already_open_does_not_reload_it() -> None:
+    """Picking the one you are on is a way of saying "never mind"; the
+    view still closes, but a reload is a fresh feed for nothing."""
+    app = picker_app()
+    reloaded = []
+    app.show_list = lambda: reloaded.append(True)
+
+    app._chain_picked("ethereum")
+
+    assert reloaded == []
+    assert app.chain_picker.value == "Ethereum"
+
+
+def test_a_phone_bar_shows_the_mark_alone() -> None:
+    """At 78px there is room for the mark and nothing else."""
+    app = header_app(PHONE)
+
+    assert app.chain_picker.value == ""
+    assert app.chain_picker.bar_leading is not None
 
 
 async def _answer(value):

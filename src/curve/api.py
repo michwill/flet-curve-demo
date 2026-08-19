@@ -521,18 +521,39 @@ class CurveApi:
         return gauges
 
     async def _list_pools(self, chain_id: int) -> list[dict[str, Any]]:
-        """Every pool on the chain, as the list endpoint describes it."""
+        """Every pool on the chain, as the list endpoint describes it.
+
+        A page that fails is asked for a second time, and if it fails
+        again the whole call raises. Silently returning the pages that did
+        arrive is what this used to do, and it is a bad answer for the
+        caller that matters: `portfolio_targets` reads this list, so a
+        dropped page is a pool nobody asks about, and a deposit in it is
+        reported as no deposit at all.
+        """
         first = await self._list_page(chain_id, 1)
+        numbers = list(range(2, self._pages[chain_id] + 1))
         rest = await asyncio.gather(
-            *[
-                self._list_page(chain_id, number)
-                for number in range(2, self._pages[chain_id] + 1)
-            ],
+            *[self._list_page(chain_id, number) for number in numbers],
             return_exceptions=True,
         )
+        retries = [n for n, page in zip(numbers, rest, strict=True)
+                   if not isinstance(page, list)]
+        if retries:
+            second = await asyncio.gather(
+                *[self._list_page(chain_id, number) for number in retries],
+                return_exceptions=True,
+            )
+            missing = [n for n, page in zip(retries, second, strict=True)
+                       if not isinstance(page, list)]
+            if missing:
+                raise ApiError(
+                    f"Curve's API did not serve page{'s' if len(missing) > 1 else ''} "
+                    f"{', '.join(str(n) for n in missing)} of this chain's pools."
+                )
+            rest = [page for page in rest if isinstance(page, list)] + list(second)
         pools = list(first)
         for page in rest:
-            if isinstance(page, list):  # a page that failed; the rest still count
+            if isinstance(page, list):
                 pools += page
         return pools
 

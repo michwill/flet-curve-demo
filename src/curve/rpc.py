@@ -146,14 +146,25 @@ class PublicNode(WalletProvider):
             if not isinstance(answer, dict):
                 last = f"{url} answered something that was not JSON-RPC"
                 continue
+            if "id" in answer and answer["id"] != payload["id"]:
+                # Not this question's answer. Nothing here multiplexes, so
+                # it is a broken endpoint rather than a race -- and what it
+                # feeds decides slippage floors, allowances and balances.
+                # Checked only when the endpoint sends one back: a terse
+                # server is not a reason to lose the read.
+                last = f"{url} answered a different request"
+                continue
             if "error" in answer:
                 self._next = index
                 error = answer["error"] or {}
                 raise RpcError(
                     int(error.get("code", -1) or -1), str(error.get("message", ""))
                 )
+            if "result" not in answer:
+                last = f"{url} answered with neither a result nor an error"
+                continue
             self._next = index
-            return answer.get("result")
+            return answer["result"]
         raise WalletError(f"No public node answered for this network. {last}".strip())
 
     async def send_transaction(self, tx: dict[str, Any]) -> str:

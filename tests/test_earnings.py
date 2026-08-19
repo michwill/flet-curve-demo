@@ -405,3 +405,20 @@ def test_crv_in_the_reward_list_is_not_counted_twice() -> None:
 def test_a_payload_with_no_rewards_seeds_cleanly() -> None:
     seeded, meta = seed_from_detail(staked(), {})
     assert (seeded.crv_apr, seeded.incentive_apr, meta) == (0.0, 0.0, {})
+
+
+async def test_a_read_that_failed_everywhere_is_not_a_page_of_zeros() -> None:
+    """`_batch` answers `None` per call that failed, and `or 0` made that
+    indistinguishable from a gauge that owes nothing -- so a transport
+    that was down showed "Unclaimed rewards: $0.00" and nothing to claim."""
+    from curve.earnings import Earning, read_earnings
+    from wallet.base import WalletError
+
+    class Down:
+        async def call(self, _to, _data):
+            raise WalletError("no node answered")
+
+    positions = [Earning(pool="0x" + "11" * 20, gauge="0x" + "22" * 20, staked=10**18)]
+
+    with pytest.raises(WalletError, match="Could not read"):
+        await read_earnings(Down(), "0x" + "aa" * 20, positions)

@@ -235,3 +235,47 @@ def test_junk_in_storage_is_nothing_remembered(junk) -> None:
 def test_a_remembered_holding_can_be_re_read_on_its_own() -> None:
     targets = portfolio.targets_for([holding()])
     assert calls_for(targets) == ["0x" + "1" * 40, "0x" + "2" * 40]
+
+
+async def test_a_page_of_pools_that_will_not_load_is_asked_for_again() -> None:
+    """And if it still will not load, the call fails rather than returning
+    what did arrive: `portfolio_targets` reads this list, so a dropped page
+    is a pool nobody asks about, and a deposit in it is reported as no
+    deposit at all."""
+    from curve.api import CurveApi
+    from curve.http import ApiError
+
+    api = CurveApi()
+    api._pages[1] = 3
+    served: dict[int, int] = {}
+
+    async def flaky(chain_id: int, page: int):
+        served[page] = served.get(page, 0) + 1
+        if page == 2 and served[page] == 1:
+            raise ApiError("502 from the API")
+        return [{"address": f"0x{page:040x}", "gauges": []}]
+
+    api._list_page = flaky  # type: ignore[method-assign]
+
+    pools = await api._list_pools(1)
+
+    assert served[2] == 2, "the page that failed was asked for a second time"
+    assert len(pools) == 3, "and every page is in the answer"
+
+
+async def test_a_page_that_never_loads_is_reported_not_dropped() -> None:
+    from curve.api import CurveApi
+    from curve.http import ApiError
+
+    api = CurveApi()
+    api._pages[1] = 2
+
+    async def broken(chain_id: int, page: int):
+        if page == 2:
+            raise ApiError("502 from the API")
+        return [{"address": "0x" + "11" * 20, "gauges": []}]
+
+    api._list_page = broken  # type: ignore[method-assign]
+
+    with pytest.raises(ApiError, match="page 2"):
+        await api._list_pools(1)

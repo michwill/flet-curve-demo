@@ -6,7 +6,7 @@ import asyncio
 import dataclasses
 from dataclasses import dataclass, field
 
-from wallet.base import WalletProvider
+from wallet.base import WalletError, WalletProvider
 
 from . import abi
 from .models import Incentive
@@ -236,11 +236,22 @@ async def read_earnings(
     working: dict[str, int] = {}
     crv_owed: dict[str, int] = {}
     counts: dict[str, int] = {}
+    #: Positions whose reads all failed. `None` is not zero, and the two
+    #: are indistinguishable once they reach the page: "unclaimed $0.00"
+    #: is what a working read of nothing looks like.
+    unread = 0
     for index, position in enumerate(staked):
         base = index * 3
+        if answers[base + 1] is None and answers[base + 2] is None:
+            unread += 1
         working[position.pool] = answers[base] or 0
         crv_owed[position.pool] = answers[base + 1] or 0
         counts[position.pool] = min(answers[base + 2] or 0, MAX_REWARD_TOKENS)
+
+    if unread == len(staked):
+        # Every one of them: that is the transport, not the gauges. The
+        # caller says so; showing a page of zeros would say the opposite.
+        raise WalletError("Could not read what these gauges owe.")
 
     token_calls: list[tuple[str, str]] = []
     asked_for: list[str] = []

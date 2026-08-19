@@ -266,6 +266,41 @@ async def test_a_chain_with_no_endpoints_says_that_instead(monkeypatch) -> None:
         await node.request("eth_chainId")
 
 
+async def test_an_answer_to_a_different_request_is_not_used(monkeypatch) -> None:
+    """Nothing here multiplexes, so a mismatched id is a broken endpoint,
+    not a race -- and what it answers decides slippage floors, allowances
+    and balances."""
+    answers = [{"id": 999, "result": "0xdead"}, {"id": 1, "result": "0xbeef"}]
+
+    async def transport(url, payload, timeout=None):
+        return answers.pop(0)
+
+    monkeypatch.setattr(rpc, "post_json", transport)
+
+    class Two(ChainlistDirectory):
+        async def endpoints(self, _chain_id):
+            return ["https://liar.example", "https://honest.example"]
+
+    assert await PublicNode(1, Two()).request("eth_call") == "0xbeef"
+
+
+async def test_neither_a_result_nor_an_error_moves_on(monkeypatch) -> None:
+    """`.get("result")` turned that into `None`, which reads downstream as
+    an empty answer -- a zero balance, an empty allowance."""
+    answers = [{"id": 1}, {"id": 1, "result": "0xbeef"}]  # one id per request
+
+    async def transport(url, payload, timeout=None):
+        return answers.pop(0)
+
+    monkeypatch.setattr(rpc, "post_json", transport)
+
+    class Two(ChainlistDirectory):
+        async def endpoints(self, _chain_id):
+            return ["https://empty.example", "https://honest.example"]
+
+    assert await PublicNode(1, Two()).request("eth_call") == "0xbeef"
+
+
 async def test_requests_are_numbered(monkeypatch) -> None:
     seen: list[int] = []
 

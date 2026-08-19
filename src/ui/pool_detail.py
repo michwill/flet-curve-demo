@@ -8,6 +8,7 @@ an alternative UI at all.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 from collections.abc import Callable
 
@@ -36,6 +37,22 @@ from .logos import pool_stack, token_mark
 from .pool_list import POINTS_ICON
 from .responsive import Layout, layout_for
 from .typography import BODY, LABEL, METRIC, SMALL, TITLE, TITLE_NARROW
+
+#: What the fold says while it is reading.
+#:
+#: Not "Reading them from the pool...", which is what it said and which
+#: has no antecedent: the fold's title is above it and out of the reader's
+#: eye by the time the words appear, so "them" is a pronoun for nothing.
+READING = "Reading pool parameters…"
+
+#: How long the whole batch gets before the panel gives up on it.
+#:
+#: Generous, because it is a backstop rather than the mechanism: with
+#: `curve.rpc.READ_DEADLINE` doing its job the read is a second or two,
+#: and anything past this is a transport nobody has thought of yet. What
+#: it buys is that the panel always resolves into *something* -- values,
+#: or a sentence saying why not -- instead of reading forever.
+PARAMETER_DEADLINE = 45.0
 
 LP_SERIES = "__lp__"
 
@@ -734,7 +751,7 @@ class PoolDetailView(ft.Column):
         self._parameters_open = _expanded(event)
         if self._parameters_open and not self._parameters_asked:
             self._parameters_asked = True
-            self._parameter_rows.controls = [self._unread("Reading them from the pool…")]
+            self._parameter_rows.controls = [self._unread(READING)]
             safe_update(self._parameter_rows)
             self._page.run_task(self.load_parameters)
 
@@ -803,9 +820,25 @@ class PoolDetailView(ft.Column):
             self._unreadable("Connect a wallet to read them.")
             return
         try:
-            readings = await contract.parameters()
+            readings = await asyncio.wait_for(contract.parameters(), PARAMETER_DEADLINE)
+        except TimeoutError:
+            # The backstop, not the mechanism. `curve.rpc.READ_DEADLINE`
+            # is what keeps one unreachable source from holding the batch,
+            # and this is here because the panel had no way at all to stop
+            # waiting: a wallet whose node had gone away left it reading
+            # for twenty-eight minutes, which every reader read as broken
+            # rather than as slow. Whatever the next such source turns out
+            # to be, this says so and lets them try again.
+            self._unreadable("The chain did not answer in time. Try again.")
+            return
         except WalletError as exc:
             self._unreadable(str(exc))
+            return
+        except Exception as exc:
+            # Anything a transport can raise that is not one of ours. The
+            # alternative is the task dying silently and the fold sitting
+            # on "Reading pool parameters..." for the rest of the session.
+            self._unreadable(f"They could not be read: {exc}")
             return
         # `pool_coins`, not `coins`: a metapool's rates are its own two,
         # and `rate_rows` refuses the whole list rather than pairing a

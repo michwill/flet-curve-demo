@@ -1516,6 +1516,83 @@ async def test_the_values_land_in_the_panel() -> None:
     assert "0.0150%" in shown
 
 
+async def test_the_wait_says_what_it_is_waiting_for() -> None:
+    """"Reading them from the pool..." had no antecedent: the fold's own
+    title is the only thing "them" could refer to, and by the time the
+    words appear it is above the reader's eye."""
+    from ui import pool_detail
+
+    contract = CountingContract()
+    view = PoolDetailView(
+        StubPage(), api=None, pool=make_pool(),
+        get_contract=lambda: contract,  # type: ignore[return-value]
+        on_back=lambda: None,
+    )
+    toggle(view, expanded=True)
+
+    # Before the task it started gets a turn: this is what the reader sees
+    # for as long as the chain takes.
+    assert pool_detail.READING in texts(view._parameter_rows)
+    assert "them" not in pool_detail.READING
+
+
+async def test_a_read_that_never_lands_stops_waiting_and_says_so(monkeypatch) -> None:
+    """The reported bug, from the panel's end.
+
+    A wallet connected to a node that has gone away answers nothing at
+    all, and `curve.rpc.READ_DEADLINE` is what steps past it. This is the
+    backstop behind that: whatever the next unreachable transport turns
+    out to be, the fold resolves into a sentence rather than reading for
+    the rest of the session.
+    """
+    from ui import pool_detail
+
+    monkeypatch.setattr(pool_detail, "PARAMETER_DEADLINE", 0.01)
+
+    class Silent:
+        async def parameters(self):
+            await asyncio.Event().wait()
+
+    contract = Silent()
+    view = PoolDetailView(
+        StubPage(), api=None, pool=make_pool(),
+        get_contract=lambda: contract,  # type: ignore[return-value]
+        on_back=lambda: None,
+    )
+    view._parameters_asked = True
+
+    await view.load_parameters()
+
+    shown = texts(view._parameter_rows)
+    assert pool_detail.READING not in shown, "it must not still be reading"
+    assert any("did not answer in time" in value for value in shown)
+    assert not view._parameters_asked, "and opening it again tries again"
+
+
+async def test_a_transport_that_raises_something_else_still_reports() -> None:
+    """Not every failure is a `WalletError`: a browser transport can throw
+    its own. Anything uncaught here kills the task silently and leaves the
+    fold reading forever, which is the state this whole fix is about."""
+    from ui import pool_detail
+
+    class Broken:
+        async def parameters(self):
+            raise RuntimeError("the bridge went away")
+
+    contract = Broken()
+    view = PoolDetailView(
+        StubPage(), api=None, pool=make_pool(),
+        get_contract=lambda: contract,  # type: ignore[return-value]
+        on_back=lambda: None,
+    )
+
+    await view.load_parameters()
+
+    shown = texts(view._parameter_rows)
+    assert pool_detail.READING not in shown
+    assert any("the bridge went away" in value for value in shown)
+
+
 async def test_a_chain_that_cannot_be_read_says_so_rather_than_showing_nothing() -> None:
     from wallet.base import WalletError
 

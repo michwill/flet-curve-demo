@@ -188,6 +188,14 @@ class BrowserWalletProvider(WalletProvider):
 
         try:
             return await asyncio.wait_for(future, timeout)
+        except asyncio.CancelledError:
+            # Somebody above stopped waiting -- `curve.rpc.READ_DEADLINE`
+            # does exactly this to a wallet that has gone quiet. The reply
+            # may still arrive, and `_on_message` drops a reply nobody is
+            # holding, so the only thing left to do is not accumulate an
+            # entry per abandoned request.
+            self._pending.pop(request_id, None)
+            raise
         except TimeoutError:
             self._pending.pop(request_id, None)
             if method == "bridge_selectWallet":

@@ -65,6 +65,41 @@ MAX_ENDPOINTS = 8
 #: self-reported, so this is a nudge rather than a guarantee.
 _TRACKING_RANK = {"none": 0, "limited": 1, "yes": 3}
 
+#: How long one source gets to answer a *read* before the next is asked.
+#:
+#: This is the whole of a bug that read as "the pool parameters never
+#: load". A wallet gets 120 seconds to answer a request -- right for a
+#: signature, where a human is looking at a prompt, and far too long for
+#: an `eth_call` nobody typed. `PoolContract.parameters` is one Multicall3
+#: and, when that comes back empty, thirteen single reads behind it. With
+#: a wallet connected to a node that has gone away, that is fourteen
+#: requests at two minutes each: **twenty-eight minutes** of a panel
+#: saying "Reading pool parameters...", with a public endpoint sitting
+#: right behind it that would have answered in a second.
+#:
+#: Eight seconds, the same budget `ENDPOINT_TIMEOUT` gives a public
+#: endpoint, and for the same reason: the point of having a list is that
+#: giving up is cheap.
+#:
+#: Only reads, and only when there is somewhere else to go -- see
+#: `FallbackProvider.request`. The last source in the order is waited on
+#: however long it takes, because cutting it short converts a slow answer
+#: into no answer at all.
+READ_DEADLINE = 8.0
+
+#: How long a source that could not answer is left out of the read order.
+#:
+#: Without this the deadline above is paid *per call*, and the batch that
+#: found this bug makes fourteen: a dead wallet would cost 112 seconds
+#: instead of 8. A source is not usually dead for one call and alive for
+#: the next, so the first failure is worth remembering.
+#:
+#: Thirty seconds, so a wallet that comes back -- a laptop off standby, a
+#: phone that reconnected -- is asked again while the reader is still on
+#: the same page, and the wallet goes back to being what reads go
+#: through. A success clears the mark immediately.
+SOURCE_COOLDOWN = 30.0
+
 #: How long a failed directory fetch is allowed to stand before it is
 #: tried again.
 #:
@@ -361,20 +396,69 @@ class FallbackProvider(WalletProvider):
         self.name = getattr(primary, "name", "wallet")
         self.kind = getattr(primary, "kind", "unknown")
         self.connector = getattr(primary, "connector", "")
+        #: Which sources have just failed to answer, by position, and
+        #: when. See `SOURCE_COOLDOWN`.
+        self._cold: dict[int, float] = {}
+
+    def read_order(self) -> list[int]:
+        """The sources worth asking now, as positions in `self.sources`.
+
+        Everything, minus whatever failed within the cooldown -- and
+        everything again if that would leave nothing to ask. A list with
+        no warm entries is not a reason to give up without trying; it is
+        the moment to find out whether one has come back.
+        """
+        now = time.monotonic()
+        warm = [
+            index
+            for index in range(len(self.sources))
+            if now - self._cold.get(index, -SOURCE_COOLDOWN) >= SOURCE_COOLDOWN
+        ]
+        return warm or list(range(len(self.sources)))
 
     async def request(self, method: str, params: list[Any] | None = None) -> Any:
         if method not in READ_METHODS:
             return await self.primary.request(method, params)
+        order = self.read_order()
         last: WalletError | None = None
-        for source in self.sources:
+        for position, index in enumerate(order):
+            source = self.sources[index]
+            # The last one waits as long as it takes: there is nowhere to
+            # fall to, and a deadline there turns slow into broken.
+            deadline = READ_DEADLINE if position < len(order) - 1 else None
             try:
-                return await source.request(method, params)
+                answer = await self._ask(source, method, params, deadline)
             except RpcError:
                 # An answer, not a failure. See the class docstring.
                 raise
             except WalletError as exc:
                 last = exc
+                self._cold[index] = time.monotonic()
+                continue
+            self._cold.pop(index, None)
+            return answer
         raise last or WalletError("Nothing could be asked about this network.")
+
+    async def _ask(
+        self,
+        source: WalletProvider,
+        method: str,
+        params: list[Any] | None,
+        deadline: float | None,
+    ) -> Any:
+        """One source, given `deadline` seconds to answer.
+
+        A source that runs out of time is reported as a source that could
+        not answer, because that is what it is from here -- and because
+        the caller above only steps over `WalletError`.
+        """
+        try:
+            return await asyncio.wait_for(source.request(method, params), deadline)
+        except TimeoutError:
+            name = getattr(source, "name", "") or type(source).__name__
+            raise WalletError(
+                f"{name} did not answer in {deadline:.0f}s."
+            ) from None
 
     async def close(self) -> None:
         """Only the spares. The wallet's session is not this object's to end."""

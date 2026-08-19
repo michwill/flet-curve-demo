@@ -14,6 +14,8 @@ be checked at all.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from curve import rpc
@@ -458,6 +460,121 @@ async def test_the_last_failure_is_what_the_user_is_told() -> None:
     )
     with pytest.raises(WalletError, match="no public node answered"):
         await reader.call("0x" + "ca11" * 10, "0xdata")
+
+
+class Silent(WalletProvider):
+    """A provider that accepts a request and never answers it.
+
+    Which is what a wallet whose node has gone away looks like from here:
+    the bridge posts the message, nothing comes back, and the deadline is
+    the only thing that ends the wait.
+    """
+
+    def __init__(self, name: str = "silent") -> None:
+        self.name = name
+        self.calls: list[str] = []
+
+    async def request(self, method: str, params=None):
+        self.calls.append(method)
+        await asyncio.Event().wait()
+
+    async def close(self) -> None: ...
+
+
+async def test_a_wallet_that_never_answers_is_stepped_over(monkeypatch) -> None:
+    """The bug this exists for: pool parameters that never load.
+
+    A wallet gets 120 seconds for a request -- right for a signature and
+    absurd for an `eth_call` -- so a wallet connected to a node that has
+    gone away used to hold every read for two minutes with a public
+    endpoint sitting behind it. Thirteen of those in one panel is
+    twenty-eight minutes, which reads as broken rather than as slow.
+    """
+    monkeypatch.setattr(rpc, "READ_DEADLINE", 0.01)
+    wallet, public = Silent(), Scripted("0xbeef")
+    reader = FallbackProvider(wallet, public)
+
+    assert await reader.call("0x" + "ca11" * 10, "0xdata") == "0xbeef"
+    assert wallet.calls, "it was asked first, as always"
+
+
+async def test_the_dead_wallet_is_not_waited_on_again(monkeypatch) -> None:
+    """`parameters()` is one multicall and thirteen single reads behind
+    it. Paying the deadline on each is the same hang, thirteen times
+    shorter -- so the first failure is remembered."""
+    monkeypatch.setattr(rpc, "READ_DEADLINE", 0.01)
+    wallet = Silent()
+    public = Scripted(*["0xbeef"] * 14)
+    reader = FallbackProvider(wallet, public)
+
+    for _ in range(14):
+        assert await reader.call("0x" + "ca11" * 10, "0xdata") == "0xbeef"
+
+    assert len(wallet.calls) == 1, "asked once, then left out of the order"
+    assert len(public.calls) == 14
+
+
+async def test_a_wallet_that_comes_back_is_asked_again(monkeypatch) -> None:
+    """A laptop off standby, a phone that reconnected. The wallet is the
+    node the transaction will run on, so it gets its place back rather
+    than being written off for the session."""
+    monkeypatch.setattr(rpc, "READ_DEADLINE", 0.01)
+    monkeypatch.setattr(rpc, "SOURCE_COOLDOWN", 0.0)
+    wallet = Scripted(WalletError("Load failed"), "0xf00d")
+    public = Scripted("0xbeef", "0xbeef")
+    reader = FallbackProvider(wallet, public)
+
+    assert await reader.call("0x" + "ca11" * 10, "0xdata") == "0xbeef"
+    assert await reader.call("0x" + "ca11" * 10, "0xdata") == "0xf00d"
+
+
+async def test_the_last_source_is_waited_on_however_long_it_takes(
+    monkeypatch,
+) -> None:
+    """A deadline is only worth having when there is somewhere to go. On
+    the last source it converts a slow answer into no answer."""
+    monkeypatch.setattr(rpc, "READ_DEADLINE", 0.01)
+    slow = Scripted("0xbeef")
+    real_request = slow.request
+
+    async def dawdle(method, params=None):
+        await asyncio.sleep(0.05)
+        return await real_request(method, params)
+
+    slow.request = dawdle  # type: ignore[method-assign]
+    reader = FallbackProvider(slow)
+
+    assert await reader.call("0x" + "ca11" * 10, "0xdata") == "0xbeef"
+
+
+async def test_every_source_cold_is_still_a_reason_to_try(monkeypatch) -> None:
+    """An empty read order is not a reason to fail without asking: it is
+    the moment to find out whether one has come back."""
+    monkeypatch.setattr(rpc, "READ_DEADLINE", 0.01)
+    wallet = Scripted(WalletError("gone"), "0xf00d")
+    public = Scripted(WalletError("gone"), "0xbeef")
+    reader = FallbackProvider(wallet, public)
+
+    with pytest.raises(WalletError):
+        await reader.call("0x" + "ca11" * 10, "0xdata")
+    assert reader.read_order() == [0, 1], "both cold, so both are asked again"
+    assert await reader.call("0x" + "ca11" * 10, "0xdata") == "0xf00d"
+
+
+async def test_a_signature_still_waits_on_the_human(monkeypatch) -> None:
+    """The deadline is for reads. A send waits on somebody reading a
+    prompt, and eight seconds is not how long that takes."""
+    monkeypatch.setattr(rpc, "READ_DEADLINE", 0.01)
+
+    async def slow_send(method, params=None):
+        await asyncio.sleep(0.05)
+        return "0xhash"
+
+    wallet = Scripted()
+    wallet.request = slow_send  # type: ignore[method-assign]
+    reader = FallbackProvider(wallet, Scripted("0xbeef"))
+
+    assert await reader.request("eth_sendTransaction", [{}]) == "0xhash"
 
 
 async def test_closing_a_reader_leaves_the_wallet_session_alone() -> None:

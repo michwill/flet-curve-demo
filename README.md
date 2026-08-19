@@ -975,6 +975,32 @@ A JSON-RPC error still ends the walk instead of continuing it, for the reason
 gives the same reply more slowly, and a rejected request asked twice is a second
 prompt.
 
+**Falling over needs a clock**, which this did not have, and the bug it left
+looked nothing like a transport problem: the pool parameters simply never
+loaded. A wallet gets 120 seconds to answer a request — right for a signature,
+where a human is reading a prompt, and absurd for an `eth_call` nobody typed.
+So a wallet whose node had gone away answered *nothing*, and the walk sat on it.
+`PoolContract.parameters` is one Multicall3 plus, when that comes back empty,
+thirteen single reads: fourteen requests at two minutes each is **twenty-eight
+minutes** of "Reading pool parameters…", with a public endpoint one step behind
+it that would have answered in a second.
+
+So a read gets `READ_DEADLINE` — eight seconds, the same budget `ENDPOINT_TIMEOUT`
+gives a public endpoint — and a source that misses it is skipped for
+`SOURCE_COOLDOWN` seconds, because otherwise the deadline is paid fourteen times
+over. Two edges matter:
+
+- **the last source in the order has no deadline.** There is nowhere to fall to,
+  and a clock there converts a slow answer into no answer;
+- **a success clears the mark at once**, so a laptop coming off standby is asked
+  again on its next read rather than being written off for the session.
+
+The panel keeps its own backstop (`PARAMETER_DEADLINE`, 45s) for the transport
+nobody has thought of yet: it resolves into values or into a sentence, never
+into reading forever. And anything a transport raises that is not a `WalletError`
+is reported the same way — an uncaught one kills the task silently, which is the
+state that made this look like a hang rather than a failure.
+
 A zap that will not answer costs nothing, since the route is gated on a working
 quote — no approve step appears and the pool-token route stays. One family is
 still unsupported for deposits: the `main`-registry metapools (GUSD/3Crv and

@@ -1182,7 +1182,7 @@ class WithdrawTab(ActionTab):
 
     @property
     def drawing_on_gauge(self) -> bool:
-        return bool(self.use_staked.value) and self.pool.has_gauge
+        return bool(self.use_staked.value) and self.pool.has_any_gauge
 
     @property
     def spendable(self) -> int:
@@ -1201,7 +1201,7 @@ class WithdrawTab(ActionTab):
 
     def _sync_use_staked(self) -> None:
         """Offer the box where it can do something, and pre-tick it once."""
-        self.use_staked.visible = self.pool.has_gauge and self.staked > 0
+        self.use_staked.visible = self.pool.has_any_gauge and self.staked > 0
         if not self.use_staked.visible:
             self.use_staked.value = False
             return
@@ -1783,7 +1783,7 @@ class ClaimTab(ActionTab):
         )
 
     def build(self) -> list[ft.Control]:
-        if not self.pool.has_gauge:
+        if not self.pool.has_any_gauge:
             return [
                 ft.Text(
                     "This pool has no gauge, so it pays no rewards.",
@@ -1869,7 +1869,7 @@ class ClaimTab(ActionTab):
 
     async def refresh(self) -> None:
         contract = self.get_contract()
-        if not self.pool.has_gauge:
+        if not self.pool.has_any_gauge:
             self.submit_button.visible = False
             self.approve_button.visible = False
             self.page.update()
@@ -1968,7 +1968,7 @@ class StakeTab(ActionTab):
     @property
     def available(self) -> bool:
         """Is there LP to move, in either direction?"""
-        return self.pool.has_gauge and (self.lp_balance > 0 or self.staked > 0)
+        return self.pool.has_any_gauge and (self.lp_balance > 0 or self.staked > 0)
 
     @property
     def done_verb(self) -> str:
@@ -1980,13 +1980,28 @@ class StakeTab(ActionTab):
         return self.amount_label(self.pool.lp_token, amount) if amount > 0 else ""
 
     def build(self) -> list[ft.Control]:
-        if not self.pool.has_gauge:
+        if not self.pool.has_any_gauge:
             return [
                 ft.Text(
                     "This pool has no gauge, so there is nothing to stake.",
                     size=SMALL,
                     color=ft.Colors.ON_SURFACE_VARIANT,
                 )
+            ]
+        if not self.pool.has_gauge:
+            # Killed: nothing new goes in, and what is in there still has
+            # to come out. So the panel is an unstake panel, and says why.
+            self.direction.value = "unstake"
+            self.submit_label = "Unstake"
+            return [
+                ft.Text(
+                    "This pool's gauge is retired: it pays no more CRV and "
+                    "takes no new stakes. Anything already staked can still "
+                    "be taken out.",
+                    size=SMALL,
+                    color=ft.Colors.ON_SURFACE_VARIANT,
+                ),
+                _stacked(self.amount, self.balances_label),
             ]
         return [
             self.direction,
@@ -2013,7 +2028,7 @@ class StakeTab(ActionTab):
 
     async def refresh(self) -> None:
         contract = self.get_contract()
-        if not self.pool.has_gauge:
+        if not self.pool.has_any_gauge:
             self.submit_button.visible = False
             self.approve_button.visible = False
             self.page.update()
@@ -2079,5 +2094,7 @@ class StakeTab(ActionTab):
         if amount <= 0:
             raise WalletError("Enter an amount.")
         if self.direction.value == "stake":
+            if not self.pool.has_gauge:
+                raise WalletError("This pool's gauge is retired: it takes no stakes.")
             return await contract.stake(amount)
         return await contract.unstake(amount)

@@ -910,7 +910,10 @@ class CurveApp:
 
     async def load_earnings(self, holdings, account: str, chain_id: int, provider) -> None:
         """What each position earns, and what it has earned but not taken."""
-        staked = [h for h in holdings if h.gauge and h.staked > 0]
+        # `wallet > 0` as well as `staked`: a gauge goes on owing after
+        # the LP has been taken out of it, and a position that unstaked
+        # without claiming was reported as earning nothing.
+        staked = [h for h in holdings if h.gauge and (h.staked > 0 or h.wallet > 0)]
         if not staked:
             self._earning_seeds = None
             return

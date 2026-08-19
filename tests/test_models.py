@@ -256,3 +256,40 @@ def test_merge_detail_tolerates_short_balance_arrays() -> None:
     pool = Pool.from_v2(LIST_3POOL).merge_detail({**DETAIL_3POOL, "balances": [1.0]})
     assert pool.coins[0].balance == 1.0
     assert pool.coins[1].balance == 0.0
+
+
+def test_a_killed_gauge_is_kept_apart_rather_than_dropped() -> None:
+    """Killed means it pays no more CRV and takes no new stakes. It does
+    not mean it is empty: 161 of Ethereum's 2,219 pools have only killed
+    gauges, and sampled ones still held LP. Dropping the address left
+    those balances invisible and with no way out of the UI."""
+    pool = Pool.from_v2(
+        {
+            "address": "0x" + "11" * 20,
+            "name": "old",
+            "gauges": [{"address": "0x" + "22" * 20, "is_killed": True}],
+        }
+    )
+
+    assert pool.gauge == "", "nothing new may be staked there"
+    assert pool.has_gauge is False
+    assert pool.dead_gauge == "0x" + "22" * 20
+    assert pool.any_gauge == pool.dead_gauge, "but it is still readable"
+    assert pool.has_any_gauge is True
+
+
+def test_a_live_gauge_wins_over_a_killed_one() -> None:
+    pool = Pool.from_v2(
+        {
+            "address": "0x" + "11" * 20,
+            "name": "replaced",
+            "gauges": [
+                {"address": "0x" + "22" * 20, "is_killed": True},
+                {"address": "0x" + "33" * 20},
+            ],
+        }
+    )
+
+    assert pool.gauge == "0x" + "33" * 20
+    assert pool.any_gauge == pool.gauge
+    assert pool.has_gauge is True

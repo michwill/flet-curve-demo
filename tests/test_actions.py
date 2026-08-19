@@ -818,6 +818,59 @@ def deposit_tab(provider):
     return tab
 
 
+def retired_gauge_pool():
+    """A pool whose only gauge has been killed, with LP still in it."""
+    pool = make_pool()
+    pool.gauge = ""
+    pool.dead_gauge = "0x" + "cc" * 20
+    return pool
+
+
+async def test_a_retired_gauge_can_still_be_unstaked_from() -> None:
+    """Killed means no more CRV and no new stakes, not that the money is
+    gone. 161 Ethereum pools are in this state and the sampled ones still
+    hold LP -- which was unreachable through this UI."""
+    from ui.actions import StakeTab
+
+    pool = retired_gauge_pool()
+    contract = PoolContract(FakeProvider(), pool, ACCOUNT)
+    tab = StakeTab(StubPage(), pool, lambda: contract, None)
+    tab.mount()
+    tab.staked = 5 * 10**18
+
+    controls = tab.build()
+
+    assert tab.direction.value == "unstake"
+    assert tab.available is True
+    assert any("retired" in getattr(c, "value", "") for c in controls)
+    assert contract.build_unstake(10**18)[0] == pool.dead_gauge
+
+
+async def test_a_retired_gauge_takes_no_new_stake() -> None:
+    from ui.actions import StakeTab
+    from wallet.base import WalletError as _WalletError
+
+    pool = retired_gauge_pool()
+    contract = PoolContract(FakeProvider(), pool, ACCOUNT)
+    tab = StakeTab(StubPage(), pool, lambda: contract, None)
+    tab.mount()
+    tab.amount.value = "1"
+    tab.direction.value = "stake"
+
+    with pytest.raises(_WalletError, match="retired"):
+        await tab.submit(contract)
+
+    assert contract.provider.sent == []
+
+
+async def test_a_retired_gauge_is_still_read_for_balances_and_rewards() -> None:
+    pool = retired_gauge_pool()
+    contract = PoolContract(FakeProvider(), pool, ACCOUNT)
+
+    assert contract.build_claim_rewards()[0] == pool.dead_gauge
+    assert await contract.staked_balance() == 0  # asked, rather than skipped
+
+
 async def test_a_refresh_during_a_send_leaves_submit_held_down() -> None:
     """A refresh runs on its own task, and `_sync_approval` sets Submit
     from the allowance alone -- so a MAX click or an edited amount while

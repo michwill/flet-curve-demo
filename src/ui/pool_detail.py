@@ -563,8 +563,9 @@ class PoolDetailView(ft.Column):
         rows: list[ft.Control] = [
             self._address_row("Pool", self.pool.address),
         ]
-        if self.pool.has_gauge:
-            rows.append(self._address_row("Gauge", self.pool.gauge))
+        if self.pool.has_any_gauge:
+            label = "Gauge" if self.pool.has_gauge else "Gauge (retired)"
+            rows.append(self._address_row(label, self.pool.any_gauge))
         rows.append(self._parameter_rows)
         return ft.ExpansionTile(
             title=ft.Text("Pool parameters", size=LABEL, weight=ft.FontWeight.BOLD),

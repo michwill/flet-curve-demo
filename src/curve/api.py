@@ -37,7 +37,7 @@ from .merkl import (
     underlying_ids,
     with_underlying,
 )
-from .models import Pool, _first_live_gauge
+from .models import Pool, _first_dead_gauge, _first_live_gauge
 from .portfolio import Target
 from .sort import get_sort
 
@@ -468,7 +468,7 @@ class CurveApi:
                     name=pool.display_name,
                     chain=chain,
                     lp_token=pool.lp_token or pool.address,
-                    gauge=pool.gauge,
+                    gauge=pool.any_gauge,
                     tvl=pool.tvl,
                     coins=tuple(
                         (coin.address, coin.symbol) for coin in pool.display_coins
@@ -505,10 +505,17 @@ class CurveApi:
         return targets
 
     async def _all_gauges(self, chain_id: int) -> dict[str, str]:
-        """Pool address -> live gauge, for every pool on the chain."""
+        """Pool address -> the gauge to read balances from.
+
+        Live where there is one, and a killed one otherwise: this feeds
+        the portfolio scan, and a killed gauge that still holds somebody's
+        LP is exactly the balance they most need to see.
+        """
         gauges: dict[str, str] = {}
         for raw in await self._list_pools(chain_id):
-            gauge = _first_live_gauge(raw.get("gauges"))
+            gauge = _first_live_gauge(raw.get("gauges")) or _first_dead_gauge(
+                raw.get("gauges")
+            )
             if gauge:
                 gauges[(raw.get("address") or "").lower()] = gauge
         return gauges

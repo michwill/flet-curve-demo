@@ -354,10 +354,14 @@ class PoolContract:
         return abi.decode_uint(result)
 
     async def staked_balance(self, owner: str | None = None) -> int:
-        """LP tokens held in the gauge. A gauge is itself an ERC-20."""
-        if not self.pool.has_gauge:
+        """LP tokens held in the gauge. A gauge is itself an ERC-20.
+
+        `any_gauge`, not `gauge`: a killed gauge takes no new stakes and
+        still holds whatever went in before it was killed.
+        """
+        if not self.pool.has_any_gauge:
             return 0
-        return await self.balance_of(self.pool.gauge, owner)
+        return await self.balance_of(self.pool.any_gauge, owner)
 
     async def allowance(self, token: str, spender: str) -> int:
         try:
@@ -523,9 +527,9 @@ class PoolContract:
         return await self._send(*self.build_stake(amount))
 
     def build_unstake(self, amount: int) -> tuple[str, str]:
-        if not self.pool.has_gauge:
+        if not self.pool.has_any_gauge:
             raise PoolCallFailed("This pool has no gauge to unstake from.")
-        return self.pool.gauge, abi.encode_gauge_withdraw(amount)
+        return self.pool.any_gauge, abi.encode_gauge_withdraw(amount)
 
     async def unstake(self, amount: int) -> str:
         return await self._send(*self.build_unstake(amount))
@@ -535,14 +539,14 @@ class PoolContract:
 
     async def claimable_crv(self, owner: str | None = None) -> int:
         """CRV the gauge has recorded for this account."""
-        if not self.pool.has_gauge or rewards_for(self.pool) is None:
+        if not self.pool.has_any_gauge or rewards_for(self.pool) is None:
             return 0
         account = owner or self.account
         if not account:
             return 0
         try:
             result = await self.provider.call(
-                self.pool.gauge, abi.encode_claimable_tokens(account)
+                self.pool.any_gauge, abi.encode_claimable_tokens(account)
             )
         except RpcError as exc:
             raise PoolCallFailed(f"Could not read claimable CRV: {exc.message}") from exc
@@ -550,10 +554,12 @@ class PoolContract:
 
     async def reward_tokens(self) -> list[str]:
         """The incentive tokens this gauge streams, in its own order."""
-        if not self.pool.has_gauge:
+        if not self.pool.has_any_gauge:
             return []
         try:
-            raw = await self.provider.call(self.pool.gauge, abi.encode_reward_count())
+            raw = await self.provider.call(
+                self.pool.any_gauge, abi.encode_reward_count()
+            )
         except RpcError:
             return []
         count = abi.decode_uint(raw) if raw and raw != "0x" else 0
@@ -561,7 +567,7 @@ class PoolContract:
         for index in range(min(count, MAX_REWARD_TOKENS)):
             try:
                 answer = await self.provider.call(
-                    self.pool.gauge, abi.encode_reward_tokens(index)
+                    self.pool.any_gauge, abi.encode_reward_tokens(index)
                 )
             except RpcError:
                 break
@@ -573,11 +579,11 @@ class PoolContract:
     async def claimable_reward(self, token: str, owner: str | None = None) -> int:
         """One incentive token's outstanding amount. A genuine view."""
         account = owner or self.account
-        if not self.pool.has_gauge or not account:
+        if not self.pool.has_any_gauge or not account:
             return 0
         try:
             result = await self.provider.call(
-                self.pool.gauge, abi.encode_claimable_reward(account, token)
+                self.pool.any_gauge, abi.encode_claimable_reward(account, token)
             )
         except RpcError as exc:
             raise PoolCallFailed(
@@ -609,16 +615,16 @@ class PoolContract:
             raise PoolCallFailed(
                 "CRV is not minted on this network, so there is nothing to claim."
             )
-        return entry.minter, abi.encode_minter_mint(self.pool.gauge)
+        return entry.minter, abi.encode_minter_mint(self.pool.any_gauge)
 
     async def claim_crv(self) -> str:
         return await self._send(*self.build_claim_crv())
 
     def build_claim_rewards(self) -> tuple[str, str]:
         """Claim every incentive token at once. Goes to the gauge."""
-        if not self.pool.has_gauge:
+        if not self.pool.has_any_gauge:
             raise PoolCallFailed("This pool has no gauge, so nothing accrues.")
-        return self.pool.gauge, abi.encode_claim_rewards()
+        return self.pool.any_gauge, abi.encode_claim_rewards()
 
     async def claim_rewards(self) -> str:
         return await self._send(*self.build_claim_rewards())

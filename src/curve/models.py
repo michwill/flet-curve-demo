@@ -125,6 +125,25 @@ def _first_live_gauge(raw: Any) -> str:
     return ""
 
 
+def _first_dead_gauge(raw: Any) -> str:
+    """A killed gauge, for a pool that has no live one.
+
+    Killed means it pays no more CRV and takes no new stakes -- it does
+    not mean it is empty. 161 of Ethereum's 2,219 pools have only killed
+    gauges, and the ones sampled still held LP, so a portfolio that only
+    ever asks about live gauges tells those people they have nothing and
+    offers them no way to get it out.
+    """
+    if not isinstance(raw, list):
+        return ""
+    for entry in raw:
+        if isinstance(entry, dict) and entry.get("is_killed"):
+            address = entry.get("address")
+            if address:
+                return address
+    return ""
+
+
 @dataclass(slots=True)
 class Pool:
     """A Curve pool, as much of it as the list and detail views need."""
@@ -140,6 +159,9 @@ class Pool:
     volume_24h: float = 0.0
     base_apr: float = 0.0
     gauge: str = ""
+    #: A killed gauge, when the pool has no live one. Nothing new goes in;
+    #: what is already there still has to come out. See `_first_dead_gauge`.
+    dead_gauge: str = ""
     #: veCRV boost range: (unboosted, max-boost) APR in percent.
     crv_apr: tuple[float, float] = (0.0, 0.0)
     incentives: list[Incentive] = field(default_factory=list)
@@ -223,7 +245,17 @@ class Pool:
 
     @property
     def has_gauge(self) -> bool:
+        """Can LP be staked here? Killed gauges take no new deposits."""
         return bool(self.gauge)
+
+    @property
+    def any_gauge(self) -> str:
+        """The gauge to read balances from, claim from and unstake from."""
+        return self.gauge or self.dead_gauge
+
+    @property
+    def has_any_gauge(self) -> bool:
+        return bool(self.any_gauge)
 
     @property
     def campaign_apr(self) -> float:
@@ -293,6 +325,7 @@ class Pool:
             volume_24h=_float(raw.get("trading_volume_24h")),
             base_apr=_float(raw.get("base_weekly_apr")),
             gauge=_first_live_gauge(raw.get("gauges")),
+            dead_gauge=_first_dead_gauge(raw.get("gauges")),
             crv_apr=(_float(raw.get("crv_apr")), _float(raw.get("crv_apr_boosted"))),
             incentives=[
                 Incentive.from_v2(r)
@@ -310,6 +343,7 @@ class Pool:
         self.registry = raw.get("registry_type") or raw.get("pool_type") or self.registry
         if raw.get("gauges"):
             self.gauge = _first_live_gauge(raw["gauges"]) or self.gauge
+            self.dead_gauge = _first_dead_gauge(raw["gauges"]) or self.dead_gauge
 
         detail_coins = raw.get("coins") or []
         balances = raw.get("balances") or []
@@ -348,7 +382,9 @@ class Pool:
                     balance_usd=balance * price,
                 )
             )
-        gauge = "" if raw.get("gauge_is_killed") else (raw.get("gauge_address") or "")
+        killed = bool(raw.get("gauge_is_killed"))
+        address = raw.get("gauge_address") or ""
+        gauge = "" if killed else address
         return cls(
             address=raw.get("address") or "",
             name=raw.get("name") or raw.get("symbol") or "",
@@ -359,6 +395,7 @@ class Pool:
             lp_token=raw.get("lp_token_address") or raw.get("address") or "",
             tvl=_float(raw.get("tvl")),
             gauge=gauge,
+            dead_gauge=address if killed else "",
             incentives=[
                 Incentive.from_lite(reward)
                 for reward in raw.get("gauge_extra_rewards") or []

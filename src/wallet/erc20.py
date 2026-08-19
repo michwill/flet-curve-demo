@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from decimal import Decimal, InvalidOperation
+import re
+from decimal import Decimal, InvalidOperation, localcontext
 
 # -- keccak-256 ------------------------------------------------------------
 # Note this is original Keccak padding (0x01), not SHA-3's (0x06);
@@ -179,27 +180,67 @@ def decode_string(data: str) -> str:
 # -- amounts ---------------------------------------------------------------
 
 
+#: A comma that can only be a thousands separator: groups of exactly three,
+#: after one to three digits. `1,000` passes and `1,5` does not, which is
+#: the point -- stripping every comma turned a European `1,5` into fifteen
+#: tokens, silently, on the way to a signature.
+_GROUPED = re.compile(r"^\d{1,3}(,\d{3})+$")
+
+#: The largest number of digits worth scaling. `uint256` tops out a little
+#: past 1e77, so anything above this cannot be a token amount, and refusing
+#: it early keeps `int()` away from a Decimal with a billion digits.
+_MAX_DIGITS = 78
+
+
 def parse_units(value: str, decimals: int) -> int:
     """Human amount ("1.5") -> smallest units. Never touches float."""
-    text = (value or "").strip().replace(",", "")
+    text = (value or "").strip()
     if not text:
         raise ValueError("Enter an amount")
+    whole, dot, fraction = text.partition(".")
+    if "," in fraction:
+        raise ValueError("Use a dot for the decimal point")
+    if "," in whole:
+        if not _GROUPED.match(whole):
+            raise ValueError("Use a dot for the decimal point")
+        whole = whole.replace(",", "")
     try:
-        amount = Decimal(text)
+        amount = Decimal(whole + dot + fraction)
     except (InvalidOperation, ValueError):
         raise ValueError(f"'{value}' is not a number") from None
+    # Before the comparison below, not after: `Decimal("nan") < 0` raises
+    # `InvalidOperation`, which is not a `ValueError` and so went straight
+    # past every caller's guard and killed the task holding the panel.
+    if not amount.is_finite():
+        raise ValueError(f"'{value}' is not a number")
     if amount < 0:
         raise ValueError("Amount cannot be negative")
-    scaled = amount * (Decimal(10) ** decimals)
+    if amount.adjusted() >= _MAX_DIGITS:
+        raise ValueError("Amount is too large")
+    # A local context, because the default one is 28 significant digits and
+    # these are not significant figures, they are wei. A balance of 100
+    # billion tokens at 18 decimals is 29 digits, so MAX rounded it *up* by
+    # one unit -- past the balance, into a revert.
+    with localcontext() as context:
+        context.prec = len(amount.as_tuple().digits) + decimals + 10
+        scaled = amount * (Decimal(10) ** decimals)
     if scaled != scaled.to_integral_value():
         raise ValueError(f"Too many decimal places (max {decimals})")
     return int(scaled)
 
 
 def format_units(value: int, decimals: int, precision: int = 6) -> str:
-    """Smallest units -> a short human string, trailing zeros trimmed."""
+    """Smallest units -> a short human string, trailing zeros trimmed.
+
+    The same local context as `parse_units`, and for the same reason: at
+    the default 28 significant digits a balance of 100 billion tokens came
+    back as a *larger* round number than it is, so MAX filled the field
+    with more than the wallet held.
+    """
     if decimals == 0:
         return str(value)
-    quantised = Decimal(value) / (Decimal(10) ** decimals)
-    text = f"{quantised:.{precision}f}".rstrip("0").rstrip(".")
-    return text or "0"
+    with localcontext() as context:
+        context.prec = len(str(abs(value))) + decimals + 10
+        quantised = Decimal(value) / (Decimal(10) ** decimals)
+        text = f"{quantised:.{precision}f}"
+    return text.rstrip("0").rstrip(".") or "0"

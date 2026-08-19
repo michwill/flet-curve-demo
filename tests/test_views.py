@@ -2295,12 +2295,16 @@ def test_an_unpriced_reward_drops_the_value_rather_than_showing_zero() -> None:
 class ClaimingChain:
     """A chain that pays out: it answers the reads, and mines the send."""
 
-    def __init__(self, gauge: str, token: str, owed: int) -> None:
+    def __init__(self, gauge: str, token: str, owed: int, network: int = 1) -> None:
         self.gauge = gauge
         self.token = token
         self.owed = owed
         self.sent: list[dict] = []
         self.round = 0
+        self.network = network
+
+    async def chain_id(self) -> int:
+        return self.network
 
     async def call(self, _to: str, _data: str) -> str:
         from .test_parameters import aggregate3_response
@@ -2352,6 +2356,55 @@ async def test_a_confirmed_claim_updates_the_numbers_it_was_made_against(
     assert app.portfolio_view.claim_rewards.visible is False
     assert app.portfolio_view.accrued_label.value == ""
     assert app.portfolio_view.accrued_value.value == ""
+
+
+async def test_a_claim_is_refused_while_the_wallet_is_on_another_network(
+    monkeypatch,
+) -> None:
+    """The portfolio reads through public nodes pinned to the chain being
+    browsed, so a wallet somewhere else is the normal state here and
+    nothing else on the page notices. The claim is the one thing that goes
+    to the wallet: sent from Arbitrum, the Ethereum minter is an address
+    with no code there, which accepts the calldata, succeeds, and claims
+    nothing -- and the page then said "Claimed CRV."."""
+    import main as app_module
+
+    gauge = "0x" + "22" * 20
+    token = "0x" + "ab" * 20
+    elsewhere = ClaimingChain(gauge, token, 4 * 10**18, network=42161)
+
+    monkeypatch.setattr(app_module, "wait_for_confirmation", _mined)
+
+    app = app_module.CurveApp.__new__(app_module.CurveApp)
+    app.page = StubPage()
+    app.chain = "ethereum"
+    app.chains = {"ethereum": 1}
+    app.portfolio_view = portfolio_view(app.page)
+    app.portfolio_view.show([make_holding()])
+    app.wallet = SimpleNamespace(address="0x" + "11" * 20, provider=elsewhere)
+    app._earnings = [earning(gauge=gauge, rewards=(crv_reward(2.0),))]
+
+    await app.claim_portfolio(True)
+
+    assert elsewhere.sent == [], "nothing may be sent to the wrong chain"
+    assert "another network" in app.portfolio_view.status.text.value
+    assert "Ethereum" in app.portfolio_view.status.text.value
+
+
+async def test_a_wallet_that_cannot_say_where_it_is_may_still_claim() -> None:
+    """Same choice the pool panel makes: refusing to act on an unreadable
+    answer is worse than letting the wallet refuse."""
+    import main as app_module
+    from wallet.base import WalletError
+
+    class Mute:
+        async def chain_id(self):
+            raise WalletError("this wallet does not answer eth_chainId")
+
+    app = app_module.CurveApp.__new__(app_module.CurveApp)
+    app.wallet = SimpleNamespace(address="0x" + "11" * 20, provider=Mute())
+
+    assert await app.wallet_is_here(1) is True
 
 
 async def _mined(_provider, _tx, **_kw) -> dict:
@@ -2598,6 +2651,9 @@ async def test_declining_a_claim_leaves_no_red_line_behind() -> None:
     from wallet.base import RpcError
 
     class Refusing:
+        async def chain_id(self) -> int:
+            return 1
+
         async def send_transaction(self, _tx: dict) -> str:
             raise RpcError(4001, "User rejected the request")
 

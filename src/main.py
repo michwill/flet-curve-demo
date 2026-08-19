@@ -963,6 +963,30 @@ class CurveApp:
         self._earnings = filled
         self.portfolio_view.show_earnings(filled, chain_id)
 
+    async def wallet_is_here(self, chain_id: int) -> bool:
+        """Is the wallet on the network the page is showing?
+
+        The portfolio *reads* through public nodes pinned to the chain
+        being browsed -- see `reader` -- so a wallet on another network is
+        the normal state here rather than an edge case, and nothing else
+        on this page would notice. A claim is the one thing that goes to
+        the wallet, and the minter it names exists at that address on
+        Ethereum and nowhere else: sent from a wallet on Arbitrum it costs
+        gas and claims nothing, and the transaction can still succeed --
+        an address with no code accepts calldata and returns.
+
+        A wallet that cannot say where it is answers True: the pool panel
+        makes the same choice, and refusing to act on an unreadable answer
+        would be worse than letting the wallet refuse.
+        """
+        wallet = self.wallet
+        if wallet is None or not chain_id:
+            return False
+        try:
+            return await wallet.provider.chain_id() == chain_id
+        except WalletError:
+            return True
+
     async def claim_portfolio(self, crv: bool) -> None:
         """Claim one half of what the portfolio is owed."""
         view = self.portfolio_view
@@ -971,6 +995,13 @@ class CurveApp:
             view.claiming("Connect a wallet first.", status.FAILED)
             return
         chain_id = self.chains.get(self.chain) or 0
+        if not await self.wallet_is_here(chain_id):
+            view.claiming(
+                f"Your wallet is on another network. Switch it to "
+                f"{chain_name(self.chain)} to claim.",
+                status.FAILED,
+            )
+            return
         plan = earnings.claim_plan(chain_id, self._earnings)
         count = len(plan.crv) if crv else (1 if plan.extras else 0)
         if not count:

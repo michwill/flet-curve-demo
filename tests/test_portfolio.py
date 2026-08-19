@@ -279,3 +279,50 @@ async def test_a_page_that_never_loads_is_reported_not_dropped() -> None:
 
     with pytest.raises(ApiError, match="page 2"):
         await api._list_pools(1)
+
+
+async def test_every_chains_tvl_arrives_in_one_request(monkeypatch) -> None:
+    """The per-chain totals endpoint answers with the chain's whole pool
+    list attached -- 2.3 MB for Ethereum -- so asking it twenty-six times
+    to order a menu is not a trade worth making."""
+    from curve import api as api_module
+    from curve.api import CurveApi
+
+    asked: list[str] = []
+
+    async def one_call(url, timeout=None):
+        asked.append(url)
+        return {"data": [
+            {"name": "ethereum", "pool_tvl": 1.4e9, "lending_tvl": 7.1e7},
+            {"name": "xdai", "pool_tvl": 2.9e6, "lending_tvl": 0.0},
+        ]}
+
+    monkeypatch.setattr(api_module, "get_json", one_call)
+    api = CurveApi()
+    api._store("lite:chains", {})
+
+    tvls = await api.chain_tvls()
+
+    assert len(asked) == 1, "one request for every chain, not one per chain"
+    assert tvls == {"ethereum": 1.4e9, "xdai": 2.9e6}
+    assert "pool_tvl" not in str(tvls), "the lending TVL beside it is not this"
+
+
+async def test_the_lite_chains_bring_their_own_totals(monkeypatch) -> None:
+    """They are not in the prices list at all, and their deployments file
+    already carries a TVL."""
+    from curve import api as api_module
+    from curve.api import CurveApi
+    from curve.lite import LiteChain
+
+    async def prices(url, timeout=None):
+        return {"data": [{"name": "ethereum", "pool_tvl": 1.4e9}]}
+
+    monkeypatch.setattr(api_module, "get_json", prices)
+    api = CurveApi()
+    api._store("lite:chains", {"etherlink": LiteChain(name="etherlink", chain_id=42793, label="Etherlink", tvl=9.2e6)})
+
+    tvls = await api.chain_tvls()
+
+    assert tvls["etherlink"] == 9.2e6
+    assert tvls["ethereum"] == 1.4e9

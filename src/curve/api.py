@@ -37,7 +37,7 @@ from .merkl import (
     underlying_ids,
     with_underlying,
 )
-from .models import Pool, _first_dead_gauge, _first_live_gauge
+from .models import Pool, _first_dead_gauge, _first_live_gauge, _float
 from .portfolio import Target
 from .sort import get_sort
 
@@ -195,6 +195,36 @@ class CurveApi:
         for name, chain in (await self.lite_chains()).items():
             mapping.setdefault(name, chain.chain_id)
         return self._store("chains", mapping)
+
+    async def chain_tvls(self) -> dict[str, float]:
+        """Chain name -> what is in its pools, for every chain at once.
+
+        One request for the ten v2 chains, and the Lite deployments list
+        for the other seventeen -- which is the whole reason this is worth
+        having: the per-chain totals endpoint answers with the chain's
+        entire pool list attached, 2.3 MB for Ethereum, so asking it
+        twenty-six times to order a menu is not a trade worth making. See
+        `chain_totals`, which is the one that pays that price, once, for
+        the chain actually on screen.
+
+        `pool_tvl` rather than the lending TVL beside it: the picker is a
+        list of places to swap.
+        """
+        cached = self._cached("chain_tvls")
+        if cached is not None:
+            return cached
+        totals: dict[str, float] = {}
+        try:
+            payload = await get_json(build_url(PRICES_V1, "/chains/"))
+        except ApiError:
+            payload = {}
+        for entry in (payload or {}).get("data") or []:
+            name = entry.get("name")
+            if name:
+                totals[str(name)] = _float(entry.get("pool_tvl"))
+        for name, chain in (await self.lite_chains()).items():
+            totals.setdefault(name, float(chain.tvl or 0.0))
+        return self._store("chain_tvls", totals)
 
     # -- Curve Lite -------------------------------------------------------
 

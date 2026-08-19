@@ -2860,3 +2860,109 @@ async def test_switching_chains_mid_load_leaves_the_one_that_was_chosen() -> Non
         "a feed must never carry one chain's slug and another's id, and the "
         "run that was overtaken must not attach one at all"
     )
+
+
+# -- the network picker ----------------------------------------------------
+
+
+def picker_app(tvls: dict[str, float] | None = None):
+    """A header whose picker knows these chains, and their sizes."""
+    app = header_app(LAPTOP)
+    app.chains = {
+        "ethereum": 1, "arbitrum": 42161, "base": 8453,
+        "xdai": 100, "polygon": 137, "sonic": 146,
+    }
+    app._chain_tvls = tvls or {}
+    app._sync_chain_options()
+    return app
+
+
+def test_the_biggest_network_is_offered_first() -> None:
+    """26 networks in alphabetical order buries the three anybody came
+    for, so the picker is ordered by what is in the pools."""
+    app = picker_app({"ethereum": 1.4e9, "base": 1.8e7, "xdai": 2.9e6, "arbitrum": 1.2e7})
+
+    assert app._chain_order[:4] == ["ethereum", "base", "arbitrum", "xdai"]
+
+
+def test_a_network_the_totals_do_not_name_comes_after_the_ones_they_do() -> None:
+    """A chain with no published TVL is not a chain with none -- it is one
+    the totals endpoint has not heard of. It sorts below, in the order
+    `PREFERRED_CHAINS` gives, rather than above everything at zero."""
+    app = picker_app({"xdai": 2.9e6})
+
+    assert app._chain_order[0] == "xdai"
+    rest = app._chain_order[1:]
+    assert rest.index("ethereum") < rest.index("arbitrum") < rest.index("sonic")
+
+
+def test_the_order_holds_before_any_totals_arrive() -> None:
+    """`load_chain_tvls` is not awaited by anything, so the picker has to
+    be usable in whatever order it already has."""
+    app = picker_app()
+
+    assert app._chain_order[:3] == ["ethereum", "arbitrum", "base"]
+
+
+async def test_the_totals_reorder_the_picker_when_they_land() -> None:
+    app = picker_app()
+    app.api = SimpleNamespace(
+        chain_tvls=lambda: _answer({"xdai": 9e9, "ethereum": 1.0})
+    )
+
+    await app.load_chain_tvls()
+
+    assert app._chain_order[:2] == ["xdai", "ethereum"]
+    assert [o.key for o in app.chain_picker.options][:2] == ["xdai", "ethereum"]
+
+
+async def test_totals_that_will_not_load_leave_the_order_alone() -> None:
+    from curve.http import ApiError
+
+    app = picker_app()
+    before = list(app._chain_order)
+
+    async def refuses():
+        raise ApiError("prices API is down")
+
+    app.api = SimpleNamespace(chain_tvls=refuses)
+    await app.load_chain_tvls()
+
+    assert app._chain_order == before
+
+
+def test_the_picker_can_be_typed_into_to_narrow_the_list() -> None:
+    """Material's own filter, so there is no second control in a header
+    that has no room for one."""
+    app = picker_app()
+
+    assert app.chain_picker.editable is True
+    assert app.chain_picker.enable_filter is True
+
+
+def test_a_phone_picker_is_not_a_text_field() -> None:
+    """At 78px it is a mark and an arrow, and the narrow layout drops the
+    labels the filter would have matched on."""
+    app = header_app(PHONE)
+
+    assert app.chain_picker.editable is False
+    assert app.chain_picker.enable_filter is False
+
+
+def test_choosing_a_network_puts_its_name_back_in_the_field() -> None:
+    """An editable dropdown keeps the field's text apart from the
+    selection, and Flet 0.86 fires no focus or blur event to tidy it --
+    so every path that sets the chain has to say the name again."""
+    app = picker_app()
+    app.chain_picker.text = "gno"  # typed, then narrowed to one
+    app.chain_picker.value = "xdai"
+    app.show_list = lambda: None
+
+    app._chain_changed(None)
+
+    assert app.chain == "xdai"
+    assert app.chain_picker.text == "Gnosis"
+
+
+async def _answer(value):
+    return value

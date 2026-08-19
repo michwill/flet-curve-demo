@@ -152,6 +152,10 @@ CHAIN_PICKER_NARROW_WIDTH = 78
 #: How wide the *open* menu is, whatever the closed field has shrunk to.
 CHAIN_MENU_WIDTH = 200
 
+#: How tall the open menu is allowed to be before it scrolls. There are 26
+#: networks and a menu that long covers the page it is over.
+CHAIN_MENU_HEIGHT = 420
+
 #: How big a theme's face is drawn on the button, and in the menu it moves
 #: into on a phone.
 BUTTON_MARK = 22
@@ -250,6 +254,9 @@ class CurveApp:
 
         self._icons = False
         self._chain_order: list[str] = list(PREFERRED_CHAINS)
+        #: Chain name -> pool TVL, once `load_chain_tvls` has read them.
+        #: Empty until then, which is what `PREFERRED_CHAINS` is for.
+        self._chain_tvls: dict[str, float] = {}
         self._totals: list[tuple[str, str]] = []
 
         self.chain_picker = ft.Dropdown(
@@ -257,8 +264,12 @@ class CurveApp:
             value=self.chain,
             width=CHAIN_PICKER_WIDTH,
             menu_width=CHAIN_MENU_WIDTH,
+            menu_height=CHAIN_MENU_HEIGHT,
             dense=True,
             border=ft.InputBorder.OUTLINE,
+            # Type to narrow the list, which is Material's own filter.
+            editable=True,
+            enable_filter=True,
             leading_icon=chain_icon(self.chain),
             on_select=self._chain_changed,
         )
@@ -473,12 +484,24 @@ class CurveApp:
             self._chain_option(chain, labelled) for chain in self._chain_order
         ]
         self.chain_picker.value = self.chain
+        # An editable dropdown keeps the field's text apart from the
+        # selection, and nothing puts it back on its own: Flet 0.86 fires
+        # neither `on_focus` nor `on_blur` here, so a search that was typed
+        # and abandoned would otherwise leave the field reading "gno" over
+        # a page that is still on Ethereum. Backspacing to empty brings the
+        # whole list back, so it is untidy rather than a trap -- but every
+        # path that sets the chain says the name again.
+        self.chain_picker.text = chain_name(self.chain) if labelled else ""
         self.chain_picker.width = (
             CHAIN_PICKER_WIDTH if labelled else CHAIN_PICKER_NARROW_WIDTH
         )
         self.chain_picker.border = (
             ft.InputBorder.OUTLINE if labelled else ft.InputBorder.NONE
         )
+        # No typing into a field that is 78px of mark and arrow, and the
+        # narrow layout drops the labels the filter would match on.
+        self.chain_picker.editable = labelled
+        self.chain_picker.enable_filter = labelled
         self.chain_picker.leading_icon = chain_icon(self.chain)
 
     def _resized(self, e: ft.PageResizeEvent) -> None:
@@ -614,6 +637,7 @@ class CurveApp:
         if picked == self.chain:
             return
         self.chain = picked
+        self.chain_picker.text = chain_name(self.chain)
         self.chain_picker.leading_icon = chain_icon(self.chain)
         self.show_list()
         self.page.run_task(self.load_pools)
@@ -738,6 +762,8 @@ class CurveApp:
                 self.chains = await self.api.chains()
                 self._sync_chain_options()
                 chain = self.chain  # `_sync_chain_options` may have moved it
+                # The order the picker ends up in, fetched behind the page.
+                self.page.run_task(self.load_chain_tvls)
             chain_id = self.chains.get(chain)
             if chain_id is None:
                 raise ApiError(f"Curve's API does not cover {chain}.")
@@ -791,15 +817,46 @@ class CurveApp:
         self.menu.items = self._menu_items()
 
     def _sync_chain_options(self) -> None:
-        """Offer every chain the API reports, preferred ones first."""
+        """Offer every chain the API reports, the biggest first.
+
+        By what is in the pools, because that is what the list under the
+        picker is for -- 26 chains in alphabetical order buries the three
+        anybody came for. `PREFERRED_CHAINS` is what the order falls back
+        to until the totals land, and what settles the chains the totals
+        do not name.
+        """
         known = list(self.chains)
-        ordered = [c for c in PREFERRED_CHAINS if c in known] + sorted(
-            c for c in known if c not in PREFERRED_CHAINS
-        )
+        tvls = self._chain_tvls
+        preferred = list(PREFERRED_CHAINS)
+
+        def rank(chain: str) -> tuple[int, float, int, str]:
+            if chain in tvls:
+                return (0, -tvls[chain], 0, chain)
+            place = preferred.index(chain) if chain in preferred else len(preferred)
+            return (1, 0.0, place, chain)
+
+        ordered = sorted(known, key=rank)
         self._chain_order = ordered
         if self.chain not in known and ordered:
             self.chain = ordered[0]
         self._sync_chain_picker()
+
+    async def load_chain_tvls(self) -> None:
+        """Put the picker in size order, once the totals arrive.
+
+        Nothing awaits this: the picker works in whatever order it has,
+        and this only improves it. One request for every chain -- see
+        `CurveApi.chain_tvls` for why it is not twenty-six.
+        """
+        try:
+            tvls = await self.api.chain_tvls()
+        except ApiError:
+            return
+        if not tvls or tvls == self._chain_tvls:
+            return
+        self._chain_tvls = tvls
+        self._sync_chain_options()
+        safe_update(self.chain_picker)
 
     # -- navigation -------------------------------------------------------
 
@@ -1098,6 +1155,7 @@ class CurveApp:
         if route.chain and route.chain != self.chain and route.chain in self.chains:
             self.chain = route.chain
             self.chain_picker.value = route.chain
+            self.chain_picker.text = chain_name(route.chain)
             self.chain_picker.leading_icon = chain_icon(route.chain)
             self.show_list()
             await self.load_pools()
@@ -1320,6 +1378,7 @@ class CurveApp:
             return False
         self.chain = name
         self.chain_picker.value = name
+        self.chain_picker.text = chain_name(name)
         self.chain_picker.leading_icon = chain_icon(name)
         self.show_list()
         await self.load_pools()

@@ -1,16 +1,4 @@
-"""The pool's own numbers: which ones exist, and what they mean.
-
-Two things are easy to get wrong here and neither shows up as an error.
-The **scales differ between parameters** -- a fee is a fraction of 1e10,
-`gamma` is 1e18 fixed point, the off-peg multiplier is 1e10 fixed point --
-so a single denominator applied to all of them produces numbers that look
-plausible and are wrong by six orders of magnitude. And the parameters a
-pool *has* depend on its family, which the registry name does not settle.
-
-The values below were read off mainnet (see `curve/parameters.py` for the
-table), so these tests are pinned to real pools rather than to invented
-integers.
-"""
+"""The pool's own numbers: which ones exist, and what they mean."""
 
 from __future__ import annotations
 
@@ -49,8 +37,8 @@ from wallet.base import WalletError
 @pytest.mark.parametrize(
     "kind,raw,expected",
     [
-        # A, as Curve's own UI shows it: a plain integer carrying whatever
-        # multiplier its family uses.
+        # A, as Curve's own UI shows it: a plain integer carrying
+        # whatever multiplier its family uses.
         (Kind.INTEGER, 4_000, "4,000"),               # 3pool
         (Kind.INTEGER, 1_707_629, "1,707,629"),       # tricryptoUSDC
         # Fees are tenths of a basis point: 1e10 is 100%.
@@ -80,13 +68,6 @@ def test_each_scale_is_the_one_that_parameter_uses(kind, raw, expected) -> None:
 
 
 def test_the_virtual_price_keeps_the_digits_that_move() -> None:
-    """The reason it is not `Kind.RATIO`.
-
-    Six significant digits is what every other 1e18 value gets, and it
-    rounds three real mainnet readings to the same string -- so a fold
-    opened to check whether a pool is earning would show the same number
-    for a pool that is and a pool that stopped a year ago.
-    """
     readings = (
         1_039_823_717_356_571_085,  # 3pool
         1_039_823_717_344_705_400,  # 3pool, an earlier read
@@ -97,24 +78,11 @@ def test_the_virtual_price_keeps_the_digits_that_move() -> None:
 
 
 def test_the_places_are_fixed_rather_than_trimmed() -> None:
-    """Trailing zeros stay. This is a number read twice and compared, and
-    a column that changes width between reads is a column you have to
-    re-read from the left each time."""
     assert format_value(Kind.PRECISE, 1_100_000_000_000_000_000) == "1.100000000000"
     assert format_value(Kind.PRECISE, 2 * 10**18) == "2.000000000000"
 
 
 def test_the_twelfth_place_is_exact_rather_than_a_float() -> None:
-    """Why the scaling is `Decimal` and not `raw / PRECISION`.
-
-    Thirteen significant digits out of a float's sixteen is a narrow
-    complaint, and most of the time the two agree. But the value is an
-    exact integer and the twelfth place is the last one shown, so when the
-    quotient falls within an ulp of a rounding boundary the float rounds
-    the wrong way -- about one value in 25,000, and always in the one
-    digit this kind exists to show. Below, the exact value continues
-    `...500073`, so the twelfth place rounds up.
-    """
     raw = 1_311_012_269_028_500_073
 
     assert format_value(Kind.PRECISE, raw) == "1.311012269029"
@@ -122,18 +90,11 @@ def test_the_twelfth_place_is_exact_rather_than_a_float() -> None:
 
 
 def test_it_is_read_off_the_pool_like_every_other_row() -> None:
-    """`get_virtual_price()`, batched with the rest -- not the value the
-    API reports, which `Pool.virtual_price` already carries and which is
-    not what a fold headed "read from the contract" should show."""
     assert any(p.key == "get_virtual_price" for p in PARAMETERS)
     assert abi.encode_parameter("get_virtual_price") == "0xbb7b8b80"
 
 
 def test_every_family_implements_it() -> None:
-    """Unlike `gamma` or `offpeg_fee_multiplier`, this one is on every
-    pool Curve has shipped -- verified on mainnet against the old
-    registry, a factory pool, stableswap-ng and two crypto pools. So the
-    row is expected to be present where the others come and go."""
     stable = rows({"A": 4_000, "fee": 1_500_000, "get_virtual_price": 10**18})
     crypto = rows({"A": 1_707_629, "gamma": 11_809_167_828_997, "get_virtual_price": 10**18})
 
@@ -142,16 +103,10 @@ def test_every_family_implements_it() -> None:
 
 
 def test_an_empty_pool_has_no_virtual_price_rather_than_a_zero() -> None:
-    """Implemented everywhere is not answered everywhere. It divides by
-    `totalSupply`, so a pool nobody has deposited into reverts -- seen on
-    mainnet at DOLA/FRAXPYUSD. Absence is the right answer there, and a
-    `0.000000000000` would read as a pool that had lost everything."""
     assert [p.key for p, _ in rows({"A": 200, "fee": 4_000_000})] == ["A", "fee"]
 
 
 def test_a_multiplier_stays_ascii() -> None:
-    """The web build's font has no glyph for U+00D7 and draws a tofu box.
-    Everything user-visible in this app is ASCII bar one interpunct."""
     assert format_value(Kind.MULTIPLIER, 20_000_000_000).isascii()
 
 
@@ -159,8 +114,6 @@ def test_a_multiplier_stays_ascii() -> None:
 
 
 def test_rows_are_in_table_order_and_skip_what_is_missing() -> None:
-    """A StableSwap pool has no gamma. That is not a failed read, it is
-    what a StableSwap pool is, so no row appears for it."""
     stable = rows({"A": 4_000, "fee": 1_500_000})
     assert [parameter.key for parameter, _ in stable] == ["A", "fee"]
 
@@ -175,7 +128,6 @@ def test_rows_are_in_table_order_and_skip_what_is_missing() -> None:
             "price_scale": 64_996_211_703_193_777_726_748,
         }
     )
-    # Table order, not the order they were read or the order of the dict.
     assert [parameter.key for parameter, _ in crypto] == [
         "A", "gamma", "fee", "mid_fee", "out_fee", "fee_gamma", "price_scale",
     ]
@@ -186,7 +138,6 @@ def test_nothing_answered_is_no_rows_rather_than_a_row_of_dashes() -> None:
 
 
 def test_every_parameter_has_a_note() -> None:
-    """The label alone does not explain `fee_gamma` to anybody."""
     assert all(parameter.note for parameter in PARAMETERS)
 
 
@@ -208,12 +159,7 @@ def make_pool() -> Pool:
 
 
 class ScriptedProvider:
-    """Answers the selectors it knows and nothing else.
-
-    Which is exactly what a pool does: a method it does not implement
-    returns empty data rather than an error, and `_read` turns that into
-    a `PoolCallFailed`.
-    """
+    """Answers the selectors it knows and nothing else."""
 
     def __init__(self, answers: dict[str, int]) -> None:
         from curve import abi
@@ -254,16 +200,10 @@ async def test_a_crypto_pool_answers_most_of_them() -> None:
 
 
 async def test_a_pool_that_answers_nothing_is_empty_not_an_error() -> None:
-    """An address with no code on this chain, for instance -- which is
-    what browsing one network with a wallet on another used to look
-    like."""
     assert not await contract_with({}).parameters()
 
 
 async def test_an_indexed_price_is_found_after_the_plain_one_fails() -> None:
-    """Tricrypto pools hold several prices and take an index; twocrypto
-    and the stable factories hold one and take none. The registry does
-    not say which, so both spellings are tried."""
     from curve import abi
 
     class OnlyIndexed(ScriptedProvider):
@@ -280,9 +220,6 @@ async def test_an_indexed_price_is_found_after_the_plain_one_fails() -> None:
 
 
 async def test_a_chain_without_multicall_asks_one_at_a_time() -> None:
-    """The batch is tried first and answers nothing -- there is no way to
-    ask whether Multicall3 is deployed that is cheaper than calling it --
-    and then every parameter is asked on its own."""
     contract = contract_with({})
     await contract.parameters()
 
@@ -292,15 +229,6 @@ async def test_a_chain_without_multicall_asks_one_at_a_time() -> None:
 
 
 async def test_a_provider_that_cannot_read_at_all_says_so() -> None:
-    """Not reaching the chain is not the same as the pool having nothing.
-
-    This one hid a real bug for as long as it returned `{}`. On iOS every
-    read failed -- see `curve.http.USER_AGENT` -- and the panel reported
-    it as "This pool answered none of them", which reads as a fact about
-    the pool and sent the search in the wrong direction entirely. A
-    transport failure is the caller's to show, so it is raised; the page
-    keeps its addresses either way, because they need no chain at all.
-    """
 
     class Dead:
         async def call(self, to: str, data: str) -> str:
@@ -311,9 +239,6 @@ async def test_a_provider_that_cannot_read_at_all_says_so() -> None:
 
 
 async def test_a_pool_that_implements_none_of_them_is_still_empty() -> None:
-    """The other half of the distinction above: the chain answered, and
-    what it said was that this contract has none of these methods. That
-    is absence, not failure, and stays a plain empty result."""
     assert not await contract_with({}).parameters()
 
 
@@ -333,8 +258,6 @@ async def test_a_reverting_read_does_not_stop_the_others() -> None:
 
 
 def test_the_reader_and_the_table_agree_on_names() -> None:
-    """`parameters()` iterates the table, so a typo in either would show
-    up as a parameter that is read and never displayed."""
     assert set(INDEXED_PARAMETERS) <= {parameter.key for parameter in PARAMETERS}
 
 
@@ -347,15 +270,11 @@ def test_a_known_chain_gets_its_own_explorer() -> None:
 
 
 def test_a_chain_that_publishes_one_wins_over_the_table() -> None:
-    """The Lite chains say which explorer they use, and they are exactly
-    the chains a hardcoded table would be wrong about."""
     url = explorers.address_url(146, "0xabc", "https://custom.example/")
     assert url == "https://custom.example/address/0xabc"
 
 
 def test_an_unknown_chain_still_gets_a_link() -> None:
-    """blockscan searches an address across chains. Not a real explorer
-    for any one of them, and better than a dead link."""
     assert explorers.address_url(31337, "0xabc").startswith(explorers.FALLBACK)
 
 
@@ -364,8 +283,6 @@ def test_no_address_is_no_link() -> None:
 
 
 async def test_it_does_not_raise_on_a_pool_call_failure() -> None:
-    """`parameters()` swallows exactly two exception types; anything else
-    would reach a page that has no handler for it."""
     assert issubclass(PoolCallFailed, WalletError)
 
 
@@ -377,16 +294,7 @@ def word(value: int) -> str:
 
 
 def aggregate3_response(answers: list[int | str | None]) -> str:
-    """Encode `(bool success, bytes returnData)[]` as Multicall3 returns it.
-
-    Writing the encoder the decoder is tested against is only worth
-    anything because the *real* one was checked against mainnet -- see
-    `curve/multicall.py`. This is here so the failure modes (a call that
-    reverted, a call that answered nothing) can be produced on demand.
-
-    An `int` is one word back, the usual case. A `str` is raw hex, for the
-    one call in the batch that answers several words.
-    """
+    """Encode `(bool success, bytes returnData)[]` as Multicall3 returns it."""
     elements = []
     for value in answers:
         if value is None:
@@ -433,15 +341,12 @@ async def test_the_whole_batch_is_one_call() -> None:
 
 
 async def test_the_batch_is_sent_to_the_pool_with_failures_allowed() -> None:
-    """`aggregate3`, not `aggregate`: half these calls are *expected* to
-    fail, and one failure would take the whole batch down with it."""
     contract = PoolContract(BatchingProvider({"A": 4_000}), make_pool(), "")
     await contract.parameters()
 
     _to, data = contract.provider.asked[0]
     plan = _parameter_plan()
     assert data.startswith("0x" + abi.selector(AGGREGATE3))
-    # One `true` per call, and every target is this pool.
     assert data.count(word(1)) >= len(plan)
     assert data.lower().count(make_pool().address[2:].lower()) == len(plan)
 
@@ -451,15 +356,12 @@ def test_the_encoding_round_trips() -> None:
     data = encode_aggregate3(calls)
 
     assert data.startswith("0x" + abi.selector(AGGREGATE3))
-    # Head: offset to the array, then its length.
     body = data[10:]
     assert int(body[0:64], 16) == 32
     assert int(body[64:128], 16) == 2
 
 
 def test_failures_can_be_refused() -> None:
-    """The flag a write depends on: false means a bad call takes the
-    transaction with it, rather than being mined as a silent no-op."""
     calls = [("0x" + "11" * 20, "0xf446c1d0"), ("0x" + "22" * 20, "0xb1373929")]
     allowed = encode_aggregate3(calls)
     refused = encode_aggregate3(calls, allow_failure=False)
@@ -474,8 +376,6 @@ def test_failures_can_be_refused() -> None:
     ["0x", "", "0x00", "0x" + "ff" * 64, None],
 )
 def test_nothing_readable_is_no_answers(result) -> None:
-    """A chain with no Multicall3 answers `0x` from an address with no
-    code. That is not an error, it is a chain to ask one call at a time."""
     assert decode_aggregate3(result) == []
 
 
@@ -485,17 +385,12 @@ def test_a_failed_call_reads_as_no_value() -> None:
 
 
 def test_a_short_answer_is_not_mistaken_for_a_full_batch() -> None:
-    """Better to ask again one at a time than to line up two answers
-    against twelve questions."""
     assert decode_uints(aggregate3_response([1, 2]), 12) == [None] * 12
 
 
 # -- stored_rates ----------------------------------------------------------
-#
 # The one read here that answers an array rather than a word, and the one
-# that most pools do not answer at all. Both raw returns below are the real
-# thing, copied off mainnet: `stored_rates()` on the stETH-ng factory pool
-# and on the osETH/rETH stableswap-ng pool, which encode it differently.
+# that most pools do not answer at all.
 
 STETH_NG_RATES = (
     "0x"
@@ -513,9 +408,6 @@ OSETH_RETH_RATES = (
 
 
 def test_both_array_encodings_are_read() -> None:
-    """A fixed `uint256[N]` and a `DynArray[uint256, N]` are both in the
-    wild for this same method, so the shape is sniffed rather than
-    declared. The dynamic one carries an offset and a length in front."""
     assert abi.decode_uint_array(STETH_NG_RATES) == [10**18, 10**18]
     assert abi.decode_uint_array(OSETH_RETH_RATES) == [
         1_077_150_828_439_152_538,
@@ -524,27 +416,16 @@ def test_both_array_encodings_are_read() -> None:
 
 
 def test_the_offset_is_never_mistaken_for_a_rate() -> None:
-    """The bug this decoder exists to prevent. `decode_uint` on the
-    dynamic form returns the first word, which is the offset -- 32 -- and
-    32 wei of a 1e18 rate formats as a confident `0.000000000000`."""
     assert abi.decode_uint(OSETH_RETH_RATES) == 32
     assert 32 not in abi.decode_uint_array(OSETH_RETH_RATES)
 
 
 @pytest.mark.parametrize("junk", ["", "0x", "0xabc", "0x" + "11" * 33])
 def test_unreadable_data_is_no_rates_rather_than_a_guess(junk) -> None:
-    """Which is how most pools answer: 3pool, the crypto pools and every
-    old factory pool revert on this one."""
     assert abi.decode_uint_array(junk) == []
 
 
 def test_each_coin_is_scaled_by_its_own_decimals() -> None:
-    """The mistake that would look plausible and be wrong by twelve orders
-    of magnitude. `stored_rates` scales every coin to 36 decimals, so a
-    six-decimal coin's flat 1.0 arrives as 1e30 and an eighteen-decimal
-    coin's as 1e18. Divide those as they come and USDC prices WETH at
-    1e-12; scale each by its own first and the pair is 1.0.
-    """
     mixed = rate_rows([10**30, 10**18], [("USDC", 6), ("WETH", 18)])
     oracle = rate_rows([10**30, 1_101_580_158_261_000_000], [("USDC", 6), ("weETH", 18)])
 
@@ -553,9 +434,6 @@ def test_each_coin_is_scaled_by_its_own_decimals() -> None:
 
 
 def test_an_oracle_rate_is_what_the_row_is_for() -> None:
-    """osETH/rETH on mainnet: both coins are LSTs and neither reads 1.0.
-    This is the case the row exists for -- everything else here is a coin
-    whose rate is its precision multiplier and nothing more."""
     shown = rate_rows(
         [1_077_150_828_439_152_538, 1_169_697_850_260_678_664],
         [("osETH", 18), ("rETH", 18)],
@@ -567,15 +445,6 @@ def test_an_oracle_rate_is_what_the_row_is_for() -> None:
 
 
 def test_the_rate_is_divided_by_the_first_coins_own_rate() -> None:
-    """The correction that makes the label true.
-
-    `stored_rates` is denominated in the pool's accounting unit, not in
-    coin 0, and the two coincide only where coin 0 has no oracle. Across
-    all 2,009 mainnet pools, 1,011 answer this method and 298 of them --
-    29% -- have a first rate that is not 1.0. osETH/rETH is one: printing
-    rETH's raw 1.1697 under a `rETH/osETH` label would claim a price the
-    pool does not hold. It prices rETH at 1.0859 osETH.
-    """
     raw = [1_077_150_828_439_152_538, 1_169_697_850_260_678_664]
     coins = [("osETH", 18), ("rETH", 18)]
 
@@ -584,8 +453,6 @@ def test_the_rate_is_divided_by_the_first_coins_own_rate() -> None:
 
 
 def test_dividing_by_one_changes_nothing_for_the_other_71_percent() -> None:
-    """Where coin 0 *is* the numeraire the ratio is the raw rate, which is
-    why this correction costs the common case nothing."""
     shown = rate_rows(
         [10**18, 1_243_624_562_186_000_000], [("DOLA", 18), ("sUSDe", 18)]
     )
@@ -596,8 +463,6 @@ def test_dividing_by_one_changes_nothing_for_the_other_71_percent() -> None:
 
 
 def test_the_first_coin_gets_no_row_of_its_own() -> None:
-    """Against itself it is 1.0 by construction, and a row that can only
-    ever say one thing says nothing."""
     shown = rate_rows(
         [10**18, 1_243_624_562_186_000_000], [("DOLA", 18), ("sUSDe", 18)]
     )
@@ -607,21 +472,12 @@ def test_the_first_coin_gets_no_row_of_its_own() -> None:
 
 
 def test_a_pool_with_no_oracle_between_its_coins_shows_nothing() -> None:
-    """541 of the 1,011 that answer are this: every rate identical, so
-    every ratio is 1.0. The rows would be a column of `1.000000000000`
-    restating that this is an ordinary pool, which the absence of the
-    rows says more briefly."""
     assert rate_rows([10**30, 10**30], [("PYUSD", 6), ("USDC", 6)]) == []
     assert rate_rows([10**18, 10**18, 10**18], [("a", 18), ("b", 18), ("c", 18)]) == []
-    # Not 1.0 each, but identical, so still nothing to tell apart.
     assert rate_rows([12 * 10**17, 12 * 10**17], [("a", 18), ("b", 18)]) == []
 
 
 def test_the_row_says_where_the_number_came_from() -> None:
-    """A bare `rETH/osETH` does not say what kind of price it is, and the
-    row a line above it is `Price oracle` -- the pool's own moving average
-    of its own trades. Two oracles measuring different things from
-    different places, so each says which it is."""
     shown = rate_rows(
         [1_077_150_828_439_152_538, 1_169_697_850_260_678_664],
         [("osETH", 18), ("rETH", 18)],
@@ -634,12 +490,6 @@ def test_the_row_says_where_the_number_came_from() -> None:
 
 
 def test_the_label_fits_a_phone() -> None:
-    """Measured, not guessed: rendered at 360px, the widest real pair --
-    `External oracle sFRAX/sUSDe` beside a twelve-place number -- sits on
-    one line inside the 314px the fold has after the page and parameter
-    padding. Symbols long enough to wrap exist (`mwstETH-WPUNKS:15`) and
-    wrap to two lines with the value still aligned, which is why the
-    label is the control that expands and the number is not."""
     shown = rate_rows(
         [1_243_624_562_186_000_000, 1_179_347_425_983_000_000, 1_160_351_238_578_000_000],
         [("sUSDe", 18), ("sDAI", 18), ("sFRAX", 18)],
@@ -649,26 +499,16 @@ def test_the_label_fits_a_phone() -> None:
 
 
 def test_a_first_rate_of_zero_is_not_divided_by() -> None:
-    """No pool should answer this, and a ZeroDivisionError inside a panel
-    refresh is not how we would want to find out that one did."""
     assert rate_rows([0, 10**18], [("a", 18), ("b", 18)]) == []
 
 
 def test_a_coin_count_that_does_not_match_shows_nothing() -> None:
-    """A metapool's `stored_rates` has the contract's two entries while
-    `coins` lists the four it decomposes into. Zipping those pairs each
-    rate with another coin's decimals, and the result is not a near miss
-    -- it is out by a factor of 1e12 and still looks like a rate. So the
-    rows are dropped entirely rather than shown wrong."""
     assert rate_rows([10**18, 10**18], [("DAI", 18)]) == []
     assert rate_rows([10**18], [("DAI", 18), ("USDC", 6)]) == []
     assert rate_rows([], [("DAI", 18)]) == []
 
 
 async def test_the_rates_ride_in_the_same_batch_as_the_parameters() -> None:
-    """The whole point of `ARRAY_PARAMETERS`: one array-valued read that
-    would otherwise cost a round trip of its own, on a panel whose budget
-    is a stranger's public endpoint."""
     plan = _parameter_plan()
     answers = [None] * len(plan)
     answers[[key for key, _ in plan].index("A")] = 5_000
@@ -694,7 +534,6 @@ async def test_the_rates_ride_in_the_same_batch_as_the_parameters() -> None:
 
 
 async def test_a_pool_without_them_leaves_the_rates_empty() -> None:
-    """Not an error and not a zero: most pools do not have this method."""
     readings = await contract_with({"A": 4_000}).parameters()
 
     assert readings.rates == ()
@@ -703,7 +542,6 @@ async def test_a_pool_without_them_leaves_the_rates_empty() -> None:
 
 
 def test_nothing_at_all_is_falsy() -> None:
-    """What the panel checks to decide between rows and a sentence."""
     assert not Readings()
     assert Readings({"A": 4_000})
     assert Readings(rates=(10**18,))

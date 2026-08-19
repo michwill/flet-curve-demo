@@ -1,38 +1,10 @@
 #!/usr/bin/env python3
 """Pin the web build to IPFS, through Pinata.
 
-    python tools/publish_ipfs.py                # publish, then pin dist/
-    python tools/publish_ipfs.py --no-build     # pin the dist/ already there
-    python tools/publish_ipfs.py --dry-run      # everything up to the upload
-
-**Where the key goes, and where it must not.** Not in
-`src/local_config.toml`. That file is deliberately inside the script
-directory because `flet publish` tars that directory into the app, which
-is what makes a plain publish come out configured -- and it means
-everything under `src/` is shipped to every visitor. Pinning it would then
-put it on IPFS, where nobody can offer you a delete button. That file says
-in its own header that nothing in it is a secret.
-
-So the Pinata JWT lives in `local_secrets.toml` at the repo *root*, which
-is gitignored and outside the tree that gets bundled, or in `PINATA_JWT`
-in the environment. The build is searched for it before anything is sent
--- see `leaked` -- because the difference between the safe file and the
-unsafe one is a single path component, and the mistake is unrecoverable
-rather than embarrassing.
-
-**Why the old endpoint.** Pinata's current upload API,
-`uploads.pinata.cloud/v3/files`, does not take a directory, and a website
-is a directory. Their own answer to that is `pinFileToIPFS`, so that is
-what this posts to: one multipart request, one `file` part per file, each
-named `<folder>/<path>` -- which is how the folder is rebuilt on the other
-side, and why the CID that comes back is the directory rather than a file.
-
-**Why the body is hand-rolled.** 1,800 files. Handing them all to httpx as
-open handles hits the descriptor limit long before it hits the network, so
-the parts are streamed one at a time, with the length computed in advance
-so the request is not chunked -- and `test_ipfs.py` asserts that the
-computed length is exactly what the generator emits, which is the one bug
-this shape is prone to.
+**The Pinata JWT goes in `local_secrets.toml` at the repo root, or in
+`PINATA_JWT` -- never under `src/`**, which `flet publish` tars into the app
+and this pins to IPFS, where there is no delete button. `leaked` searches the
+build for it before every upload.
 """
 
 from __future__ import annotations
@@ -57,11 +29,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 DIST = ROOT / "dist"
 
-# Run as `python tools/publish_ipfs.py`, the interpreter puts `tools/` on
-# the path and not the repo root, so `from tools import ...` cannot
-# resolve -- while the tests, which import this as `tools.publish_ipfs`,
-# resolve it fine. That asymmetry shipped a publish script that crashed on
-# the one way anybody actually runs it. Same guard as `curve/pool.py`.
+# Run as `python tools/publish_ipfs.py`, the interpreter puts `tools/` on the
+# path and not the repo root, so `from tools import ...` cannot resolve --
+# while the tests, which import this as `tools.publish_ipfs`, resolve it
+# fine.
 if __package__ in (None, ""):  # pragma: no cover - direct-script import
     sys.path.insert(0, str(ROOT))
 
@@ -73,29 +44,16 @@ SECRETS = ROOT / "local_secrets.toml"
 SOURCE = ROOT / "src"
 
 #: Compiled bytecode, which goes up unless something stops it.
-#:
-#: Flet's own tar filter excludes a member whose name *starts with*
-#: `__pycache__`, which catches `src/__pycache__` and nothing below it --
-#: so `curve/__pycache__/abi.cpython-313.pyc` and forty-seven of its
-#: neighbours were pinned in the first published build. They are not
-#: merely redundant: Pyodide runs a different Python than the one that
-#: wrote them, so nothing can load them even in principle.
 BYTECODE = "__pycache__"
 
 PIN_URL = "https://api.pinata.cloud/pinning/pinFileToIPFS"
 
-#: Where to send someone once it is pinned. Not `gateway.pinata.cloud`:
-#: that one answers 403 for anything that is HTML ("cannot be served
-#: through the pinata public gateway ... utilize a dedicated gateway",
-#: ERR_ID:00023), which for a website is every page of it. It serves the
-#: js, the wasm and the images quite happily, so the failure looks like a
-#: broken pin rather than a policy. A dedicated gateway is the answer, and
-#: goes in `local_secrets.toml`; until then this one works.
+#: Where to send someone once it is pinned.
 PUBLIC_GATEWAY = "https://dweb.link/ipfs/"
 
 #: CIDv1 rather than v0: it is case-insensitive base32, which is what a
 #: subdomain gateway (`https://<cid>.ipfs.dweb.link`) needs to put the CID
-#: in a hostname. v0 hashes only work on path gateways.
+#: in a hostname.
 CID_VERSION = 1
 
 #: Read size per file, and how often to report progress.
@@ -149,13 +107,10 @@ BASE_ABSOLUTE = '<base href="/">'
 BASE_RELATIVE = '<base href="./">'
 
 #: Routes must live in the fragment, or every deep link 404s at the gateway.
-#: See the README, and `publish()` for why this is a flag rather than the
-#: `pyproject.toml` key that looks like it should do the job.
 ROUTE_STRATEGY = "hash"
 
 #: index.html names the strategy twice: Flet's template default, and then
-#: the value `flet publish` patches in below it. Both are plain assignments
-#: in script tags that run in order, so the last one is the one that counts.
+#: the value `flet publish` patches in below it.
 _ROUTE_NAMED = re.compile(r'routeUrlStrategy\s*[:=]\s*"(path|hash)"')
 
 
@@ -166,18 +121,7 @@ def route_strategy(index: Path) -> str:
 
 
 def make_relative(index: Path) -> bool:
-    """Point the page at its own directory rather than at the site root.
-
-    A gateway serves a pinned site under `/ipfs/<cid>/`, so `href="/"`
-    sends the bootstrap, the wasm, canvaskit and the Python tarball to the
-    gateway's root, where none of them are -- a blank page and a handful of
-    404s. Relative resolves under any prefix, and is identical at a root,
-    which is what `tools/serve.py` is.
-
-    Returns whether it changed anything, so a second run is quiet rather
-    than wrong. The app's *own* asset URLs need nothing: `ui.assets` builds
-    them from the worker's `location`, which is already the right prefix.
-    """
+    """Point the page at its own directory rather than at the site root."""
     html = index.read_text(encoding="utf-8")
     if BASE_RELATIVE in html:
         return False
@@ -193,30 +137,6 @@ def make_relative(index: Path) -> bool:
 # -- the app package, in something a gateway will hand over ----------------
 
 #: What `flet publish` calls the Python app, and what it is turned into.
-#:
-#: eth.limo and eth.link answer **404** for the archive and 200 for every
-#: other file in the same pin -- `main.dart.js`, 9.5 MB across 37 blocks,
-#: included. The shell loads, the Python never arrives, and the app sits on
-#: "Working..." forever with a single 404 to explain it.
-#:
-#: Renaming does not get round it, and the measurements say why. A six-byte
-#: *text* file called `gateway-probe.tar.gz` is served -- and served
-#: labelled `application/gzip`, so the declared type is not what is
-#: refused. The real archive under that same name is refused. `.tgz` and
-#: `.zip` are refused whatever is inside them, and those are the only other
-#: suffixes `python-worker.js` accepts. So the bytes are what is caught, no
-#: filename avoids it, and the way out is to stop shipping archive bytes.
-#:
-#: Base64 inside JSON does that: a legitimate container for binary a script
-#: is going to read, text so that nothing can take it for an archive, and
-#: still same-origin -- where a gateway URL baked into the page would tie
-#: the build to one host, and this has to work on any of them.
-#:
-#: It costs a third more bytes on 400 KB, and it may now be more than is
-#: needed: `--probe` shows `.gz` being served, so a rename alone might do
-#: after all. That was written when `.gz` was believed refused. Untested
-#: against a real pin, and the wrapping works, so it stands until somebody
-#: measures the cheaper route rather than assuming it.
 PACKAGE_FROM = "app.tar.gz"
 PACKAGE_TO = "app-package.json"
 #: The JSON key, named for what it holds -- so the worker unpacking it as a
@@ -224,69 +144,13 @@ PACKAGE_TO = "app-package.json"
 PACKAGE_KEY = "gztar"
 
 #: Directories a CDN serves, so pinning them ships bytes nobody fetches.
-#:
-#: Half the pin. Measured on this build: `canvaskit/` is 38.5 MB and
-#: `pyodide/` is 15.3, against 108 MB in total, and a real page load
-#: requests neither -- 124 requests, canvaskit from gstatic and Pyodide
-#: from jsDelivr.
-#:
-#: This is not read off the network but out of the build, because Flet
-#: decides it and says so. `flutter_bootstrap.js`:
-#:
-#:     if (flet.noCdn) {
-#:         flutterConfig.canvasKitBaseUrl = flet.canvasKitBaseUrl;
-#:         flutterConfig.fontFallbackBaseUrl = flet.fontFallbackBaseUrl;
-#:     }
-#:
-#: With `noCdn` false that branch never runs, so the `canvasKitBaseUrl:
-#: "/canvaskit/"` sitting in `index.html` is inert and Flutter falls
-#: through to gstatic. `flet publish --no-cdn` flips it, and then both
-#: directories *are* fetched from the pin and must stay -- which is why
-#: `cdn_build` asks the build rather than assuming. Publishing self-
-#: contained is a real choice: an app on IPFS that needs gstatic is not
-#: reachable where gstatic is blocked.
-#:
-#: `main.dart.wasm` is deliberately not here. The build ships two targets
-#: and a WasmGC browser takes `{"compileTarget":"dart2wasm",
-#: "mainWasmPath":"main.dart.wasm"}` from *our* origin -- only the skwasm
-#: renderer beside it comes from the CDN.
 CDN_SERVED = ("canvaskit", "pyodide")
 
 #: How a suffix is tested, and why it costs nothing.
-#:
-#: The old answer here was a matrix: five files, 9 MB of them, bolted onto
-#: every publish, because every earlier probe had varied the name *and* the
-#: size *and* the content together and so could not say which mattered.
-#:
-#: The matrix was never needed. Ask a gateway for a file that **does not
-#: exist**, and the confound disappears on its own -- a file that is not
-#: there has no bytes and no size, so anything that tells two of them apart
-#: can only be the name:
-#:
-#:     definitely-absent.zip    18B   "Resource Not Found"
-#:     definitely-absent.bin   220B   "failed to resolve /ipfs/<cid>/...:
-#:                                     no link named"
-#:
-#: The first is a canned refusal delivered before the path is resolved at
-#: all; the second is the IPFS resolver reporting honestly that nothing of
-#: that name is there. So the gateway short-circuits on the extension, and
-#: finding that out takes a second and no pin at all.
-#:
-#: It explains all four observations that used to look contradictory:
-#:
-#:     gateway-probe.tar.gz   served    final extension `.gz`, allowed
-#:     app.tar.gz             refused   renamed to `.tgz` before pinning
-#:     packaging-*.whl        served    `.whl` allowed -- and a real zip
-#:     python_stdlib.zip      refused   `.zip` denied
-#:
-#: The third row settles it: a genuine zip under an allowed suffix is
-#: served, so **the content is never sniffed**. Nor the size -- 9.5 MB of
-#: `main.dart.js` serves fine.
 PROBE_ABSENT = "definitely-absent-file"
 
 #: What a gateway says when it refuses a suffix outright, as opposed to
-#: resolving the path and finding nothing there. Short and canned, where
-#: the honest miss quotes the CID and the path back at you.
+#: resolving the path and finding nothing there.
 REFUSAL_BODY = "Resource Not Found"
 
 #: Suffixes worth checking, for `--probe`. The allowed ones are in here as
@@ -297,38 +161,7 @@ PROBE_SUFFIXES = (
     ".zip", ".tar", ".tgz", ".7z", ".rar", ".bz2", ".xz", ".zst", ".jar",
 )
 
-#: Suffixes an IPFS gateway refuses outright. Measured with `--probe`
-#: against eth.limo and eth.link, which agree exactly.
-#:
-#: **`.gz` is not among them**, which is a correction. It was listed here
-#: for as long as the question stayed open, on the strength of `app.tar.gz`
-#: being refused -- but that file is renamed to `.tgz` before it is pinned,
-#: and `.tgz` is what the gateway declines. A plain `.gz` serves, and so
-#: does `.tar.gz`: the *final* extension is what decides.
-#:
-#: The refusal arrives before the path is resolved, so it is not a fact
-#: about any file -- a suffix on this list is refused whether or not
-#: anything of that name was ever pinned. That is what makes `--probe`
-#: free.
-#:
-#: The refusal is a fresh 404 in ~0.3s with no `Age` header, which is what
-#: distinguishes it from a block that has not propagated yet -- that one is
-#: a 504 after ~17s. See `classify`.
-#:
-#: **This warns rather than stops**, and the reason is worth keeping. The
-#: one file it catches today is `pyodide/python_stdlib.zip`, and the
-#: published app never asks a gateway for it: `flet publish` overwrites its
-#: own template default with
-#: `flet.pyodideUrl="https://cdn.jsdelivr.net/pyodide/v314.0.3/full/pyodide.mjs"`,
-#: so Pyodide and its standard library come from jsDelivr and the whole
-#: pinned `pyodide/` directory is never read. The site loads on
-#: curve.eth.link with that file 404ing throughout -- checked in a browser,
-#: every request 200 and the pool list populated by Python.
-#:
-#: So a refusal here is a fact about a file, not about the app, and
-#: predicting damage from a filename is what turned an observation into a
-#: block that would have stopped a working publish. `verify` measures
-#: instead of predicting; this is a heads-up beside it.
+#: Suffixes an IPFS gateway refuses outright.
 REFUSED_SUFFIXES = (".zip", ".tgz", ".tar", ".bz2", ".xz", ".7z", ".rar", ".zst", ".jar")
 
 
@@ -354,9 +187,7 @@ def wrap_package(root: Path) -> bool:
 
 
 #: Where the worker decides what it fetched, and what goes in front of that
-#: decision. Anchored on its own source rather than a line number: if Flet
-#: rewrites this, the patch fails loudly instead of quietly producing a
-#: build whose app package nothing knows how to read.
+#: decision.
 WORKER = "python-worker.js"
 WORKER_ANCHOR = '            if _archive_path.endswith(".zip"):'
 WORKER_PATCH = f'''            if _archive_path.endswith(".json"):
@@ -394,13 +225,7 @@ def patch_worker(root: Path) -> bool:
 
 
 def cdn_build(index: Path) -> bool:
-    """Does this build load canvaskit and Pyodide from a CDN?
-
-    Read from `index.html`, where `flet publish` writes its answer, rather
-    than assumed: `--no-cdn` produces a build that needs those directories
-    and dropping them would break it. Absent or unreadable reads as CDN,
-    which is Flet's own default.
-    """
+    """Does this build load canvaskit and Pyodide from a CDN?"""
     try:
         text = index.read_text(errors="ignore")
     except OSError:
@@ -409,10 +234,7 @@ def cdn_build(index: Path) -> bool:
 
 
 def drop_cdn_copies(root: Path) -> list[tuple[str, int]]:
-    """Delete the directories a CDN serves. Returns `(name, bytes)` freed.
-
-    Does nothing to a `--no-cdn` build, which fetches them from the pin.
-    """
+    """Delete the directories a CDN serves. Returns `(name, bytes)` freed."""
     if not cdn_build(root / "index.html"):
         return []
     freed = []
@@ -427,16 +249,7 @@ def drop_cdn_copies(root: Path) -> list[tuple[str, int]]:
 
 
 def suffix_served(client, gateway: str, suffix: str) -> bool:
-    """Would this gateway serve a file ending `suffix`, if one existed?
-
-    Asked of a path that is deliberately not in the pin, because that is
-    what removes the confound -- see `PROBE_ABSENT`. A refusal is canned
-    and arrives before the path is resolved; a miss quotes the CID back.
-
-    Anything unreadable counts as served, because the question this answers
-    is "will the suffix stop it", and a gateway that cannot be reached has
-    not stopped anything. The caller is publishing either way.
-    """
+    """Would this gateway serve a file ending `suffix`, if one existed?"""
     url = f"{gateway.rstrip('/')}/{PROBE_ABSENT}{suffix}"
     try:
         body = client.get(url, timeout=VERIFY_TIMEOUT).text
@@ -446,13 +259,7 @@ def suffix_served(client, gateway: str, suffix: str) -> bool:
 
 
 def probe_suffixes(gateway: str, suffixes=PROBE_SUFFIXES) -> dict[str, bool]:
-    """Which of `suffixes` a gateway will serve. Costs one request each.
-
-    Nothing is written and nothing is pinned. The matrix this replaced put
-    9 MB of probe files into every publish to answer the same question, and
-    could not answer it even then, because a file that exists carries a
-    size and a content along with its name.
-    """
+    """Which of `suffixes` a gateway will serve."""
     import httpx
 
     with httpx.Client(follow_redirects=True) as client:
@@ -461,8 +268,7 @@ def probe_suffixes(gateway: str, suffixes=PROBE_SUFFIXES) -> dict[str, bool]:
 
 # -- the check that matters ------------------------------------------------
 
-#: Where a secret could plausibly be readable. The tarball is the app's own
-#: source, `local_config.toml` included; the rest is what the page loads.
+#: Where a secret could plausibly be readable.
 TEXT_SUFFIXES = {".html", ".js", ".json", ".toml", ".txt", ".mjs", ".py"}
 #: `.tgz` as well as `.gz`, because the app package is renamed to `.tgz`
 #: before it is pinned -- and it is the one archive in the build that
@@ -474,21 +280,7 @@ MAX_SCAN = 4 << 20
 
 
 def leaked(root: Path, secret: str) -> list[str]:
-    """Files in the build containing `secret`. Empty is the only good answer.
-
-    IPFS has no unpublish. A key that goes up stays up for as long as
-    anyone finds it worth pinning, so this runs before the upload rather
-    than as a lint afterwards.
-
-    **The app archive is searched through `app_archive`, not as a file.**
-    It is the one member of the build that matters most here -- it is what
-    `src/local_config.toml` ends up inside, which is the mistake this whole
-    function exists to catch -- and by the time this runs it is no longer a
-    tarball at all: `wrap_package` has base64'd it into JSON and deleted
-    it. Base64 does not preserve substrings, so scanning that JSON for the
-    key matches nothing, and the scan reported clean builds for a shape it
-    could not see into.
-    """
+    """Files in the build containing `secret`. Empty is the only good answer."""
     needle = secret.encode()
     found = []
     for path in sorted(root.rglob("*")):
@@ -510,21 +302,13 @@ def leaked(root: Path, secret: str) -> list[str]:
             found += [
                 f"{name}:{member}"
                 for member in _members_holding(archive, needle)
-                # A raw tarball is reached by the loop above as well.
                 if f"{name}:{member}" not in found
             ]
     return sorted(found)
 
 
 def app_archive(root: Path) -> tuple[str, tarfile.TarFile] | None:
-    """The app's own archive, whichever shape the build has it in.
-
-    `wrap_package` base64s it into JSON and deletes the tarball, so
-    anything that wants to look inside has to know both forms -- and every
-    check here runs immediately before the upload, which is *after* the
-    wrapping. Reaching for `app.tar.gz` alone finds nothing and says so
-    cheerfully.
-    """
+    """The app's own archive, whichever shape the build has it in."""
     raw = root / PACKAGE_FROM
     if raw.is_file() and tarfile.is_tarfile(raw):
         return PACKAGE_FROM, tarfile.open(raw)
@@ -541,13 +325,7 @@ def app_archive(root: Path) -> tuple[str, tarfile.TarFile] | None:
 
 
 def bytecode(root: Path) -> list[str]:
-    """`__pycache__` in the build. Empty is the only good answer.
-
-    Checked rather than trusted to the two measures that should have
-    prevented it, because `--no-build` skips both: somebody pinning a
-    `dist/` they built by hand gets the same protection as somebody who
-    let this script build it.
-    """
+    """`__pycache__` in the build. Empty is the only good answer."""
     found = [
         path.relative_to(root).as_posix()
         for path in sorted(root.rglob("*"))
@@ -566,24 +344,7 @@ def bytecode(root: Path) -> list[str]:
 
 
 def refused_by_gateway(root: Path) -> list[str]:
-    """Files in the build an IPFS gateway will not serve. See REFUSED_SUFFIXES.
-
-    Listed before the upload so that a file which will not be reachable is
-    known before it is pinned rather than after somebody reports a page
-    that never finishes loading.
-
-    **It does not stop the run.** Today it catches exactly one file,
-    `pyodide/python_stdlib.zip`, and the published app never asks a gateway
-    for it -- Pyodide is loaded from jsDelivr, so the whole pinned
-    `pyodide/` directory goes unread and curve.eth.link loads with that
-    file 404ing throughout. The refusal is a fact about a file; whether it
-    matters is a fact about the app, and only `verify` and a browser can
-    answer that.
-
-    The one archive this build produces itself is handled rather than
-    reported: `wrap_package` base64s it into JSON, because for gzip no
-    rename is enough.
-    """
+    """Files in the build an IPFS gateway will not serve."""
     return [
         path.relative_to(root).as_posix()
         for path in sorted(root.rglob("*"))
@@ -602,14 +363,7 @@ def clear_bytecode() -> list[str]:
 
 
 def build_env() -> dict[str, str]:
-    """The environment the build steps run in.
-
-    Sweeping `__pycache__` first is not enough on its own, and the reason
-    is worth stating: `build_assets` imports `ui.assets` to read
-    `MARK_PIXELS`, and the interpreter writes that import's bytecode as it
-    goes -- after the sweep, before `flet publish` tars the directory. The
-    first clean attempt still shipped three files for exactly that reason.
-    """
+    """The environment the build steps run in."""
     return {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
 
 
@@ -665,12 +419,7 @@ def _tail(boundary: str) -> bytes:
 def content_length(
     parts: list[tuple[str, Path]], fields: dict[str, str], boundary: str
 ) -> int:
-    """How long the body will be, without building it.
-
-    Sent as `Content-Length` so the request is not chunked. It has to agree
-    with `body` to the byte: too short truncates the upload, too long hangs
-    it until the server gives up.
-    """
+    """How long the body will be, without building it."""
     total = sum(len(_field(boundary, key, value)) for key, value in fields.items())
     for name, path in parts:
         total += len(_file_head(boundary, name)) + path.stat().st_size + len(b"\r\n")
@@ -730,8 +479,6 @@ def pin(
     headers = {
         "Authorization": f"Bearer {jwt}",
         "Content-Type": f"multipart/form-data; boundary={boundary}",
-        # With this present httpx streams the generator as-is; without it
-        # the request goes out chunked, which this endpoint refuses.
         "Content-Length": str(total),
     }
 
@@ -755,120 +502,51 @@ def pin(
 
 
 # -- proving the pin before a name points at it ----------------------------
-#
-# Pinning does not publish anything anywhere. Pinata holds the bytes and
-# announces provider records into the DHT, and until those records are out
-# a gateway asking "who has this block" gets no answer and times out. The
-# root CID is one record and goes first, so index.html resolves within
-# seconds while individual files 504 for a good while after -- which reads
-# exactly like "the site is broken" and is not.
-#
-# **The reason to gate on it rather than wait a bit** is that the first
-# request through a gateway is what gets cached, failures included. Point
-# ENS at a CID before its records are out and your own first visit teaches
-# that gateway a 404, which then outlives the propagation that caused it.
-# So: prove retrievability against a CID URL first, and only then move the
-# name that people will actually use.
+# Pinning does not publish anything anywhere.
 
-#: Where to prove it. `{cid}` is filled in. The subdomain form, so this is
-#: a different cache key from the ENS hostname the name will resolve to.
-#:
-#: **This proves the content exists. It does not predict eth.limo.** dweb.link
-#: is Cloudflare-fronted and answers `cache-control: public, max-age=29030400,
-#: immutable`; it was caught serving with `age=3266`, i.e. from cache, an hour
-#: after a build it had fetched once. A pass here means "some gateway holds
-#: these bytes", which is worth knowing and is not the question a visitor asks.
-#: eth.limo's own nodes do their own provider lookups over a different path,
-#: and that path fails intermittently -- see `WARM_GATEWAY`.
+#: Where to prove it. `{cid}` is filled in.
 VERIFY_GATEWAY = "https://{cid}.ipfs.dweb.link"
 
 #: The gateway people actually use, checked *after* ENS is moved -- which is
 #: the only order available, because eth.limo has no CID gateway at all:
-#:
-#:     https://<cid>.ipfs.eth.limo/   DNS does not resolve
-#:     https://eth.limo/ipfs/<cid>/   404
-#:
-#: It serves ENS names and nothing else, so its retrieval path cannot be
-#: exercised for a CID until the name points at it. Hence two stages rather
-#: than one: `verify` before, against a CID gateway, and this after.
-#:
-#: Fetching is also the fix. A block pulled through an edge lands in that
-#: edge's store, so the same loop that measures the problem removes it, and
-#: the first real visitor gets a warm cache instead of a coin flip. What was
-#: measured on the pin that prompted this, minutes apart on one file:
-#:
-#:     app-package.json   504 unfound (17.4s)  ->  206 served (1.0s)
-#:     app-package.json   206 served  ( 1.0s)  ->  504 unfound (17.4s)
-#:
-#: Not size, either: the 4 KB icon font failed the same way and left every
-#: glyph on the page a tofu box.
-#:
-#: It is a mitigation and not a cure. eth.limo answers `max-age=300` and runs
-#: several edges, so a visitor arriving tomorrow on a cold one gets the same
-#: coin flip. The durable fix is more peers that can answer -- your own node,
-#: or a second pinning service.
+#: https://<cid>.ipfs.eth.limo/ DNS does not resolve
+#: https://eth.limo/ipfs/<cid>/ 404 It serves ENS names and nothing else, so
+#: its retrieval path cannot be exercised for a CID until the name points at
+#: it.
 WARM_GATEWAY = "https://curve.eth.limo"
 
 #: Two, not six. Eight parallel probes against eth.limo earned a run of 503s
 #: from its rate limiter, which then looked exactly like the failure being
-#: investigated. Warming is not in a hurry and must not be the reason a
-#: gateway starts refusing.
+#: investigated.
 WARM_WORKERS = 2
 
 #: The gateway saying "not so fast", which is a fact about the request rate
-#: and not about the content. Retried like `unfound` rather than recorded as
-#: a refusal -- a 503 arrives in well under `REFUSAL_SECONDS` and would
-#: otherwise be filed as a permanent decision and never tried again.
+#: and not about the content.
 THROTTLE_STATUSES = (429, 503)
 
-#: How long to keep retrying the ones that have not propagated. Fifteen
-#: minutes is well past what a few thousand blocks has taken in practice
-#: and short enough to sit and watch.
+#: How long to keep retrying the ones that have not propagated.
 VERIFY_DEADLINE = 900.0
 VERIFY_INTERVAL = 20.0
 VERIFY_TIMEOUT = 45.0
 VERIFY_WORKERS = 6
 
-#: A failure faster than this is a decision, not a timeout. A gateway that
-#: cannot find a block spends its whole retrieval budget first -- ~17s in
-#: the case that prompted this -- where one that refuses to serve the file
-#: answers in a third of a second. Waiting fixes the first and never the
-#: second, so they must not be reported as the same thing.
+#: A failure faster than this is a decision, not a timeout.
 REFUSAL_SECONDS = 3.0
 
 #: Not verified: the token marks, which are fetched only when a pool that
-#: uses one is drawn. 6,716 files against the 92 a visitor needs to boot,
-#: and hammering a public gateway for art nobody has asked for yet is not
-#: a check, it is an imposition.
+#: uses one is drawn.
 LAZY_DIR = "curve"
 
 #: Nor this one, which is fetched *never*. `flet publish` overwrites its own
-#: template default with
-#: `flet.pyodideUrl="https://cdn.jsdelivr.net/pyodide/v314.0.3/full/pyodide.mjs"`,
-#: so Pyodide and its standard library come from jsDelivr and the 15 MB
-#: pinned copy is dead weight the app does not know about.
-#:
-#: Measured rather than assumed, twice: a browser load of curve.eth.limo
-#: shows 124 requests, canvaskit from gstatic and rive from jsDelivr, and
-#: not one request under `pyodide/`. The app renders the pool list with live
-#: data while these files 404.
-#:
-#: Left in the list they are permanent noise -- `python_stdlib.zip` is an
-#: archive and gateways decline those outright, `package.json` answered 502
-#: on four attempts in a row -- so every run would end in a failure report
-#: about files nothing reads, which is how you teach someone to stop reading
-#: the report. `refused_by_gateway` still names them.
+#: template default with `flet.pyodideUrl="https://cdn.jsdelivr.net/pyodide/
+#: v314.0.3/full/pyodide.mjs"`, so Pyodide and its standard library come
+#: from jsDelivr and the 15 MB pinned copy is dead weight the app does not
+#: know about.
 UNFETCHED_DIR = "pyodide"
 
 
 def boot_files(root: Path) -> list[str]:
-    """The part of the build a visitor needs before the app can paint.
-
-    Derived from the build rather than listed here, for the reason
-    `build_assets` reads the submodule's directory rather than a table: a
-    list kept in the tool goes stale silently, and the failure mode is a
-    file nobody checked being the one that does not serve.
-    """
+    """The part of the build a visitor needs before the app can paint."""
     skip = (LAZY_DIR, UNFETCHED_DIR)
     return [
         path.relative_to(root).as_posix()
@@ -878,14 +556,7 @@ def boot_files(root: Path) -> list[str]:
 
 
 def classify(status: int | str, seconds: float) -> str:
-    """`served`, `throttled`, `refused` or `unfound` -- the difference is the point.
-
-    `throttled` is separated from `refused` because both are fast and only
-    one of them is about the file. A rate-limited 503 lands in a fraction of
-    a second, which is the signature this used to read as a permanent
-    decision, and it would then never be retried -- turning our own request
-    rate into a report that the gateway declines to serve the app.
-    """
+    """`served`, `throttled`, `refused` or `unfound` -- the difference is the point."""
     if status in (200, 206):
         return "served"
     if status in THROTTLE_STATUSES:
@@ -894,16 +565,7 @@ def classify(status: int | str, seconds: float) -> str:
 
 
 def probe(client, url: str, *, whole: bool = False) -> tuple[int | str, float]:
-    """Fetch `url` and time it.
-
-    By default streamed and abandoned after the first chunk: proving a 9 MB
-    file is retrievable does not require moving 9 MB, and this runs against
-    somebody else's gateway.
-
-    `whole=True` reads to the end, which is what warming needs and checking
-    does not. The first chunk is the first block; leaving after it warms one
-    block of the thirty-seven in `main.dart.js` and reports the file done.
-    """
+    """Fetch `url` and time it."""
     import httpx
 
     started = time.monotonic()
@@ -931,27 +593,7 @@ def verify(
     sleep=time.sleep,
     on_round=None,
 ) -> dict[str, tuple[str, int | str, float]]:
-    """Poll until every path is retrievable, or until the deadline.
-
-    Returns only what is still wrong, keyed by path. Anything classified
-    `refused` is returned immediately and never retried: a gateway that
-    declines to serve a suffix will decline for the rest of the day.
-    `throttled` is retried like `unfound` -- it is our request rate talking,
-    not the gateway's opinion of the file.
-
-    `whole=True` pulls each file to the end rather than sampling its first
-    block, which is what makes this warm a gateway as well as measure it.
-    `gateway` needs no `{cid}`: an ENS host is a fixed base and formats to
-    itself, which is how the post-ENS stage reuses all of this.
-
-    `on_round(served, total, elapsed)` after each pass, so the caller owns
-    the display -- this has to be usable from a test without a terminal,
-    and the bar has to be drawable without reaching into the polling.
-
-    **Interrupting is a supported way to leave.** The pin exists whatever
-    happens here; the caller catches `KeyboardInterrupt` and keeps the CID
-    on screen, and `--verify-only` picks the waiting back up later.
-    """
+    """Poll until every path is retrievable, or until the deadline."""
     import httpx
 
     base = gateway.format(cid=cid).rstrip("/")
@@ -990,8 +632,8 @@ def verify(
     return bad
 
 
-#: How wide the bar is drawn. Narrow enough to leave room for the counts
-#: and the clock on an eighty-column terminal.
+#: How wide the bar is drawn. Narrow enough to leave room for the counts and
+#: the clock on an eighty-column terminal.
 BAR_WIDTH = 28
 
 
@@ -1010,12 +652,7 @@ def progress_bar(served: int, total: int, elapsed: float) -> str:
 
 
 def progress_reporter(stream=None):
-    """Draw the bar in place on a terminal, one line per pass otherwise.
-
-    A `\\r` bar piped into a file is thousands of overwritten lines and no
-    way to read what happened, so the redirected case gets plain lines --
-    which is also what a CI log wants.
-    """
+    """Draw the bar in place on a terminal, one line per pass otherwise."""
     stream = stream or sys.stdout
     inline = hasattr(stream, "isatty") and stream.isatty()
 
@@ -1024,42 +661,25 @@ def progress_reporter(stream=None):
         stream.write(f"\r{line}" if inline else f"{line}\n")
         stream.flush()
 
-    #: Whether the last line still needs closing. A `\r` bar leaves the
-    #: cursor on it; plain lines have already ended.
     report.inline = inline
     return report
 
 
 def flet_cli() -> str:
-    """The `flet` console script belonging to this interpreter.
-
-    Not `python -m flet`: the package has no `__main__`, so that spelling
-    fails with "cannot be directly executed" -- and the next thing that
-    happens is a pin of whatever `dist/` happened to be holding.
-    """
+    """The `flet` console script belonging to this interpreter."""
     beside = Path(sys.executable).with_name("flet")
     return str(beside) if beside.is_file() else "flet"
 
 
-#: What an installed shortcut is called. `tool.flet.product` names the
-#: app in the manifest, but the *short* name falls back to the project's
-#: own -- "flet-curve" -- and only a flag overrides it. That is the label
-#: under the icon on an Android home screen, where "flet-curve" is the
-#: repository showing through to somebody who never asked what it was
-#: built with.
+#: What an installed shortcut is called. `tool.flet.product` names the app
+#: in the manifest, but the *short* name falls back to the project's own --
+#: "flet-curve" -- and only a flag overrides it.
 SHORT_NAME = "Curve Finance"
 
 
 def compile_assets() -> None:
     """`build_assets.py`, so the marks that go up are the marks in the
     submodule as it is pinned right now.
-
-    Run here rather than left to whoever is publishing, because its
-    output is gitignored -- correctly, it is generated -- and so a stale
-    `src/assets/curve` is invisible in `git status`. It cannot be
-    forgotten if nobody has to remember it. Every asset change this
-    session needed a manual rebuild before it meant anything, and there
-    was a window each time where a pin could have carried the old art.
     """
     print("build_assets ...")
     result = subprocess.run(
@@ -1076,17 +696,7 @@ def compile_assets() -> None:
 
 
 def publish() -> None:
-    """`flet publish`, so what goes up is what the source says now.
-
-    `--route-url-strategy` is passed even though `pyproject.toml` declares
-    it, because Flet does not read it there. The option is defined with
-    `default="path"` rather than `default=None`, so the value is always
-    truthy and the `or get_pyproject("tool.flet.web.route_url_strategy")`
-    beside it can never be reached -- a build that trusts the key comes out
-    on `path` and 404s every deep link at the gateway. Passing the flag is
-    the only thing that works, and `main` checks the result rather than
-    trusting this line either.
-    """
+    """`flet publish`, so what goes up is what the source says now."""
     print("flet publish ...")
     result = subprocess.run(
         [
@@ -1171,10 +781,6 @@ def main() -> int:
     )
     options = parser.parse_args()
 
-    # Warming needs no CID and no key: it asks the ENS name for the files the
-    # build says a visitor needs, which is the same question a visitor asks.
-    # It reads the list from `dist/` for the same reason `--verify-only` does
-    # -- a CID names exactly one tree, and this is that tree.
     if options.warm:
         if not (options.dist / "index.html").is_file():
             raise SystemExit(
@@ -1185,10 +791,6 @@ def main() -> int:
             options.warm_gateway.rstrip("/"), boot_files(options.dist), options
         )
 
-    # Resuming a wait. Nothing is built, nothing is sent, and no key is
-    # needed -- the pin already exists and this only asks the network
-    # whether it can find it yet. What to ask for still comes from the
-    # build, which is the same build: a CID names exactly one tree.
     if options.verify_only:
         if not (options.dist / "index.html").is_file():
             raise SystemExit(
@@ -1201,23 +803,14 @@ def main() -> int:
         )
 
     if not options.no_build:
-        # Before either step, because both import from `src/` and
-        # `flet publish` tars whatever is in there -- see `BYTECODE`.
         if (swept := clear_bytecode()):
             print(f"swept {len(swept)} bytecode {'directory' if len(swept) == 1 else 'directories'} under src/")
-        # The marks first: `flet publish` tars `src/` into the app, so
-        # anything compiled after it would not be in the build.
         compile_assets()
         publish()
     dist: Path = options.dist
     if not (dist / "index.html").is_file():
         raise SystemExit(f"{dist} holds no index.html -- run without --no-build")
 
-    # Before anything else about the build: a `path` build looks perfect
-    # on any local server -- `tools/serve.py` falls back to index.html --
-    # and 404s every deep link on the one thing it is about to be uploaded
-    # to. Checked rather than documented, like the leaked-key scan below,
-    # because the mistake is invisible until somebody pastes a link.
     strategy = route_strategy(dist / "index.html")
     if strategy != ROUTE_STRATEGY:
         raise SystemExit(
@@ -1232,8 +825,6 @@ def main() -> int:
     if make_relative(dist / "index.html"):
         print("index.html: base href is relative now, for a gateway sub-path")
 
-    # 1.26 MB of icon font to draw ten glyphs, and the one file the
-    # gateway will not compress. See tools/subset_icons.py.
     from tools import subset_icons
 
     icon_font = dist / subset_icons.FONT_RELATIVE
@@ -1260,7 +851,6 @@ def main() -> int:
     if patch_worker(dist):
         print(f"{WORKER}: taught to unwrap it")
     if options.probe:
-        # Nothing is added to the build for this. See `PROBE_ABSENT`.
         for host in (options.warm_gateway, "https://curve.eth.link"):
             served = probe_suffixes(host.rstrip("/"))
             refused = sorted(s for s, ok in served.items() if not ok)
@@ -1308,11 +898,6 @@ def main() -> int:
     if not cid:
         raise SystemExit(f"No CID in Pinata's answer: {answer}")
 
-    # The CID first, and unconditionally. It is the one thing worth having
-    # from this run: the upload succeeded, the content is pinned, and
-    # everything below is about *when* the rest of the world can find it.
-    # Holding it back behind a check that can legitimately take a quarter
-    # of an hour means a slow network reads as a failed publish.
     show_pin(cid, duplicate=bool(answer.get("isDuplicate")))
     if options.no_verify:
         return 0
@@ -1322,11 +907,6 @@ def main() -> int:
     if options.no_warm:
         return 0
 
-    # One run, three stages, because the middle one is yours. The script
-    # cannot move the name -- that is a wallet signature -- but it can watch
-    # for it, and waiting here is what keeps the warming attached to the
-    # publish that needs it rather than to a command you have to remember an
-    # hour later.
     host = options.warm_gateway.rstrip("/")
     if not wait_for_ens(host, cid, options):
         return 0
@@ -1338,8 +918,6 @@ def show_pin(cid: str, *, duplicate: bool = False) -> None:
     print(f"\n  CID  {cid}")
     if duplicate:
         print("       (already pinned -- identical to a previous build)")
-    # Yours first, if you have one. A dedicated gateway is the only Pinata
-    # host that will serve the HTML.
     if gateway := str(config().get("gateway", "")).strip():
         print(f"       {gateway.rstrip('/')}/{cid}/")
     print(f"       https://{cid}.ipfs.dweb.link/")
@@ -1348,13 +926,7 @@ def show_pin(cid: str, *, duplicate: bool = False) -> None:
 
 
 def wait_until_findable(cid: str, paths: list[str], options) -> int:
-    """Watch the pin become retrievable, and say when it is safe to publish.
-
-    Separate from the upload because it is a separate question with a
-    separate answer. The pin is done; this is the network catching up, it
-    is slow, and it is interruptible -- Ctrl-C leaves the CID standing and
-    `--verify-only` resumes.
-    """
+    """Watch the pin become retrievable, and say when it is safe to publish."""
     print(f"\nwaiting for the network to find it: {len(paths)} files, via")
     print(f"  {options.verify_gateway.format(cid=cid)}")
     print("  (token marks skipped -- lazily fetched, and there are 6,716)")
@@ -1419,24 +991,13 @@ def wait_until_findable(cid: str, paths: list[str], options) -> int:
 
 
 #: How often to ask the gateway which CID the name points at now, and how
-#: long to keep asking. An hour because the wait is a wallet signature and a
-#: block confirmation, not a network condition -- and because leaving it
-#: running costs one request every half minute.
+#: long to keep asking.
 ENS_INTERVAL = 30.0
 ENS_DEADLINE = 3600.0
 
 
 def resolved_cid(client, host: str) -> str:
-    """Which CID the gateway is serving that name from, or "".
-
-    Every eth.limo response carries it, which is how ENS was ruled out as
-    the cause of a bad load in the first place:
-
-        x-ipfs-roots: bafybeig4zzt5yofgwdpbval6p3osa3kbf4tidnnxjttjvbtwsyuf3xmlkq
-
-    On a subpath the header lists the root and then each node down to the
-    file, so the root is the first entry. Asking for `/` keeps it to one.
-    """
+    """Which CID the gateway is serving that name from, or ""."""
     import httpx
 
     try:
@@ -1456,17 +1017,7 @@ def wait_for_ens(
     now=time.monotonic,
     sleep=time.sleep,
 ) -> bool:
-    """Block until `host` resolves to `cid`. True if it got there.
-
-    The one step of a publish this script does not perform -- moving the
-    contenthash is a wallet signature -- so it watches for it instead of
-    asking you to come back afterwards. Warming before the name moves would
-    faithfully warm the *previous* build, which is why this is a gate and
-    not a pause.
-
-    **Ctrl-C is a supported way to leave**, as everywhere else here: the pin
-    is done and verified, and `--warm` picks up whenever you are ready.
-    """
+    """Block until `host` resolves to `cid`. True if it got there."""
     import httpx
 
     owned = client is None
@@ -1502,16 +1053,6 @@ def wait_for_ens(
 
 
 #: What this stage does *not* cover, said where it is noticed.
-#:
-#: This warms the boot set, through one gateway, and that is by design --
-#: see `LAZY_DIR` for why 6,716 marks are not checked on every publish, and
-#: `WARM_GATEWAY` for why the warming is attached to the name people use.
-#: But a visitor fetches more than the boot set, and there are two gateways.
-#:
-#: Saying so here is the fix for a real afternoon: a build was published,
-#: warmed, and still would not load in one browser and drew a page full of
-#: holes in another, because nothing had asked for the mark bundles or for
-#: the second gateway at all.
 NEXT_WARM = (
     "\n  Then warm what a visitor fetches beyond the boot set -- the mark\n"
     "  bundles, and the other gateway:\n\n"
@@ -1520,17 +1061,7 @@ NEXT_WARM = (
 
 
 def warm(host: str, paths: list[str], options) -> int:
-    """Pull the boot set through the gateway people use, until it all lands.
-
-    Runs *after* ENS is updated, and is the only stage that touches the
-    retrieval path a visitor gets -- see `WARM_GATEWAY` for why that order
-    is forced rather than chosen. Measuring and fixing are the same act
-    here: a block fetched through an edge stays in that edge's store.
-
-    Nothing about it is fast. Two workers and whole files, because the
-    alternative was teaching eth.limo's rate limiter to answer 503 and then
-    reading those 503s back as a broken pin.
-    """
+    """Pull the boot set through the gateway people use, until it all lands."""
     print(f"\nwarming the gateway people use: {len(paths)} files, via")
     print(f"  {host}")
     print(f"  (whole files, {WARM_WORKERS} at a time -- this is deliberately slow)")

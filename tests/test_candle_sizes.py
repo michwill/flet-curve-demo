@@ -1,10 +1,4 @@
-"""The candle-size picker and the aggregation it maps to.
-
-You pick the candle, not the window -- the window follows from it. Every
-`(agg_number, agg_units)` pair below was checked against the live `lp_ohlc`
-endpoint and returns candles at exactly `seconds` apart; these tests guard
-the table against drift.
-"""
+"""The candle-size picker and the aggregation it maps to."""
 
 from __future__ import annotations
 
@@ -27,7 +21,6 @@ def test_every_size_the_picker_offers() -> None:
 
 
 def test_units_stay_inside_the_api_enum() -> None:
-    """`agg_units` accepts only these three; anything else is a 422."""
     for size in CANDLE_SIZES:
         assert size.agg_units in ("minute", "hour", "day"), size.label
 
@@ -44,7 +37,6 @@ def test_sizes_are_ordered_shortest_first() -> None:
 
 
 def test_the_window_follows_from_the_candle() -> None:
-    """200 x 15m is about two days; 200 x 1d about seven months."""
     assert get_candle_size("15m").window() == 900 * CANDLE_COUNT
     assert get_candle_size("1d").window(10) == 86400 * 10
 
@@ -95,11 +87,6 @@ async def test_pair_candles_sends_the_same_aggregation() -> None:
 
 
 async def test_a_pair_is_sent_the_way_the_endpoint_reads_it() -> None:
-    """"WBTC/USDC" is the price of WBTC in USDC, and this endpoint prices
-    `reference_token` *in* `main_token` -- so the quote coin is the main
-    one. Measured on tricryptoUSDC: main=WBTC/reference=USDC answers
-    0.0000156, and swapped it answers 63,586. Taking the parameter names
-    at face value inverts every pair chart, which is what it did."""
     api = RecordingApi()
     await api.pair_candles(
         "ethereum", "0xpool", base="0xWBTC", quote="0xUSDC",
@@ -120,17 +107,14 @@ async def test_the_two_directions_of_a_pair_are_cached_apart() -> None:
 
 
 async def test_each_size_is_cached_separately() -> None:
-    """Switching candle size must refetch, not reuse the previous series."""
     api = RecordingApi()
     for label in ("1h", "4h", "1h"):
         await api.lp_candles(
             "ethereum", "0xpool", size=get_candle_size(label), now=1_000_000
         )
-    # Two distinct sizes -> two requests; the repeat comes from cache.
     assert len(api.calls) == 2
 
 
 @pytest.mark.parametrize("size", CANDLE_SIZES, ids=lambda s: s.label)
 def test_no_size_asks_for_an_absurd_window(size: CandleSize) -> None:
-    """A 14d candle over 200 of them is ~7.7 years, which is the intent."""
     assert 0 < size.window() <= 86400 * 365 * 10

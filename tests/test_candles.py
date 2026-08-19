@@ -1,9 +1,4 @@
-"""Chart data preparation, and the crosshair.
-
-`CandlestickChart` draws the candles, so what is left to test is what this
-app decides: the fitted window, the axis ticks, and what the crosshair
-draws. The pan/zoom arithmetic is in `test_viewport.py`.
-"""
+"""Chart data preparation, and the crosshair."""
 
 from __future__ import annotations
 
@@ -65,7 +60,6 @@ def test_fit_covers_every_candle_with_headroom() -> None:
 
 
 def test_fit_on_a_flat_series_invents_a_range() -> None:
-    """Pegged pairs really do produce identical OHLC across a window."""
     view = fit(series([(1.0, 1.0, 1.0, 1.0)] * 5))
     assert view.y_max > view.y_min
 
@@ -76,12 +70,6 @@ def test_fit_on_a_zero_priced_series_is_survivable() -> None:
 
 
 def test_fit_ignores_an_absurd_wick() -> None:
-    """One glitched candle otherwise sets the whole scale.
-
-    Strategic USD Reserves has a daily candle whose low is 0.024 against a
-    body of 1.0158 -- not a two-cent trade in a USDC/USDT pool -- and it
-    flattened 200 days of history into a line.
-    """
     candles = series([(1.015, 1.017, 1.014, 1.016)] * 50)
     candles[20] = Candle(candles[20].time, 1.0158, 1.0160, 0.0243, 1.0160)
     view = fit(candles)
@@ -90,7 +78,6 @@ def test_fit_ignores_an_absurd_wick() -> None:
 
 
 def test_fit_keeps_a_plausible_wick() -> None:
-    """A real dip must still set the scale, only nonsense is trimmed."""
     candles = series([(1.015, 1.017, 1.014, 1.016)] * 50)
     body_span = 0.017 - 1.014
     dip = 1.014 - body_span * (WICK_HEADROOM - 1)
@@ -106,7 +93,6 @@ def test_fit_never_clips_a_body() -> None:
 
 
 def test_fit_leaves_a_volatile_series_alone() -> None:
-    """Wide-ranging pools must keep their full range -- nothing to trim."""
     candles = series(
         [(1400 + i * 4, 1420 + i * 4, 1380 + i * 4, 1410 + i * 4) for i in range(200)]
     )
@@ -125,7 +111,6 @@ def test_fit_on_an_empty_series_is_usable() -> None:
 
 
 def test_axis_labels_are_all_distinct_on_a_tight_range() -> None:
-    """A stable pool ranges over ~0.0003; four decimals prints "1.027" thrice."""
     labels = [
         lb.label.value for lb in price_axis(Viewport(0, 10, 1.0268, 1.0271)).labels
     ]
@@ -179,11 +164,6 @@ def test_nice_interval_survives_degenerate_input() -> None:
 
 
 def test_price_axis_labels_sit_on_multiples_of_the_interval() -> None:
-    """The chart ticks at multiples of `label_spacing`, counted from zero.
-
-    A label at any other value is silently dropped -- which left the axis
-    showing only its min and max.
-    """
     axis = price_axis(Viewport(0, 10, 0.9, 1.1))
     assert axis.label_spacing > 0
     assert 2 <= len(axis.labels) <= PRICE_LABELS + 2
@@ -204,7 +184,6 @@ def test_date_axis_thins_labels_so_they_cannot_collide() -> None:
 
 
 def test_date_axis_follows_the_window_when_zoomed() -> None:
-    """Zoomed into a few candles, the labels must be those candles'."""
     candles = flat(300)
     zoomed = date_axis(candles, Viewport(100.0, 110.0, 1.0, 2.0))
     assert zoomed.labels, "a zoomed window should still be labelled"
@@ -238,20 +217,13 @@ def test_spots_carry_ohlc_and_are_indexed_from_zero() -> None:
 
 
 def test_spots_suppress_the_built_in_tooltip() -> None:
-    """The crosshair readout replaces it; two tooltips would fight."""
     assert all(not s.show_tooltip for s in build_spots(flat(3)))
 
 
 def test_flat_candles_are_floored_so_they_still_draw() -> None:
-    """The chart renders nothing for a candle thinner than a pixel.
-
-    Not a hypothetical: Strategic USD Reserves over 7 days has 101 of 169
-    hourly candles under a pixel, which read as missing data.
-    """
     candles = [Candle(1_700_000_000, 1.0, 1.0, 1.0, 1.0)]
     spot = build_spots(candles, fit(candles), min_extent=0.01)[0]
     assert spot.high - spot.low == pytest.approx(0.01)
-    # Widened about the midpoint, so the candle does not appear to move.
     assert (spot.high + spot.low) / 2 == pytest.approx(1.0)
 
 
@@ -262,14 +234,12 @@ def test_the_floor_leaves_normal_candles_untouched() -> None:
 
 
 def test_the_floor_never_touches_open_or_close() -> None:
-    """Only the drawn extent is padded; the prices stay true."""
     candles = [Candle(1_700_000_000, 1.0, 1.0, 1.0, 1.0)]
     spot = build_spots(candles, fit(candles), min_extent=0.01)[0]
     assert (spot.open, spot.close) == (1.0, 1.0)
 
 
 def test_the_crosshair_still_reads_the_true_prices() -> None:
-    """The floor is applied to the chart's copy, never to `_candles`."""
     chart = CandleChart()
     chart.set_candles([Candle(1_700_000_000, 1.0, 1.0, 1.0, 1.0)] * 5)
     assert all(c.high == 1.0 and c.low == 1.0 for c in chart._candles)
@@ -318,7 +288,6 @@ def test_crosshair_is_empty_outside_the_plot_area() -> None:
 
 
 def test_crosshair_past_the_last_candle_still_shows_a_price() -> None:
-    """Overscrolled past the data, the price line must still read out."""
     candles = flat(10)
     shapes = crosshair_shapes(
         plot(), Viewport(500.0, 600.0, 1.0, 2.0), candles, 400.0, 200.0, **COLOURS
@@ -368,13 +337,6 @@ def test_double_tap_resets_the_view() -> None:
 
 
 def test_the_chart_has_no_animation_at_all() -> None:
-    """Any tween makes direct manipulation trail the cursor.
-
-    `AnimationValue` is `Union[bool, int, Animation]` -- not Optional -- and
-    the field defaults to a 150ms tween, so passing `None` silently keeps
-    that default rather than disabling it. Only an explicit zero Duration
-    actually means none, and this is the guard against it drifting back.
-    """
     animation = CandleChart()._chart.animation
     duration = animation.duration
     assert duration.days == 0
@@ -402,18 +364,12 @@ def test_visible_slice_follows_the_window() -> None:
 
 
 def test_visible_slice_never_returns_nothing() -> None:
-    """An empty slice would leave the price axis with no range at all."""
     candles = rising(10)
     assert visible_slice(candles, Viewport(500.0, 600.0, 0, 1))
     assert visible_slice([], Viewport(0, 10, 0, 1)) == []
 
 
 def test_price_refits_to_the_visible_candles_when_zoomed() -> None:
-    """Ten candles must not keep the whole series' price range.
-
-    Without this, zooming in leaves the candles squashed into a few pixels
-    -- which is the entire point of zooming in.
-    """
     candles = rising(200)
     chart = CandleChart()
     chart.set_candles(candles)
@@ -472,7 +428,6 @@ def scroll(x: float, y: float, dy: float) -> SimpleNamespace:
 
 
 def test_wheel_over_the_price_gutter_zooms_price() -> None:
-    """No modifier keys on a Flet scroll event, so position dispatches."""
     chart = CandleChart()
     chart.set_candles(rising(100))
     chart._plot = Plot(800.0, 340.0)
@@ -498,7 +453,6 @@ def test_wheel_over_the_plot_zooms_time_and_refits_price() -> None:
 
 
 def test_capacity_holds_the_pitch_constant_across_widths() -> None:
-    """A wider chart shows more candles, not the same ones stretched."""
     chart = CandleChart()
     pitches = []
     for width in (400, 800, 1200, 1600):
@@ -526,13 +480,11 @@ def test_capacity_is_bounded_at_both_ends() -> None:
 
 
 def test_the_gap_is_never_wider_than_a_candle() -> None:
-    """The whole point of the pitch: ~3px candle in a ~5.5px slot."""
     measured_candle_px = 3.0
     assert TARGET_PITCH_PX - measured_candle_px <= measured_candle_px
 
 
 def test_a_small_resize_does_not_refetch() -> None:
-    """Otherwise dragging a window edge fires a request per pixel."""
     calls = []
     chart = CandleChart(on_capacity_change=lambda: calls.append(1))
     chart._resized(SimpleNamespace(width=830.0, height=340.0))
@@ -540,11 +492,6 @@ def test_a_small_resize_does_not_refetch() -> None:
 
 
 def test_the_first_layout_refetches_when_it_differs_from_the_guess() -> None:
-    """A chart that opens narrow must not keep the wide default.
-
-    The capacity is seeded from the default plot size, so the first real
-    layout is compared against something rather than silently accepted.
-    """
     calls = []
     chart = CandleChart(on_capacity_change=lambda: calls.append(1))
     chart._resized(SimpleNamespace(width=440.0, height=340.0))
@@ -576,7 +523,6 @@ def test_summary_is_empty_without_enough_data() -> None:
 
 
 def test_summary_stays_ascii() -> None:
-    """The web build's font renders arrows as tofu; see curve.format."""
     chart = CandleChart()
     chart.set_candles(series([(1.0, 1.0, 1.0, 1.0), (1.0, 1.1, 1.0, 1.1)]))
     assert chart.summary.isascii()

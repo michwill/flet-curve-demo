@@ -1,16 +1,4 @@
-"""Reading a chain with no wallet: public endpoints, and their failures.
-
-A quote needs no account, so the panels should show rates before anyone
-connects anything. What makes that awkward is the endpoints: they are
-strangers' machines, they rate-limit, they go away, and one of them will
-answer HTML from a captive portal. So the whole of this file is about
-what happens when they misbehave -- the happy path is one test.
-
-Nothing here goes near the network. `post_json` and `get_json` are
-replaced with scripted fakes, which is also how the ordering guarantees
-(where the next request starts, what gets retried and what does not) can
-be checked at all.
-"""
+"""Reading a chain with no wallet: public endpoints, and their failures."""
 
 from __future__ import annotations
 
@@ -53,8 +41,6 @@ CHAINLIST_PAYLOAD = [
 
 
 def test_only_https_endpoints_this_app_can_call() -> None:
-    """Websockets are a different protocol; an API-key template is
-    somebody else's key; `http://` will not load on an HTTPS page."""
     urls = usable_endpoints(CHAINLIST_PAYLOAD[0])
     assert urls == [
         "https://clean.example",   # tracking: none, first
@@ -64,15 +50,12 @@ def test_only_https_endpoints_this_app_can_call() -> None:
 
 
 def test_endpoints_that_keep_nothing_come_first() -> None:
-    """`tracking` is self-reported, so this is a nudge, not a guarantee --
-    but it is the only privacy signal the list carries."""
     urls = usable_endpoints(CHAINLIST_PAYLOAD[0])
     assert urls[0] == "https://clean.example"
     assert urls[-1] == "https://tracked.example"
 
 
 def test_the_list_is_capped() -> None:
-    """Walking eighty dead hosts is not failover, it is a hang."""
     many = {"rpc": [{"url": f"https://node{i}.example"} for i in range(40)]}
     assert len(usable_endpoints(many)) == rpc.MAX_ENDPOINTS
     assert len(usable_endpoints(many, limit=3)) == 3
@@ -104,8 +87,6 @@ async def test_a_chain_gets_its_endpoints(directory) -> None:
 
 
 async def test_the_list_is_fetched_once_for_every_chain(directory) -> None:
-    """There is no per-chain endpoint and the file is a couple of
-    megabytes, so it is fetched lazily and kept."""
     await directory.endpoints(100)
     await directory.endpoints(100)
     await directory.endpoints(999)
@@ -121,9 +102,6 @@ async def test_an_unknown_chain_is_empty_not_an_error(directory) -> None:
 
 
 async def test_a_directory_that_will_not_load_is_not_retried_at_once(monkeypatch) -> None:
-    """A quote is typed a character at a time; re-fetching two megabytes
-    per keystroke because the first attempt failed would be worse than
-    having no quote."""
     calls = 0
 
     async def failing(url, timeout=None):
@@ -139,14 +117,6 @@ async def test_a_directory_that_will_not_load_is_not_retried_at_once(monkeypatch
 
 
 async def test_a_directory_that_failed_is_tried_again_later(monkeypatch) -> None:
-    """The wait is a wait, not a surrender.
-
-    It used to be permanent, and that made one failed fetch cost the
-    whole session: no endpoints for any chain until the page was
-    reloaded, every read failing, and the pool panel reporting it as a
-    pool with no parameters. Nothing here can work without this file, so
-    it gets asked again.
-    """
     attempts = 0
 
     async def failing_once(url, timeout=None):
@@ -175,9 +145,6 @@ async def test_a_directory_that_failed_is_tried_again_later(monkeypatch) -> None
 
 
 async def test_a_directory_that_answers_junk_is_tried_again_too(monkeypatch) -> None:
-    """A captive portal, or a gateway serving its own error page. It
-    parses and it is not the list, which is a failed load like any
-    other rather than a directory with no chains in it."""
     served: list[object] = [{"error": "nope"}, CHAINLIST_PAYLOAD]
 
     async def answering(url, timeout=None):
@@ -242,8 +209,6 @@ async def test_a_dead_endpoint_is_walked_past(monkeypatch) -> None:
 
 
 async def test_the_survivor_is_where_the_next_read_starts(monkeypatch) -> None:
-    """Otherwise every read pays for the dead host at the top of the list
-    again, and a panel makes several per keystroke."""
     node, transport = node_with(
         monkeypatch,
         {
@@ -258,8 +223,6 @@ async def test_the_survivor_is_where_the_next_read_starts(monkeypatch) -> None:
 
 
 async def test_something_that_is_not_json_rpc_is_a_failure_too(monkeypatch) -> None:
-    """A captive portal answering HTML, or an endpoint that has become a
-    web page. It parses as JSON and means nothing."""
     node, _ = node_with(
         monkeypatch,
         {
@@ -271,9 +234,6 @@ async def test_something_that_is_not_json_rpc_is_a_failure_too(monkeypatch) -> N
 
 
 async def test_a_json_rpc_error_is_raised_rather_than_retried(monkeypatch) -> None:
-    """A reverted `eth_call` is an *answer*: asking somebody else the same
-    question gets the same answer, and retrying would only make a
-    reverting quote three times slower."""
     node, transport = node_with(
         monkeypatch,
         {"https://one.example": {"error": {"code": -32000, "message": "execution reverted"}}},
@@ -307,8 +267,6 @@ async def test_a_chain_with_no_endpoints_says_that_instead(monkeypatch) -> None:
 
 
 async def test_requests_are_numbered(monkeypatch) -> None:
-    """Not required by any endpoint here, but a JSON-RPC id that never
-    changes is the sort of thing a batching proxy gets wrong."""
     seen: list[int] = []
 
     async def transport(url, payload, timeout=None):
@@ -328,8 +286,6 @@ async def test_requests_are_numbered(monkeypatch) -> None:
 
 
 async def test_the_node_knows_its_own_chain_without_asking(monkeypatch) -> None:
-    """Asking a stranger's endpoint which chain it is would only be a
-    chance to disagree with the pool being read."""
     node, transport = node_with(monkeypatch, {}, chain_id=100)
     assert await node.chain_id() == 100
     assert transport.calls == []
@@ -347,19 +303,15 @@ async def test_the_node_knows_its_own_chain_without_asking(monkeypatch) -> None:
     ],
 )
 async def test_signing_needs_a_wallet(monkeypatch, call) -> None:
-    """There is no key here. Saying so beats a transaction that vanishes."""
     node, _ = node_with(monkeypatch, {})
     with pytest.raises(WalletError, match="Connect a wallet"):
         await call(node)
 
 
 # -- a wallet with the public endpoints behind it --------------------------
-#
 # The bug: a portfolio scan is a Multicall3 batch of three hundred entries,
 # and pushing that through a WalletConnect relay into a phone failed with
-# WebKit's "Load failed". The wallet was the only thing asked, so the page
-# said it could not read the chain and stopped. It should have asked
-# somebody else.
+# WebKit's "Load failed".
 
 
 class Scripted(WalletProvider):
@@ -383,8 +335,6 @@ class Scripted(WalletProvider):
 
 
 def test_a_reader_presents_itself_as_the_wallet_it_wraps() -> None:
-    """The UI names the transport from the provider, so wrapping one for
-    failover must not rename the user's wallet to something else."""
     wallet = Scripted(name="Rabby")
     wallet.kind, wallet.connector = "browser", "walletconnect"
     reader = FallbackProvider(wallet, Scripted())
@@ -397,8 +347,6 @@ def test_a_reader_presents_itself_as_the_wallet_it_wraps() -> None:
 
 
 async def test_a_read_the_wallet_cannot_carry_goes_to_a_public_node() -> None:
-    """The reported failure, in one test: the relay would not carry the
-    batch, so the answer has to come from somewhere else."""
     wallet = Scripted(WalletError("Load failed"))
     public = Scripted("0xbeef")
     reader = FallbackProvider(wallet, public)
@@ -408,8 +356,6 @@ async def test_a_read_the_wallet_cannot_carry_goes_to_a_public_node() -> None:
 
 
 async def test_the_wallet_is_asked_first_and_alone_when_it_answers() -> None:
-    """Its node is the one the transaction will run on, so nothing else
-    is troubled when it works."""
     wallet = Scripted("0xf00d")
     public = Scripted("0xbeef")
     reader = FallbackProvider(wallet, public)
@@ -419,9 +365,6 @@ async def test_the_wallet_is_asked_first_and_alone_when_it_answers() -> None:
 
 
 async def test_a_node_that_answered_no_is_not_asked_again_elsewhere() -> None:
-    """A reverted call is a reply. Asking a different endpoint the same
-    question gets the same reply, more slowly -- and a user rejection
-    asked twice is a second prompt."""
     wallet = Scripted(RpcError(3, "execution reverted"))
     public = Scripted("0xbeef")
     reader = FallbackProvider(wallet, public)
@@ -440,8 +383,6 @@ async def test_a_node_that_answered_no_is_not_asked_again_elsewhere() -> None:
     ],
 )
 async def test_only_reads_ever_leave_the_wallet(method, params) -> None:
-    """There is no fallback for a signature, and a public node could not
-    provide one. A write goes to the user's wallet or it fails."""
     wallet = Scripted(WalletError("wallet is being difficult"))
     public = Scripted("0xbeef")
     reader = FallbackProvider(wallet, public)
@@ -452,8 +393,6 @@ async def test_only_reads_ever_leave_the_wallet(method, params) -> None:
 
 
 async def test_the_last_failure_is_what_the_user_is_told() -> None:
-    """When nothing answers, the message has to come from somewhere, and
-    the final attempt is the most recent thing that actually happened."""
     reader = FallbackProvider(
         Scripted(WalletError("Load failed")),
         Scripted(WalletError("no public node answered")),
@@ -463,12 +402,7 @@ async def test_the_last_failure_is_what_the_user_is_told() -> None:
 
 
 class Silent(WalletProvider):
-    """A provider that accepts a request and never answers it.
-
-    Which is what a wallet whose node has gone away looks like from here:
-    the bridge posts the message, nothing comes back, and the deadline is
-    the only thing that ends the wait.
-    """
+    """A provider that accepts a request and never answers it."""
 
     def __init__(self, name: str = "silent") -> None:
         self.name = name
@@ -482,14 +416,6 @@ class Silent(WalletProvider):
 
 
 async def test_a_wallet_that_never_answers_is_stepped_over(monkeypatch) -> None:
-    """The bug this exists for: pool parameters that never load.
-
-    A wallet gets 120 seconds for a request -- right for a signature and
-    absurd for an `eth_call` -- so a wallet connected to a node that has
-    gone away used to hold every read for two minutes with a public
-    endpoint sitting behind it. Thirteen of those in one panel is
-    twenty-eight minutes, which reads as broken rather than as slow.
-    """
     monkeypatch.setattr(rpc, "READ_DEADLINE", 0.01)
     wallet, public = Silent(), Scripted("0xbeef")
     reader = FallbackProvider(wallet, public)
@@ -499,9 +425,6 @@ async def test_a_wallet_that_never_answers_is_stepped_over(monkeypatch) -> None:
 
 
 async def test_the_dead_wallet_is_not_waited_on_again(monkeypatch) -> None:
-    """`parameters()` is one multicall and thirteen single reads behind
-    it. Paying the deadline on each is the same hang, thirteen times
-    shorter -- so the first failure is remembered."""
     monkeypatch.setattr(rpc, "READ_DEADLINE", 0.01)
     wallet = Silent()
     public = Scripted(*["0xbeef"] * 14)
@@ -515,9 +438,6 @@ async def test_the_dead_wallet_is_not_waited_on_again(monkeypatch) -> None:
 
 
 async def test_a_wallet_that_comes_back_is_asked_again(monkeypatch) -> None:
-    """A laptop off standby, a phone that reconnected. The wallet is the
-    node the transaction will run on, so it gets its place back rather
-    than being written off for the session."""
     monkeypatch.setattr(rpc, "READ_DEADLINE", 0.01)
     monkeypatch.setattr(rpc, "SOURCE_COOLDOWN", 0.0)
     wallet = Scripted(WalletError("Load failed"), "0xf00d")
@@ -531,8 +451,6 @@ async def test_a_wallet_that_comes_back_is_asked_again(monkeypatch) -> None:
 async def test_the_last_source_is_waited_on_however_long_it_takes(
     monkeypatch,
 ) -> None:
-    """A deadline is only worth having when there is somewhere to go. On
-    the last source it converts a slow answer into no answer."""
     monkeypatch.setattr(rpc, "READ_DEADLINE", 0.01)
     slow = Scripted("0xbeef")
     real_request = slow.request
@@ -548,8 +466,6 @@ async def test_the_last_source_is_waited_on_however_long_it_takes(
 
 
 async def test_every_source_cold_is_still_a_reason_to_try(monkeypatch) -> None:
-    """An empty read order is not a reason to fail without asking: it is
-    the moment to find out whether one has come back."""
     monkeypatch.setattr(rpc, "READ_DEADLINE", 0.01)
     wallet = Scripted(WalletError("gone"), "0xf00d")
     public = Scripted(WalletError("gone"), "0xbeef")
@@ -562,8 +478,6 @@ async def test_every_source_cold_is_still_a_reason_to_try(monkeypatch) -> None:
 
 
 async def test_a_signature_still_waits_on_the_human(monkeypatch) -> None:
-    """The deadline is for reads. A send waits on somebody reading a
-    prompt, and eight seconds is not how long that takes."""
     monkeypatch.setattr(rpc, "READ_DEADLINE", 0.01)
 
     async def slow_send(method, params=None):
@@ -578,8 +492,6 @@ async def test_a_signature_still_waits_on_the_human(monkeypatch) -> None:
 
 
 async def test_closing_a_reader_leaves_the_wallet_session_alone() -> None:
-    """The wallet outlives any one page's reads, and its session is the
-    user's, not this object's, to end."""
     wallet, public = Scripted(), Scripted()
     await FallbackProvider(wallet, public).close()
 
@@ -588,7 +500,6 @@ async def test_closing_a_reader_leaves_the_wallet_session_alone() -> None:
 
 
 async def test_closing_still_spares_a_wallet_read_last() -> None:
-    """The wallet is not identified by its position in the read order."""
     wallet, public = Scripted(), Scripted()
     await FallbackProvider(wallet, public, spares_first=True).close()
 
@@ -600,8 +511,6 @@ async def test_closing_still_spares_a_wallet_read_last() -> None:
 
 
 def test_only_walletconnect_wants_its_reads_taken_elsewhere() -> None:
-    """An injected wallet is a node in the same browser; there is no
-    relay to route around and its own view is the better one."""
     relayed = Scripted()
     relayed.connector = "walletconnect"
     injected = Scripted()
@@ -613,8 +522,6 @@ def test_only_walletconnect_wants_its_reads_taken_elsewhere() -> None:
 
 
 async def test_a_relayed_wallet_is_read_past_not_through() -> None:
-    """The sharper half of the fix: do not send six Multicall3 batches
-    into a phone at all, rather than sending them and recovering."""
     wallet = Scripted("0xf00d")
     public = Scripted("0xbeef")
     reader = FallbackProvider(wallet, public, spares_first=True)
@@ -624,9 +531,6 @@ async def test_a_relayed_wallet_is_read_past_not_through() -> None:
 
 
 async def test_a_relayed_wallet_is_still_asked_when_nothing_public_answers() -> None:
-    """On a chain chainlist has never heard of, the wallet is the only
-    thing that can answer at all. Preferring the public nodes must not
-    mean refusing to fall back to the wallet."""
     wallet = Scripted("0xf00d")
     public = Scripted(WalletError("No public node is known for this network"))
     reader = FallbackProvider(wallet, public, spares_first=True)
@@ -635,9 +539,6 @@ async def test_a_relayed_wallet_is_still_asked_when_nothing_public_answers() -> 
 
 
 async def test_a_relayed_wallet_is_still_the_only_thing_that_signs() -> None:
-    """Reading past the wallet must not become sending past it: a public
-    node has no key, and reordering reads is not a licence to reorder
-    anything else."""
     wallet = Scripted("0xhash")
     public = Scripted("0xbeef")
     reader = FallbackProvider(wallet, public, spares_first=True)
@@ -647,19 +548,10 @@ async def test_a_relayed_wallet_is_still_the_only_thing_that_signs() -> None:
 
 
 # -- a wallet that is on another chain --------------------------------------
-#
-# Not a slow source or a flaky one. A source that answers the wrong
-# question confidently, which no amount of falling back can detect.
+# Not a slow source or a flaky one.
 
 
 async def test_a_wallet_on_another_chain_is_not_read_through_at_all() -> None:
-    """The reported failure. `balanceOf` on an Ethereum LP token, asked of
-    a wallet sitting on Fraxtal, returns `0x` -- there is no code at that
-    address there. Successfully. So nothing raises, nothing falls back,
-    and the portfolio reads empty for an account with eight positions.
-
-    The only fix is not to ask.
-    """
     wallet = Scripted("0x")  # what a call to a contract that is not there says
     public = Scripted("0x" + "0" * 63 + "5")
     reader = FallbackProvider(wallet, public, read_primary=False)
@@ -669,9 +561,6 @@ async def test_a_wallet_on_another_chain_is_not_read_through_at_all() -> None:
 
 
 async def test_a_wallet_on_another_chain_is_still_the_one_that_signs() -> None:
-    """Which is the whole reason it is dropped from `sources` rather than
-    from the object: the wallet that must not be read through is exactly
-    the wallet that must be asked to move."""
     wallet = Scripted("0xhash", "0xhash")
     public = Scripted("0xbeef")
     reader = FallbackProvider(wallet, public, read_primary=False)
@@ -682,9 +571,6 @@ async def test_a_wallet_on_another_chain_is_still_the_one_that_signs() -> None:
 
 
 async def test_which_chain_it_is_on_is_still_asked_of_the_wallet() -> None:
-    """`eth_chainId` is not a read of the chain, so it never went through
-    `sources` -- which is what keeps this recoverable. The app can still
-    see where the wallet is, and so can still ask it to come across."""
     wallet = Scripted("0xfc")  # Fraxtal
     public = Scripted("0x1")
     reader = FallbackProvider(wallet, public, read_primary=False)
@@ -694,7 +580,6 @@ async def test_which_chain_it_is_on_is_still_asked_of_the_wallet() -> None:
 
 
 async def test_closing_spares_a_wallet_that_was_never_read_from() -> None:
-    """Same rule as everywhere else here: the session is the user's."""
     wallet, public = Scripted(), Scripted()
     await FallbackProvider(wallet, public, read_primary=False).close()
 
@@ -709,14 +594,6 @@ async def test_closing_spares_a_wallet_that_was_never_read_from() -> None:
 async def test_which_chain_the_wallet_is_on_is_asked_of_the_wallet(
     spares_first,
 ) -> None:
-    """`eth_chainId` does not read the chain -- it asks a source which
-    chain it is on, and each source here has a different honest answer.
-
-    The action panel uses it to decide whether the wallet needs switching
-    networks before it can act. Answered by a public node, pinned to the
-    chain the app is showing, that check would pass every time and the
-    "switch your wallet" prompt would never appear again.
-    """
     wallet = Scripted("0xa")  # the wallet is on Optimism
     public = Scripted("0x1")  # the public node is Ethereum's
     reader = FallbackProvider(wallet, public, spares_first=spares_first)
@@ -726,9 +603,6 @@ async def test_which_chain_the_wallet_is_on_is_asked_of_the_wallet(
 
 
 async def test_a_wallet_that_cannot_say_which_chain_is_not_guessed_for() -> None:
-    """Failing over here would invent an answer: the public node would
-    happily report the chain it is pinned to, which says nothing about
-    where the user's wallet is pointed."""
     reader = FallbackProvider(
         Scripted(WalletError("Load failed")), Scripted("0x1")
     )

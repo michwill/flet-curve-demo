@@ -1,52 +1,4 @@
-"""Pull the published site back through the gateways, from time to time.
-
-`publish_ipfs.py` warms once, at publish, and that is not enough. Warming
-**decays**: `main.dart.wasm` is in the boot set and was warmed on the 15th,
-and on the 18th `curve.eth.limo` answered 504 for it after seventeen
-seconds -- the signature of a gateway that could not find the block, not
-one refusing to serve it. An edge's store is a cache, several edges sit
-behind one name, and a visitor arriving on a cold one gets the same coin
-flip whatever happened at publish.
-
-So this is the same act as `publish_ipfs --warm`, minus the publishing,
-and pointed at more of the site:
-
-  * **both gateways.** eth.limo and eth.link are separate infrastructure
-    with separate caches, and warming one says nothing about the other.
-    Whichever a visitor reaches is not our choice;
-  * **the token marks**, which publishing deliberately leaves alone. See
-    `LAZY_DIR`: 6,716 files is an imposition to check on every publish, and
-    that reasoning is about *publishing*. A job that runs occasionally can
-    afford what a job that runs on every deploy cannot -- and those files
-    are precisely the ones nobody has ever warmed, which is why a missing
-    coin logo is the most visible form this bug takes;
-  * **and the boot set, unless told not to.** Publishing warms it only if
-    the run got that far -- the warm stage sits behind `wait_for_ens`, on
-    one gateway -- so a name moved by hand after the script gave up leaves
-    it cold. A build published and then warmed by a run that skipped the
-    boot set still had a 4 KB icon font answering 504 after 17.6 seconds:
-    one browser drew a page with holes in it and another would not load at
-    all. "Warmed" has to mean the whole of what a visitor fetches.
-
-Nothing here changes what is published. It only asks for files that are
-already there, which is why it is safe to run at any time, as often as
-patience allows, and why an interrupted run costs nothing: every file
-fetched before the interrupt stays fetched.
-
-The file list comes from the local `dist/`, so a `dist/` that has drifted
-from what is pinned will ask for paths the gateway does not have. Those
-come back as `refused` with a 404, which is a true statement about the
-published site rather than a fault here -- but it means the honest way to
-read a 404 from this script is "rebuild, or you are warming the wrong
-list".
-
-    tools/warm_ipfs.py                    # everything a visitor fetches
-    tools/warm_ipfs.py --no-boot          # just the logos
-    tools/warm_ipfs.py --boot-only        # just what decides it loads at all
-    tools/warm_ipfs.py --tiers all        # every compiled size
-    tools/warm_ipfs.py --all-marks        # the loose marks behind the bundles
-    tools/warm_ipfs.py --gateway https://curve.eth.limo
-"""
+"""Pull the published site back through the gateways, from time to time."""
 
 from __future__ import annotations
 
@@ -67,86 +19,30 @@ from tools.publish_ipfs import (
 )
 
 #: Both of them, because they are separate infrastructure behind one name
-#: and a visitor does not choose between them. eth.link is Cloudflare's
-#: resolver and eth.limo is independent; a block warm in one is not warm in
-#: the other, so warming a single gateway leaves half the audience where it
-#: started.
+#: and a visitor does not choose between them.
 GATEWAYS = ("https://curve.eth.limo", "https://curve.eth.link")
 
 #: Where the compiled marks live inside the build, and how they are named.
-#: `<root>/curve/tokens/<chain>/<address>@<tier>.png` -- see
-#: `tools/build_assets.py`, which writes them, and `ui/assets.py`, which
-#: picks the tier from the screen's pixel ratio.
 MARKS_DIR = ("curve", "tokens")
 
 #: Which sizes to warm unless told otherwise.
-#:
-#: Not all four. `ui.assets.mark_tier` rounds *up* from the mark's size in
-#: device pixels, and a mark is drawn between 14 and 38 logical pixels: at
-#: the ratios real screens report, that lands on 40 or 80 nearly always. 20
-#: needs a 1x screen and the smallest mark on the page; 160 needs a 4x one.
-#: Warming those two doubles the work to cover the ends of the range, so
-#: they are opt-in through `--tiers all`.
 DEFAULT_TIERS = (40, 80)
 
-#: Longer than a publish's, because nothing is waiting on this. A publish
-#: verifies while somebody watches; this runs on its own and the only cost
-#: of a slow round is that it is still going.
+#: Longer than a publish's, because nothing is waiting on this.
 WARM_DEADLINE = 7200.0
 
 #: Workers for the marks, against `publish_ipfs`'s two.
-#:
-#: Two is right where it was measured -- eight parallel pulls of
-#: multi-megabyte boot files earned a run of 503s from eth.limo's rate
-#: limiter. A mark is 3.2 KB, which is a different kind of load entirely,
-#: and the number is worth re-measuring rather than inheriting. Three
-#: disjoint slices of forty cold marks, one per setting:
-#:
-#:     2 workers   0.59 files/s   67.9s   throttled 0
-#:     4 workers   0.71 files/s   56.3s   throttled 0
-#:     8 workers   1.11 files/s   35.9s   throttled 0
-#:
-#: Nothing was throttled at any of them, and eight is nearly twice as fast.
-#: It scales less than linearly because a fifth of cold marks answer 504
-#: after seventeen seconds whatever the concurrency -- that is the block
-#: not being found, and no amount of asking at once fixes it.
-#:
-#: The boot set keeps two, because that is where the 503s were earned and
-#: nothing here re-measured it.
 MARK_WORKERS = 8
 
 #: How many files to ask for between progress lines.
-#:
-#: `verify` reports once per *pass*, which is the right grain when the pass
-#: is the 77-file boot set and takes forty-five seconds. It is the wrong
-#: grain here. A full warm is 3,435 files, and measured at the ~1.7 files a
-#: second two workers actually manage, one pass is **thirty-four minutes**
-#: -- so the first version of this script printed its header and then
-#: nothing at all for over half an hour, which is indistinguishable from a
-#: hang and was reported as one.
-#:
-#: So the run is cut into batches and each batch reports. Sixty-four is
-#: about forty seconds of work: often enough to see it moving, rare enough
-#: that the bar is not the thing doing the work.
 CHUNK = 64
 
 #: How long to keep retrying inside one batch before moving on.
-#:
-#: Not the run's deadline, which would let a single unfindable file hold a
-#: batch for the whole budget while 3,000 warm ones waited behind it. A
-#: cold block answers 504 in ~17s, so this is a few attempts, and anything
-#: still missing is reported and left -- there is another pass next time
-#: the script runs, which is the entire premise.
 CHUNK_DEADLINE = 120.0
 
 
 def mark_files(root: Path, tiers: tuple[int, ...], chains: list[str]) -> list[str]:
-    """Every compiled token mark, as paths relative to the site root.
-
-    Sorted by chain and then by name so two runs ask in the same order:
-    an interrupted run then resumes over roughly the same ground rather
-    than sampling a fresh scatter of a 6,716-file set.
-    """
+    """Every compiled token mark, as paths relative to the site root."""
     base = root.joinpath(*MARKS_DIR)
     if not base.is_dir():
         return []
@@ -164,20 +60,9 @@ def mark_files(root: Path, tiers: tuple[int, ...], chains: list[str]) -> list[st
 
 
 def bundle_files(root: Path, tiers: tuple[int, ...], chains: list[str]) -> list[str]:
-    """Each chain's packed marks and its index, as site-root paths.
-
-    These are what a browser actually fetches now -- one pair per chain
-    instead of up to 627 files -- so they are what warming is for. The
-    individual marks stay reachable as the fallback and are warmed only
-    when asked for; there are 3,358 of them against 136 of these.
-    """
+    """Each chain's packed marks and its index, as site-root paths."""
     base = root.joinpath(*MARKS_DIR)
     found = []
-    # The network marks ride in one bundle of their own beside the coins',
-    # in `curve/chains/`. Every page draws one and the picker draws all of
-    # them, so leaving it cold is a missing logo on every screen -- which
-    # is why it is listed before the coins are looked for rather than
-    # inside a walk of `tokens/` that a build without one leaves empty.
     directories = [root / MARKS_DIR[0] / "chains"] if not chains else []
     if base.is_dir():
         directories += [p for p in sorted(base.iterdir()) if p.is_dir()]
@@ -187,10 +72,6 @@ def bundle_files(root: Path, tiers: tuple[int, ...], chains: list[str]) -> list[
         if not chain.is_dir():
             continue
         for tier in tiers:
-            # Both halves of a split chain. The `-rest` pair only exists
-            # for the largest -- see `SPLIT_ABOVE` in build_assets -- and
-            # leaving it out would warm the half that gates the first
-            # paint and none of what fills in behind it.
             for infix in ("", "-rest"):
                 for suffix in (".bin", ".json"):
                     path = chain / f"marks@{tier}{infix}{suffix}"
@@ -200,20 +81,7 @@ def bundle_files(root: Path, tiers: tuple[int, ...], chains: list[str]) -> list[
 
 
 def chain_files(root: Path) -> list[str]:
-    """Every network mark's own file, at every tier.
-
-    Warmed by default, unlike the token marks, and at every size rather
-    than the two `DEFAULT_TIERS` picks. Both of those are about the one
-    mark this app draws before it has fetched anything: the picker's
-    `leading_icon` is built in `CurveApp.__init__`, long before the
-    `chains` bundle exists, and it asks for the **top** tier because a
-    decoration box stretches it -- see `chain_mark`'s `sized_by_parent`.
-    So the fallback here is not a rainy-day path, it is what every visit
-    touches for a moment, and `mark_tier` can land it on any of the four.
-
-    The whole family is 160 files and 444 KB, against 3,358 token marks
-    and 10.9 MB. There is no version of this worth being clever about.
-    """
+    """Every network mark's own file, at every tier."""
     base = root / MARKS_DIR[0] / "chains"
     if not base.is_dir():
         return []
@@ -225,13 +93,7 @@ def chain_files(root: Path) -> list[str]:
 
 
 def brand_files(root: Path) -> list[str]:
-    """The Curve mark itself, and anything else committed under `branding/`.
-
-    One file, 428 KB, drawn in the header of every screen -- and a member
-    of `LAZY_DIR`, so publishing skips it exactly as it skips 3,358 token
-    marks. That grouping is right for the marks and wrong for this: it is
-    not a long tail, it is the logo.
-    """
+    """The Curve mark itself, and anything else committed under `branding/`."""
     base = root / MARKS_DIR[0] / "branding"
     if not base.is_dir():
         return []
@@ -242,43 +104,10 @@ def brand_files(root: Path) -> list[str]:
 
 
 def plan(root: Path, options) -> list[str]:
-    """What to ask for: the boot set and the mark bundles, in that order.
-
-    **The boot set is back in the default run**, and both halves of the
-    reasoning that took it out have since stopped being true.
-
-    It was excluded because it was 77 files and 60.7 MB -- 85% of the
-    weight -- and because publishing warms it anyway. Dropping canvaskit/
-    and pyodide/ from the pin took 54 MB of that away:
-
-        boot set      59 files   21.2 MB
-        bundles      140 files   11.0 MB
-        loose marks 3,358 files  10.9 MB    --all-marks
-
-    And publishing only warms it if the run got that far: the warm stage
-    sits behind `wait_for_ens`, on one gateway, and a name moved by hand
-    after the script gave up leaves the whole boot set cold. That is not
-    hypothetical -- it is what a published build looked like: the icon
-    font 504ing after 17.6s, `app-package.json` the same, one browser
-    showing a page with holes in it and another not loading at all, after
-    a warm run that had been told to skip exactly those files.
-
-    So the default is now everything a visitor touches, and `--no-boot`
-    is there for a run that only wants the marks.
-
-    Boot files come first: they decide whether the site loads at all,
-    where the marks only decide whether it looks right, and an interrupted
-    run should have bought the first.
-    """
+    """What to ask for: the boot set and the mark bundles, in that order."""
     paths: list[str] = boot_files(root) if options.boot else []
     if options.boot_only:
         return paths
-    # Bundles first: they are what a visitor fetches, and there are 136 of
-    # them against 3,358 individual marks. The marks are the fallback for a
-    # bundle that will not load and for the tiers that have none, so they
-    # are worth warming eventually and not worth warming first -- with the
-    # network marks the exception, because that fallback is on the path of
-    # every visit. See `chain_files`.
     paths += bundle_files(root, options.tiers, options.chains)
     if not options.chains:
         paths += brand_files(root)
@@ -294,12 +123,7 @@ def batched(paths: list[str], size: int) -> list[list[str]]:
 
 
 def remaining_text(done: int, total: int, elapsed: float) -> str:
-    """A rough "still to go", from the rate so far.
-
-    Rough on purpose: the rate swings by an order of magnitude depending on
-    how many blocks in a batch were cold, and a confident-looking countdown
-    that is wrong by twenty minutes is worse than an approximate one.
-    """
+    """A rough "still to go", from the rate so far."""
     if not done or done >= total:
         return ""
     left = elapsed / done * (total - done)
@@ -307,30 +131,12 @@ def remaining_text(done: int, total: int, elapsed: float) -> str:
 
 
 def weight(root: Path, paths: list[str]) -> int:
-    """How many bytes this run will pull, per gateway.
-
-    Bytes rather than files, because files are a poor proxy here: 77 boot
-    files outweigh 3,358 marks six to one, so a run reported purely in
-    files sits at "0/3435" through the slowest part of its work and looks
-    stuck. It is the number this script is actually rate-limited by.
-    """
+    """How many bytes this run will pull, per gateway."""
     return sum((root / p).stat().st_size for p in paths if (root / p).exists())
 
 
 def rate_text(done: int, total: int, done_bytes: int, elapsed: float) -> str:
-    """Throughput so far and what is left of it, measured not predicted.
-
-    **Files a second first, bytes second**, because for the marks the byte
-    rate is meaningless and alarming: a mark is 3.2 KB and the transfer
-    takes 0.0001s against a 0.6s time-to-first-byte, so the whole cost is
-    the gateway's lookup and you would need 308 files a second to show
-    1 MB/s. Reporting only KB/s produced a reasonable-looking run
-    advertising "8 KB/s", which reads as a broken connection.
-
-    Nothing is predicted before a run. Two readings of the same gateway
-    hours apart came in at 686 KB/s and 2 KB/s -- three hundred times
-    apart -- so it reports what it is achieving, which self-corrects.
-    """
+    """Throughput so far and what is left of it, measured not predicted."""
     if elapsed <= 0 or not done:
         return ""
     left = (total - done) / (done / elapsed)
@@ -341,13 +147,7 @@ def rate_text(done: int, total: int, done_bytes: int, elapsed: float) -> str:
 
 
 def warm_one(host: str, paths: list[str], options) -> dict:
-    """One gateway, whole files, two at a time. Returns what is still bad.
-
-    In batches, so it reports while it works rather than at the end -- see
-    `CHUNK`. Batching also bounds how long one unfindable file can hold up
-    the ones behind it, which at three thousand files is the difference
-    between a slow job and a stalled one.
-    """
+    """One gateway, whole files, two at a time."""
     total_bytes = weight(options.dist, paths)
     print(
         f"\n{host}: {len(paths)} files, {total_bytes / 1e6:.1f} MB, "
@@ -451,8 +251,6 @@ def main() -> int:
 
     if options.boot_only:
         options.boot = True
-    # The 503s were earned pulling big boot files eight at a time, so that
-    # is the case that keeps the cautious number. See `MARK_WORKERS`.
     if not options.workers:
         options.workers = WARM_WORKERS if options.boot else MARK_WORKERS
 

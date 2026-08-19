@@ -1,47 +1,4 @@
-"""Claiming what a gauge owes you, in CRV and in everything else.
-
-A staked position earns two kinds of reward and they are claimed by two
-different contracts, which is the whole reason this module exists:
-
-  * **CRV is minted, not transferred.** The gauge only records how much
-    you are owed (`integrate_fraction`); the tokens are created by a
-    minter when you ask. On Ethereum that is the Minter; on every other
-    chain it is the chain's child gauge factory. Both answer
-    `mint(address gauge)`, verified against 0xd061D6… and 0x988d10…
-  * **Everything else is already in the gauge**, deposited by whoever is
-    incentivising the pool, and `claim_rewards()` transfers your share of
-    all of them at once.
-
-So a pool with CRV and two incentive tokens is *two* transactions, not
-three and not one. There is no contract that does both.
-
-**The preview trap.** `claimable_tokens(address)` is declared
-`nonpayable` in every gauge ABI -- mainnet and child alike -- because it
-checkpoints before it answers. A client that dispatches on state
-mutability will therefore try to *send* it, which costs gas and returns
-nothing useful to display. It is a perfectly good `eth_call`: the
-checkpoint happens in the simulated state and is thrown away, and the
-return value is the number you want.
-
-Nothing here has to work around that, because this app encodes its own
-calldata and every read goes through `provider.call()` -- see
-`curve.pool._read`. The trap is recorded because the next person to reach
-for a typed ABI will hit it, and because it explains why the CRV figure
-and the incentive figures are fetched by such different-looking code for
-what is, on screen, one list.
-
-  extra rewards   `claimable_reward(address,address)`  [view]
-  CRV             `claimable_tokens(address)`          [nonpayable]
-
-**Where the addresses came from.** curve-js's `network_constants.ts`
-aliases -- `crv`, and `minter` on Ethereum or `child_gauge_factory`
-elsewhere -- each checked with `eth_getCode` on its own chain. Chains
-whose CRV alias is the zero address (X Layer, Mantle, HyperEVM) have no
-CRV to claim and are left out; so is Kava, whose published CRV address
-holds no code, which is a discrepancy in the source data rather than
-something to guess around. Those pools still claim their incentive
-tokens, because that path needs nothing from this table.
-"""
+"""Claiming what a gauge owes you, in CRV and in everything else."""
 
 from __future__ import annotations
 
@@ -56,14 +13,10 @@ class Rewards:
 
     #: The CRV token, for its logo and its symbol. 18 decimals everywhere.
     crv: str
-    #: `mint(address)`: the Minter on Ethereum, the child gauge factory on
-    #: every other chain.
+    #: `mint(address)`: the Minter on Ethereum, the child gauge factory
+    #: on every other chain.
     minter: str
-    #: How many gauges `mint_many` takes at once. Ethereum's Minter
-    #: declares `address[8]`; the child gauge factories declare
-    #: `address[32]`. It is part of the *signature*, so a wrong width is a
-    #: selector for a function that does not exist -- both read off the
-    #: verified ABIs of 0xd061D6… and 0x988d10…
+    #: How many gauges `mint_many` takes at once.
     mint_many_size: int = 32
 
 
@@ -137,22 +90,13 @@ CRV_DECIMALS = 18
 
 
 def rewards_for(pool: Pool) -> Rewards | None:
-    """Where to read and mint this pool's CRV, if CRV is minted here at all.
-
-    None whenever the pool has no gauge -- nothing accrues -- or the chain
-    is not in the table. Neither is an error: the incentive-token half of
-    claiming needs only the gauge, so the panel still has something to do.
-    """
+    """Where to read and mint this pool's CRV, if CRV is minted here at all."""
     if not pool.has_gauge:
         return None
     return REWARDS.get(pool.chain_id)
 
 
 def crv_token(pool: Pool) -> str:
-    """CRV's address on this pool's chain, or "" if unknown.
-
-    Separate from `rewards_for` because the *list* wants only the logo and
-    has no interest in who mints it.
-    """
+    """CRV's address on this pool's chain, or "" if unknown."""
     entry = REWARDS.get(pool.chain_id)
     return entry.crv if entry else ""

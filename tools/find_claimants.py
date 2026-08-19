@@ -1,30 +1,5 @@
 #!/usr/bin/env python
-"""Find a mainnet account whose gauge position has rewards outstanding.
-
-`tests/fork/test_writes.py` impersonates one. It has to be a real address
-rather than a funded anvil account, because rewards accrue over time and
-there is no way to manufacture a position that has been earning for weeks
--- so the claim tests borrow somebody who already was.
-
-That makes the address fixture data with a shelf life. The account can
-withdraw, or a gauge can stop paying, and then the tests skip. This is how
-to find the next one.
-
-**Wanted: both kinds at once.** CRV is minted by the Minter and incentive
-tokens come out of the gauge -- two contracts, two transactions -- so an
-account with only one of them exercises half the path and passes anyway.
-The search therefore ranks by having both, and prints the constants to
-paste into the test.
-
-Candidates come from the gauge's own Transfer log: a gauge is an ERC-20 and
-staking mints, so everyone who ever deposited appears there. Deliberately no
-API key and no block explorer -- `eth_getLogs` over a recent window, through
-the same public-endpoint fallback the app itself reads with, so this runs
-from a clean checkout with nothing configured.
-
-    python tools/find_claimants.py                    # Ethereum, top pools
-    python tools/find_claimants.py --chain arbitrum --pools 12
-"""
+"""Find a mainnet account whose gauge position has rewards outstanding."""
 
 from __future__ import annotations
 
@@ -43,8 +18,8 @@ from curve.format import token_amount, units_to_float
 from curve.rpc import ChainlistDirectory, PublicNode
 from wallet.erc20 import encode_balance_of, encode_decimals, keccak256
 
-#: Curve's own REST API, which is where `zapAddress` and `gaugeRewards`
-#: live -- the Prices v2 API this app otherwise reads does not carry them.
+#: Curve's own REST API, which is where `zapAddress` and `gaugeRewards` live
+#: -- the Prices v2 API this app otherwise reads does not carry them.
 POOLS_API = "https://api.curve.finance/api/getPools/{chain}/{registry}"
 
 #: Every registry a chain might have. Missing ones 404 and are skipped;
@@ -62,8 +37,7 @@ TRANSFER_TOPIC = "0x" + keccak256(b"Transfer(address,address,uint256)").hex()
 #: cap `eth_getLogs` at a few thousand blocks and simply error above it.
 DEFAULT_WINDOW = 5_000
 
-#: Chain ids for the names Curve's API uses. Only the ones with gauges
-#: worth scanning; anything else can be passed with --chain-id.
+#: Chain ids for the names Curve's API uses.
 CHAIN_IDS = {
     "ethereum": 1, "optimism": 10, "xdai": 100, "polygon": 137,
     "fantom": 250, "base": 8453, "arbitrum": 42161, "avalanche": 43114,
@@ -77,11 +51,7 @@ def fetch_json(url: str, timeout: float = 45.0):
 
 
 def gauges_with_rewards(chain: str) -> list[dict]:
-    """Pools on a chain whose gauge streams at least one incentive token.
-
-    Sorted by TVL, because a busy gauge is likelier to have somebody with
-    an unclaimed balance than a dormant one.
-    """
+    """Pools on a chain whose gauge streams at least one incentive token."""
     found: dict[str, dict] = {}
     for registry in REGISTRIES:
         try:
@@ -105,11 +75,7 @@ def gauges_with_rewards(chain: str) -> list[dict]:
 
 
 def addresses_in(logs: list[dict]) -> list[str]:
-    """Every counterparty in a batch of Transfer logs, in first-seen order.
-
-    Both sides: a gauge mints to the staker on deposit and burns from them
-    on withdrawal, so an address can appear on either.
-    """
+    """Every counterparty in a batch of Transfer logs, in first-seen order."""
     seen: list[str] = []
     for log in logs:
         for topic in (log.get("topics") or [])[1:3]:
@@ -180,13 +146,7 @@ async def outstanding(reader: Reader, entry: dict, who: str) -> dict | None:
 
 
 def describe(hit: dict) -> str:
-    """One account's position, amount before symbol as the app writes them.
-
-    Every reward in its own decimals -- an incentive token is whatever the
-    pool's owner chose to stream, and 6-decimal stablecoins are common. An
-    earlier version rendered all of them as 18, which printed a real 2.5
-    USDC reward as "0" and made the account look like a poor candidate.
-    """
+    """One account's position, amount before symbol as the app writes them."""
     parts = [f"staked {token_amount(units_to_float(hit['staked'], 18))} LP"]
     if hit["crv"]:
         parts.append(f"{token_amount(units_to_float(hit['crv'], 18))} CRV")

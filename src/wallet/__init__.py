@@ -1,25 +1,4 @@
-"""A wallet, on whatever platform this app happens to be running on.
-
-Two layers, and an app should only ever need the second:
-
-  `base.WalletProvider`  -- the portability seam. One method (`request`),
-      EIP-1193, one implementation per platform:
-
-          browser (Pyodide/wasm)  -> BroadcastChannel -> EIP-6963 / WalletConnect
-          desktop (CPython)       -> HTTP JSON-RPC    -> Frame / qeth on :1248
-
-  `session.Wallet`       -- what you actually call. Connection lifecycle,
-      account and chain state, token metadata, balances, transfers.
-
-The whole app-facing surface:
-
-    from wallet import Wallet, WalletError, autoconnect
-
-    wallet = await Wallet.connect()          # raises WalletError
-    tokens = wallet.known_tokens()
-    amount = await wallet.balance_of(tokens[0])
-    tx     = await wallet.send(token=tokens[0], to="0x…", amount="0.25")
-"""
+"""A wallet, on whatever platform this app happens to be running on."""
 
 from __future__ import annotations
 
@@ -60,12 +39,7 @@ __all__ = [
 
 
 async def connect_wallet() -> WalletProvider:
-    """Return a raw EIP-1193 provider for this platform.
-
-    Most code wants `Wallet.connect()` instead; this is the seam underneath
-    it, exposed for anything that needs to speak the protocol directly.
-    Does not prompt for accounts -- that is `provider.request_accounts()`.
-    """
+    """Return a raw EIP-1193 provider for this platform."""
     if is_browser():
         from . import browser
 

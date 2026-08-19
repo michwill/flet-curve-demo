@@ -1,10 +1,4 @@
-"""Breakpoints, and what every view does at each of them.
-
-All of this is checkable without a window, which is the point: Flet's
-integration tests run at a fixed size and cannot resize the page in device
-mode, so a responsive layout verified only by eye in a browser is a
-responsive layout with no regression test at all.
-"""
+"""Breakpoints, and what every view does at each of them."""
 
 from __future__ import annotations
 
@@ -57,7 +51,6 @@ def test_a_desktop_is_the_same_as_a_laptop() -> None:
 
 
 def test_the_pool_page_stacks_before_the_table_becomes_cards() -> None:
-    """A chart next to a 360px panel runs out of room first."""
     assert STACK_BREAKPOINT > CARD_BREAKPOINT
     assert layout_for(PHONE_LANDSCAPE).stacked
     assert not layout_for(PHONE_LANDSCAPE).cards
@@ -72,7 +65,6 @@ def test_every_width_yields_a_usable_layout(width: float) -> None:
 
 
 def test_columns_only_ever_shrink_as_the_window_narrows() -> None:
-    """Never add a column back on the way down."""
     widths = [2000.0, 1400.0, 1100.0, 1000.0, 900.0, 800.0, 760.0, 600.0, 320.0]
     previous = set(ALL_COLUMNS)
     for width in widths:
@@ -94,24 +86,18 @@ def test_the_breakpoints_are_exact() -> None:
 
 
 def test_an_ordinary_window_is_not_capped() -> None:
-    """None means "fill it", so every window narrower than the cap is laid
-    out exactly as it was before there was a cap at all."""
     assert content_width(390.0) is None
     assert content_width(1280.0) is None
     assert content_width(MAX_CONTENT_WIDTH) is None
 
 
 def test_a_very_wide_window_stops_the_page_growing() -> None:
-    """A pool row is a name and four numbers. Across 2560px the two halves
-    stop reading as one row, which is the only thing a table is for."""
     assert content_width(1441.0) == MAX_CONTENT_WIDTH
     assert content_width(2560.0) == MAX_CONTENT_WIDTH
     assert content_width(5120.0) == MAX_CONTENT_WIDTH
 
 
 def test_the_cap_never_makes_the_page_wider_than_the_window() -> None:
-    """The one thing that would be worse than a stretched table: a page
-    that needs sideways scrolling to read."""
     for width in (320.0, 760.0, 1000.0, 1439.0, 1440.0, 1441.0, 3840.0):
         capped = content_width(width)
         assert capped is None or capped <= width

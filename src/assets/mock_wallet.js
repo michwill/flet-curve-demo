@@ -1,18 +1,4 @@
-/*
- * mock_wallet.js -- a fake EIP-6963 wallet, for development only.
- *
- * Loaded ONLY when the page URL carries ?mock=1, so it can never appear in
- * a normal visit. It announces itself exactly like a real extension, which
- * means the whole app -- discovery, the wallet picker, balances, ABI
- * encoding, the send flow, the error paths -- can be exercised end to end
- * without a real wallet, a real chain, or real money.
- *
- *   http://localhost:8000/?mock=1
- *
- * It never signs anything: eth_sendTransaction records the transaction on
- * window.__lastTx and returns a fixed hash, so you can assert on exactly
- * what the Python side built.
- */
+// mock_wallet.js -- a fake EIP-6963 wallet, for development only.
 
 (() => {
   "use strict";
@@ -22,15 +8,15 @@
   // picker and a mock that always answers "Ethereum" would make that
   // impossible to see working.
   let CHAIN_ID = "0x1";
-  //: Networks this mock claims to know. Anything else gets 4902, which is
-  //: how a real wallet says "never heard of it" -- and is the path the app
-  //: takes to offer `wallet_addEthereumChain`.
+  // : Networks this mock claims to know. Anything else gets 4902, which
+  // is : how a real wallet says "never heard of it" -- and is the path
+  // the app : takes to offer `wallet_addEthereumChain`.
   const KNOWN_CHAINS = new Set(["0x1", "0x64", "0xa4b1", "0xa", "0x89", "0x2105"]);
   const NATIVE_BALANCE = 2000000000000000000n; // 2 ETH
   const TOKEN_BALANCE = 1234560000n; // 1234.56 at 6 decimals
   const TOKEN_DECIMALS = 6n;
   const TOKEN_SYMBOL = "TEST";
-  //: The block every mock transaction lands in.
+  // : The block every mock transaction lands in.
   const MINED_BLOCK = 21_000_000;
 
   // EIP-6963 requires an announced icon, so the mock announces one too --
@@ -58,7 +44,8 @@
     removeListener(event, handler) {
       this._handlers[event] = (this._handlers[event] || []).filter((h) => h !== handler);
     },
-    /** Fire a wallet event at the app, e.g. mockWallet.emit('chainChanged', '0xa') */
+    // Fire a wallet event at the app, e.g.
+    // mockWallet.emit('chainChanged', '0xa')
     emit(event, data) {
       (this._handlers[event] || []).forEach((h) => h(data));
     },
@@ -77,15 +64,16 @@
           return "0x" + NATIVE_BALANCE.toString(16);
         case "eth_call": {
           const selector = (params[0]?.data || "").slice(2, 10);
-          // fee() -- 1_500_000 of 1e10, i.e. 0.015%, which is 3pool's.
-          // The app reads it to preset the slippage tolerance.
+          // fee() -- 1_500_000 of 1e10, i.e. 0.015%, which is
+          // 3pool's.
           if (selector === "ddca3f43") return "0x" + word("16e360");
-          // dynamic_fee(int128,int128) is deliberately *not* answered:
-          // only StableSwap-NG has it, and the fallback to fee() is the
-          // path worth exercising here.
+          // dynamic_fee(int128,int128) is deliberately *not*
+          // answered: only StableSwap-NG has it, and the fallback
+          // to fee() is the path worth exercising here.
           if (selector === "dd62ed3e") {
-            // allowance(): zero until an approval has been mined, so the
-            // app's "wait, then re-read" path has something to observe.
+            // allowance(): zero until an approval has been
+            // mined, so the app's "wait, then re-read" path has
+            // something to observe.
             return "0x" + word((window.__approved ? 2n ** 200n : 0n).toString(16));
           }
           if (selector === "313ce567") return "0x" + word(TOKEN_DECIMALS.toString(16)); // decimals()
@@ -103,8 +91,8 @@
           return "0x";
         }
         case "eth_blockNumber":
-          // Creeps forward so the "wait for the endpoint to catch up"
-          // path is exercised rather than short-circuited.
+          // Creeps forward so the "wait for the endpoint to catch
+          // up" path is exercised rather than short-circuited.
           this._head = (this._head || MINED_BLOCK - 2) + 1;
           return "0x" + Math.min(this._head, MINED_BLOCK).toString(16);
         case "eth_getTransactionReceipt":
@@ -118,7 +106,8 @@
           };
         case "eth_sendTransaction":
           this._polls = 0;
-          // An approve() to any spender counts, for the same reason.
+          // An approve() to any spender counts, for the same
+          // reason.
           if ((params[0]?.data || "").startsWith("0x095ea7b3")) {
             window.__approved = true;
           }

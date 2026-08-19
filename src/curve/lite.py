@@ -1,30 +1,4 @@
-"""Curve Lite: the small deployments, on a different API.
-
-Most chains in this app come from the Prices API, which indexes trades and
-so can report volume, base APR and price history. **Curve Lite** is the
-other kind of deployment -- the factory contracts and a gauge, without any
-of that indexing -- and it is served by `api2.curve.finance`, a separate
-service with six endpoints and a different shape.
-
-What is missing is the point, and it is not a little:
-
-  * no volume and no base APR. Not zero -- *unknown*. Nothing measures
-    trades on these chains, so a list that printed 0.00% would be
-    inventing a measurement;
-  * no OHLC, so no chart;
-  * no CRV boost range, and reward APRs only where the token has a price.
-
-What it does give, in one request per chain, is everything the pools
-themselves know: reserves, coin prices, LP token, gauge, amplification.
-That is the whole chain at once rather than a page at a time, so ordering,
-searching and paging happen here instead of at the server -- `select`
-below is the local stand-in for what v2 does with query parameters.
-
-Two lists are filtered out before anything is shown: pools the API marks
-`is_broken`, and the ones `get_hidden_pools` names -- Curve's own frontend
-hides both, and a pool that cannot be read is worse than a pool that is
-absent.
-"""
+"""Curve Lite: the small deployments, on a different API."""
 
 from __future__ import annotations
 
@@ -37,19 +11,11 @@ from .models import Pool
 LITE_API = "https://api2.curve.finance"
 
 #: How long to wait on the Lite API before giving up on it.
-#:
-#: Short, because this is on the critical path for **every** chain, not
-#: just the Lite ones: `chains()` folds the Lite deployments into the
-#: picker, so the first page of Ethereum pools waits on this call. At the
-#: 30-second default a slow `api2` means a pool list that looks like it is
-#: loading forever; at five it means a session with no Lite chains in the
-#: picker, which is the degradation `lite_chains` already promises.
 LITE_TIMEOUT = 5.0
 
-#: The list floor for a Lite chain. Zero, where the main chains use
-#: $10,000: whole Lite deployments are smaller than that floor -- Sonic's
-#: pools come to about $200k between them -- so the same cut would empty
-#: the list. Sorting by TVL is what keeps the dust at the bottom.
+#: The list floor for a Lite chain. Zero, where the main chains use $10,000:
+#: whole Lite deployments are smaller than that floor -- Sonic's pools come
+#: to about $200k between them -- so the same cut would empty the list.
 LITE_MIN_TVL = 0.0
 
 
@@ -60,25 +26,19 @@ class LiteChain:
     name: str
     chain_id: int
     #: The display name the API carries, which is sometimes better cased
-    #: than the key ("X layer" for `x-layer`) and sometimes worse ("tac").
+    #: than the key ("X layer" for `x-layer`) and sometimes worse
+    #: ("tac").
     label: str
     tvl: float
     #: What a wallet needs to *add* the network, for the ones no wallet
-    #: ships with -- which is most of these. `wallet_addEthereumChain`
-    #: wants exactly this: a name, an RPC, an explorer and the native
-    #: symbol. Nowhere else publishes it for a Curve Lite chain.
+    #: ships with -- which is most of these.
     rpc_url: str = ""
     explorer: str = ""
     native_symbol: str = "ETH"
 
 
 def parse_platforms(payload: Any) -> dict[str, LiteChain]:
-    """Chain name -> deployment, mainnets only.
-
-    The testnets and devnets in this list (`bsc_testnet`, `devnet:monad`)
-    are real entries with real pools, and no use at all to someone opening
-    a pool list, so they are dropped here rather than shown and explained.
-    """
+    """Chain name -> deployment, mainnets only."""
     data = (payload or {}).get("data") or {}
     metadata = data.get("platforms_metadata") or {}
     chains: dict[str, LiteChain] = {}
@@ -131,12 +91,7 @@ def parse_pools(
 
 
 def matches(pool: Pool, query: str) -> bool:
-    """The local stand-in for v2's `search_string`.
-
-    Name, coin symbols and address, because those are the three things
-    someone has in hand: what the pool is called, what is in it, or a
-    contract they pasted.
-    """
+    """The local stand-in for v2's `search_string`."""
     query = query.strip().lower()
     if not query:
         return True
@@ -155,13 +110,7 @@ def select(
     page: int = 1,
     page_size: int = 50,
 ) -> tuple[list[Pool], int]:
-    """Filter, order and page a whole chain in memory.
-
-    Returns the requested page and the total matching count, which is the
-    same contract `CurveApi.list_pools` has with v2 -- so `PoolFeed` pages
-    a Lite chain exactly as it pages a big one, and nothing above this
-    knows the difference.
-    """
+    """Filter, order and page a whole chain in memory."""
     found = [
         pool
         for pool in pools

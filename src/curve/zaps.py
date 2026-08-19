@@ -1,50 +1,4 @@
-"""Which deposit zap serves which metapool, and in which ABI dialect.
-
-A metapool holds two coins: its own, and the *LP token of a base pool*. So
-the World Liberty pool is USD1 paired with crv2pool, and depositing USDC
-into it means minting crv2pool first -- a second transaction, a second
-approval, and a token nobody wanted to hold.
-
-A zap does both in one call. It takes the **underlying** list instead --
-the metapool's own coin followed by the base pool's coins, which is exactly
-`Pool.display_coins` -- and every function carries the pool address as its
-first argument, because one zap serves every metapool built on the same
-base.
-
-**Four dialects**, and none of them can be inferred from the others --
-each was probed against deployed contracts:
-
-  * StableSwap-NG's zap: pool argument, `uint256[]` (a Vyper `DynArray`),
-    `is_deposit` flag, `int128` indices;
-  * the older stable factory zaps: pool argument, `uint256[N]`, flag,
-    `int128`;
-  * the crypto factory's zaps: pool argument, `uint256[N]`, **no flag**,
-    `uint256` indices;
-  * the older crypto metapools' zaps: **no pool argument at all** -- one
-    zap was deployed per pool -- so the calldata is exactly what the pool
-    itself would take.
-
-Which is why there are three tables below rather than one. They differ in
-what addresses a zap, not just in what it speaks: by base pool for the
-factory zaps, by pool for the ones deployed per pool.
-
-**Where these addresses came from.** Curve's own API publishes a
-`zapAddress` per pool (`api.curve.finance/api/getPools/{chain}/{registry}`),
-which the Prices v2 API this app otherwise uses does not carry. They are
-transcribed here rather than fetched, because a second API call on every
-pool page to learn a constant is a poor trade. The sweep covers all 21
-chains and every registry, and each entry was then checked with an
-`eth_call` to that zap on its own chain. `coins` is the length the zap
-expects; a metapool whose decomposed coin list does not match it is not
-offered the underlying route at all.
-
-One family is still absent: the oldest `main`-registry metapools
-(GUSD/3Crv and friends), whose per-pool deposit contracts did not answer
-any spelling probed against them. Several NG metapools have no zap
-published at all either, on Ethereum, Gnosis and Arbitrum. Both keep the
-pool-token route, which works everywhere -- and their underlying coins
-can still be *swapped*, since that needs no zap at all.
-"""
+"""Which deposit zap serves which metapool, and in which ABI dialect."""
 
 from __future__ import annotations
 
@@ -53,11 +7,7 @@ from dataclasses import dataclass
 from .models import Pool
 
 #: Pool types this applies to. The zaps below are *factory* zaps: one per
-#: base pool, addressed by pool. The oldest metapools are not from a
-#: factory at all -- they predate it, their LP token is a separate contract
-#: from the pool, and each has its own deposit contract with no pool
-#: argument. Handing one of those to a factory zap is calldata that at best
-#: reverts, so they are excluded by type rather than by address.
+#: base pool, addressed by pool.
 FACTORY_METAPOOL_TYPES = frozenset(
     {"factory", "stableswapng", "factory-stable-ng"}
 )
@@ -65,50 +15,23 @@ FACTORY_METAPOOL_TYPES = frozenset(
 
 @dataclass(frozen=True, slots=True)
 class Zap:
-    """One deposit zap, and which of the four dialects it speaks.
-
-    All four were probed against deployed contracts; none of them can be
-    inferred from the others, and a wrong guess is calldata for a function
-    that does not exist.
-    """
+    """One deposit zap, and which of the four dialects it speaks."""
 
     address: str
-    #: Underlying coins it expects: 1 + the base pool's own count. Part of
-    #: the signature in the fixed dialect, and merely required in the
-    #: dynamic one -- the NG zap reverts on a wrong length either way.
+    #: Underlying coins it expects: 1 + the base pool's own count.
     coins: int
     #: `uint256[]` rather than `uint256[N]`.
     dynamic: bool
-    #: Does it take the pool as its first argument? A factory zap serves
-    #: every metapool on one base pool and must be told which; the older
-    #: crypto metapools each got a zap of their own, which takes none --
-    #: its calldata is exactly what the pool itself would take.
+    #: Does it take the pool as its first argument?
     pool_arg: bool = True
-    #: Stable zaps carry the `is_deposit` flag on `calc_token_amount` and
-    #: index coins with `int128`; the crypto ones have neither.
+    #: Stable zaps carry the `is_deposit` flag on `calc_token_amount`
+    #: and index coins with `int128`; the crypto ones have neither.
     stableswap: bool = True
-    #: Does it swap, as well as deposit and withdraw? Only the per-pool
-    #: crypto zaps do -- all seven carry `exchange_underlying` and
-    #: `get_dy_underlying`, checked in their deployed bytecode, and no
-    #: factory zap of either kind has either function. It matters because
-    #: a crypto metapool has no underlying swap of its own, so without
-    #: this the route would not exist for those pools at all.
+    #: Does it swap, as well as deposit and withdraw?
     swaps: bool = False
 
 
-#: Keyed by `(chain_id, base pool address lowercased, dynamic)`. The last
-#: element matters on Ethereum, where 3pool and FraxBP each have both an
-#: old factory zap and the NG one.
-#:
-#: Transcribed from `zapAddress` across all 21 chains and both stable
-#: registries of `api.curve.finance` -- see the module docstring -- and then
-#: checked one by one with an `eth_call` to each zap on its own chain,
-#: quoting a real deposit into its busiest metapool. Sixteen of the
-#: twenty-one answered; the five marked below revert on every sample pool
-#: they serve, which are small or empty deployments. Those are kept because
-#: the data is Curve's own and the route is gated on a working quote
-#: anyway: a zap that will not answer offers no approve step and the
-#: pool-token route stays.
+#: Keyed by `(chain_id, base pool address lowercased, dynamic)`.
 ZAPS: dict[tuple[int, str, bool], Zap] = {
     # -- Ethereum --------------------------------------------------
     (1, "0x4f493b7de8aac7d55f71853688b1f7c8f0243c85", True): Zap(
@@ -184,8 +107,6 @@ ZAPS: dict[tuple[int, str, bool], Zap] = {
 
 
 #: Shared zaps for the crypto factory's metapools, keyed by base pool.
-#: `calc_token_amount(address,uint256[N])` -- a pool argument like the
-#: stable factory zaps, but no `is_deposit` flag and uint256 indices.
 CRYPTO_ZAPS: dict[tuple[int, str], Zap] = {
     (1, "0xdcef968d416a41cdac0ed8702fac8128a64241a2"): Zap(
         "0x5De4EF4879F4fe3bBADF2227D2aC5d0E2D76C895", 3, False, stableswap=False
@@ -195,9 +116,9 @@ CRYPTO_ZAPS: dict[tuple[int, str], Zap] = {
     ),  # Ethereum, 24 pools
 }
 
-#: Zaps deployed for one pool each, which is how the older crypto
-#: metapools were shipped: no pool argument at all, so the calldata is
-#: what the pool itself would take -- just addressed elsewhere.
+#: Zaps deployed for one pool each, which is how the older crypto metapools
+#: were shipped: no pool argument at all, so the calldata is what the pool
+#: itself would take -- just addressed elsewhere.
 POOL_ZAPS: dict[tuple[int, str], Zap] = {
     (1, "0xadcfcf9894335dc340f6cd182afa45999f45fc44"): Zap(
         "0xc5FA220347375ac4f91f9E4A4AAb362F22801504", 4, False,
@@ -231,19 +152,9 @@ POOL_ZAPS: dict[tuple[int, str], Zap] = {
 
 
 def zap_for(pool: Pool) -> Zap | None:
-    """The zap that can deposit this metapool's underlying coins, if any.
-
-    None whenever anything does not line up -- not a metapool, no zap known
-    for that base pool on that chain, or a decomposed coin list whose length
-    disagrees with the zap's. The last case is the one worth being strict
-    about: the fixed dialect encodes N in the signature, so a mismatch is
-    calldata for a function that does not exist, and in the dynamic dialect
-    it is a revert inside the zap. Either way the pool-token route still
-    works, which is what the caller falls back to.
-    """
+    """The zap that can deposit this metapool's underlying coins, if any."""
     if not pool.base_pool:
         return None
-    # Most specific first: a zap deployed for this pool alone.
     zap = POOL_ZAPS.get((pool.chain_id, pool.address.lower()))
     if zap is None:
         if not pool.is_stableswap:

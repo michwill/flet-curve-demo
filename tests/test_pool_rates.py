@@ -1,21 +1,4 @@
-"""How many requests it takes to learn what a portfolio earns.
-
-The rates the earnings pass needs -- `crv_apr`, `crv_apr_boosted` and
-`extra_rewards_apr`, the last carrying each token's address, decimals and
-price -- are on the pool *list* as well as on the per-pool detail
-endpoint. Checked against the live API: same fields, same values.
-
-That matters because the list is already downloaded. A portfolio scan
-pages every pool on the chain to find the gauges, so by the time anything
-asks for a rate, every rate on the chain has been paid for. An address in
-three hundred gauges was making three hundred requests for figures it
-already had.
-
-The fallbacks below are what happens when it has not: paging the list
-(`ceil(count / 50)` requests) beats asking per pool once there are more
-pools to look up than the chain has pages, and loses when a wallet is in
-a handful of pools -- which most wallets are.
-"""
+"""How many requests it takes to learn what a portfolio earns."""
 
 from __future__ import annotations
 
@@ -88,8 +71,6 @@ def served(monkeypatch):
 
 
 async def test_a_scanned_chain_costs_nothing_to_rate(served) -> None:
-    """The case the portfolio actually hits. `_all_gauges` pages the whole
-    chain to find gauges; every rate on it comes along for free."""
     server, api, pools = served(120)
     await api._all_gauges(CHAIN)
     asked = len(server.list_pages)
@@ -103,8 +84,6 @@ async def test_a_scanned_chain_costs_nothing_to_rate(served) -> None:
 
 
 async def test_a_handful_of_pools_is_asked_for_one_at_a_time(served) -> None:
-    """Three pools against a chain of twelve pages: asking per pool is
-    three requests and paging the list is twelve."""
     server, api, pools = served(600)
     await api._all_gauges(CHAIN)
     api.invalidate()          # rates expired; the page count is still known
@@ -117,8 +96,6 @@ async def test_a_handful_of_pools_is_asked_for_one_at_a_time(served) -> None:
 
 
 async def test_more_pools_than_pages_takes_the_list(served) -> None:
-    """Twenty pools against a chain of two pages: paging is two requests
-    and asking per pool is twenty."""
     server, api, pools = served(100)
     await api._all_gauges(CHAIN)
     api.invalidate()
@@ -132,8 +109,6 @@ async def test_more_pools_than_pages_takes_the_list(served) -> None:
 
 
 async def test_an_unlisted_chain_asks_per_pool_for_a_few(served) -> None:
-    """Three pools cannot be worth a request to find out how many pages
-    the chain has, whatever the answer would have been."""
     server, api, pools = served(600)
 
     await api.pool_rates(CHAIN, [p["address"] for p in pools[:3]])
@@ -143,10 +118,6 @@ async def test_an_unlisted_chain_asks_per_pool_for_a_few(served) -> None:
 
 
 async def test_an_unlisted_chain_buys_the_page_count_when_it_matters(served) -> None:
-    """Three hundred pools on a chain never listed here. Asking per pool
-    is three hundred requests and paging is twelve, but nothing knows that
-    until a page is fetched -- so one is, and it pays for itself twice
-    over by carrying fifty of the rates."""
     server, api, pools = served(600)
 
     rates = await api.pool_rates(CHAIN, [p["address"] for p in pools[:300]])
@@ -157,8 +128,6 @@ async def test_an_unlisted_chain_buys_the_page_count_when_it_matters(served) -> 
 
 
 async def test_the_probe_page_is_not_fetched_twice(served) -> None:
-    """The page bought to learn the count is the first page of the listing
-    that follows, not an extra one."""
     server, api, pools = served(600)
 
     await api.pool_rates(CHAIN, [p["address"] for p in pools[:300]])
@@ -167,23 +136,17 @@ async def test_the_probe_page_is_not_fetched_twice(served) -> None:
 
 
 async def test_buying_the_count_can_settle_it_the_other_way(served) -> None:
-    """Fifty pools on a chain of two hundred pages: the probe says paging
-    would cost far more than asking, so the rest are asked for -- and the
-    fifty rates the probe brought back are kept, not thrown away."""
     server, api, pools = served(10_000)
     wanted = [p["address"] for p in pools[:25]] + [p["address"] for p in pools[-25:]]
 
     rates = await api.pool_rates(CHAIN, wanted)
 
     assert server.list_pages == [1], "one page, to learn the count"
-    # The first twenty-five were on that page; only the others cost a
-    # request of their own.
     assert len(server.details) == 25
     assert len(rates) == 50
 
 
 async def test_a_pool_nothing_answers_for_is_left_out(served) -> None:
-    """It costs that row its APR and no more."""
     _server, api, pools = served(10)
 
     rates = await api.pool_rates(
@@ -205,8 +168,6 @@ async def test_rates_are_not_asked_for_twice(served) -> None:
 
 
 def test_a_pool_is_valued_by_what_it_holds() -> None:
-    """Not by `tvl_usd`. A position is priced by its share of the total,
-    so a wrong total is multiplied by however small the supply is."""
     from curve.api import pool_composition
 
     assert pool_composition(
@@ -215,11 +176,6 @@ def test_a_pool_is_valued_by_what_it_holds() -> None:
 
 
 def test_the_two_ethx_pools_stop_being_worth_thirty_dollars() -> None:
-    """The payload that started this, verbatim from v1 /chains/ethereum.
-
-    Both pools hold a few tens of thousands of wei, one account holds
-    100% of the LP, and the Portfolio page showed $30.03 and $25.11.
-    """
     from curve.api import pool_composition
 
     ethx_wsteth = {
@@ -235,8 +191,6 @@ def test_the_two_ethx_pools_stop_being_worth_thirty_dollars() -> None:
 
 
 def test_a_payload_with_no_reserves_still_gets_a_number() -> None:
-    """`tvl_usd` of unknown provenance beats dropping the pool entirely:
-    it decides only whether the pool is worth scanning."""
     from curve.api import pool_composition
 
     assert pool_composition({"tvl_usd": 1_234.5}) == 1_234.5
@@ -245,8 +199,6 @@ def test_a_payload_with_no_reserves_still_gets_a_number() -> None:
 
 
 def test_a_reserve_that_is_null_counts_as_nothing() -> None:
-    """Curve Lite omits the price where it has none, and `None + float`
-    would take the whole scan down."""
     from curve.api import pool_composition
 
     assert pool_composition({"balances_usd": [10.0, None]}) == 10.0

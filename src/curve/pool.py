@@ -1,22 +1,4 @@
-"""Talking to a pool on-chain, through whatever wallet is connected.
-
-Everything the action panels need -- quotes, allowances, balances, and the
-transactions (exchange, deposit, withdraw, stake, unstake, and the combined
-deposit-and-stake) -- expressed against `wallet.WalletProvider`. That
-provider proxies `eth_call` to the user's own node, so this file needs no
-RPC URL of its own.
-
-The one non-obvious rule in here is `_read`, and it is worth stating up
-front because getting it wrong is silent:
-
-> Calling a function a Curve pool does not implement returns **empty data**,
-> not an error. `decode_uint("0x")` is 0, so a mis-typed pool would quote
-> every swap at zero output instead of failing.
-
-That is not hypothetical -- it is exactly what a StableSwap-signature
-`get_dy` does against a CryptoSwap pool, confirmed against mainnet. So every
-read here rejects empty return data.
-"""
+"""Talking to a pool on-chain, through whatever wallet is connected."""
 
 from __future__ import annotations
 
@@ -39,22 +21,15 @@ from .zaps import Zap, zap_for
 
 #: The two parameters that are spelled two ways: a tricrypto pool holds
 #: several prices and takes an index, twocrypto and the stable factories
-#: hold one and take none. The registry does not say which, so both are
-#: asked -- which costs nothing now that they go in one batch. Index 0 is
-#: the first priced coin, the one a single line of a summary should show.
+#: hold one and take none.
 INDEXED_PARAMETERS = ("price_oracle", "price_scale")
 
 #: Asked in the same batch as the parameters and decoded differently: this
 #: one answers an array, one entry per coin, where every other read here
-#: answers a single word. It rides along rather than costing a round trip
-#: of its own -- but it cannot go in `PARAMETERS`, because `decode_uint`
-#: on a dynamic array returns the *offset*, which is 32, which would be
-#: shown as a rate of 0.000000000000. See `abi.decode_uint_array`.
+#: answers a single word.
 ARRAY_PARAMETERS = ("stored_rates",)
 
-#: How many `reward_tokens(i)` to walk before giving up. Gauges cap this
-#: at eight themselves; the bound is here so a gauge answering nonsense
-#: for `reward_count` costs one panel refresh rather than a hang.
+#: How many `reward_tokens(i)` to walk before giving up.
 MAX_REWARD_TOKENS = 8
 
 
@@ -76,27 +51,13 @@ class PoolContract:
     def __init__(self, provider: WalletProvider, pool: Pool, account: str) -> None:
         self.provider = provider
         self.pool = pool
-        #: Empty when the contract is bound to a public node rather than a
-        #: wallet: quotes work, nothing else does. See `curve.rpc`.
         self.account = account
-        #: The deposit zap for this pool's underlying coins, if there is
-        #: one. None for every pool that is not a factory metapool, which
-        #: is nearly all of them.
         self.zap: Zap | None = zap_for(pool)
-        #: The deposit-and-stake zap for this *chain*, if the pool has a
-        #: gauge to stake into. Unrelated to `zap` above: that one is about
-        #: which coins a deposit may be made in, this one about whether the
-        #: deposit and the stake can share a transaction.
         self.stake_zap: StakeZap | None = stake_zap_for(pool)
 
     @property
     def can_send(self) -> bool:
-        """Is there an account behind this, or only a node?
-
-        A quote needs neither an account nor a signature, so the panels
-        show rates with no wallet connected; everything that moves a token
-        needs both, and asks this first.
-        """
+        """Is there an account behind this, or only a node?"""
         return bool(self.account)
 
     # -- reads ------------------------------------------------------------
@@ -104,23 +65,12 @@ class PoolContract:
     async def _read_data(
         self, to: str, data: str, what: str, subject: str = "The pool"
     ) -> str:
-        """`eth_call` returning raw hex, with the empty-data guard.
-
-        `subject` names whatever was asked, because a read on the
-        underlying route goes to the zap and "the pool did not answer"
-        would point at the wrong contract.
-
-        Undecoded because not everything asked here is a uint256:
-        `stored_rates()` answers an array. The guard is the part both
-        shapes need and is the reason this is one function.
-        """
+        """`eth_call` returning raw hex, with the empty-data guard."""
         try:
             result = await self.provider.call(to, data)
         except RpcError as exc:
             raise PoolCallFailed(f"Could not read {what}: {exc.message}") from exc
         if not result or result in ("0x", "0x0"):
-            # See the module docstring: this is what a wrong signature looks
-            # like, and it must never be mistaken for a legitimate zero.
             raise PoolCallFailed(
                 f"{subject} did not answer {what} — it may not support this action."
             )
@@ -143,16 +93,7 @@ class PoolContract:
         )
 
     def underlying_swap_target(self) -> tuple[str, bool]:
-        """Who performs an underlying swap, and in which index width.
-
-        A StableSwap metapool does it itself: `exchange_underlying` is on
-        the pool, which does the base-pool leg internally, so nothing but
-        the pool is ever approved. A *crypto* metapool has no such
-        function at all -- confirmed against the chain -- and its per-pool
-        zap carries one instead, with `uint256` indices. That zap is then
-        the spender, which is the one place the two routes differ beyond
-        the address.
-        """
+        """Who performs an underlying swap, and in which index width."""
         if self.pool.is_stableswap:
             return self.pool.address, True
         zap = self.zap
@@ -176,21 +117,7 @@ class PoolContract:
         )
 
     async def calc_token_amount(self, amounts: list[int], *, deposit: bool = True) -> int:
-        """Estimate LP tokens minted (or burned) for a set of coin amounts.
-
-        Three spellings exist and the pool answers exactly one:
-
-          * `uint256[N]` plus a flag -- the classic pools;
-          * `uint256[]` plus a flag -- StableSwap-NG, whose amounts are a
-            Vyper `DynArray`;
-          * `uint256[N]` alone -- the oldest CryptoSwap pools.
-
-        The registry says which to expect, and this asks anyway: an
-        unknown factory would otherwise get calldata that reverts. The
-        shape that answers is remembered on the pool, because
-        `add_liquidity` has to send the same one and a transaction gets no
-        second attempt.
-        """
+        """Estimate LP tokens minted (or burned) for a set of coin amounts."""
         if not any(amounts):
             return 0
         expected = self.pool.dynamic_arrays
@@ -225,30 +152,7 @@ class PoolContract:
         )
 
     async def reserves(self, count: int) -> list[int]:
-        """What the pool holds of each coin, in that coin's own units.
-
-        Two spellings, because `balances` is declared `int128` on the old
-        registry pools and `uint256` on everything since -- the same split
-        `encode_total_supply` avoids by reading the LP token instead. This
-        one has no such escape: only the pool knows its reserves.
-
-        Asked because a *balanced* withdrawal is the one action whose
-        result the pool will not quote. There is no `calc_remove_liquidity`
-        anywhere in Curve, and none is needed: `remove_liquidity` pays
-        `balances[i] * amount / totalSupply` and nothing else. Computing
-        that here is not a second implementation of the invariant -- it is
-        the contract's own arithmetic over two numbers read from the
-        contract, which is the rule this file keeps.
-
-        Both spellings for every coin go out in **one** `eth_call` through
-        Multicall3, the same way `parameters` asks its thirteen questions --
-        a three-coin pool is six reads, and sequentially that is six round
-        trips on every keystroke.
-
-        Returns `[]` rather than a partial list if any coin will not
-        answer in either spelling. A gap here would be a withdrawal
-        preview missing a line, which reads as a coin you do not get.
-        """
+        """What the pool holds of each coin, in that coin's own units."""
         plan: list[tuple[str, str]] = []
         for index in range(count):
             plan.append((f"u{index}", abi.encode_indexed_parameter("balances", index)))
@@ -256,9 +160,6 @@ class PoolContract:
         answers = await self._read_many(plan)
         reserves = []
         for index in range(count):
-            # First spelling that answers wins. A pool implements one and
-            # reverts on the other, so there is no case where both come
-            # back and disagree.
             found = answers[index * 2]
             if found is None:
                 found = answers[index * 2 + 1]
@@ -272,24 +173,7 @@ class PoolContract:
         return await self._read(self.pool.address, abi.encode_fee(), "the pool fee")
 
     async def parameters(self) -> Readings:
-        """Every curve parameter this pool will answer, raw and unscaled.
-
-        A pool that does not implement one is the normal case, not a
-        failure: `gamma` on a StableSwap pool, `offpeg_fee_multiplier` on
-        anything but StableSwap-NG. Those are left out rather than
-        reported, so the caller shows what exists.
-
-        Thirteen questions -- ten parameters, a second spelling for the two
-        that have one, and `stored_rates` -- asked in a **single**
-        `eth_call` through Multicall3, which is why `curve.multicall`
-        exists. Sequentially that is thirteen round trips for one panel,
-        and on a public endpoint thirteen chances to be rate-limited.
-
-        Two kinds of answer come back, hence `Readings` rather than a
-        dict: twelve of these are one word each and `stored_rates` is an
-        array. Decoding it as a word would yield the array's offset, 32,
-        which is a perfectly plausible-looking wrong number.
-        """
+        """Every curve parameter this pool will answer, raw and unscaled."""
         plan = _parameter_plan()
         answers = await self._read_many_data(plan)
         found: dict[str, int] = {}
@@ -300,8 +184,6 @@ class PoolContract:
             if key in ARRAY_PARAMETERS:
                 rates = rates or tuple(abi.decode_uint_array(value))
             elif key not in found:
-                # First spelling that answers wins, and the plan lists the
-                # bare form before the indexed one.
                 found[key] = abi.decode_uint(value)
         return Readings(found, rates)
 
@@ -313,19 +195,7 @@ class PoolContract:
         ]
 
     async def _read_many_data(self, plan: list[tuple[str, str]]) -> list[str | None]:
-        """The batch, or one call each where there is no batching.
-
-        Multicall3 is at the same address on every chain that has it, and
-        a chain without it is a normal case -- a Lite deployment on a new
-        chain may well predate it. There is no way to ask whether it is
-        there that is cheaper than trying, and nothing distinguishes "no
-        multicall" from "the batch answered nothing", so an empty answer
-        falls back to asking one at a time.
-
-        Undecoded, because the caller knows which of its questions asked
-        for a word and which for an array; this only knows which ones were
-        answered at all.
-        """
+        """The batch, or one call each where there is no batching."""
         with contextlib.suppress(Exception):
             result = await self.provider.call(
                 MULTICALL3,
@@ -344,36 +214,14 @@ class PoolContract:
             return None
 
     async def _maybe(self, data: str) -> int | None:
-        """One read, where not being implemented is an expected answer.
-
-        `PoolCallFailed` only, deliberately. It is the pool's answer --
-        a revert, or the empty data a Vyper contract returns for a method
-        it does not have -- and "this pool has no `gamma`" is a fact worth
-        recording as absence.
-
-        Any other `WalletError` is not the pool talking, it is that we
-        never reached it: no node known for the chain, no node that
-        answered. Swallowing those to `None` made a dead provider
-        indistinguishable from a pool with no parameters, and the panel
-        said "This pool answered none of them" -- which reads as a fact
-        about the pool -- while the real trouble was that nothing had been
-        asked. That is how the iOS breakage in `USER_AGENT` stayed hidden.
-        So it propagates, and `load_parameters` prints the sentence.
-        """
+        """One read, where not being implemented is an expected answer."""
         try:
             return await self._read(self.pool.address, data, "a pool parameter")
         except PoolCallFailed:
             return None
 
     async def pair_fee(self, i: int, j: int) -> int:
-        """The fee that applies to swapping `i` for `j`.
-
-        StableSwap-NG prices each pair separately and exposes
-        `dynamic_fee`; every other pool has one flat `fee()`. Not having
-        the method looks like a revert on older Vyper and like empty data
-        on newer, and both arrive here as `PoolCallFailed` -- so the
-        fallback covers both without asking what the pool is.
-        """
+        """The fee that applies to swapping `i` for `j`."""
         try:
             return await self._read(
                 self.pool.address, abi.encode_dynamic_fee(i, j), "the pair fee"
@@ -382,26 +230,16 @@ class PoolContract:
             return await self.fee()
 
     async def base_fee(self) -> int:
-        """The base pool's fee, for a deposit that passes through it.
-
-        A zap deposit of an underlying coin is two deposits -- into the
-        base pool, then into the metapool -- and pays both fees. Measured
-        on a fork across the Ethereum metapools, the shortfall against the
-        zap's own quote lands under their sum in every realistic case:
-        0.045% against 0.055% on the 3pool metapools, and exactly zero on
-        the NG ones, whose quote is fee-inclusive.
-        """
+        """The base pool's fee, for a deposit that passes through it."""
         if not self.pool.base_pool:
             return 0
         return await self._read(
             self.pool.base_pool, abi.encode_fee(), "the base pool fee", "The base pool"
         )
 
-    # -- the underlying route ---------------------------------------------
-    #
+    # -- the underlying route ----------------------------------------------
     # Same five operations, addressed to the zap and carrying the pool as
-    # their first argument. The amounts are the *underlying* coins --
-    # `Pool.display_coins` -- rather than the two the contract holds.
+    # their first argument.
 
     def _zap(self) -> Zap:
         if self.zap is None:
@@ -412,11 +250,7 @@ class PoolContract:
         return self.zap
 
     def _zap_pool(self, zap: Zap) -> str | None:
-        """The pool argument, where the zap takes one.
-
-        A per-pool zap does not: it was deployed for this pool alone, and
-        its calldata is what the pool itself would take.
-        """
+        """The pool argument, where the zap takes one."""
         return self.pool.address if zap.pool_arg else None
 
     async def zap_calc_token_amount(
@@ -534,8 +368,7 @@ class PoolContract:
             raise PoolCallFailed(f"Could not read allowance: {exc.message}") from exc
         return abi.decode_uint(result)
 
-    # -- writes -----------------------------------------------------------
-    #
+    # -- writes ------------------------------------------------------------
     # Gas and nonce are deliberately left unset on every transaction: the
     # wallet fills them in and knows the chain better than this app does.
 
@@ -545,19 +378,7 @@ class PoolContract:
         )
 
     async def estimate_gas(self, built: tuple[str, str]) -> int:
-        """What the chain says this transaction would burn.
-
-        The simulation's own figure, which is what the transaction pays
-        for. It is *not* the gas limit the wallet will set: that carries
-        headroom -- qeth reserves half again -- and the headroom is
-        refunded. See `curve.gas`.
-
-        Zero rather than an exception when it cannot be had, and there are
-        two ordinary ways it cannot: a deposit whose token has not been
-        approved yet reverts under simulation exactly as it would on
-        chain, and a public node with no account behind it has no `from`
-        to simulate for. Neither is worth a red line about a fee.
-        """
+        """What the chain says this transaction would burn."""
         if not self.can_send:
             return 0
         to, data = built
@@ -575,23 +396,10 @@ class PoolContract:
 
     # Every write below is split in two: a `build_` that works out where
     # the transaction goes and what its calldata is, and a sender that
-    # does nothing else. The split exists so a panel can ask what an
-    # action *would* cost -- `eth_estimateGas` needs the transaction, and
-    # before this there was no way to hold one without also sending it.
-    #
-    # Nothing may be duplicated across the two. A fee quoted for calldata
-    # assembled a second time is a fee for a different transaction, and it
-    # would agree with the real one right up until a route or a pool type
-    # differed.
+    # does nothing else.
 
     def build_approve(self, token: str, spender: str, amount: int) -> tuple[str, str]:
-        """Approve exactly `amount` rather than an unlimited allowance.
-
-        An infinite approval is one signature cheaper over time, but it
-        leaves the pool able to move the user's whole balance forever. For
-        an app whose point is to demonstrate the flow, the safer default is
-        the honest one.
-        """
+        """Approve exactly `amount` rather than an unlimited allowance."""
         return token, abi.encode_approve(spender, amount)
 
     async def approve(self, token: str, spender: str, amount: int) -> str:
@@ -620,12 +428,7 @@ class PoolContract:
     def build_add_liquidity(
         self, amounts: list[int], min_mint: int
     ) -> tuple[str, str]:
-        """Deposit, in whichever array shape this pool speaks.
-
-        The shape is whatever `calc_token_amount` proved -- the panel
-        always quotes before it sends -- falling back to what the registry
-        implies for a pool nobody has quoted yet.
-        """
+        """Deposit, in whichever array shape this pool speaks."""
         return (
             self.pool.address,
             abi.encode_add_liquidity(
@@ -671,23 +474,7 @@ class PoolContract:
     def build_deposit_and_stake(
         self, amounts: list[int], min_mint: int, *, underlying: bool = False
     ) -> tuple[str, str]:
-        """Deposit and stake in one transaction, through Curve's zap.
-
-        The arguments mirror what the panel already knows: which route is
-        live decides where the coins go, which coin list is sent, and which
-        array shape the inner deposit uses.
-
-        `use_underlying` is always false here, and that is not a shortcut.
-        Curve's own client sets it only for lending pools and old crypto
-        metapools that have *no* deposit zap of their own -- and this app's
-        underlying route is defined by having one, so the flag can never
-        apply. Lending pools' underlying route is not offered here at all.
-
-        The pool argument is separate from the deposit address for the same
-        reason it is in `curve.zaps`: a factory zap serves every metapool on
-        its base pool and has to be told which, while a per-pool zap was
-        deployed for one and takes none.
-        """
+        """Deposit and stake in one transaction, through Curve's zap."""
         zap = stake_zap_for(self.pool)
         if zap is None:
             raise PoolCallFailed(
@@ -743,24 +530,11 @@ class PoolContract:
     async def unstake(self, amount: int) -> str:
         return await self._send(*self.build_unstake(amount))
 
-    # -- claiming ---------------------------------------------------------
-    #
+    # -- claiming ----------------------------------------------------------
     # Two halves that look alike on screen and are nothing alike on chain.
-    # See `curve.rewards`.
 
     async def claimable_crv(self, owner: str | None = None) -> int:
-        """CRV the gauge has recorded for this account.
-
-        Zero for a pool with no gauge, or on a chain with no CRV -- both
-        are ordinary answers, not failures, so this returns 0 rather than
-        raising and letting a panel show an error where the honest answer
-        is "nothing".
-
-        `claimable_tokens` is `nonpayable`, and this calls it anyway: an
-        `eth_call` runs the checkpoint against a simulated state and
-        throws it away. That is the trap the module docstring in
-        `curve.rewards` is about.
-        """
+        """CRV the gauge has recorded for this account."""
         if not self.pool.has_gauge or rewards_for(self.pool) is None:
             return 0
         account = owner or self.account
@@ -775,12 +549,7 @@ class PoolContract:
         return abi.decode_uint(result)
 
     async def reward_tokens(self) -> list[str]:
-        """The incentive tokens this gauge streams, in its own order.
-
-        A gauge that does not implement `reward_count` is an old one with
-        no incentive tokens at all, which is the same outcome as a count
-        of zero -- so the failure is swallowed rather than reported.
-        """
+        """The incentive tokens this gauge streams, in its own order."""
         if not self.pool.has_gauge:
             return []
         try:
@@ -817,16 +586,7 @@ class PoolContract:
         return abi.decode_uint(result)
 
     async def token_meta(self, token: str) -> tuple[str, int]:
-        """`(symbol, decimals)` for a token this app has no entry for.
-
-        Incentive tokens arrive from the gauge as bare addresses, and an
-        amount rendered with the wrong decimals is not slightly wrong, it
-        is wrong by orders of magnitude. Both reads fall back rather than
-        raise -- a token that will not say its symbol is still worth
-        showing -- but the decimals fall back to 18, which is what almost
-        everything is, and the clamp is there because a garbage answer to
-        `decimals()` would otherwise divide by 10**(a very large number).
-        """
+        """`(symbol, decimals)` for a token this app has no entry for."""
         from wallet.erc20 import decode_string, encode_decimals, encode_symbol
 
         symbol = "?"

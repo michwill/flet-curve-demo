@@ -1,28 +1,4 @@
-"""Driving the app through random sequences of what a user can do.
-
-The example-based tests each check one transition. This checks the thing
-those cannot: that no *ordering* of transitions leaves the app broken.
-That distinction is not academic here -- the bug that shipped was
-"switch theme a few times, then hover a row", and every step of it passed
-its own test.
-
-Two pieces make it work:
-
-  * `tests.fake_session.Session` runs Flet's real diff, so controls get
-    frozen exactly as they do behind a browser -- see that module. `flush`
-    is a rule like any other, so Hypothesis decides where the client's
-    round trips land relative to everything else, which is the ordering
-    that mattered;
-  * `fire_handler` picks a control out of the live tree and calls one of
-    its handlers. It knows nothing about which control it found, so it
-    covers handlers that were written after this file and would otherwise
-    never be exercised at all.
-
-The invariants are deliberately about *state*, not about pixels: what the
-theme says must agree with what the controls carry, the route must agree
-with what is on screen, and nothing the app will later assign to may be
-frozen.
-"""
+"""Driving the app through random sequences of what a user can do."""
 
 from __future__ import annotations
 
@@ -93,7 +69,6 @@ class FakeApi:
         pools = [make_pool(i, chain or "ethereum") for i in range(self.count)]
         if search:
             pools = [p for p in pools if search.lower() in p.name.lower()]
-        # Two per page, so paging is reachable in a handful of scrolls.
         start = (page - 1) * 2
         return pools[start : start + 2], len(pools)
 
@@ -110,12 +85,7 @@ class FakeApi:
     async def attach_campaigns(
         self, chain_id: int, chain: str, pools: Any
     ) -> None:
-        """Merkl and the point campaigns, with neither host reachable.
-
-        Which is the shape that matters here: a third-party outage must
-        cost the campaign lines and nothing else, so this leaves every
-        pool exactly as it found it.
-        """
+        """Merkl and the point campaigns, with neither host reachable."""
 
     async def lp_candles(self, *a: Any, **kw: Any) -> list[Any]:
         return []
@@ -125,12 +95,7 @@ class FakeApi:
 
 
 class _NoPublicNodes:
-    """The chainlist directory, with nothing in it.
-
-    Reads then fail the way they do when a chain has no public endpoint,
-    which the panels already handle -- and which is the state to be in
-    here, because the alternative is a test that calls strangers' RPC.
-    """
+    """The chainlist directory, with nothing in it."""
 
     async def endpoints(self, _chain_id: int) -> list[str]:
         return []
@@ -143,8 +108,6 @@ def build_app(session: Session):
     app_module.autoconnect = lambda: False  # never open a wallet
     app = app_module.CurveApp.__new__(app_module.CurveApp)
     app.api = FakeApi()
-    # Everything the constructor sets up before `_build`, minus the wallet
-    # and the network. `_build` itself is the real one.
     app.page = session
     app.wallet = None
     app._route_applied = False
@@ -162,12 +125,10 @@ def build_app(session: Session):
 
 
 #: Handlers a fuzzer must not fire: they would open a wallet, or reach a
-#: network this test has no fake for. Everything else on the tree is fair
-#: game, including handlers added after this file was written.
+#: network this test has no fake for.
 OFF_LIMITS = ("connect", "_wallet_clicked", "_change_wallet", "_disconnect_wallet")
 
-#: Tasks the app queues that the machine will run. The rest (wallet
-#: restore, the desktop window icon) are recorded and dropped.
+#: Tasks the app queues that the machine will run.
 RUNNABLE = ("load_pools", "load_more", "apply_route", "restore_theme", "load", "load_chart")
 
 
@@ -204,11 +165,7 @@ class AppMachine(RuleBasedStateMachine):
         self.loop.run_until_complete(coro)
 
     def pump(self, rounds: int = 4) -> None:
-        """Run the follow-up tasks the app queued, as a loop would.
-
-        Bounded: a task can queue another, and a fixed number of rounds is
-        the difference between draining the queue and chasing it.
-        """
+        """Run the follow-up tasks the app queued, as a loop would."""
         for _ in range(rounds):
             queued, self.session.tasks = self.session.tasks, []
             if not queued:
@@ -268,12 +225,7 @@ class AppMachine(RuleBasedStateMachine):
 
     @rule()
     def reselect_the_current_chain(self) -> None:
-        """Open the picker on the network you are already on, and pick it.
-
-        A dropdown reports a selection, not a change, so this arrives at
-        the handler looking exactly like a real switch. It must do
-        nothing: a pool page open here has to stay open.
-        """
+        """Open the picker on the network you are already on, and pick it."""
         before = self.app._detail
         route = self.session.route
         self.app.chain_picker.value = self.app.chain
@@ -304,12 +256,7 @@ class AppMachine(RuleBasedStateMachine):
 
     @rule(which=st.integers(min_value=0, max_value=200), data=st.sampled_from([True, False, None]))
     def fire_handler(self, which: int, data: Any) -> None:
-        """Poke a handler somewhere in the live tree.
-
-        The point of not choosing by name: this covers controls this file
-        has never heard of, which is where the next bug of this kind will
-        be.
-        """
+        """Poke a handler somewhere in the live tree."""
         found: list[tuple[Any, str]] = []
         handlers(self.session.root, found, set())
         if not found:
@@ -319,9 +266,6 @@ class AppMachine(RuleBasedStateMachine):
         if handler is None:
             return
         result = handler(Event(control=control, data=data))
-        # Some handlers are coroutines. Dropping one would be a warning
-        # and a gap: awaiting it is the point, and with no wallet the
-        # sending paths refuse rather than send.
         if inspect.iscoroutine(result):
             self.run(result)
         self.pump()
@@ -336,11 +280,7 @@ class AppMachine(RuleBasedStateMachine):
 
     @invariant()
     def decorations_agree_with_the_theme(self) -> None:
-        """Everything decided at build time and reassigned on a change.
-
-        These are the ones a theme switch has to carry across, and the
-        ones an ordering bug leaves stale.
-        """
+        """Everything decided at build time and reassigned on a change."""
         chad = theme.is_chad(self.session)
         view = self.app.list_view
         assert (self.app.header.shadow is not None) == chad
@@ -352,12 +292,7 @@ class AppMachine(RuleBasedStateMachine):
 
     @invariant()
     def nothing_the_app_will_write_to_is_frozen(self) -> None:
-        """The bug that shipped, as a property.
-
-        A control the app assigns to after a rebuild must not be one Flet
-        has frozen -- assigning would raise inside an event handler, where
-        there is nothing to catch it.
-        """
+        """The bug that shipped, as a property."""
         view = self.app.list_view
         for control in (
             self.app.header,
@@ -382,7 +317,8 @@ class AppMachine(RuleBasedStateMachine):
     @invariant()
     def the_list_never_shows_a_column_the_chain_cannot_fill(self) -> None:
         """A Lite chain measures no volume, and a blank column is a lie
-        that looks like a zero."""
+        that looks like a zero.
+        """
         view = self.app.list_view
         if view._lite:
             assert not view._sort_cells["volume"].visible
@@ -392,14 +328,12 @@ class AppMachine(RuleBasedStateMachine):
         self.loop.close()
 
 
-# Two profiles. The default keeps this a few seconds inside `check.py`,
-# which is what makes it a test people actually run; `deep` is for when
-# something smells and the machine should be let off the leash:
-#
-#     HYPOTHESIS_PROFILE=deep .venv/bin/python -m pytest tests/test_stateful.py
-#
-# No deadline either way: a single step can rebuild a view and diff the
-# whole tree, and a per-step time limit would flag that as a failure.
+# Two profiles. The default keeps this a few seconds inside `check.py`, which
+# is what makes it a test people actually run; `deep` is for when something
+# smells and the machine should be let off the leash: HYPOTHESIS_PROFILE=deep
+# .venv/bin/python -m pytest tests/test_stateful.py No deadline either way: a
+# single step can rebuild a view and diff the whole tree, and a per-step time
+# limit would flag that as a failure.
 _COMMON = {
     "deadline": None,
     "suppress_health_check": [HealthCheck.too_slow, HealthCheck.filter_too_much],
@@ -414,14 +348,6 @@ TestApp = AppMachine.TestCase
 
 @pytest.mark.parametrize("theme_name", ["light", "dark", "chad"])
 def test_re_making_a_keyed_control_freezes_it(theme_name: str) -> None:
-    """The mechanism the machine above relies on, checked directly.
-
-    It is also the reason the pool list keeps its keys on *slots* that
-    outlive the rows inside them: a frozen control cannot be assigned to,
-    and its images are fetched, arrive and never paint. If Flet ever
-    stops freezing keyed controls this fails, and the stateful tests will
-    have quietly stopped testing the thing they exist for.
-    """
     session = Session()
     app = build_app(session)
     app._set_theme(theme_name, remember=False)
@@ -432,7 +358,6 @@ def test_re_making_a_keyed_control_freezes_it(theme_name: str) -> None:
     session.flush()
     assert not any(hasattr(row, "_frozen") for row in view.rows.controls)
 
-    # Same keys, new objects: what re-making a keyed row does.
     view.rows.controls = [ft.Container(key=f"row-{n}") for n in range(3)]
     session.flush()
 

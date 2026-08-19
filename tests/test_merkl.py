@@ -1,22 +1,4 @@
-"""Merkl: two campaigns per pool, and one of them Curve does not report.
-
-The thing this module exists to get right is that a Merkl campaign pays a
-*token*, and for a Curve pool there are two tokens it could be watching:
-the LP token, which pays whether or not you stake, and the gauge, which
-pays only what is staked into it. Merkl usually runs both. Curve's
-`merkle_apr` is the second one alone -- measured, not inferred: on the
-frxUSD/USP pool v2 said `325.0632316262278`, which is the gauge
-opportunity to the digit, while the one beside it paid `325.1121240372897`
-and is in no Curve field at all.
-
-The other half is points. Merkl types them `POINT`, carries no price for
-them, and therefore quotes `apr: 0` -- so a points campaign is invisible
-in every APR field on both APIs while being the whole reason some pools
-have liquidity. They must survive parsing as a named reward with no rate,
-and must never be summed into anything.
-
-Every payload below is trimmed from a real `/v4/opportunities` response.
-"""
+"""Merkl: two campaigns per pool, and one of them Curve does not report."""
 
 from __future__ import annotations
 
@@ -39,9 +21,7 @@ PIKU = "0x2E4039E8E31475d65DC00293C366FDBfBBC02DC3"
 ORBITAL = "0x10710501778b7FAf9e478f36FaE0B286C028eDE8"
 
 
-#: The wrapper case, from the pyUSD/crvUSD pool. `underlyingTokenId` is
-#: the whole discovery: the campaign is denominated in `ybwcrvUSD` and
-#: pays crvUSD, and Merkl's own UI shows the former.
+#: The wrapper case, from the pyUSD/crvUSD pool.
 YBW_ID = "16745282869799121720"
 CRVUSD_ID = "18369832616504291492"
 CRVUSD = "0xf939E0A03FB07F59A73314E73794Be0E57ac1b4E"
@@ -57,12 +37,7 @@ def opportunity(
     status: str = "LIVE",
     ident: str = "1",
 ) -> dict:
-    """One entry, with the fields this app reads and the ones it must not.
-
-    `tokens` is the trap and is included deliberately: it lists what the
-    *watched* contract holds, which for a Curve pool is the pool's own
-    coins. Reading rewards from there reports USDC as the reward.
-    """
+    """One entry, with the fields this app reads and the ones it must not."""
     return {
         "chainId": 1,
         "type": "ERC20LOGPROCESSOR",
@@ -113,12 +88,6 @@ def rewards_for(pool: str = "", lp_token: str = "", gauge: str = "") -> MerklRew
 
 
 def test_past_campaigns_are_not_live() -> None:
-    """A finished campaign is asked for by the query and dropped here too.
-
-    The request sends `status=LIVE`, so this only bites when the payload
-    comes from somewhere else -- but a campaign that ended paying 900% is
-    exactly the number that would make a pool look worth entering.
-    """
     assert [c.name for c in parse_opportunities(PAYLOAD)] == [
         "Provide liquidity to Curve frxUSD-USP",
         "Stake into the Curve frxUSP gauge",
@@ -127,18 +96,15 @@ def test_past_campaigns_are_not_live() -> None:
 
 
 def test_rewards_come_from_the_breakdowns_not_the_token_list() -> None:
-    """`tokens[]` is what the pool holds; USDC is not the reward here."""
     campaign = parse_opportunities(PAYLOAD)[0]
     assert campaign.tokens == (MerklToken("PIKU", PIKU, points=False),)
 
 
 def test_a_pre_tge_token_is_a_token() -> None:
-    """`PRETGE` is priced, so it has a rate and belongs in the APR."""
     assert not parse_opportunities(PAYLOAD)[0].tokens[0].points
 
 
 def test_points_are_not_a_rate() -> None:
-    """`POINT` carries no price, so no APR, and it must not become 0%."""
     rewards = rewards_for(pool=POINTS_POOL)
     assert rewards.points == (MerklToken("Orbital Points", ORBITAL, points=True),)
     assert rewards.apr == 0.0
@@ -146,41 +112,27 @@ def test_points_are_not_a_rate() -> None:
 
 
 def test_both_sides_of_a_campaign_are_found_and_kept_apart() -> None:
-    """The pool pays unstaked liquidity, the gauge pays staked."""
     rewards = rewards_for(pool=POOL, gauge=GAUGE)
     assert [c.identifier for c in rewards.unstaked] == [POOL]
     assert [c.identifier for c in rewards.staked] == [GAUGE]
 
 
 def test_the_apr_is_the_better_side_not_the_sum() -> None:
-    """Both cannot be earned at once: staking moves the liquidity.
-
-    Summing them would report 650% on a pool paying 325%, and would sort
-    it above pools that genuinely pay more.
-    """
     assert rewards_for(pool=POOL, gauge=GAUGE).apr == 325.1121
 
 
 def test_a_campaign_watching_the_lp_token_is_found() -> None:
-    """An old-registry pool's LP token is a different contract.
-
-    Which is why three addresses are looked up rather than one, and why
-    the pool page runs the lookup again after the detail arrives -- the
-    list endpoint carries no `lp_token_address` at all.
-    """
     rewards = rewards_for(pool="0xnothing", lp_token=POOL)
     assert [c.identifier for c in rewards.unstaked] == [POOL]
 
 
 def test_a_pool_that_is_its_own_lp_token_is_counted_once() -> None:
-    """Every factory pool is this, so a double count would be the rule."""
     rewards = rewards_for(pool=POOL, lp_token=POOL, gauge=GAUGE)
     assert len(rewards.unstaked) == 1
     assert rewards.apr == 325.1121
 
 
 def test_addresses_match_whatever_their_case() -> None:
-    """Merkl checksums its identifiers; Curve's API does not always."""
     rewards = rewards_for(pool=POOL.lower(), gauge=GAUGE.upper())
     assert len(rewards.all) == 2
 
@@ -193,12 +145,6 @@ def test_nothing_found_is_falsy_and_costs_nothing() -> None:
 
 
 def test_near_identical_rates_are_one_row() -> None:
-    """325.1121% and 325.0632% are the same campaign, not two facts.
-
-    The two sides drift apart by however much liquidity happens to be
-    staked at the moment, so a breakdown here would be two lines to the
-    fourth decimal place saying nothing.
-    """
     rewards = rewards_for(pool=POOL, gauge=GAUGE)
     token = rewards.tokens[0]
     assert rewards.sides_for(token) == (("", 325.1121),)
@@ -219,11 +165,6 @@ def test_rates_that_really_differ_get_a_row_each() -> None:
 
 
 def test_one_sided_campaigns_say_which_side() -> None:
-    """The case where guessing costs money.
-
-    A campaign paying only unstaked liquidity is one that staking turns
-    off, and the pool page it appears on has a Stake button.
-    """
     rewards = rewards_for(pool=POOL)
     assert rewards.sides_for(rewards.tokens[0]) == (("unstaked LP only", 325.1121),)
 
@@ -232,7 +173,6 @@ def test_one_sided_campaigns_say_which_side() -> None:
 
 
 def test_the_link_is_to_the_opportunity_id() -> None:
-    """The address-based path 301s to this one, so link straight there."""
     campaign = rewards_for(pool=POOL).all[0]
     assert campaign.url == f"{MERKL_APP}/opportunities/a"
 
@@ -244,19 +184,14 @@ def test_a_campaign_with_no_id_still_links_somewhere() -> None:
 
 
 def test_a_broken_payload_is_no_campaigns_rather_than_a_crash() -> None:
-    """Merkl answering with an error object must cost the lines, not the page."""
     assert parse_opportunities({"detail": "nope"}) == []
     assert parse_opportunities(None) == []
     assert parse_opportunities([{"status": "LIVE"}]) == []  # no identifier
 
 
 # -- wrappers ---------------------------------------------------------------
-#
 # A Merkl wrapper is an ERC-20 with an `onClaim` hook: the campaign is
-# denominated in the wrapper and the claimer receives the underlying. Three
-# of the fourteen tokens paying live Curve campaigns were wrappers when this
-# was written, and Merkl's own UI shows the wrapper symbol, so a pool paying
-# crvUSD advertised `ybwcrvUSD`.
+# denominated in the wrapper and the claimer receives the underlying.
 
 YBW_TOKEN = {
     "id": YBW_ID,
@@ -286,12 +221,9 @@ def wrapped_campaigns() -> list:
 
 
 def test_a_wrapper_is_noticed_before_anything_is_fetched() -> None:
-    """Parsing records the id; resolving it costs a request."""
     token = wrapped_campaigns()[0].tokens[0]
     assert token.underlying_id == CRVUSD_ID
     assert not token.wrapped
-    # Until it resolves, the wrapper's own symbol shows -- which is what
-    # Merkl shows, so the fallback is never wrong, only less helpful.
     assert token.paid_symbol == "ybwcrvUSD"
     assert token.paid_address == YBWCRVUSD
 
@@ -304,18 +236,11 @@ def test_resolving_a_wrapper_names_what_actually_arrives() -> None:
     token = resolved[0].tokens[0]
     assert token.wrapped
     assert token.paid_symbol == "crvUSD"
-    # And whose logo to draw: curve-assets has crvUSD and not the wrapper.
     assert token.paid_address == CRVUSD
-    # The wrapper is not lost -- Merkl's own page still calls it this.
     assert token.symbol == "ybwcrvUSD"
 
 
 def test_a_token_pointing_at_itself_is_not_a_wrapper() -> None:
-    """`WFRAX` and `tGBP` both carry `underlyingTokenId` set to their own id.
-
-    Following that prints "WFRAX pays WFRAX", and worse, makes the real
-    wrappers indistinguishable from the rest in code.
-    """
     itself = {**YBW_TOKEN, "id": YBW_ID, "underlyingTokenId": YBW_ID}
     token = parse_opportunities([opportunity(POOL, "x", 1.0, itself)])[0].tokens[0]
     assert token.underlying_id == ""
@@ -323,13 +248,11 @@ def test_a_token_pointing_at_itself_is_not_a_wrapper() -> None:
 
 
 def test_an_unresolved_wrapper_is_left_as_it_was() -> None:
-    """A lookup that did not come back costs the nicer name and no more."""
     resolved = with_underlying(wrapped_campaigns(), {})
     assert resolved[0].tokens[0].paid_symbol == "ybwcrvUSD"
 
 
 def test_a_wrapped_reward_still_carries_its_rate() -> None:
-    """The APR belongs to the campaign, not to which token names it."""
     index = by_identifier(with_underlying(wrapped_campaigns(), parse_tokens([CRVUSD_TOKEN])))
     rewards = split(index, pool=POOL)
     assert rewards.apr == 0.2
@@ -337,13 +260,6 @@ def test_a_wrapped_reward_still_carries_its_rate() -> None:
 
 
 def test_a_reward_type_nobody_has_seen_is_treated_as_points() -> None:
-    """Unpriced beats a rate invented from a type this app cannot read.
-
-    Merkl has added types before -- `PRETGE` is one -- and the failure
-    modes are not symmetrical: an unknown type shown as a named reward is
-    merely incomplete, while one folded into an APR is a wrong number in
-    a column of right ones.
-    """
     exotic = {"symbol": "???", "address": "0x1", "type": "SOMETHING_NEW"}
     campaign = parse_opportunities([opportunity(POOL, "New", 5.0, exotic)])[0]
     assert campaign.tokens[0].points

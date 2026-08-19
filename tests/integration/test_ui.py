@@ -1,37 +1,4 @@
-"""End-to-end UI tests driven by Flet's own integration-testing framework.
-
-These are the real thing: `flet_app` starts the app and `tester` finds
-controls, taps them and types into them. That covers layout, hit-testing and
-paint -- exactly what the constructor tests in `tests/test_views.py` cannot
-reach, and where every bug in this project so far has actually lived:
-
-  * a `TextButton` column heading that hovered but never fired `on_click`;
-  * `ft.Tab(content=…)`, which no longer exists in 0.86, blowing up only
-    when a pool page was opened.
-
-Marked `flet_ui` and excluded from the default run, because unlike
-everything else here they need a Flutter test host. `flet-cli` downloads and
-provisions one -- including the Flutter SDK itself, to `~/flutter/` -- so no
-pre-installed SDK is required, but budget ~5 minutes for the first run
-against ~25s per test warm:
-
-    .venv/bin/python -m pytest tests/integration -m flet_ui
-
-Two limits worth knowing before adding to this file:
-
-  * In device mode (the default) `flet_app.tester` is a `RemoteTester`,
-    whose API is a subset of `Tester`: find/tap/enter_text/screenshot are
-    there, **`drag` is not**. So scrolling cannot be driven from here, and
-    the scroll-to-load-a-page trigger is covered by
-    `tests/test_views.py::test_scroll_near_the_end_is_what_triggers_a_page`
-    instead.
-  * `pump_and_settle` returns as soon as animations stop, which is long
-    before a network call answers. Every wait below is therefore a polling
-    loop, not a single settle.
-
-The app reads the live Curve API, so a failure here can also mean the API is
-unreachable rather than the UI being wrong.
-"""
+"""End-to-end UI tests driven by Flet's own integration-testing framework."""
 
 from __future__ import annotations
 
@@ -74,13 +41,9 @@ async def wait_for_pools(tester):
 
 
 async def test_app_starts_and_lists_pools(flet_app) -> None:
-    """The list paints with real data from the API."""
     tester = flet_app.tester
     await tester.pump_and_settle()
 
-    # The chrome renders before any data arrives. Keyed rather than found
-    # by text, because the brand is the Curve mark when the compiled assets
-    # are present and the wordmark when they are not.
     assert (await tester.find_by_key("brand")).count == 1
 
     assert (await wait_for_pools(tester)).count >= 1, "the pool count never appeared"
@@ -88,32 +51,16 @@ async def test_app_starts_and_lists_pools(flet_app) -> None:
 
 
 async def test_the_list_opens_on_one_page_of_fifty(flet_app) -> None:
-    """The paging contract, visible in the header: v2 caps a page at 50.
-
-    Asserted on the header rather than by counting rows: `ListView`
-    virtualises, so only the handful of rows currently on screen exist in
-    the widget tree and `find_by_key("pool-row-40")` finds nothing even
-    though the pool is loaded.
-    """
     tester = flet_app.tester
     first = await wait_for(
         tester, lambda: tester.find_by_text_containing(FIRST_PAGE_PATTERN)
     )
     assert first.count == 1
-    # The top row is built; a row far down the page is not, being off screen.
     assert (await tester.find_by_key("pool-row-0")).count == 1
     assert (await tester.find_by_key("pool-row-49")).count == 0
 
 
 async def test_the_list_offers_a_way_to_sort(flet_app) -> None:
-    """Column headings on a wide window, a dropdown on a narrow one.
-
-    The test surface is well under the 760px card breakpoint, so this suite
-    exercises the *phone* layout -- which is worth knowing, and is why this
-    asserts on either control rather than on the headings. The breakpoints
-    themselves are covered exhaustively in `tests/test_responsive.py`,
-    where no window is needed at all.
-    """
     tester = flet_app.tester
     await wait_for_pools(tester)
     headings = (await tester.find_by_text("Volume")).count
@@ -122,12 +69,6 @@ async def test_the_list_offers_a_way_to_sort(flet_app) -> None:
 
 
 async def test_searching_asks_the_server_and_narrows_the_list(flet_app) -> None:
-    """Typing resets the feed and re-queries; it does not filter in memory.
-
-    "steth" matches 14 pools above the TVL floor, so the header must stop
-    saying "50 of …" -- a client-side filter over the 50 rows already
-    loaded could never produce that.
-    """
     tester = flet_app.tester
     assert (
         await wait_for(tester, lambda: tester.find_by_text_containing(FIRST_PAGE_PATTERN))
@@ -142,18 +83,11 @@ async def test_searching_asks_the_server_and_narrows_the_list(flet_app) -> None:
     )
     assert remaining.count == 0, "the search never reached the server"
 
-    # A narrowed but non-empty list.
     assert (await wait_for_pools(tester)).count >= 1
     assert (await tester.find_by_key("pool-row-0")).count == 1
 
 
 async def test_sorting_by_tvl_reloads_the_list(flet_app) -> None:
-    """Tapping a heading resets the feed and reloads from page 1.
-
-    The heading is a `Container` with `on_click` rather than a
-    `TextButton`, because the latter hovered but never fired in a published
-    build -- the kind of thing only a test at this level catches.
-    """
     tester = flet_app.tester
     await wait_for_pools(tester)
 
@@ -166,11 +100,6 @@ async def test_sorting_by_tvl_reloads_the_list(flet_app) -> None:
 
 
 async def test_opening_a_pool_shows_the_action_panel(flet_app) -> None:
-    """Tapping a row opens the detail page with all four action tabs.
-
-    This is the path `ft.Tab(content=…)` broke: the list rendered perfectly
-    and the app only died on the second click.
-    """
     tester = flet_app.tester
     await wait_for_pools(tester)
 
@@ -183,33 +112,17 @@ async def test_opening_a_pool_shows_the_action_panel(flet_app) -> None:
         found = await wait_for(tester, lambda label=label: tester.find_by_text(label))
         assert found.count >= 1, f"{label} tab missing from the detail page"
 
-    # The chart's series picker and its candle-size picker are both there.
     assert (
         await wait_for(tester, lambda: tester.find_by_text_containing("LP token"))
     ).count >= 1
     assert (await tester.find_by_key("candle-size")).count == 1
 
-    # Let the chart request finish before teardown.
     await wait_until_gone(tester, lambda: tester.find_by_text("Loading…"))
 
-    # Let the chart request finish before the fixture tears the app down;
-    # otherwise the Flutter process is killed mid-request and teardown errors.
     await wait_until_gone(tester, lambda: tester.find_by_text("Loading…"))
 
 
 async def test_the_chart_receives_candles(flet_app) -> None:
-    """The chart gets real data: the caption reports the window's change.
-
-    That caption is only produced once at least two candles have arrived,
-    so it is a proxy for "the chart has a series in it".
-
-    What this does *not* prove is that the tooltip renders on hover.
-    `find_by_key` does not reach inside a `flet-charts` control, and
-    synthetic pointer events do not reach Flutter's hover hit-testing from
-    Chrome DevTools either, so the interactivity is taken on the control's
-    documented behaviour plus the unit test that every spot carries a
-    tooltip string.
-    """
     tester = flet_app.tester
     await wait_for_pools(tester)
     await tester.tap(await tester.find_by_key("pool-row-0"))

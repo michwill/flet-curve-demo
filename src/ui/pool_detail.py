@@ -1,10 +1,4 @@
-"""One pool: its price history, what is in it, and what you can do to it.
-
-Laid out like Curve's own pool page because the arrangement is genuinely
-good -- chart and composition on the left, a single action panel pinned on
-the right -- and because a side-by-side comparison is the point of building
-an alternative UI at all.
-"""
+"""One pool: its price history, what is in it, and what you can do to it."""
 
 from __future__ import annotations
 
@@ -38,20 +32,13 @@ from .pool_list import POINTS_ICON
 from .responsive import Layout, layout_for
 from .typography import BODY, LABEL, METRIC, SMALL, TITLE, TITLE_NARROW
 
-#: What the fold says while it is reading.
-#:
-#: Not "Reading them from the pool...", which is what it said and which
-#: has no antecedent: the fold's title is above it and out of the reader's
-#: eye by the time the words appear, so "them" is a pronoun for nothing.
+#: What the fold says while it is reading. Not "Reading them from the
+#: pool...", which is what it said and which has no antecedent: the fold's
+#: title is above it and out of the reader's eye by the time the words
+#: appear, so "them" is a pronoun for nothing.
 READING = "Reading pool parameters…"
 
 #: How long the whole batch gets before the panel gives up on it.
-#:
-#: Generous, because it is a backstop rather than the mechanism: with
-#: `curve.rpc.READ_DEADLINE` doing its job the read is a second or two,
-#: and anything past this is a transport nobody has thought of yet. What
-#: it buys is that the panel always resolves into *something* -- values,
-#: or a sentence saying why not -- instead of reading forever.
 PARAMETER_DEADLINE = 45.0
 
 LP_SERIES = "__lp__"
@@ -69,20 +56,13 @@ def _metric(label: str, value: str) -> ft.Control:
     )
 
 
-#: The parameter list is indented under its heading, not against the
-#: chart's left edge, so the fold reads as one block.
+#: The parameter list is indented under its heading, not against the chart's
+#: left edge, so the fold reads as one block.
 PARAMETER_PADDING = ft.Padding.only(left=6, bottom=4)
 
 
 def _expanded(event: AnyEvent) -> bool:
-    """Did an `ExpansionTile` just open, from its `on_change` event.
-
-    Flet documents `data` as a bool here and sends one. The string branch
-    is for the version that does not: `bool("false")` is True, so reading
-    it naively would make a *closing* fold trigger the read the whole
-    point of this was to defer -- silently, and only on the surface whose
-    Flet is older.
-    """
+    """Did an `ExpansionTile` just open, from its `on_change` event."""
     data = event.data
     return data if isinstance(data, bool) else str(data).strip().lower() == "true"
 
@@ -98,18 +78,15 @@ class PoolDetailView(ft.Column):
         on_back: Callable[[], None],
         explorer: str = "",
     ) -> None:
-        # `ft.Column` exposes `page` as a read-only property, so the reference
-        # kept for `run_task`/`update` needs a name of its own.
+        # `ft.Column` exposes `page` as a read-only property, so the
+        # reference kept for `run_task`/`update` needs a name of its
+        # own.
         self._page = page
         self.api = api
         self.pool = pool
         self.get_contract = get_contract
-        #: The chain's own explorer, where the chain publishes one. Lite
-        #: chains do; the rest come from a table. See `curve.explorers`.
         self._explorer = explorer
 
-        # Set before anything is built: the address rows ask it whether
-        # they have room to print 42 characters.
         self._layout = layout_for(2000.0)
 
         self.chart = CandleChart(height=340, on_capacity_change=self._chart_resized)
@@ -124,40 +101,17 @@ class PoolDetailView(ft.Column):
             width=220,
             on_select=self._series_changed,
         )
-        # Filled in by `_load_detail`: the v2 list endpoint carries no
-        # reserves, no per-coin prices and no LP token, so there is nothing
-        # to draw here until the detail request lands.
         self._composition_slot = ft.Container(
             ft.Text("Loading pool details…", size=SMALL, color=ft.Colors.ON_SURFACE_VARIANT)
         )
-        #: Whether that slot holds a table yet, rather than the line above
-        #: or an error. A width change re-lays the table out; it must not
-        #: turn "loading" into an empty one.
         self._composition_ready = False
         self._yields_slot = ft.Container(self._yields())
-        # Empty for most pools, and empty until the campaign lookups have
-        # landed for the rest -- they ride alongside the pool list rather
-        # than blocking it, so a deep link can paint before they arrive.
         self._campaigns_slot = ft.Container(self._campaigns())
-        # Read from the pool itself, so it cannot be built until the
-        # provider has answered. The rows are replaced in place -- this
-        # container outlives the reads and is never re-made, which is what
-        # keeps it assignable (see `theme.rows_theme` for what happens to
-        # controls that are not).
         self._parameter_rows = ft.Column(spacing=2)
-        #: Whether the fold is open, and whether its read has been made.
-        #: The first survives the rebuild in `set_layout`; the second is
-        #: what keeps the chain to one batch per page. Cleared again if
-        #: the read did not land, so connecting a wallet and opening the
-        #: fold a second time retries rather than showing the old excuse.
         self._parameters_open = False
         self._parameters_asked = False
         self._parameters_slot = ft.Container(self._parameters())
 
-        # A dropdown rather than a segmented button: nine candle sizes do
-        # not fit as buttons, and it is the control Curve uses for the same
-        # job. You pick the candle, not the window -- the window follows
-        # from it (200 candles of whatever size).
         self.size_picker = ft.Dropdown(
             key="candle-size",
             options=[
@@ -170,11 +124,6 @@ class PoolDetailView(ft.Column):
             on_select=self._size_changed,
         )
 
-        # A Curve Lite chain has no OHLC endpoint at all -- no service
-        # indexes its trades -- so the chart and its two pickers are not
-        # merely empty there, they have nothing to ask. One line stands in
-        # their place; everything below it works exactly as it does
-        # anywhere else, because the rest comes from the pool itself.
         chart_block: list[ft.Control] = (
             [
                 ft.Container(
@@ -209,14 +158,9 @@ class PoolDetailView(ft.Column):
             spacing=10,
         )
         self._right = ft.Container(self._actions())
-        # Side by side on a wide window, stacked on a narrow one. Rebuilt by
-        # `set_layout` rather than being two separate trees, so the chart and
-        # the action panel keep their state across a resize.
         self._body = ft.Container()
 
         self._on_back = on_back
-        #: Rebuilt when the page crosses into card widths -- the name needs
-        #: its own line there, and a Row cannot be made into a Column.
         self._header_slot = ft.Container(self._header())
 
         super().__init__(
@@ -231,12 +175,7 @@ class PoolDetailView(ft.Column):
         was = self._layout
         self._layout = layout
         if layout.cards != was.cards:
-            # Addresses are written in full where there is room and
-            # shortened where there is not, so this crossing is the one
-            # that re-makes them. The rows of values are the same object
-            # either way and keep whatever has been read.
             self._parameters_slot.content = self._parameters()
-            # And the two that lay out by width rather than by content.
             self._header_slot.content = self._header()
             if self._composition_ready:
                 self._composition_slot.content = self._composition()
@@ -247,35 +186,17 @@ class PoolDetailView(ft.Column):
         safe_update(self)
 
     def _arrange(self) -> None:
-        """Chart beside the actions, or above them when there is no room.
-
-        Neither arrangement scrolls: the window does -- see `CurveApp.body`
-        -- and this page is laid out to whatever height it needs inside it.
-        That is also why nothing here may be `expand` on the vertical: a
-        flex child in unbounded height is a Flutter layout error rather
-        than a cosmetic problem, and it is what broke this page at phone
-        widths before it stopped scrolling for itself.
-
-        The action panel is as tall as what is in it, in both
-        arrangements: nothing on this page is given a height. See
-        `_actions` for why not.
-        """
+        """Chart beside the actions, or above them when there is no room."""
         self.scroll = None
         self._left.scroll = None
         self._left.expand = False
         self._body.expand = False
         if self._layout.stacked:
-            # In a Column `expand` is the *vertical* flex, and there is no
-            # vertical to divide: the page is as tall as it needs to be.
             self._right.expand = False
             self._body.content = ft.Column(
                 [self._left, self._right], spacing=16, tight=True
             )
         else:
-            # In a Row it is the horizontal one, and dropping it is what
-            # collapsed this page: the panel took its natural width, the
-            # chart column got what was left, which was nothing, and the
-            # composition set itself one letter per line.
             self._right.expand = 1
             self._body.content = ft.Row(
                 [ft.Container(self._left, expand=2), self._right],
@@ -286,16 +207,7 @@ class PoolDetailView(ft.Column):
     # -- header -----------------------------------------------------------
 
     def _header(self) -> ft.Control:
-        """Back, marks, name and the two figures -- on one line or three.
-
-        On a phone it has to be three. Everything here has a width of its
-        own except the name, so the name is what gives: back button, marks
-        and two figures come to about 370px, which on a 390px screen left
-        the title a column one character wide and Flutter did as it was
-        told -- `DAI/USDC/USDT` set vertically, one letter per line. That
-        is the whole bug, and no font size fixes it. The name gets its own
-        line instead, and the figures theirs.
-        """
+        """Back, marks, name and the two figures -- on one line or three."""
         title = ft.Column(
             [
                 ft.Text(
@@ -327,8 +239,6 @@ class PoolDetailView(ft.Column):
                     vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     spacing=10,
                 ),
-                # Under the name, and aligned with it rather than with the
-                # back button, which is furniture.
                 ft.Row(stats, spacing=24, wrap=True),
             ],
             spacing=8,
@@ -341,8 +251,8 @@ class PoolDetailView(ft.Column):
         return pairs
 
     def _stat(self, label: str, value: str) -> ft.Control:
-        # Right-aligned at the end of a wide row, left-aligned when they
-        # have their own line under the name.
+        # Right-aligned at the end of a wide row, left-aligned when
+        # they have their own line under the name.
         end = not self._layout.cards
         return ft.Column(
             [
@@ -358,15 +268,7 @@ class PoolDetailView(ft.Column):
     # -- left column ------------------------------------------------------
 
     def _composition(self) -> ft.Control:
-        """What is in the pool, as plain Rows rather than a `DataTable`.
-
-        `DataTable` sizes itself from its content and does not shrink, so on
-        a narrow window it overflowed its parent -- which Flutter raises as a
-        widget exception, failing the integration tests outright rather than
-        just looking wrong. Everything else in this app lays out with
-        `Row` + fixed-width `Container` cells, which flex down cleanly; this
-        now does the same.
-        """
+        """What is in the pool, as plain Rows rather than a `DataTable`."""
         total = sum(c.balance_usd for c in self.pool.pool_coins) or 1.0
 
         def cell(control: ft.Control, width: int | None = None, end: bool = False) -> ft.Control:
@@ -391,8 +293,6 @@ class PoolDetailView(ft.Column):
         )
 
         rows: list[ft.Control] = [] if self._layout.cards else [header]
-        # The contract's coins: `balances` lines up with these, and a
-        # metapool's decomposed extras have no balance of their own.
         for coin in self.pool.pool_coins:
             if self._layout.cards:
                 rows.append(self._composition_card(coin, total))
@@ -458,14 +358,7 @@ class PoolDetailView(ft.Column):
         )
 
     def _composition_card(self, coin, total: float) -> ft.Control:
-        """One asset on two lines instead of four columns.
-
-        Price, share and balance come to 340px of fixed width, which on a
-        phone leaves the asset column about ten pixels -- so the symbol set
-        itself one letter per line, exactly as the title did. The pool list
-        and the portfolio already answer this with cards; this is the same
-        answer in the same shape.
-        """
+        """One asset on two lines instead of four columns."""
         return ft.Container(
             ft.Column(
                 [
@@ -518,9 +411,8 @@ class PoolDetailView(ft.Column):
         )
 
     def _yields(self) -> ft.Control:
-        # Base vAPY is fees earned, which needs somebody counting trades.
-        # On a Lite chain nobody is, so the row would be a nought standing
-        # for an unknown -- and the total below it would inherit that.
+        # Base vAPY is fees earned, which needs somebody counting
+        # trades.
         lines: list[ft.Control] = (
             []
             if self.pool.lite
@@ -552,25 +444,10 @@ class PoolDetailView(ft.Column):
         )
 
     def _merkl_rows(self) -> list[ft.Control]:
-        """What Merkl pays, with the two sides of a campaign named.
-
-        The list column prints the better of the two rates and leaves it
-        there, because it has 190 pixels. Here there is room to say which
-        side is which, and it is worth saying: a campaign paying only
-        unstaked liquidity is one that staking switches off, and this is
-        the page with a Stake button on it.
-
-        Points get no row at all. They have no rate, so a row here would
-        be a label against a blank in a column of percentages; they are
-        named in the campaigns block below instead, which is also where
-        the link to go and count them lives.
-        """
+        """What Merkl pays, with the two sides of a campaign named."""
         rows: list[ft.Control] = []
         for token in self.pool.merkl.tokens:
             for qualifier, apr in self.pool.merkl.sides_for(token):
-                # What arrives, not what the campaign is denominated in --
-                # see `curve.merkl.MerklToken`. The wrapper is named in
-                # the campaigns block below rather than lost.
                 label = f"{token.paid_symbol} via Merkl"
                 rows.append(
                     self._yield_row(
@@ -578,26 +455,13 @@ class PoolDetailView(ft.Column):
                     )
                 )
         if not self.pool.merkl and self.pool.merkle_apr > 0:
-            # Curve's own figure, for a chain Merkl does not cover or a
-            # request that did not come back. It names no token, which is
-            # the whole reason the rows above exist.
             rows.append(self._yield_row("Merkle campaign", percent(self.pool.merkle_apr)))
         return rows
 
     # -- campaigns --------------------------------------------------------
 
     def _campaigns(self) -> ft.Control:
-        """Where to go for the rewards this app cannot hand over.
-
-        Two kinds end up here and both need a door rather than a button.
-        A Merkl campaign is claimed on Merkl -- it is a merkle drop, not a
-        gauge, so `claim_rewards()` knows nothing about it -- and points
-        are not claimable anywhere by anybody; what you can do with points
-        is see how many you have, on whoever's dashboard is counting them.
-
-        So every row here is a link out, and the section disappears
-        entirely when there is nothing to link to, which is most pools.
-        """
+        """Where to go for the rewards this app cannot hand over."""
         rows: list[ft.Control] = []
         for campaign in self.pool.merkl.all:
             token = next(iter(campaign.tokens), None)
@@ -649,13 +513,7 @@ class PoolDetailView(ft.Column):
         )
 
     def _campaign_detail(self, campaign: MerklCampaign) -> str:
-        """The second line of a Merkl row: what it pays, and how fast.
-
-        This is the one place the wrapper is written out. Merkl's own page
-        -- the one the link goes to -- will say `ybwcrvUSD` where this app
-        says crvUSD, so the sentence has to hold both or the two cannot be
-        reconciled by whoever follows the link.
-        """
+        """The second line of a Merkl row: what it pays, and how fast."""
         tokens = ", ".join(token.paid_symbol for token in campaign.tokens) or "rewards"
         wrapped = [t for t in campaign.tokens if t.wrapped]
         via = (
@@ -672,12 +530,7 @@ class PoolDetailView(ft.Column):
     def _campaign_row(
         self, *, mark: ft.Control, title: str, detail: str, url: str, link: str
     ) -> ft.Control:
-        """One campaign: what it is, and the way out to it.
-
-        `ft.Url` with a blank target rather than a bare string, for the
-        same reason the explorer links use one -- this app is a page
-        somebody was in the middle of.
-        """
+        """One campaign: what it is, and the way out to it."""
         return ft.Row(
             [
                 mark,
@@ -706,23 +559,7 @@ class PoolDetailView(ft.Column):
     # -- parameters -------------------------------------------------------
 
     def _parameters(self) -> ft.Control:
-        """The addresses and the curve's own numbers, folded away.
-
-        Collapsed by default: this is reference material, wanted rarely
-        and precisely when it is wanted. It replaces the line of facts
-        that used to sit under the yields, which spent two thirds of its
-        width on the registry name and the word "plain" -- neither of
-        which anybody can act on.
-
-        And because it is wanted rarely, it is *read* rarely: opening the
-        fold is what asks the chain, not landing on the page. The
-        addresses come from the API and need no node, so a collapsed fold
-        costs nothing at all -- see `_expanded`.
-
-        `expanded` is passed through rather than left to default, because
-        this control is re-made when the layout crosses into card widths
-        and a fold the reader had open would otherwise shut itself.
-        """
+        """The addresses and the curve's own numbers, folded away."""
         rows: list[ft.Control] = [
             self._address_row("Pool", self.pool.address),
         ]
@@ -741,13 +578,7 @@ class PoolDetailView(ft.Column):
         )
 
     def _parameters_toggled(self, event: ft.Event[ft.ExpansionTile]) -> None:
-        """Read the pool the first time somebody opens the fold.
-
-        Thirteen `eth_call`s ride in that batch, and before this they went
-        out for every pool page anybody landed on, opened or not -- on a
-        public endpoint, where the budget is somebody else's goodwill.
-        Almost nobody opens this fold, so almost all of it was waste.
-        """
+        """Read the pool the first time somebody opens the fold."""
         self._parameters_open = _expanded(event)
         if self._parameters_open and not self._parameters_asked:
             self._parameters_asked = True
@@ -756,14 +587,7 @@ class PoolDetailView(ft.Column):
             self._page.run_task(self.load_parameters)
 
     def _address_row(self, label: str, address: str) -> ft.Control:
-        """An address, in full where there is room, with a copy and a link.
-
-        Shortened only on a narrow layout. On a phone the full 42
-        characters wrap onto three lines and push the row off the screen;
-        on anything wider they are what someone came here for -- an
-        address you have to hover or click to read is not much use for
-        checking a contract.
-        """
+        """An address, in full where there is room, with a copy and a link."""
         shown = short_address(address) if self._layout.cards else address
         url = explorers.address_url(self.pool.chain_id, address, self._explorer)
         return ft.Row(
@@ -786,8 +610,6 @@ class PoolDetailView(ft.Column):
                     ft.Icons.OPEN_IN_NEW,
                     icon_size=14,
                     tooltip="Open in the explorer",
-                    # `Url` rather than a bare string so it opens in a new
-                    # tab: this app is a page you were in the middle of.
                     url=ft.Url(url, target=ft.UrlTarget.BLANK) if url else None,
                 ),
             ],
@@ -803,18 +625,7 @@ class PoolDetailView(ft.Column):
             await ft.Clipboard().set(value)
 
     async def load_parameters(self) -> None:
-        """Ask the pool what shape it is.
-
-        Eleven reads, and a pool answers between three and ten of them --
-        which ones is the pool's own answer to what family it belongs to,
-        and is not inferable from the registry name. See
-        `curve.parameters`.
-
-        Called when the fold is opened, not when the page loads. With no
-        wallet these go through a public node, which may not exist for the
-        chain; the section then keeps the addresses and says so, because
-        they are the half that needs no chain at all.
-        """
+        """Ask the pool what shape it is."""
         contract = self.get_contract()
         if contract is None:
             self._unreadable("Connect a wallet to read them.")
@@ -822,27 +633,14 @@ class PoolDetailView(ft.Column):
         try:
             readings = await asyncio.wait_for(contract.parameters(), PARAMETER_DEADLINE)
         except TimeoutError:
-            # The backstop, not the mechanism. `curve.rpc.READ_DEADLINE`
-            # is what keeps one unreachable source from holding the batch,
-            # and this is here because the panel had no way at all to stop
-            # waiting: a wallet whose node had gone away left it reading
-            # for twenty-eight minutes, which every reader read as broken
-            # rather than as slow. Whatever the next such source turns out
-            # to be, this says so and lets them try again.
             self._unreadable("The chain did not answer in time. Try again.")
             return
         except WalletError as exc:
             self._unreadable(str(exc))
             return
         except Exception as exc:
-            # Anything a transport can raise that is not one of ours. The
-            # alternative is the task dying silently and the fold sitting
-            # on "Reading pool parameters..." for the rest of the session.
             self._unreadable(f"They could not be read: {exc}")
             return
-        # `pool_coins`, not `coins`: a metapool's rates are its own two,
-        # and `rate_rows` refuses the whole list rather than pairing a
-        # rate with another coin's decimals.
         coins = [(coin.symbol, coin.decimals) for coin in self.pool.pool_coins]
         shown = parameters.rows(readings.values) + parameters.rate_rows(readings.rates, coins)
         self._parameter_rows.controls = [
@@ -851,13 +649,7 @@ class PoolDetailView(ft.Column):
         safe_update(self._parameter_rows)
 
     def _unreadable(self, why: str) -> None:
-        """Say why, and let the next open try again.
-
-        Both cases this serves are about the *provider*, not the pool: no
-        wallet yet, or no node that answered. Both can be fixed from
-        outside this page while it is still on screen, and a reader who
-        connects a wallet and reopens the fold means "try now".
-        """
+        """Say why, and let the next open try again."""
         self._parameters_asked = False
         self._parameter_rows.controls = [self._unread(why)]
         safe_update(self._parameter_rows)
@@ -891,36 +683,12 @@ class PoolDetailView(ft.Column):
     # -- right column -----------------------------------------------------
 
     def _actions(self) -> ft.Control:
-        """The four panels, with a tab bar built by hand.
-
-        **Nothing here is given a height.** Flet's `Tabs`/`TabBar`/
-        `TabBarView` set needs one: `TabBarView` takes its height from the
-        box around it and cannot size to its content, so the panel had to
-        be told how tall it was -- a number worked out from how many coins
-        a pool has and how tall a row measures *here*. On a phone, with
-        another font and another OS, the content came out taller than the
-        number and Flutter drew the Deposit button straight over the
-        slippage box.
-
-        A guessed size cannot be made right by calibrating it; it can only
-        be removed. So the bar is a Row of containers, the body is one
-        container holding whichever tab is showing, and every height in the
-        panel comes from what is in it.
-
-        Containers rather than buttons for the same reason the nav links
-        and the sortable column headings are: a `TextButton` here hovers
-        correctly and never fires its handler in the published web build.
-        And the labels wrap rather than scroll, so a wider font takes a
-        second line instead of a scrollbar.
-        """
+        """The four panels, with a tab bar built by hand."""
         self.tabs = [
             DepositTab(self._page, self.pool, self.get_contract, self.refresh_actions),
             WithdrawTab(self._page, self.pool, self.get_contract, self.refresh_actions),
             SwapTab(self._page, self.pool, self.get_contract, self.refresh_actions),
             StakeTab(self._page, self.pool, self.get_contract, self.refresh_actions),
-            # Last, and conditional like Stake: a claim is the tail of a
-            # position rather than a way into one, and the tab is only
-            # there when something is actually owed.
             ClaimTab(self._page, self.pool, self.get_contract, self.refresh_actions),
         ]
         self._tab = 0
@@ -935,25 +703,13 @@ class PoolDetailView(ft.Column):
             border=ft.Border.all(1, ft.Colors.OUTLINE_VARIANT),
             border_radius=10,
             clip_behavior=ft.ClipBehavior.HARD_EDGE,
-            # Chad only, and hard-edged: see `ui/theme.py`. Everywhere
-            # else this is None and Material's own flatness stands.
             shadow=theme.panel_shadow(self._page),
         )
 
     def _sync_tabs(self) -> None:
-        """Draw the bar for the tab that is showing, and its panel.
-
-        Only the tabs that have something to act on: `Stake` takes itself
-        out of the bar when the wallet holds no LP and the gauge holds none
-        either. Indices stay those of `self.tabs` rather than of what is
-        drawn, so which panel is showing survives a tab appearing or
-        disappearing underneath it -- which happens on every confirmed
-        transaction, since that is when the balances are re-read.
-        """
+        """Draw the bar for the tab that is showing, and its panel."""
         shown = [(index, tab) for index, tab in enumerate(self.tabs) if tab.available]
         if not any(index == self._tab for index, _tab in shown):
-            # The tab that was showing has nothing left to do -- unstaking
-            # the last of a position, say. Fall back to the first that has.
             self._tab = shown[0][0] if shown else 0
         self._tab_bar.content = ft.Row(
             [self._tab_label(index, tab.title) for index, tab in shown],
@@ -972,8 +728,6 @@ class PoolDetailView(ft.Column):
                 weight=ft.FontWeight.W_500 if here else None,
             ),
             padding=ft.Padding.symmetric(horizontal=14, vertical=12),
-            # Underlined rather than merely coloured, as the page links in
-            # the header are: colour alone is a weak signal.
             border=ft.Border(bottom=ft.BorderSide(2, ft.Colors.PRIMARY)) if here else None,
             on_click=lambda _e, chosen=index: self._show_tab(chosen),
             ink=True,
@@ -988,18 +742,7 @@ class PoolDetailView(ft.Column):
         safe_update(self._tab_body)
 
     async def refresh_actions(self) -> None:
-        """Re-read every panel, then redraw the bar in case it changed.
-
-        This runs after each confirmed transaction -- `ActionTab.on_done`
-        -- and confirmation already means the reads that follow are at or
-        after the block the transaction landed in, so a first deposit's LP
-        is visible here rather than one refresh later. See
-        `curve.confirm.wait_for_confirmation`.
-
-        The bar is redrawn because whether `Stake` belongs in it is a
-        function of those balances: staking the last unstaked LP removes
-        nothing, but withdrawing the last of a position does.
-        """
+        """Re-read every panel, then redraw the bar in case it changed."""
         for tab in self.tabs:
             await tab.refresh()
         before = self._tab
@@ -1027,11 +770,7 @@ class PoolDetailView(ft.Column):
         self._page.run_task(self.load_chart)
 
     def _chart_resized(self) -> None:
-        """The chart got materially wider or narrower -- refetch to suit.
-
-        A wider chart should show *more* candles at the same size, not the
-        same candles stretched.
-        """
+        """The chart got materially wider or narrower -- refetch to suit."""
         self._page.run_task(self.load_chart)
 
     def _size_changed(self, _e: AnyEvent) -> None:
@@ -1042,9 +781,6 @@ class PoolDetailView(ft.Column):
         if self.pool.lite:
             return  # nothing to ask; the panel says so instead
         size = get_candle_size(self._candle_size)
-        # As many candles as the chart has room for at a readable pitch,
-        # rather than a fixed number that looks cramped on one size and
-        # sparse on another.
         count = self.chart.candle_capacity()
         self.chart_error.value = ""
         self.chart_caption.value = "Loading…"
@@ -1057,8 +793,6 @@ class PoolDetailView(ft.Column):
                     self.pool.chain, self.pool.address, size=size, count=count
                 )
             else:
-                # `i:j` is the pair as it is written and read: coin i
-                # priced in coin j.
                 i, j = (int(x) for x in value.split(":"))
                 candles = await self.api.pair_candles(
                     self.pool.chain,
@@ -1084,29 +818,14 @@ class PoolDetailView(ft.Column):
         self._page.update()
 
     async def _load_campaigns(self) -> None:
-        """Re-run the campaign lookup now that the LP token is known.
-
-        Cheap: both sources are cached on the API client for the session,
-        so a pool reached from the list asks nothing here. It is run at
-        all because the list endpoint carries no `lp_token_address`, and
-        an old-registry pool's LP token is a different contract from the
-        pool -- which is one of the three addresses a Merkl campaign can
-        be watching. A pool reached by deep link had it already.
-        """
+        """Re-run the campaign lookup now that the LP token is known."""
         await self.api.attach_campaigns(
             self.pool.chain_id, self.pool.chain, [self.pool]
         )
         self._campaigns_slot.content = self._campaigns()
 
     async def _load_detail(self) -> None:
-        """Fetch the fields only the detail endpoint has, then redraw.
-
-        The composition table and every write action depend on this: there
-        is no LP token to withdraw or stake without it, and no reserves to
-        tabulate.
-        """
-        # A Lite pool arrives complete -- reserves, prices, LP token and
-        # all -- because that API has no list/detail split to fill in.
+        """Fetch the fields only the detail endpoint has, then redraw."""
         if self.pool.detailed:
             await self._load_campaigns()
             self._composition_slot.content = self._composition()
@@ -1126,10 +845,6 @@ class PoolDetailView(ft.Column):
         self._composition_slot.content = self._composition()
         self._composition_ready = True
         self._yields_slot.content = self._yields()
-        # Both of these were built from the *decomposed* coin list, because
-        # the contract's coin count only arrives with the detail. On a
-        # metapool that is four fields where the pool takes two -- and the
-        # deposit would have been calldata for a function it does not have.
         self._right.content = self._actions()
         self.series.options = self._series_options()
         self.series.value = LP_SERIES
@@ -1140,5 +855,5 @@ class PoolDetailView(ft.Column):
         await self._load_detail()
         await self.load_chart()
         await self.refresh_actions()
-        # Not the parameters: those wait for somebody to open the fold.
-        # See `_parameters_toggled`.
+        # Not the parameters: those wait for somebody to open the
+        # fold.

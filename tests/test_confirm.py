@@ -1,20 +1,4 @@
-"""Waiting for a transaction, and for the node to admit it happened.
-
-This exists because sending returns a hash, not a result: the panel used to
-re-read the chain the moment the hash arrived, which is before the
-transaction is mined, so an approval landed and left the Deposit button
-disabled. Two failures are covered here that "poll for a receipt" alone
-does not:
-
-  * a mined *revert* has a receipt too, and treating it as success would
-    report a deposit that never happened;
-  * the receipt names a block, and the next read is not guaranteed to see
-    it -- an endpoint behind a load balancer answers from whichever node
-    took the request, and those can be a block or two apart.
-
-Nothing here sleeps: the interval is passed as zero so the loops run at
-full speed.
-"""
+"""Waiting for a transaction, and for the node to admit it happened."""
 
 from __future__ import annotations
 
@@ -80,29 +64,23 @@ async def test_pending_is_polled_until_it_lands() -> None:
 
 
 async def test_a_mined_revert_is_not_success() -> None:
-    """It has a receipt like any other, and reporting it as a deposit that
-    happened would be the worst possible lie."""
     node = FakeNode([receipt(status="0x0")])
     with pytest.raises(TransactionFailed, match="reverted"):
         await wait_for_receipt(node, TX, interval=0)
 
 
 async def test_a_receipt_with_no_status_is_taken_as_success() -> None:
-    """Pre-Byzantium receipts have no status. Nothing here talks to a chain
-    that old, and every other client assumes the same."""
     node = FakeNode([receipt(status=None)])
     assert await wait_for_receipt(node, TX, interval=0)
 
 
 async def test_waiting_gives_up_eventually() -> None:
-    """A transaction can sit in the mempool for hours; the app must not."""
     node = FakeNode([None] * 50)
     with pytest.raises(StillPending):
         await wait_for_receipt(node, TX, timeout=0, interval=0)
 
 
 async def test_a_node_that_does_not_know_the_hash_yet_is_not_an_error() -> None:
-    """Right after broadcasting, some endpoints raise rather than answer."""
 
     class Grumpy(FakeNode):
         async def request(self, method, params=None):
@@ -125,7 +103,6 @@ async def test_a_node_already_past_the_block_needs_no_waiting() -> None:
 
 
 async def test_a_node_behind_the_block_is_waited_for() -> None:
-    """The load-balancer case: the receipt says 100, this node says 98."""
     node = FakeNode(heads=[98, 99, 100])
     assert await wait_for_block(node, 100, interval=0) is True
     assert node.head_calls == 3
@@ -155,8 +132,6 @@ async def test_confirmation_returns_the_block_it_landed_in() -> None:
 
 
 async def test_confirmation_waits_for_the_endpoint_to_see_that_block() -> None:
-    """Otherwise the panel re-reads from a node one block behind and shows
-    the state as it was before the transaction."""
     node = FakeNode([receipt(block=500)], heads=[498, 499, 500])
     await wait_for_confirmation(node, TX, interval=0)
     assert node.head_calls == 3

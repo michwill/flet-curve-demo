@@ -1,9 +1,4 @@
-"""Calldata encoding.
-
-The selector cases are the important ones: every value below was taken from
-a deployed Curve pool, so if `keccak256` or a signature string is ever
-wrong, these fail rather than the app silently sending calls that revert.
-"""
+"""Calldata encoding."""
 
 from __future__ import annotations
 
@@ -12,7 +7,6 @@ import pytest
 from curve import abi
 
 # -- selectors -------------------------------------------------------------
-#
 # Verified against mainnet contracts: 3pool (StableSwap, 3 coins) and
 # tricrypto2 (CryptoSwap, 3 coins).
 KNOWN_SELECTORS = {
@@ -20,9 +14,7 @@ KNOWN_SELECTORS = {
     "approve(address,uint256)": "095ea7b3",
     "allowance(address,address)": "dd62ed3e",
     "totalSupply()": "18160ddd",
-    # `fee()` is on every pool; `dynamic_fee` only on StableSwap-NG. Both
-    # checked against mainnet through a node: PayPool answers 1_000_283
-    # where its flat fee is 1_000_000, and 3pool reverts on it.
+    # `fee()` is on every pool; `dynamic_fee` only on StableSwap-NG.
     "fee()": "ddca3f43",
     "dynamic_fee(int128,int128)": "76a9cd3e",
     "get_dy(int128,int128,uint256)": "5e0d443f",
@@ -43,17 +35,10 @@ def test_selector_matches_deployed_contract(signature: str, expected: str) -> No
 
 
 def test_stableswap_and_cryptoswap_selectors_differ() -> None:
-    """The int128/uint256 split is the whole reason `is_stableswap` exists.
-
-    Confirmed on mainnet: sending the StableSwap `get_dy` to tricrypto2
-    returns empty data rather than reverting, which is why `PoolContract`
-    treats empty as an error.
-    """
     stable = abi.encode_get_dy(0, 1, 10**18, stableswap=True)
     crypto = abi.encode_get_dy(0, 1, 10**18, stableswap=False)
     assert stable[:10] != crypto[:10]
     assert stable[:10] == "0x5e0d443f"
-    # Only the selector differs -- non-negative indices encode identically.
     assert stable[10:] == crypto[10:]
 
 
@@ -70,11 +55,9 @@ def test_approve_encoding() -> None:
 
 
 def test_add_liquidity_array_length_is_in_the_signature() -> None:
-    """`uint256[N]` is a distinct type per N, so 2- and 3-coin pools differ."""
     two = abi.encode_add_liquidity([1, 2], 0)
     three = abi.encode_add_liquidity([1, 2, 3], 0)
     assert two[:10] != three[:10]
-    # Static arrays encode inline: selector + N words + min_mint.
     assert len(three) == 2 + 8 + 64 * 4
     assert len(two) == 2 + 8 + 64 * 3
 
@@ -115,7 +98,6 @@ def test_zero_slippage_is_identity() -> None:
 
 
 def test_slippage_never_exceeds_the_estimate() -> None:
-    """The floor must never end up above what the quote supports."""
     for tolerance in (0.0, 0.01, 0.5, 1.0, 5.0, 50.0):
         assert abi.apply_slippage(10**18, tolerance) <= 10**18
 

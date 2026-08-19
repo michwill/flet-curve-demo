@@ -1,14 +1,4 @@
-"""`PoolFeed`: paging, exhaustion, and the reset race.
-
-The v2 API caps a page at 50 rows, so the list is a cursor rather than a
-snapshot. That makes two things worth pinning down, because neither is
-visible until it goes wrong in a browser:
-
-  * a page that arrives *after* the query changed must be discarded, not
-    appended to the results of a different sort;
-  * a scroll handler fires constantly, so `load_more` has to be safe to
-    call spuriously.
-"""
+"""`PoolFeed`: paging, exhaustion, and the reset race."""
 
 from __future__ import annotations
 
@@ -36,8 +26,6 @@ class FakeApi:
     def __init__(self, total: int = 7, *, delay: float = 0.0, page_size: int = 50) -> None:
         self.all = [make_pool(i) for i in range(total)]
         self.delay = delay
-        # `PoolFeed` does not pass a page size -- it takes the API's cap --
-        # so the fake decides how big a page is, as the server does.
         self.page_size = page_size
         self.queries: list[dict] = []
         self.fail_with: Exception | None = None
@@ -94,7 +82,6 @@ async def test_load_more_is_a_no_op_once_exhausted() -> None:
 
 
 async def test_concurrent_calls_do_not_double_fetch_a_page() -> None:
-    """A scroll handler fires often; overlapping calls must not stack."""
     api = FakeApi(total=100, delay=0.01)
     f = feed(api)
     results = await asyncio.gather(f.load_more(), f.load_more(), f.load_more())
@@ -137,7 +124,6 @@ async def test_search_is_sent_to_the_server() -> None:
 
 
 async def test_a_page_in_flight_when_the_query_changes_is_discarded() -> None:
-    """The race that produces a list sorted two different ways at once."""
     api = FakeApi(total=10, delay=0.05)
     f = feed(api)
     task = asyncio.ensure_future(f.load_more())

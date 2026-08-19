@@ -1,23 +1,4 @@
-"""The visible window over a candle series, and the pixel<->data mapping.
-
-Pulled out of the chart control because it is pure arithmetic and every
-interesting case -- zooming past the ends, panning off the data, a plot box
-too small to divide by -- is worth pinning down without a running app.
-
-Two coordinate spaces:
-
-  * **data**: x is a candle index (0..n-1, fractional while panning), y is a
-    price.
-  * **plot pixels**: measured from the top-left of the chart *box*, which is
-    wider and taller than the plot area because the axis labels live inside
-    it.
-
-`CandlestickChart` does not expose where it actually drew its plot area, so
-`Plot` reconstructs it from the axis label sizes this app itself sets. That
-makes the crosshair readout an approximation -- good to a pixel or two, not
-exact -- which is fine for a readout and is the price of not reimplementing
-the chart.
-"""
+"""The visible window over a candle series, and the pixel<->data mapping."""
 
 from __future__ import annotations
 
@@ -66,22 +47,13 @@ class Viewport:
         return Viewport(self.x_min, self.x_max, y_min, y_max)
 
     def zoomed_x(self, factor: float, focus: float) -> Viewport:
-        """Scale the x window by `factor`, holding `focus` (a data x) still.
-
-        Anchoring on the cursor is what makes wheel-zoom feel right: the
-        candle under the pointer stays under the pointer.
-        """
+        """Scale the x window by `factor`, holding `focus` (a data x) still."""
         left = (focus - self.x_min) * factor
         right = (self.x_max - focus) * factor
         return Viewport(focus - left, focus + right, self.y_min, self.y_max)
 
     def clamped(self, count: int) -> Viewport:
-        """Keep the window over the data and no narrower than `MIN_VISIBLE`.
-
-        Panning is allowed to run half a window past each end -- stopping
-        dead at the last candle feels like the chart is stuck -- but not
-        into empty space beyond that.
-        """
+        """Keep the window over the data and no narrower than `MIN_VISIBLE`."""
         if count <= 0:
             return self
         span = min(max(self.x_span, MIN_VISIBLE), max(float(count), MIN_VISIBLE))
@@ -138,7 +110,6 @@ class Plot:
 
     def data_y(self, py: float, view: Viewport) -> float:
         ratio = (py - self.top) / self.inner_height
-        # Screen y grows downward; price grows upward.
         return view.y_max - ratio * view.y_span
 
     # -- data -> pixels ---------------------------------------------------

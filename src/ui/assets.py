@@ -1,24 +1,4 @@
-"""Finding the compiled curve-assets images, on either platform.
-
-`tools/build_assets.py` copies the subset this app needs out of the
-curve-assets submodule into `src/assets/curve/`. This module turns a chain
-or a token address into something `ft.Image` will actually load, which is
-not the same string on both platforms:
-
-> Flutter resolves a *relative* `Image.src` against its own asset bundle.
-> That is exactly right on desktop, where `flet run` serves `src/assets`,
-> and draws **nothing** on web, where the bundle is not where the files
-> went. On web `flet publish` copies `src/assets/**` to the site root, so
-> the same file is reachable at an absolute URL path.
-
-flet-pay-example hit the same wall with one icon and solved it by inlining
-a data URI. That does not scale to 900 token logos, so this dispatches on
-platform instead: an absolute path in the browser, a relative one on the
-desktop.
-
-Nothing here raises. A token with no logo upstream is the normal case, not
-an error, so callers get `None` and draw initials instead.
-"""
+"""Finding the compiled curve-assets images, on either platform."""
 
 from __future__ import annotations
 
@@ -32,82 +12,14 @@ from pathlib import Path
 ASSET_ROOT = "curve"
 
 #: How large a compiled mark is, in pixels, on the long side.
-#:
-#: Upstream art is 200 to 280px and every mark here is drawn between 14
-#: and 38, so the renderer was being handed a tenfold reduction and asked
-#: to make it look good. It cannot: minification wants an average over
-#: every contributing pixel, which is what a mipmap is, and CanvasKit does
-#: not build one -- so in a browser every filter quality produced the same
-#: aliased result, worst on the smallest mark on the page.
-#:
-#: A resampler that *does* average over everything is easy to run once, at
-#: build time, where nothing is in a hurry. So the art arrives close to
-#: the size it is drawn at and the runtime step is small enough that any
-#: filter can do it.
-#:
-#: 160 because the largest mark drawn is 38px -- the pool stack on a
-#: detail page -- and the densest screens put four device pixels on each
-#: logical one: 152, rounded up. 128 was the first answer and covers a
-#: ratio of 3 but not 3.5, which real phones report; the test that asks
-#: for every ratio up to 4 is what caught it, and 25% more art is a
-#: cheaper mistake than a mark being upscaled on the newest handsets.
-#:
-#: A *ceiling*: art that arrives smaller is left alone rather than blown
-#: up to meet it.
-#:
-#: **And one size cannot serve this alone**, which is what took three
-#: attempts to see. A mark is drawn between 14 and 38 logical pixels and
-#: a screen puts between 1 and 4 device pixels on each, so the art has to
-#: cover 14 through 152 -- an elevenfold spread. A single ceiling sized
-#: for the top of it hands the renderer a sixfold reduction for the
-#: ordinary case: a 24px mark on a 1x desktop is 27 device pixels, drawn
-#: from 160.
-#:
-#: That is the one reduction CanvasKit does badly. It builds no mipmap
-#: chain, so `FilterQuality.MEDIUM` has nothing to average over and comes
-#: down to four bilinear taps spanning six source pixels. Measured against
-#: curve.finance side by side -- whose marks are `<img>` elements put
-#: through the browser's own downscaler, and are visibly crisper -- that
-#: is the whole difference. The art was never the problem; the ratio it
-#: was asked to survive was.
-#:
-#: So every mark is compiled at each of these, and the nearest size *up*
-#: is what gets asked for. The renderer is then left a scale of at most
-#: 2:1, which is the one reduction a four-tap bilinear does exactly: four
-#: pixels averaged into one is a box filter, the same answer a mipmap
-#: level would have held.
-#:
-#: **They double for that reason.** The worst case between two tiers is
-#: their ratio, so a ratio of 2 is what bounds it at 2. Three tiers of
-#: 32/64/160 was the first attempt and does not: 22px on a 3x screen is
-#: 66 device pixels, one past 64, and falls all the way to 160 -- a 2.4x
-#: reduction, back in the territory this exists to leave. The test that
-#: sweeps every drawn size against every ratio a screen reports is what
-#: caught it, which is the test that was missing all along.
-#:
-#: 20 at the bottom because the smallest mark is 14px and a 1x screen
-#: draws it at 14; 160 at the top because the largest is 38px and a 4x
-#: screen draws it at 152.
 MARK_TIERS = (20, 40, 80, 160)
 
-#: The largest tier, and so the size nothing is compiled above. Named
-#: separately because it is the ceiling the build enforces, whereas the
-#: tuple above is the set of sizes it writes.
+#: The largest tier, and so the size nothing is compiled above.
 MARK_PIXELS = MARK_TIERS[-1]
 
 
 def mark_tier(device_pixels: float) -> int:
-    """The smallest compiled size that still covers what will be drawn.
-
-    Rounds *up*, deliberately. Art below the size it is drawn at is
-    magnified, and magnification is the one direction no filter recovers
-    from -- it invents nothing and smears what is there. Art above it is
-    only a reduction, and by construction a small enough one to be done
-    well.
-
-    Past the largest tier there is no more art, so that is the answer for
-    anything bigger.
-    """
+    """The smallest compiled size that still covers what will be drawn."""
     for tier in MARK_TIERS:
         if device_pixels <= tier:
             return tier
@@ -115,19 +27,11 @@ def mark_tier(device_pixels: float) -> int:
 
 
 def tiered(filename: str, tier: int) -> str:
-    """`0xabc.png` at tier 64 is `0xabc@64.png`.
-
-    The suffix goes before the extension rather than into a per-tier
-    directory so that one token's sizes sort together, and so a missing
-    tier is visible beside the ones that were written.
-    """
+    """`0xabc.png` at tier 64 is `0xabc@64.png`."""
     stem, dot, suffix = filename.rpartition(".")
     return f"{stem}@{tier}{dot}{suffix}" if dot else f"{filename}@{tier}"
 
-#: The same directory on the Python filesystem, for existence checks. On
-#: web this path does not exist -- `flet publish` deliberately leaves the
-#: assets out of the archive Pyodide unpacks -- so checks are skipped there
-#: and a missing image simply fails to paint.
+#: The same directory on the Python filesystem, for existence checks.
 _LOCAL_ROOT = Path(__file__).resolve().parent.parent / "assets" / ASSET_ROOT
 
 
@@ -137,18 +41,7 @@ def is_browser() -> bool:
 
 @lru_cache(maxsize=1)
 def _web_base() -> str:
-    """The URL the app was served from, for building absolute asset URLs.
-
-    Flet treats an `Image.src` that does not look like a URL as a path into
-    the Flutter *asset bundle*. On web the compiled assets are not in that
-    bundle -- `flet publish` copies them to the site root instead -- so a
-    relative path finds nothing and a leading slash is not enough either.
-    They need a real URL.
-
-    Taken from the worker's own location rather than a hardcoded origin, so
-    an app served under a sub-path still resolves. There is no `window` in
-    a Web Worker, but there is a `location`.
-    """
+    """The URL the app was served from, for building absolute asset URLs."""
     try:
         import js
 
@@ -162,34 +55,20 @@ def asset_url(*parts: str) -> str:
     """Something `ft.Image` can load, for a file under the assets root."""
     path = "/".join((ASSET_ROOT, *parts))
     if not is_browser():
-        # Desktop resolves relative paths against `assets_dir`, which is
-        # exactly where these live.
         return path
     return f"{_web_base()}{path}"
 
 
 @lru_cache(maxsize=4096)
 def _exists(relative: str) -> bool:
-    """Is the file actually there? Always True in the browser.
-
-    Pyodide cannot see the assets directory, so guessing "yes" is the only
-    option there -- a wrong guess costs a 404 and an unpainted image, which
-    is what a missing logo looks like anyway.
-    """
+    """Is the file actually there? Always True in the browser."""
     if is_browser():
         return True
     return (_LOCAL_ROOT / relative).is_file()
 
 
 #: One bundle at one tier, once fetched: `(directory, tier)` -> bytes per
-#: name. The directory is the one the marks live in relative to the assets
-#: root -- `tokens/xdai` for a chain's coins, `chains` for the network
-#: marks -- because those are the same shape and want the same treatment,
-#: and keying by it is what lets one loader serve both.
-#:
-#: Empty until something calls `remember_bundle`, and a miss is not an
-#: error: the caller falls back to the file's own URL, which is what every
-#: build did before bundles existed and what desktop still does.
+#: name.
 _BUNDLES: dict[tuple[str, int], dict[str, bytes]] = {}
 
 #: Where a chain's coin marks live, and where the network marks do.
@@ -201,15 +80,7 @@ def token_bundle(chain: str) -> str:
     return f"{TOKENS}/{chain}"
 
 #: Which `(chain, tier, rest)` are settled: fetched, or asked for as often
-#: as they are going to be. Separate from `_BUNDLES` because the two halves
-#: share one entry there, so "is it cached" cannot be asked of the store:
-#: with only that check the tail was re-fetched every time the page reloaded
-#: a chain -- 2.2 MB on Ethereum, twice per visit, because `load_pools` runs
-#: once at startup and again when the deep link is applied.
-#:
-#: A key goes in when the fetch *starts*, not when it succeeds, so two
-#: overlapping `load_pools` cannot both pull the same megabytes; a failure
-#: takes it back out again while an attempt is still owed.
+#: as they are going to be.
 _FETCHED: set[tuple[str, int, bool]] = set()
 
 #: How many times each has been asked for, so a failure can be asked again
@@ -218,23 +89,6 @@ _TRIES: dict[tuple[str, int, bool], int] = {}
 
 #: How many times a bundle is asked for before the page settles for
 #: individual marks.
-#:
-#: Two, for exactly the reason `logos.MARK_ATTEMPTS` is two, and measured
-#: on the published site rather than reasoned about. An IPFS gateway that
-#: cannot find a block inside its retrieval budget answers 504 after about
-#: seventeen seconds -- and the ask is itself what warms it. On
-#: curve.eth.limo, `curve/tokens/ethereum/marks@80.bin` answered 504 after
-#: 17.7s and then served in 1.07s when asked again.
-#:
-#: **That tier is the one every phone asks for.** A mark is drawn at 27
-#: logical pixels, so a 1x desktop wants tier 40 and every phone wants 80 --
-#: which is how one cold block reads as "the icons are missing on mobile
-#: and fine on the laptop beside it". A single bundle failing takes every
-#: mark on the page down with it, so it is worth one more request.
-#:
-#: The second ask is deliberately *behind* the first paint rather than in
-#: front of it: 17 seconds of blank rows is the other way this failure
-#: shows up, and waiting twice for it would be 35.
 BUNDLE_ATTEMPTS = 2
 
 
@@ -247,29 +101,13 @@ BUNDLED_TIERS = (40, 80)
 
 
 def bundle_tier(device_pixels: float) -> int:
-    """The bundled tier to use for a mark of this size on this screen.
-
-    Not `mark_tier`, which answers what art the mark *wants*: past the
-    largest bundled tier there is no bundle to want, and asking for one
-    404s and drops every mark on the page back to its own file. That is
-    not hypothetical -- it is what mobile was doing. A mark is drawn at 27
-    logical pixels in the list, so a 3x phone asks `mark_tier` for 160,
-    which is not bundled, and no phone was getting a bundle at all.
-
-    Clamping costs almost nothing where it bites hardest. At 3x the mark
-    is 81 device pixels and tier 80 art is 1.01x magnification, which is
-    nothing; a true 4x screen gets 1.35x, which is softer than ideal and a
-    great deal better than a missing logo. Bundling 160 as well would fix
-    that exactly and cost 19.1 MB of pin, which is not the trade.
-    """
+    """The bundled tier to use for a mark of this size on this screen."""
     wanted = mark_tier(device_pixels)
     covered = [tier for tier in BUNDLED_TIERS if tier >= wanted]
     return min(covered) if covered else max(BUNDLED_TIERS)
 
 
-#: What the second half of a split bundle is called. Only the largest
-#: chains have one -- see `SPLIT_ABOVE` in `tools/build_assets.py` -- and
-#: asking for one that does not exist costs a 404 and nothing else.
+#: What the second half of a split bundle is called.
 REST_INFIX = "-rest"
 
 
@@ -280,20 +118,7 @@ def bundle_url(directory: str, tier: int, suffix: str, *, rest: bool = False) ->
 
 
 def remember_bundle(directory: str, tier: int, blob: bytes, index: dict) -> int:
-    """Cut a fetched bundle into one PNG per address. Returns how many.
-
-    The slices are the original files byte for byte -- the bundle is a
-    concatenation, not a container -- so nothing is decoded here and no
-    image library is needed in Pyodide.
-
-    Merges into what is already held for this chain and tier, because a
-    split chain arrives in two halves and the second must not evict the
-    first.
-
-    A truncated or mismatched entry is dropped rather than stored: a short
-    slice is not a PNG, and `ft.Image` would render nothing where the URL
-    fallback would have rendered a logo.
-    """
+    """Cut a fetched bundle into one PNG per address."""
     marks = dict(_BUNDLES.get((directory, tier), {}))
     for address, span in (index or {}).items():
         try:
@@ -309,8 +134,9 @@ def remember_bundle(directory: str, tier: int, blob: bytes, index: dict) -> int:
 
 
 def forget_bundles() -> None:
-    """Drop every cached bundle. For tests, and for a chain switch that
-    wants the memory back."""
+    """Drop every cached bundle. For tests, and for a chain switch that wants
+    the memory back.
+    """
     _BUNDLES.clear()
     _FETCHED.clear()
     _TRIES.clear()
@@ -319,23 +145,7 @@ def forget_bundles() -> None:
 async def load_bundle(
     directory: str, device_pixels: float, fetch, *, rest: bool = False
 ) -> int:
-    """Fetch one chain's mark bundle and remember it. Returns how many.
-
-    `fetch(url)` returns the bytes at a URL, or raises. Injected rather
-    than imported so this is testable without a network and so the browser
-    and desktop transports stay where they already live.
-
-    `rest=True` asks for the second half of a split chain, which only the
-    largest have. It merges into whatever the first half left rather than
-    replacing it, and a 404 for a chain that was never split is one of the
-    failures that reads as zero.
-
-    **Nothing here is allowed to break a page.** A build with no bundles,
-    a gateway that will not serve one, a truncated index: all of them come
-    back as zero, and every mark then asks for its own file exactly as it
-    did before bundles existed. That is the whole safety argument for
-    putting this in front of a working path.
-    """
+    """Fetch one chain's mark bundle and remember it."""
     tier = bundle_tier(device_pixels)
     key = (directory, tier, rest)
     if key in _FETCHED:
@@ -347,16 +157,10 @@ async def load_bundle(
         raw = await fetch(bundle_url(directory, tier, ".json", rest=rest))
         index = json.loads(bytes(raw))
     except asyncio.CancelledError:
-        # The page gave up on this chain. Not a failure of the bundle, and
-        # swallowing it would leave the task looking like it succeeded --
-        # nor a reason to never ask again, so the notes are taken back.
         _FETCHED.discard(key)
         _TRIES[key] = tries - 1
         raise
     except Exception:
-        # A 404 for a tail that was never written, or a 504 for a block the
-        # gateway could not find inside its budget -- and this cannot tell
-        # them apart, so both are worth one more ask. See `BUNDLE_ATTEMPTS`.
         if tries < BUNDLE_ATTEMPTS:
             _FETCHED.discard(key)
         return 0
@@ -364,49 +168,19 @@ async def load_bundle(
 
 
 def bundled_mark(chain: str, address: str, device_pixels: float) -> bytes | None:
-    """One mark's PNG out of a fetched bundle, or None if it is not there.
-
-    None covers both "no bundle for this chain" and "this token is not in
-    it", which the caller treats the same way: ask for the file.
-    """
+    """One mark's PNG out of a fetched bundle, or None if it is not there."""
     if not chain or not address:
         return None
     return _bundled(token_bundle(chain), address, device_pixels)
 
 
 def bundled_chain(name: str, device_pixels: float) -> bytes | None:
-    """A network's mark out of the `chains` bundle, or None.
-
-    One bundle for every chain rather than one each: there are 34 of them,
-    the picker draws all of them at once when it opens, and 160 files for
-    444 KB was the last multi-file family left in the build.
-    """
+    """A network's mark out of the `chains` bundle, or None."""
     return _bundled(CHAINS, name, device_pixels)
 
 
 def _held(directory: str, tier: int) -> dict[str, bytes] | None:
-    """The bundle to serve this tier from, out of what was actually fetched.
-
-    Not `_BUNDLES[(directory, tier)]`, and the difference is a bug that
-    survived the bundles being right. **One directory is fetched at one
-    tier and read at several.** `CurveApp._load_marks` picks the tier from
-    `MARK_SIZE`, the 27px a coin is drawn at in the list, because that is
-    what the fetch is mostly for -- but the network marks come out of the
-    same store at 18px, and the picker's own field asks for the top tier
-    because a decoration box stretches it.
-
-    At a device pixel ratio of 1.5 or 2 those disagree: 27x2 rounds up to
-    tier 80 and 18x2 rounds up to tier 40, so every network logo in the
-    open menu asked a store that held nothing under that key, missed, and
-    fell back to its own file -- cold, unwarmed, and a 504 away from a
-    blank circle in the one list whose job is choosing a network. Ratios
-    of 1, 2.25 and 3 happen to agree, which is why this looked like an
-    intermittent gateway fault rather than a lookup that could not hit.
-
-    So: the smallest fetched tier that still covers what is wanted, and
-    the largest fetched one when none does. Both are art in hand, and the
-    worst case is a reduction slightly past 2:1 rather than a request.
-    """
+    """The bundle to serve this tier from, out of what was actually fetched."""
     loaded = sorted(
         held for (held_directory, held) in _BUNDLES if held_directory == directory
     )
@@ -419,22 +193,12 @@ def _held(directory: str, tier: int) -> dict[str, bytes] | None:
 def _bundled(directory: str, name: str, device_pixels: float) -> bytes | None:
     if not directory or not name:
         return None
-    # `bundle_tier`, not `mark_tier`: an exact size here would ask for a
-    # tier no build bundles. And `_held` rather than the store directly,
-    # because asking for the right tier is not the same as it being the
-    # one that was fetched.
     marks = _held(directory, bundle_tier(device_pixels))
     return marks.get(name.strip().lower()) if marks else None
 
 
 def chain_logo(chain: str, device_pixels: float = MARK_PIXELS) -> str | None:
-    """The network's mark, for the chain picker.
-
-    `device_pixels` is how large it will actually be drawn, in device
-    pixels -- the logical size times the screen's ratio. It picks the
-    compiled tier; the default asks for the largest, which is what a
-    caller that does not know the ratio should get.
-    """
+    """The network's mark, for the chain picker."""
     name = (chain or "").strip().lower()
     if not name:
         return None
@@ -460,20 +224,12 @@ def curve_logo() -> str | None:
 
 
 def bundled(name: str) -> str:
-    """A file committed straight into `src/assets`.
-
-    The same web/desktop split as `asset_url`, without the `curve/` prefix:
-    these are not compiled from the submodule, they are in the repository.
-    """
+    """A file committed straight into `src/assets`."""
     return name if not is_browser() else f"{_web_base()}{name}"
 
 
 def chad_mark() -> str:
-    """The Chad, for the theme button.
-
-    From curve-frontend (`packages/ui/src/images/chad.png`) rather than
-    curve-assets, which is why it is committed rather than compiled.
-    """
+    """The Chad, for the theme button."""
     return bundled("chad.png")
 
 
@@ -498,5 +254,4 @@ def chain_name(chain: str) -> str:
     known = CHAIN_NAMES.get(chain.lower())
     if known:
         return known
-    # Hyphens and underscores are word breaks upstream, not punctuation.
     return " ".join(part.capitalize() for part in chain.replace("_", "-").split("-"))

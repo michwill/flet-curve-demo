@@ -1,17 +1,4 @@
-"""Every write is built once and sent unchanged.
-
-The split exists so a panel can ask what an action would cost without
-sending it -- `eth_estimateGas` needs the transaction, and before this
-there was no way to hold one without also signing it.
-
-The risk the split introduces is drift: calldata assembled a second time
-for the estimate would agree with the real one right up until a route or
-a pool type differed, and then quote a fee for a transaction nobody sent.
-So the test below is not "does `build_x` return something plausible" but
-"is what `x` sends byte-for-byte what `build_x` returned" -- asked of
-every write method there is, found by reflection rather than by a list
-somebody has to remember to extend.
-"""
+"""Every write is built once and sent unchanged."""
 
 from __future__ import annotations
 
@@ -88,9 +75,7 @@ ARGUMENTS: dict[str, tuple] = {
 
 #: Writes whose `build_` needs a pool this fixture is not: the zap routes
 #: want a metapool with a deposit zap, and deposit-and-stake wants a chain
-#: with the stake zap deployed. Their split is the same three lines as the
-#: others; what is not covered here is the argument plumbing, not the
-#: no-drift property.
+#: with the stake zap deployed.
 NEEDS_ANOTHER_POOL = {
     "zap_add_liquidity",
     "zap_remove_liquidity_one_coin",
@@ -108,15 +93,11 @@ def writes() -> list[str]:
 
 
 def test_every_write_has_both_halves() -> None:
-    """A `build_` with no sender is dead code; a sender with no `build_` is
-    a transaction that cannot be estimated."""
     for name in writes():
         assert hasattr(PoolContract, name), f"build_{name} has no sender"
 
 
 def test_the_sweep_below_covers_every_write() -> None:
-    """So that adding a write and forgetting to cover it fails here rather
-    than passing quietly."""
     assert set(writes()) == set(ARGUMENTS) | NEEDS_ANOTHER_POOL
 
 
@@ -136,7 +117,6 @@ async def test_what_is_built_is_what_is_sent(name: str) -> None:
 
 @pytest.mark.parametrize("name", sorted(ARGUMENTS))
 async def test_building_sends_nothing(name: str) -> None:
-    """The whole point: a panel may ask what an action is without doing it."""
     pool = contract()
     getattr(pool, f"build_{name}")(*ARGUMENTS[name])
     assert pool.provider.sent == []
@@ -159,9 +139,6 @@ async def test_the_estimate_asks_about_the_transaction_that_would_be_sent() -> N
 
 
 async def test_an_estimate_that_reverts_is_no_number_rather_than_an_error() -> None:
-    """A deposit whose token is not approved yet reverts under simulation
-    exactly as it would on chain. That is an ordinary state of the panel,
-    not something to colour red."""
     from wallet.base import RpcError
 
     class Refusing(Recorder):
@@ -176,8 +153,6 @@ async def test_an_estimate_that_reverts_is_no_number_rather_than_an_error() -> N
 
 
 async def test_a_node_with_no_account_estimates_nothing() -> None:
-    """`curve.rpc`'s public provider quotes but cannot sign, and an
-    `eth_estimateGas` with no `from` is a different question."""
     pool = PoolContract(Recorder(), contract().pool, "")
 
     assert await pool.estimate_gas(pool.build_exchange(0, 1, 10**6, 1)) == 0

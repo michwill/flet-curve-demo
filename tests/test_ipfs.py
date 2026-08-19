@@ -1,17 +1,4 @@
-"""Pinning the web build, without a Pinata account or a network.
-
-Two things here can fail in a way that costs something real rather than a
-redraw. A hand-rolled multipart body whose declared length disagrees with
-what it emits truncates or hangs the upload -- 108 MB in, and no way to
-tell which half arrived. And a build that carries the API key gets pinned
-with it, which is not a mistake anybody can take back: IPFS has no
-unpublish, and the key is a live credential until it is rotated.
-
-So those two are tested against real bytes and a real tarball, and the
-rest of the module is checked for the shape Pinata's directory upload
-needs -- one `file` part per file, each named `<folder>/<path>`, which is
-the only reason the CID that comes back is a directory.
-"""
+"""Pinning the web build, without a Pinata account or a network."""
 
 from __future__ import annotations
 
@@ -42,8 +29,6 @@ def build(tmp_path: Path, files: dict[str, str]) -> Path:
 
 
 def test_the_declared_length_is_exactly_what_goes_out(tmp_path: Path) -> None:
-    """The bug this shape invites: a body that does not match its own
-    Content-Length. Short truncates the upload, long hangs it."""
     root = build(tmp_path, {"index.html": "<html>", "a/b.js": "x" * 5000, "e.txt": ""})
     parts = ipfs.uploads(root, "site")
     fields = ipfs.fields_for("site")
@@ -55,8 +40,6 @@ def test_the_declared_length_is_exactly_what_goes_out(tmp_path: Path) -> None:
 
 
 def test_a_file_part_is_named_for_its_place_in_the_folder(tmp_path: Path) -> None:
-    """This is what makes it a directory on the other side rather than
-    1,800 loose files: the name carries the path."""
     root = build(tmp_path, {"index.html": "<html>", "curve/tokens/a.png": "img"})
 
     named = dict(ipfs.uploads(root, "flet-curve"))
@@ -75,8 +58,6 @@ def test_every_file_goes_up_under_the_same_field_name(tmp_path: Path) -> None:
 
 
 def test_the_options_ask_for_a_cid_a_subdomain_gateway_can_hold() -> None:
-    """v0 hashes are base58 and case-sensitive, so they cannot go in a
-    hostname -- `https://<cid>.ipfs.dweb.link` needs v1."""
     options = json.loads(ipfs.fields_for("x")["pinataOptions"])
     assert options["cidVersion"] == 1
 
@@ -85,9 +66,6 @@ def test_the_options_ask_for_a_cid_a_subdomain_gateway_can_hold() -> None:
 
 
 def test_the_build_runs_the_console_script_not_dash_m() -> None:
-    """`python -m flet` raises "cannot be directly executed" -- the package
-    has no `__main__`. The build then fails and the next step would pin
-    whatever `dist/` was already holding."""
     command = ipfs.flet_cli()
 
     assert command.endswith("flet")
@@ -98,10 +76,6 @@ def test_the_build_runs_the_console_script_not_dash_m() -> None:
 
 
 def test_the_package_is_wrapped_as_text_and_the_page_follows(tmp_path: Path) -> None:
-    """eth.limo serves a six-byte text file named `.tar.gz` -- labelled
-    application/gzip, even -- and refuses the real archive under the same
-    name. The bytes are what is caught, so the bytes stop being an
-    archive."""
     root = build(
         tmp_path,
         {
@@ -120,10 +94,6 @@ def test_the_package_is_wrapped_as_text_and_the_page_follows(tmp_path: Path) -> 
 
 
 def test_the_worker_can_read_what_the_wrapper_writes(tmp_path: Path) -> None:
-    """The contract between the two halves, run end to end: a real gzipped
-    tar, wrapped here, unwrapped by the same three steps the patched worker
-    performs. A key or format that disagreed would otherwise surface as an
-    app that downloads its Python and cannot open it."""
     root = tmp_path / "dist"
     root.mkdir()
     (root / "index.html").write_text('appPackageUrl: "app.tar.gz"', encoding="utf-8")
@@ -134,7 +104,6 @@ def test_the_worker_can_read_what_the_wrapper_writes(tmp_path: Path) -> None:
 
     ipfs.wrap_package(root)
 
-    # Exactly what WORKER_PATCH does, in the same order.
     blob = json.loads((root / ipfs.PACKAGE_TO).read_text())[ipfs.PACKAGE_KEY]
     with tarfile.open(fileobj=io.BytesIO(base64.b64decode(blob))) as archive:
         assert archive.getnames() == ["main.py"]
@@ -149,8 +118,6 @@ def test_wrapping_a_build_that_is_already_wrapped_does_nothing(tmp_path: Path) -
 def test_the_archive_is_not_wrapped_without_the_line_that_points_at_it(
     tmp_path: Path,
 ) -> None:
-    """Wrapping one and not the other is a build that fetches a file that
-    is not there -- the same blank page, with no 404 to explain it."""
     root = build(tmp_path, {"index.html": "<head>nothing here</head>", "app.tar.gz": "x"})
     with pytest.raises(SystemExit, match="appPackageUrl"):
         ipfs.wrap_package(root)
@@ -180,8 +147,6 @@ def test_the_worker_learns_to_unwrap_and_skips_the_old_path(tmp_path: Path) -> N
     patched = (root / ipfs.WORKER).read_text(encoding="utf-8")
 
     assert '.endswith(".json")' in patched
-    # The archive path is still there for a build served from anywhere
-    # else, but it no longer runs for the wrapped one.
     assert "if _archive_format:" in patched
     assert ipfs.WORKER_UNPACK.strip() in patched
 
@@ -195,8 +160,6 @@ def test_patching_a_patched_worker_does_nothing(tmp_path: Path) -> None:
 
 
 def test_a_worker_that_has_changed_shape_stops_the_run(tmp_path: Path) -> None:
-    """Flet regenerates this file. Patching it blind would leave a build
-    that downloads its Python and quietly ignores it."""
     root = tmp_path / "dist"
     root.mkdir()
     (root / ipfs.WORKER).write_text("something else entirely", encoding="utf-8")
@@ -205,9 +168,6 @@ def test_a_worker_that_has_changed_shape_stops_the_run(tmp_path: Path) -> None:
 
 
 def test_the_python_injected_into_the_worker_parses() -> None:
-    """It is Python inside a JavaScript string inside a generated file --
-    nothing type-checks it, and a syntax error there is a blank page after
-    a pin, an ENS update and a wait."""
     branch = "\n".join(ipfs.WORKER_PATCH.splitlines()[:-1])  # drop the trailing elif
     body = textwrap.indent(textwrap.dedent(branch), "    ")
     compile(
@@ -218,12 +178,7 @@ def test_the_python_injected_into_the_worker_parses() -> None:
 
 
 class FakeSuffixGateway:
-    """A gateway that refuses some suffixes before resolving anything.
-
-    Which is what the real ones do: the refusal is canned and arrives
-    without the path being looked up, where a genuine miss quotes the CID
-    and the path back.
-    """
+    """A gateway that refuses some suffixes before resolving anything."""
 
     def __init__(self, refuses: tuple[str, ...]) -> None:
         self.refuses = refuses
@@ -239,18 +194,6 @@ class FakeSuffixGateway:
 
 
 def test_a_file_that_does_not_exist_is_what_removes_the_confound() -> None:
-    """The trick the whole probe rests on.
-
-    Every earlier measurement varied the name, the bytes *and* the size
-    together -- a 6-byte text `.tar.gz` served against a 400 KB real
-    archive, a 96 KB wheel against a 2.5 MB zip -- so "the bytes decide",
-    "the suffix decides" and "the size decides" all fit, and two of them
-    were asserted in this file at different times.
-
-    A file that is not in the pin has no bytes and no size. Anything that
-    tells two of them apart can only be the name, and no experiment needs
-    designing around it.
-    """
     gateway = FakeSuffixGateway((".zip", ".tgz"))
 
     assert not ipfs.suffix_served(gateway, "https://curve.eth.limo", ".zip")
@@ -259,9 +202,6 @@ def test_a_file_that_does_not_exist_is_what_removes_the_confound() -> None:
 
 
 def test_the_probe_pins_nothing_and_writes_nothing(tmp_path: Path) -> None:
-    """It replaced a matrix that put five files and 9 MB into every
-    publish, onto a pin whose propagation was the thing being complained
-    about -- and which could not answer the question even then."""
     root = build(tmp_path, {"index.html": "x"})
     before = sorted(p.name for p in root.rglob("*"))
 
@@ -271,9 +211,6 @@ def test_the_probe_pins_nothing_and_writes_nothing(tmp_path: Path) -> None:
 
 
 def test_an_unreachable_gateway_does_not_read_as_a_refusal() -> None:
-    """The question is whether the suffix stops the file. A gateway that
-    cannot be reached has not stopped anything, and the caller is
-    publishing either way."""
 
     class Dead:
         def get(self, url: str, **_kw):
@@ -283,18 +220,11 @@ def test_an_unreachable_gateway_does_not_read_as_a_refusal() -> None:
 
 
 def test_the_allowed_suffixes_are_probed_as_controls() -> None:
-    """A run where nothing at all is allowed is a broken run rather than a
-    strict gateway, and without controls there is no way to tell."""
     assert ".bin" in ipfs.PROBE_SUFFIXES
     assert set(ipfs.REFUSED_SUFFIXES) < set(ipfs.PROBE_SUFFIXES)
 
 
 def test_gz_is_not_refused_and_that_is_a_correction() -> None:
-    """It was on the refused list for as long as the question was open, on
-    the strength of `app.tar.gz` being refused -- but that file is renamed
-    to `.tgz` before it is pinned, and `.tgz` is what is declined. Measured
-    against both gateways: `.gz` and `.tar.gz` serve, the final extension
-    decides."""
     assert ".gz" not in ipfs.REFUSED_SUFFIXES
     assert ".tgz" in ipfs.REFUSED_SUFFIXES
     assert not "x.tar.gz".endswith(ipfs.REFUSED_SUFFIXES)
@@ -310,8 +240,6 @@ def test_a_key_in_the_build_is_found_in_a_plain_file(tmp_path: Path) -> None:
 
 
 def test_a_key_inside_the_python_tarball_is_found_too(tmp_path: Path) -> None:
-    """Which is the case that would actually happen: `flet publish` tars
-    `src/` into `app.tar.gz`, and `src/local_config.toml` is in there."""
     root = build(tmp_path, {"index.html": "<html>"})
     buffer = io.BytesIO(b'jwt = "SEKRIT"\n')
     with tarfile.open(root / "app.tar.gz", "w:gz") as archive:
@@ -323,9 +251,6 @@ def test_a_key_inside_the_python_tarball_is_found_too(tmp_path: Path) -> None:
 
 
 def test_the_renamed_package_is_still_searched(tmp_path: Path) -> None:
-    """The rename to `.tgz` happens before the scan, and `app.tgz` is the
-    one archive in the build that holds `src/` -- looking only for `.gz`
-    would leave the check passing over the file it exists for."""
     root = build(tmp_path, {"index.html": "<html>"})
     buffer = io.BytesIO(b'jwt = "SEKRIT"\n')
     with tarfile.open(root / "app.tgz", "w:gz") as archive:
@@ -337,14 +262,6 @@ def test_the_renamed_package_is_still_searched(tmp_path: Path) -> None:
 
 
 def test_a_key_is_still_found_once_the_package_is_wrapped(tmp_path: Path) -> None:
-    """The shape the build is in when the scan actually runs.
-
-    `wrap_package` base64s the archive and deletes it, and `main` does that
-    *before* this check -- so the one file `src/local_config.toml` ends up
-    in was, for a while, the one file the scan could not read. Base64 does
-    not preserve substrings, so searching the JSON found nothing and the
-    build was pronounced clean.
-    """
     root = build(
         tmp_path,
         {"index.html": f'<script>appPackageUrl: "{ipfs.PACKAGE_FROM}"</script>'},
@@ -362,8 +279,6 @@ def test_a_key_is_still_found_once_the_package_is_wrapped(tmp_path: Path) -> Non
 
 
 def test_a_key_in_the_wrapped_package_is_named_once(tmp_path: Path) -> None:
-    """A raw tarball is reached by the file walk and by the archive pass,
-    and one leak reported twice reads as two."""
     root = build(tmp_path, {"index.html": "<html>"})
     buffer = io.BytesIO(b'jwt = "SEKRIT"\n')
     with tarfile.open(root / ipfs.PACKAGE_FROM, "w:gz") as archive:
@@ -394,9 +309,6 @@ def _packaged(root: Path, members: dict[str, bytes]) -> None:
 
 
 def test_bytecode_below_the_top_level_is_found(tmp_path: Path) -> None:
-    """The case that actually shipped. Flet's own tar filter drops a member
-    whose name *starts with* `__pycache__`, so `src/__pycache__` never got
-    in and `curve/__pycache__/...` always did -- forty-eight files of it."""
     root = build(tmp_path, {"index.html": "<html>"})
     _packaged(
         root,
@@ -414,9 +326,6 @@ def test_bytecode_below_the_top_level_is_found(tmp_path: Path) -> None:
 
 
 def test_bytecode_is_found_after_the_package_is_wrapped(tmp_path: Path) -> None:
-    """Which is the shape it is in when the check runs: `wrap_package` has
-    already base64'd the archive and deleted it. Looking for `app.tar.gz`
-    at that point finds nothing and says the build is clean."""
     root = build(
         tmp_path,
         {"index.html": f'<script>appPackageUrl: "{ipfs.PACKAGE_FROM}"</script>'},
@@ -442,9 +351,6 @@ def test_a_build_with_no_bytecode_reports_nothing(tmp_path: Path) -> None:
 
 
 def test_the_build_runs_with_bytecode_writing_off() -> None:
-    """Sweeping first is not enough: `build_assets` imports `ui.assets` for
-    `MARK_PIXELS`, and the import writes its own bytecode -- after the
-    sweep and before `flet publish` tars the directory."""
     assert ipfs.build_env()["PYTHONDONTWRITEBYTECODE"] == "1"
 
 
@@ -452,8 +358,6 @@ def test_the_build_runs_with_bytecode_writing_off() -> None:
 
 
 def test_the_page_is_pointed_at_its_own_directory(tmp_path: Path) -> None:
-    """A gateway serves the site under `/ipfs/<cid>/`, where an absolute
-    base sends every script to the gateway's root and nothing loads."""
     index = tmp_path / "index.html"
     index.write_text('<head><base href="/">\n</head>', encoding="utf-8")
 
@@ -468,8 +372,6 @@ def test_making_it_relative_twice_changes_nothing(tmp_path: Path) -> None:
 
 
 def test_an_index_with_no_base_tag_stops_the_run(tmp_path: Path) -> None:
-    """Rather than pinning a build that cannot load. It would mean Flet's
-    index patcher changed, which is worth being told about."""
     index = tmp_path / "index.html"
     index.write_text("<head></head>", encoding="utf-8")
     with pytest.raises(SystemExit, match="patcher"):
@@ -480,7 +382,6 @@ def test_an_index_with_no_base_tag_stops_the_run(tmp_path: Path) -> None:
 
 
 def test_the_environment_wins_over_the_file(monkeypatch) -> None:
-    """So CI needs no file, and a shell can override one for a test pin."""
     monkeypatch.setenv("PINATA_JWT", "from-env")
     assert ipfs.token({"jwt": "from-file"}) == "from-env"
 
@@ -519,8 +420,6 @@ def test_the_upload_is_authorised_declared_and_read_back(tmp_path: Path) -> None
     assert answer["IpfsHash"] == "bafyOK"
     assert seen["url"] == ipfs.PIN_URL
     assert seen["auth"] == "Bearer the-jwt"
-    # Declared, not chunked -- and the declaration held all the way to the
-    # wire, which is the whole point of computing it up front.
     assert seen["chunked"] is None
     assert int(seen["length"]) == len(seen["body"])
 
@@ -540,23 +439,6 @@ def test_a_refusal_is_reported_rather_than_returned(tmp_path: Path) -> None:
 
 
 def test_routes_live_in_the_fragment() -> None:
-    """A gateway is a filesystem, not a server.
-
-    It resolves the request path inside the published directory and 404s
-    when there is no such file, and there is no file called `ethereum`.
-    So `/ethereum/0xC09e…` -- the kind of link this app exists to hand out
-    -- died at the gateway while working against any local server, which
-    falls back to index.html the way a normal SPA host does.
-
-    A fragment is never sent to the server: the gateway is asked for `/`,
-    serves index.html, and the app reads the route from the fragment. It
-    needs nothing from the gateway, so it works the same on a path
-    gateway, a subdomain gateway and an ENS name through eth.limo.
-
-    Declared in `pyproject.toml` because that is the documented way to say
-    it -- but Flet does not read it there, which is what the next two
-    tests are about, so nothing may rely on this key alone.
-    """
     import tomllib
 
     root = Path(ipfs.__file__).resolve().parent.parent
@@ -567,10 +449,6 @@ def test_routes_live_in_the_fragment() -> None:
 
 
 def test_the_strategy_is_passed_as_a_flag_because_the_key_is_not_read() -> None:
-    """`flet publish` defines `--route-url-strategy` with `default="path"`,
-    so `options.route_url_strategy` is always truthy and the
-    `or get_pyproject(...)` beside it is unreachable. A build that trusts
-    `pyproject.toml` comes out on `path` and 404s every deep link."""
     source = Path(ipfs.__file__).read_text()
 
     assert "--route-url-strategy" in source
@@ -578,10 +456,6 @@ def test_the_strategy_is_passed_as_a_flag_because_the_key_is_not_read() -> None:
 
 
 def test_the_effective_strategy_is_the_last_one_named(tmp_path) -> None:
-    """index.html names it twice -- Flet's template default, then the value
-    `flet publish` patches in below. Both are assignments in script tags
-    that run in order, so the later one is what the page uses. Reading the
-    first would pass a build that is about to 404 everywhere."""
     index = tmp_path / "index.html"
     index.write_text(
         '<script>var flet = { routeUrlStrategy: "path" }</script>\n'
@@ -597,10 +471,6 @@ def test_the_effective_strategy_is_the_last_one_named(tmp_path) -> None:
 
 
 def test_the_base_href_stays_relative() -> None:
-    """The other half of the same problem, and the reason `_redirects` is
-    not the answer: a gateway serves this under `/ipfs/<cid>/`, so the
-    assets are found relatively. Serving index.html at a deep path instead
-    would resolve them against that path and 404 every one."""
     assert ipfs.BASE_RELATIVE == '<base href="./">'
     assert ipfs.BASE_ABSOLUTE == '<base href="/">'
 
@@ -609,16 +479,6 @@ def test_the_base_href_stays_relative() -> None:
 
 
 def test_the_script_runs_as_a_script(tmp_path) -> None:
-    """`python tools/publish_ipfs.py`, not `import tools.publish_ipfs`.
-
-    Those two put different things on `sys.path`: as a script the
-    interpreter contributes `tools/` and not the repo root, so a
-    `from tools import ...` inside resolves under pytest and crashes for
-    the person publishing. It did, with `ModuleNotFoundError: No module
-    named 'tools'`, and every test in this file passed while it did --
-    because every test in this file imports the module rather than running
-    it. So this one runs it.
-    """
     import io
     import shutil
     import subprocess
@@ -630,9 +490,6 @@ def test_the_script_runs_as_a_script(tmp_path) -> None:
     root = Path(ipfs.__file__).resolve().parent.parent
     web = Path(flet_web.__file__).parent / "web"
 
-    # Enough of a build for the script to walk the whole way through: the
-    # page it rewrites, the font it cuts, the worker it patches, and the
-    # archive it wraps.
     dist = tmp_path / "dist"
     (dist / "assets/fonts").mkdir(parents=True)
     (dist / "index.html").write_text(
@@ -653,26 +510,17 @@ def test_the_script_runs_as_a_script(tmp_path) -> None:
         [sys.executable, str(root / "tools/publish_ipfs.py"),
          "--dry-run", "--no-build", "--dist", str(dist)],
         capture_output=True, text=True, cwd=root, timeout=120,
-        # The return code is asserted below, with the output to explain it.
         check=False,
     )
 
     assert "ModuleNotFoundError" not in done.stderr, done.stderr
     assert "Traceback" not in done.stderr, done.stderr
     assert done.returncode == 0, done.stderr
-    # And it did the work rather than merely starting: the font is cut.
     cut = (dist / "assets/fonts/MaterialIcons-Regular.otf").stat().st_size
     assert cut < 50_000, f"the font was not subset ({cut} bytes)"
 
 
 def test_publishing_compiles_the_marks_first() -> None:
-    """The assets are generated and gitignored, which is right -- and
-    means a stale `src/assets/curve` shows up in no `git status` and no
-    diff. Nobody should have to remember it.
-
-    Order matters too: `flet publish` tars `src/` into the app package,
-    so marks compiled after it would not be in the build.
-    """
     source = Path(ipfs.__file__).read_text(encoding="utf-8")
 
     assert "build_assets.py" in source, "publishing must compile the marks"
@@ -683,33 +531,17 @@ def test_publishing_compiles_the_marks_first() -> None:
 
 
 # -- what a gateway will not serve ------------------------------------------
-#
-# Two rules, measured separately, and neither predicts the other. gzip is
-# caught by its *bytes* -- a text file named `.tar.gz` is served and a real
-# archive under that name is not. `.zip` is caught by its *name*: a wheel is
-# `PK\x03\x04` exactly as `python_stdlib.zip` is, and eth.limo serves the
-# wheel and refuses the zip from the same directory in the same pin.
+# Two rules, measured separately, and neither predicts the other.
 
 
 def test_the_stdlib_zip_is_reported_and_does_not_stop_the_upload(
     tmp_path: Path,
 ) -> None:
-    """Named, not blocked -- and the difference cost a working publish.
-
-    `flet publish` overwrites its own template default with
-    `flet.pyodideUrl="https://cdn.jsdelivr.net/pyodide/.../pyodide.mjs"`,
-    so Pyodide and its standard library come from jsDelivr and nothing
-    ever asks a gateway for the copy in the pin. curve.eth.link loads
-    fully with this file 404ing throughout. Predicting damage to the app
-    from a filename is what made this a block; `verify` measures the pin
-    instead.
-    """
     root = build(tmp_path, {"index.html": "<html>", "pyodide/python_stdlib.zip": "PK"})
     assert ipfs.refused_by_gateway(root) == ["pyodide/python_stdlib.zip"]
 
 
 def test_a_wheel_is_the_same_bytes_and_is_left_alone(tmp_path: Path) -> None:
-    """Which is why the rule is the suffix and not the magic number."""
     root = build(tmp_path, {"pyodide/packaging-26.1-py3-none-any.whl": "PK\x03\x04"})
     assert ipfs.refused_by_gateway(root) == []
 
@@ -723,8 +555,6 @@ def test_a_build_with_nothing_refused_is_quiet(tmp_path: Path) -> None:
 
 
 def test_the_lazy_token_art_is_not_verified(tmp_path: Path) -> None:
-    """6,716 files a visitor does not need to boot. Asking a public
-    gateway for all of them is an imposition, not a check."""
     root = build(
         tmp_path,
         {
@@ -739,14 +569,6 @@ def test_the_lazy_token_art_is_not_verified(tmp_path: Path) -> None:
 def test_the_pyodide_copy_nothing_ever_asks_for_is_not_verified(
     tmp_path: Path,
 ) -> None:
-    """`flet publish` points the app at jsDelivr, so the pinned 15 MB is dead
-    weight. A browser load of the published site makes 124 requests and not
-    one of them is under `pyodide/`.
-
-    Left in, they fail every run -- an archive gateways decline, and a
-    `package.json` that answered 502 four times running -- and a report that
-    always ends in failure is a report nobody reads.
-    """
     root = build(
         tmp_path,
         {
@@ -759,17 +581,10 @@ def test_the_pyodide_copy_nothing_ever_asks_for_is_not_verified(
 
 
 def test_a_fast_failure_is_a_refusal_and_a_slow_one_is_not_yet() -> None:
-    """The whole point of the gate: only one of these clears by waiting.
-
-    Measured on the pin that prompted this -- a refused file answers 404
-    in ~0.3s, a block whose providers are not announced yet spends the
-    gateway's whole retrieval budget first and comes back 504 at ~17s.
-    """
     assert ipfs.classify(404, 0.3) == "refused"
     assert ipfs.classify(504, 17.5) == "unfound"
     assert ipfs.classify(200, 0.4) == "served"
     assert ipfs.classify(206, 1.2) == "served"
-    # A timeout has no status code at all, and is still not a refusal.
     assert ipfs.classify("ReadTimeout", 45.0) == "unfound"
 
 
@@ -801,7 +616,6 @@ def test_a_pin_that_is_fully_retrievable_passes(monkeypatch) -> None:
 
 
 def test_a_file_still_propagating_is_retried_until_it_lands(monkeypatch) -> None:
-    """This is the case the deadline exists for, and it must not fail."""
     gateway = FakeGateway({"slow.js": [(504, 17.0), (504, 17.0), (200, 0.9)]})
 
     assert run_verify(monkeypatch, gateway, ["slow.js"]) == {}
@@ -809,8 +623,6 @@ def test_a_file_still_propagating_is_retried_until_it_lands(monkeypatch) -> None
 
 
 def test_a_refusal_is_never_retried(monkeypatch) -> None:
-    """A gateway declining a suffix will decline it for the rest of the day,
-    so retrying is a quarter of an hour spent learning nothing."""
     gateway = FakeGateway({"pyodide/python_stdlib.zip": [(404, 0.3)]})
 
     bad = run_verify(monkeypatch, gateway, ["pyodide/python_stdlib.zip"])
@@ -831,7 +643,6 @@ def test_the_deadline_ends_a_pin_that_never_propagates(monkeypatch) -> None:
 
 
 def test_a_file_that_heals_is_dropped_from_the_report(monkeypatch) -> None:
-    """It failed on the first pass; the report is about the end state."""
     gateway = FakeGateway({"a.js": [(504, 17.0), (200, 0.3)], "b.js": [(200, 0.1)]})
     assert run_verify(monkeypatch, gateway, ["a.js", "b.js"]) == {}
 
@@ -840,10 +651,6 @@ def test_a_file_that_heals_is_dropped_from_the_report(monkeypatch) -> None:
 
 
 def test_being_rate_limited_is_not_a_refusal() -> None:
-    """Measured: eight parallel probes earned a run of 503s from eth.limo,
-    which arrive in a fraction of a second -- the same shape as a refusal.
-    Filed as one, they would never be retried and the report would say the
-    gateway declines to serve the app."""
     assert ipfs.classify(503, 0.2) == "throttled"
     assert ipfs.classify(429, 0.1) == "throttled"
     assert ipfs.classify(404, 0.3) == "refused", "a real refusal still is one"
@@ -857,7 +664,6 @@ def test_a_throttled_file_is_retried_until_the_limiter_lets_go(monkeypatch) -> N
 
 
 # -- waiting for the name to move, so one command covers the whole publish --
-#
 # The script cannot set the contenthash -- that is a wallet signature -- but
 # it can watch for it, which is the difference between warming attached to
 # the publish that needs it and a command you have to remember later.
@@ -896,8 +702,6 @@ def test_the_wait_ends_when_the_name_points_at_the_new_build(capsys) -> None:
 
 
 def test_the_old_cid_is_never_mistaken_for_the_new_one(capsys) -> None:
-    """The whole point of the gate. Warming while the name still resolves to
-    the previous build would faithfully warm the previous build."""
     ticks = iter([0.0, 0.0, 10.0, 20.0, 9999.0, 9999.0, 9999.0])
     resolver = FakeResolver(["bafyold"])
 
@@ -906,7 +710,6 @@ def test_the_old_cid_is_never_mistaken_for_the_new_one(capsys) -> None:
 
 
 def test_a_subpath_header_is_read_down_to_its_root() -> None:
-    """`x-ipfs-roots` lists the root and then each node down to the file."""
     client = types.SimpleNamespace(
         get=lambda *_a, **_kw: types.SimpleNamespace(
             headers={"x-ipfs-roots": "bafyroot,bafychild"}
@@ -933,15 +736,12 @@ def test_interrupting_the_ens_wait_leaves_the_pin_verified(capsys) -> None:
 
 
 # -- warming: the stage that touches the path a visitor actually takes ------
-#
 # eth.limo has no CID gateway (`https://<cid>.ipfs.eth.limo` does not
 # resolve, `https://eth.limo/ipfs/<cid>` 404s), so its retrieval path cannot
-# be exercised until ENS points at the CID. That forces two stages, and this
-# is the second.
+# be exercised until ENS points at the CID.
 
 
 def test_warming_reads_whole_files_not_just_the_first_block(monkeypatch) -> None:
-    """A file is many blocks. Sampling the first one warms the first one."""
     gateway = FakeGateway({"main.dart.js": [(200, 0.9)]})
     monkeypatch.setattr(ipfs, "probe", gateway.probe)
 
@@ -958,8 +758,6 @@ def test_warming_reads_whole_files_not_just_the_first_block(monkeypatch) -> None
 
 
 def test_an_ens_host_needs_no_cid_and_formats_to_itself() -> None:
-    """`verify` fills `{cid}` in; a fixed ENS base simply has none, which is
-    what lets both stages share one polling loop."""
     assert ipfs.WARM_GATEWAY.format(cid="bafyfake") == ipfs.WARM_GATEWAY
 
 
@@ -985,7 +783,6 @@ def test_warming_asks_the_ens_host_for_the_boot_set(monkeypatch, capsys) -> None
 def test_warming_reports_what_is_still_cold_and_says_to_run_again(
     monkeypatch, capsys
 ) -> None:
-    """The 4 KB icon font, which is what left every glyph a tofu box."""
     font = "assets/fonts/MaterialIcons-Regular.otf"
     monkeypatch.setattr(ipfs, "verify", lambda *a, **kw: {font: ("unfound", 504, 17.4)})
 
@@ -1002,8 +799,6 @@ def test_warming_reports_what_is_still_cold_and_says_to_run_again(
 def test_interrupting_a_warm_keeps_what_it_already_fetched(
     monkeypatch, capsys
 ) -> None:
-    """Ctrl-C is a supported way to leave: the blocks pulled so far stay in
-    the edge's store, so a second run picks up warmer than the first."""
 
     def interrupted(*_a, **_kw):
         raise KeyboardInterrupt
@@ -1023,8 +818,6 @@ def test_interrupting_a_warm_keeps_what_it_already_fetched(
 def test_the_pre_ens_pass_does_not_claim_to_have_checked_eth_limo(
     monkeypatch, capsys
 ) -> None:
-    """It checks a CID gateway, which is a different question from the one a
-    visitor asks. Saying otherwise is what made a verified pin load badly."""
     gateway = FakeGateway({"index.html": [(200, 0.2)]})
     monkeypatch.setattr(ipfs, "probe", gateway.probe)
 
@@ -1042,11 +835,9 @@ def test_the_pre_ens_pass_does_not_claim_to_have_checked_eth_limo(
 
 
 # -- the CID comes first, and the waiting is its own phase ------------------
-#
-# The upload succeeding and the network being able to find the result are
-# two questions with two answers, and the second can legitimately take a
-# quarter of an hour. Holding the CID back behind it makes a slow network
-# read as a failed publish.
+# The upload succeeding and the network being able to find the result are two
+# questions with two answers, and the second can legitimately take a quarter
+# of an hour.
 
 
 def test_the_bar_fills_with_what_is_retrievable() -> None:
@@ -1061,7 +852,6 @@ def test_an_empty_build_does_not_divide_by_zero() -> None:
 
 
 def test_the_bar_redraws_in_place_only_on_a_terminal() -> None:
-    """A `\\r` bar piped to a file is thousands of overwritten lines."""
 
     class Pipe(io.StringIO):
         def isatty(self) -> bool:
@@ -1084,7 +874,6 @@ def test_the_bar_redraws_in_place_only_on_a_terminal() -> None:
 
 
 def test_the_cid_is_printed_before_any_waiting(capsys) -> None:
-    """The one thing worth having from the run, whatever happens next."""
     ipfs.show_pin("bafyexample", duplicate=True)
     out = capsys.readouterr().out
 
@@ -1105,7 +894,6 @@ def waiting_options(**kw):
 def test_interrupting_the_wait_keeps_the_pin_and_says_how_to_resume(
     monkeypatch, capsys
 ) -> None:
-    """Ctrl-C during a long wait must not read as a failed publish."""
 
     def interrupted(*_a, **_kw):
         raise KeyboardInterrupt
@@ -1135,7 +923,6 @@ def test_a_pin_still_propagating_says_to_come_back(monkeypatch, capsys) -> None:
 
 
 def test_a_refusal_does_not_suggest_waiting_longer(monkeypatch, capsys) -> None:
-    """Resuming would burn another deadline on a decision already made."""
     monkeypatch.setattr(
         ipfs, "verify", lambda *a, **kw: {"a.zip": ("refused", 404, 0.3)}
     )
@@ -1162,16 +949,12 @@ def test_a_pin_the_network_can_find_reports_the_wait_and_passes(
 
 
 def test_the_whole_archive_family_is_reported_not_just_zip(tmp_path: Path) -> None:
-    """Gateways decline archives generally, not `.zip` specifically."""
     root = build(
         tmp_path,
         {
             "a.zip": "x", "c.tgz": "x", "d.tar": "x",
             "e.bz2": "x", "f.xz": "x", "g.7z": "x", "h.zst": "x", "i.jar": "x",
-            # Served: the final extension decides, and `.gz` is allowed.
             "b.tar.gz": "x", "j.gz": "x",
-            # Not archives, and two of them are the shapes most likely to
-            # be mistaken for one.
             "main.dart.js": "//", "pyodide/pyodide.asm.wasm": "\0",
             "packaging-26.1-py3-none-any.whl": "PK\x03\x04",
         },
@@ -1185,9 +968,6 @@ def test_the_whole_archive_family_is_reported_not_just_zip(tmp_path: Path) -> No
 
 
 def test_a_cdn_build_drops_the_copies_it_will_never_serve(tmp_path: Path) -> None:
-    """38.5 MB of canvaskit and 15.3 of Pyodide, against 108 MB in total,
-    and a real page load requests neither: canvaskit comes from gstatic and
-    Pyodide from jsDelivr."""
     root = build(
         tmp_path,
         {
@@ -1207,10 +987,6 @@ def test_a_cdn_build_drops_the_copies_it_will_never_serve(tmp_path: Path) -> Non
 
 
 def test_a_no_cdn_build_keeps_them_because_it_serves_them(tmp_path: Path) -> None:
-    """`flet publish --no-cdn` is what makes the pin self-contained, and
-    then these directories are the app rather than dead weight. Dropping
-    them on that build is the one way this could break a site, so it is
-    read out of the build rather than assumed."""
     root = build(
         tmp_path,
         {
@@ -1242,16 +1018,10 @@ def test_the_cdn_question_is_read_out_of_the_build(tmp_path: Path, text, is_cdn)
 
 
 def test_a_missing_index_reads_as_a_cdn_build(tmp_path: Path) -> None:
-    """Which is Flet's default, and the reading that deletes rather than
-    keeps -- so it is worth being sure. `main` refuses to publish a build
-    with no index.html long before this is reached."""
     assert ipfs.cdn_build(tmp_path / "nothing-here.html") is True
 
 
 def test_main_dart_wasm_is_not_treated_as_cdn_served() -> None:
-    """The build ships two targets and a WasmGC browser fetches
-    `main.dart.wasm` from our own origin -- only the skwasm renderer beside
-    it comes from the CDN. It 504'd once, which is what warming is for."""
     assert not any("wasm" in name for name in ipfs.CDN_SERVED)
     assert ipfs.CDN_SERVED == ("canvaskit", "pyodide")
 

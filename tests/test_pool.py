@@ -1,14 +1,4 @@
-"""`PoolContract` driven against a fake EIP-1193 provider.
-
-No network and no wallet: the provider below records what it was asked and
-answers from a script, which is enough to pin down both the calldata that
-goes out and the handling of what comes back.
-
-The empty-data cases are the ones that matter most. Calling a function a
-pool does not implement returns `0x` rather than reverting, and `0x` decodes
-to zero -- so without the guard in `PoolContract._read` a mis-typed pool
-would quote every swap at zero output instead of failing visibly.
-"""
+"""`PoolContract` driven against a fake EIP-1193 provider."""
 
 from __future__ import annotations
 
@@ -46,7 +36,6 @@ class FakeProvider(WalletProvider):
             self.calls.append((to, data))
             if self.raise_on_call is not None:
                 raise self.raise_on_call
-            # Match on selector so tests need not spell out full calldata.
             return self.answers.get(data[:10], self.default)
         if method == "eth_sendTransaction":
             self.sent.append(params[0])
@@ -91,7 +80,6 @@ async def test_bare_0x0_is_also_rejected() -> None:
 
 
 async def test_a_genuine_zero_quote_is_still_returned() -> None:
-    """A full 32-byte zero is a real answer, unlike empty data."""
     provider = FakeProvider({"0x" + abi.selector("get_dy(int128,int128,uint256)"): word(0)})
     assert await contract(provider).get_dy(0, 1, 10**6) == 0
 
@@ -130,17 +118,11 @@ async def test_get_dy_short_circuits_on_zero_input() -> None:
 
 
 async def test_calc_token_amount_falls_back_to_the_older_signature() -> None:
-    """Old CryptoSwap pools declare `calc_token_amount(uint256[N])`."""
     with_flag = "0x" + abi.selector("calc_token_amount(uint256[2],bool)")
     without = "0x" + abi.selector("calc_token_amount(uint256[2])")
     provider = FakeProvider({with_flag: "0x", without: word(4242)})
-    # A method a pool does not implement answers with nothing, so that is
-    # what everything unlisted does here -- a zero word would be a real
-    # answer and would stop the search.
     provider.default = "0x"
     assert await contract(provider).calc_token_amount([1, 0]) == 4242
-    # Both flagged spellings are tried before the flagless one: the pool
-    # could have been an NG pool with an unhelpful registry string.
     dynamic = "0x" + abi.selector("calc_token_amount(uint256[],bool)")
     assert [d[:10] for _, d in provider.calls] == [with_flag, dynamic, without]
 
@@ -152,7 +134,6 @@ async def test_calc_token_amount_skips_the_call_when_nothing_is_entered() -> Non
 
 
 async def test_balance_of_allows_a_real_zero() -> None:
-    """Unlike a quote, an empty balance is a perfectly good answer."""
     provider = FakeProvider()
     provider.default = word(0)
     assert await contract(provider).balance_of("0x" + "cc" * 20) == 0
@@ -176,7 +157,6 @@ async def test_exchange_sends_the_expected_transaction() -> None:
     assert tx["to"] == POOL_ADDRESS
     assert tx["value"] == "0x0"
     assert tx["data"] == abi.encode_exchange(0, 1, 1000, 995, stableswap=True)
-    # Gas and nonce are the wallet's job.
     assert "gas" not in tx and "nonce" not in tx
 
 
@@ -220,11 +200,7 @@ async def test_approve_is_for_an_exact_amount_not_unlimited() -> None:
 
 
 # -- fees ------------------------------------------------------------------
-#
-# Curve states fees as a fraction of 1e10. Every pool has `fee()`;
-# StableSwap-NG also prices each pair through `dynamic_fee(i, j)`, and the
-# pools without it answer with a revert (older Vyper) or empty data (newer).
-# Both were confirmed against mainnet, and both have to fall back.
+# Curve states fees as a fraction of 1e10.
 
 
 async def test_the_flat_fee_is_read_from_the_pool() -> None:
@@ -233,7 +209,6 @@ async def test_the_flat_fee_is_read_from_the_pool() -> None:
 
 
 async def test_a_pair_fee_is_used_when_the_pool_has_one() -> None:
-    """StableSwap-NG: `dynamic_fee` answers, so the flat fee is not asked."""
     provider = FakeProvider(
         {
             "0x" + abi.selector("dynamic_fee(int128,int128)"): word(1_000_283),
@@ -246,14 +221,12 @@ async def test_a_pair_fee_is_used_when_the_pool_has_one() -> None:
 
 
 async def test_empty_data_from_dynamic_fee_falls_back_to_the_flat_one() -> None:
-    """What a crypto pool does: the method is absent, so nothing comes back."""
     provider = FakeProvider({"0x" + abi.selector("fee()"): word(4_577_514)})
     provider.default = "0x"
     assert await contract(provider).pair_fee(0, 1) == 4_577_514
 
 
 async def test_a_reverting_dynamic_fee_falls_back_too() -> None:
-    """What 3pool does: older Vyper reverts rather than returning nothing."""
 
     class Reverting(FakeProvider):
         async def request(self, method, params=None):
@@ -278,12 +251,8 @@ async def test_the_pair_is_encoded_into_the_dynamic_fee_call() -> None:
 
 
 # -- array shapes ----------------------------------------------------------
-#
 # StableSwap-NG takes a Vyper `DynArray`, so its amounts are `uint256[]`
-# where every other implementation takes `uint256[N]`. Confirmed against
-# mainnet: PayPool and Strategic USD Reserves answer the dynamic spelling
-# and revert on the fixed one; 3pool, crvUSD/USDT, stETH-ng, TricryptoUSDC,
-# tricrypto2 and YB-WETH do the opposite.
+# where every other implementation takes `uint256[N]`.
 
 
 def ng_pool() -> Pool:
@@ -305,7 +274,6 @@ async def test_a_classic_pool_is_quoted_with_a_fixed_array() -> None:
 
 
 async def test_an_unknown_registry_is_asked_rather_than_assumed() -> None:
-    """A factory this app has never seen still gets working calldata."""
     dynamic = "0x" + abi.selector("calc_token_amount(uint256[],bool)")
     provider = FakeProvider({dynamic: word(5)})
     provider.default = "0x"
@@ -316,7 +284,6 @@ async def test_an_unknown_registry_is_asked_rather_than_assumed() -> None:
 
 
 async def test_the_deposit_is_sent_in_the_shape_that_answered() -> None:
-    """A quote can try both spellings; a transaction cannot."""
     dynamic = "0x" + abi.selector("calc_token_amount(uint256[],bool)")
     provider = FakeProvider({dynamic: word(5)})
     provider.default = "0x"
@@ -335,7 +302,6 @@ async def test_a_dynamic_deposit_carries_an_offset_and_a_length() -> None:
     await contract(provider, ng_pool()).add_liquidity([7, 9], 3)
     data = provider.sent[-1]["data"]
     words = [int(data[10:][i : i + 64], 16) for i in range(0, len(data) - 10, 64)]
-    # head: offset to the array, min_mint. tail: length, elements.
     assert words == [0x40, 3, 2, 7, 9]
 
 
@@ -358,8 +324,6 @@ async def test_a_classic_deposit_stays_inline() -> None:
 
 
 async def test_the_index_width_still_follows_the_family() -> None:
-    """Verified on mainnet: every stable pool -- NG included -- answers
-    `int128`, and every crypto pool answers `uint256`."""
     assert make_pool(registry="stableswapng").is_stableswap
     assert make_pool(registry="crvusd").is_stableswap
     assert make_pool(registry="main").is_stableswap

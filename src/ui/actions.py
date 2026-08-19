@@ -1,35 +1,4 @@
-"""The four things you can do to a pool: deposit, withdraw, swap, stake.
-
-Note the coin list a panel uses is `pool.pool_coins`, not `pool.coins`. On
-a metapool those differ: v2 decomposes the base pool into `coins`, so a
-two-coin metapool reports four. `add_liquidity` takes a `uint256[N]` whose
-N is part of the function signature, so building it from the decomposed
-list is calldata for a function the pool does not have.
-
-The exceptions are the two underlying routes, which exist precisely to
-take the decomposed list. Depositing and withdrawing them needs a zap --
-see `curve.zaps` -- and each panel keeps a set of fields per route: which
-one is live decides the coins, the spender that gets approved, the
-contract the transaction goes to, and the fee the slippage comes from.
-
-**Swapping them needs nothing.** A metapool does the base-pool leg itself
-through `exchange_underlying`, so that route approves the pool like any
-other swap and works on every chain, including the ones where no zap was
-ever deployed.
-
-Each tab is the same shape -- read some balances, quote the result on
-chain, then submit -- so the shared parts (the approve step, the status
-line, the "connect a wallet first" state) live in `ActionTab` and each
-subclass only supplies its own fields and its own two transactions.
-
-Two rules hold everywhere in this file:
-
-  * amounts are integers in the token's smallest unit from the moment they
-    are parsed until they reach calldata. Floats appear only in labels.
-  * every quote is fetched from the pool itself rather than computed here.
-    Re-implementing Curve's invariants in Python would be a second source
-    of truth that silently drifts from the deployed contract.
-"""
+"""The four things you can do to a pool: deposit, withdraw, swap, stake."""
 
 from __future__ import annotations
 
@@ -68,18 +37,13 @@ from .logos import pool_stack, token_mark
 from .status import DONE, FAILED, StatusPanel
 from .typography import BODY, LABEL, SMALL
 
-#: How often to ask whether a transaction has been mined. A module-level
-#: knob rather than a hidden default so a test can run the loop flat out.
+#: How often to ask whether a transaction has been mined.
 CONFIRM_INTERVAL = POLL_INTERVAL
 
-#: Between the fields and the buttons under them. The fields sit 12
-#: apart, and the button wants more than that or it reads as one more of
-#: them.
+#: Between the fields and the buttons under them.
 BUTTON_GAP = 24
 
 #: Tolerance used until the pool says otherwise, and whenever it will not.
-#: Curve shows 0.03% on pegged stable pools, but one number has to cover
-#: every pool type here, so it errs toward the volatile end.
 DEFAULT_SLIPPAGE = 0.5
 
 #: "no fee read yet" -- distinct from None, which is what the deposit and
@@ -88,93 +52,29 @@ _NOT_READ = object()
 
 #: How much of the pool's own fee to allow as slippage, for an action whose
 #: quote is exact.
-#:
-#: The fee is what a trade is expected to cost, so it is the natural scale
-#: for what an unexpected move is worth tolerating -- a tricrypto pool
-#: charging 0.046% and a stable pool charging 0.01% do not deserve the same
-#: fixed 0.5%. A fifth is tight, which is the point: `get_dy` is fetched
-#: immediately before the transaction, so this only covers movement between
-#: the quote and the block.
 SLIPPAGE_OF_FEE = 0.2
 
 #: The deposit and withdrawal side, as `a * fee + b`, fitted to what real
 #: deposits need: 88 measurements over 44 mainnet pools, run on a fork
 #: through titanoboa, bisecting `min_mint` until `add_liquidity` stops
 #: reverting.
-#:
-#: `a = 1`: the whole fee. With `b` held at 0.005% the smallest slope that
-#: covers all 44 pools is 0.880 -- binding, as always, on cvxCrv/Crv -- and
-#: rounding it to one is not just headroom, it is the ceiling the number is
-#: converging to. The imbalance fee on a fully single-sided deposit
-#: approaches the base fee as a two-coin pool skews (Curve's adjusted fee
-#: is `base * N / (4(N-1))`, applied to each coin's distance from balance),
-#: so no pool of this shape can need more. The measured worst was 0.91.
-#:
-#: Which makes the whole rule sayable in one line: *a deposit may lose its
-#: pool's fee, plus a little for the quote going stale.* What binds it is
-#: the old StableSwap implementations, whose `calc_token_amount` quotes
-#: fee-free so the mint lands short: cvxCrv/Crv by 0.91x its fee, 3pool by
-#: 0.63x, alETH/frxETH by 0.13x, msETH/WETH by 0.05x -- the spread is how
-#: imbalanced each pool already is, and one whole fee is the ceiling for a
-#: two-coin pool. Everything modern (crvusd, stableswap-ng, tricrypto-ng,
-#: twocrypto-ng, the old crypto pools) mints *exactly* the quote at every
-#: size from 0.01% to 1% of the pool, so for those this is pure margin --
-#: which is also what covers an implementation this app has never seen.
 ESTIMATE_FEE_SHARE = 1.0
 
 #: `b` is what the same fit says is zero -- and it is zero *across pools*,
-#: because a cross-section cannot see time. Every pool above was measured
-#: at one moment; what a quote loses by being a few blocks old is a
-#: separate axis, measured by calling `calc_token_amount` against the
-#: archive at the block you would have quoted at and the block you land in.
-#:
-#: That is bursty rather than pool-shaped: in a quiet snapshot the largest
-#: drop over five blocks across all 44 pools was 0.00022%, while a volatile
-#: one cost 0.0173% over three blocks on TricryptoUSDC. Keeping `b` at
-#: 0.005% covers the quiet case outright, and the bursty one is covered by
-#: the fee term instead: the pools that lurch are the ones charging enough
-#: for `a * fee` to absorb it (TricryptoUSDC allows 0.0335% against that
-#: 0.0173% drop), while the pools with fees too small to help are the
-#: pegged ones that do not move -- Strategic USD Reserves charges 0.001%
-#: and its worst drift over a hundred blocks was 0.0019%, inside 0.00595%.
-#:
-#: Which is the whole reason to keep the slope: a low constant is only
-#: affordable because `a` is doing the work where the risk actually is.
+#: because a cross-section cannot see time.
 QUOTE_DRIFT = 0.005
 
-#: The probe trade, as a divisor of what was typed. A twentieth is small
-#: enough that the pool's curve is near-flat across it -- so its rate
-#: stands in for the marginal one -- and large enough that the integer
-#: division below does not swamp the answer.
+#: The probe trade, as a divisor of what was typed.
 IMPACT_PROBE_DIVISOR = 20
 
 #: The smallest probe worth quoting, in the token's own smallest units --
 #: applied at **both** ends of the trade.
-#:
-#: Going in, the probe is `amount // 20`, which throws away up to one unit.
-#: Coming out, the pool answers in whole units too, and `probe_out * 20`
-#: multiplies whatever it truncated by twenty. Either way the error is
-#: about `1 / units`, and at ten thousand that is 0.01% -- exactly the
-#: precision the line is printed to. Below it the measurement is of the
-#: rounding rather than of the pool, and is left unsaid instead of being
-#: dressed up as a number.
-#:
-#: The far end is the one that bites, because it is denominated in the
-#: coin being *bought*: one USDT into TricryptoUSDT buys 1,530 units of
-#: WBTC, of which a twentieth is 76 -- and 76 rounded, times twenty, read
-#: as a 0.59% price impact on a one-dollar swap. That is not a restriction
-#: on small trades so much as a statement about them: nothing this size
-#: moves a price anyway.
 IMPACT_MIN_PROBE = 10_000
 
-#: How long the chain's fee readings are kept before being asked for
-#: again. One Ethereum block; on faster chains it simply means the figure
-#: lags by a second, which a fee estimate can afford.
+#: How long the chain's fee readings are kept before being asked for again.
 FEE_TTL = 12.0
 
-#: One client for the native coin's price, shared by every panel. Its own
-#: five-minute cache is what keeps this to one request per chain rather
-#: than one per keystroke.
+#: One client for the native coin's price, shared by every panel.
 _PRICES = CurveApi()
 
 
@@ -187,17 +87,7 @@ async def _native_usd(chain: str, chain_id: int) -> float:
 
 
 class _Band(ft.Container):
-    """One line of annotation under the estimate, in the theme's colour.
-
-    The colour is re-read before every paint rather than fixed at
-    construction, for the reason `buttons.Themed` gives: a panel outlives
-    any number of theme switches, and a band built under Chad and left
-    there is a flat Tango fill on a Material surface.
-
-    `alarming` is what keeps the two out of each other's way. A punishing
-    price impact pulses the same band red, and a repaint in the middle of
-    that pulse would put the calm colour back under it.
-    """
+    """One line of annotation under the estimate, in the theme's colour."""
 
     def __init__(
         self, content: ft.Control, page: ft.Page, *, kind: str = "", visible: bool = True
@@ -221,16 +111,14 @@ class _Band(ft.Container):
             self.bgcolor = theme.note_tint(self._page, self.kind)
 
 
-#: The mark beside an amount on the estimate line. Sized to the text it
-#: sits with rather than to the amount fields' 18-20px: this is a caption
-#: saying which token, not a control to aim at.
+#: The mark beside an amount on the estimate line.
 ESTIMATE_MARK = 16
 
 #: Under this, in percent, the impact is inside the probe's own error.
 IMPACT_FLOOR = 0.01
 
 #: Where the number stops being a detail and becomes a reason to type a
-#: smaller one. Curve's own UI draws the line around here.
+#: smaller one.
 IMPACT_HIGH = 1.0
 
 #: The two tints the alarm band alternates between, as opacities of the
@@ -239,28 +127,16 @@ IMPACT_HIGH = 1.0
 ALARM_LIT = 0.28
 ALARM_DIM = 0.07
 
-#: Half a pulse, in seconds. The container animates across it, so this is
-#: a fade rather than a strobe.
+#: Half a pulse, in seconds. The container animates across it, so this is a
+#: fade rather than a strobe.
 ALARM_INTERVAL = 0.5
 
 #: How many times it pulses before settling on the dim tint.
-#:
-#: Bounded, and not only out of taste. A panel has no teardown hook -- the
-#: pool page rebuilds its tabs outright -- so a loop that ran until the
-#: number came down would outlive the panel it was drawing on and go on
-#: calling `page.update()` for the rest of the session. Attention is drawn
-#: by the flashing; the state stays visible in the tint that is left.
 ALARM_PULSES = 5
 
 
 def impact_probe(amounts: list[int]) -> list[int] | None:
-    """A twentieth of each amount, or None where that cannot be measured.
-
-    None rather than an unreliable number: see `IMPACT_MIN_PROBE`. A coin
-    left at zero stays at zero -- the probe has to point the same way as
-    the trade, and a single-sided deposit probed on both sides would be
-    measuring a different deposit.
-    """
+    """A twentieth of each amount, or None where that cannot be measured."""
     probe = [amount // IMPACT_PROBE_DIVISOR for amount in amounts]
     if not any(probe):
         return None
@@ -273,22 +149,7 @@ def impact_probe(amounts: list[int]) -> list[int] | None:
 
 
 def price_impact(probe_out: int, out: int) -> float | None:
-    """What the size of a trade costs it, in percent.
-
-    The probe's rate scaled back up to the full size -- `probe_out * 20` --
-    is what the trade would produce if its own weight never moved the
-    price; `out` is what it actually produces. The gap between them is the
-    curve, and it is the whole of what this measures: the fee cancels,
-    because both sides pay the same proportion of it.
-
-    Negative is a real answer rather than a slipped sign. A deposit of
-    whichever coin the pool is short of mints more than its proportional
-    share, and so does a swap into a pool whose dynamic fee falls as the
-    trade rebalances it.
-
-    None where the probe's *own* answer is too coarse to divide -- see
-    `IMPACT_MIN_PROBE`, whose second half is about exactly this end.
-    """
+    """What the size of a trade costs it, in percent."""
     if probe_out < IMPACT_MIN_PROBE or out <= 0:
         return None
     return (probe_out * IMPACT_PROBE_DIVISOR - out) / out * 100
@@ -309,13 +170,7 @@ def slippage_for(
 
 
 def format_slippage(percent: float) -> str:
-    """Three significant figures, rounded *up*.
-
-    Up rather than nearest because this number is a floor being handed to
-    the chain: `%.3g` turns 0.01925 into 0.0192, which is a tolerance
-    slightly tighter than the one that was calculated, and the whole point
-    of calculating it was that tighter reverts.
-    """
+    """Three significant figures, rounded *up*."""
     if percent <= 0:
         return "0"
     value = Decimal(repr(percent))
@@ -346,37 +201,24 @@ class ActionTab:
     #: Label for the button that sends the main transaction.
     submit_label = "Confirm"
     #: Past tense, for the line shown once the transaction is mined.
-    #: A property rather than a plain attribute because staking answers it
-    #: with a question -- which way the gauge went -- and a property
-    #: cannot override an attribute.
     _done_verb = "Confirmed"
 
     @property
     def done_verb(self) -> str:
         return self._done_verb
-    #: Does this action have a price to protect? Staking does not -- it
-    #: moves LP tokens into a gauge at no rate at all -- so showing a
-    #: tolerance there invites someone to tune a number that does nothing.
+    #: Does this action have a price to protect?
     uses_slippage = True
-    #: `a` and `b` for this action. Deposits and withdrawals are quoted by
-    #: `calc_token_amount`, which some implementations compute fee-free.
+    #: `a` and `b` for this action. Deposits and withdrawals are quoted
+    #: by `calc_token_amount`, which some implementations compute fee-
+    #: free.
     fee_multiple = ESTIMATE_FEE_SHARE
     slippage_constant = QUOTE_DRIFT
-    #: Does the size of this action move the price it gets? Only for the
-    #: panels that implement `_quote`: staking has no price at all, and
-    #: claiming is not a trade.
+    #: Does the size of this action move the price it gets?
     shows_impact = False
 
     @property
     def available(self) -> bool:
-        """Is there anything this panel can act on?
-
-        False takes the tab out of the bar entirely rather than showing an
-        empty one -- see `pool_detail._sync_tabs`. Only staking answers
-        this with anything but True: three of the four panels are useful
-        with nothing in the wallet at all, because a quote is worth reading
-        before you own anything.
-        """
+        """Is there anything this panel can act on?"""
         return True
 
     def __init__(
@@ -391,9 +233,6 @@ class ActionTab:
         self.get_contract = get_contract
         self.on_done = on_done
 
-        # Secondary, and sized to say so: a number you set once and then
-        # ignore should not have the same weight as the amount you are
-        # about to send.
         self.slippage = ft.TextField(
             label="Slippage %",
             value=str(DEFAULT_SLIPPAGE),
@@ -403,45 +242,13 @@ class ActionTab:
             label_style=ft.TextStyle(size=LABEL),
             on_change=self._slippage_edited,
         )
-        #: Once the user has typed in the box, the pool stops overwriting it.
         self._slippage_is_theirs = False
-        #: What the last suggestion was for, so a fee is read once per pair
-        #: rather than on every keystroke.
         self._fee_read_for: object = _NOT_READ
-        #: The status line as a whole: a tinted panel rather than loose
-        #: text, so "waiting", "done" and "failed" are told apart before
-        #: the words are read. Shared with the portfolio's claim bar --
-        #: see `ui.status`, which is where the three states are defined.
         self.status_panel = StatusPanel(page)
         self.status = self.status_panel.text
         self.status_spinner = self.status_panel.spinner
-        #: What you get. Sized like the fields above rather than like a
-        #: caption, because it is the other half of the trade: the amount
-        #: typed in and the amount coming out are the same kind of fact,
-        #: and one of them was set in eight-point grey.
         self.estimate = ft.Text("", size=BODY, color=ft.Colors.ON_SURFACE)
-        #: What the size of the trade costs it, on its own line rather than
-        #: appended to the estimate: it is a reason to type a smaller
-        #: number, not another way of describing the result, and the line
-        #: above is already two figures long.
         self.impact = ft.Text("", size=SMALL, color=ft.Colors.ON_SURFACE_VARIANT)
-        #: The bands behind the two lines, which are what flash. Vertical
-        #: padding only: a horizontal inset would set these 8px right of
-        #: the fields they belong under, and lines that nearly line up read
-        #: as a mistake. The impact one is hidden until there is something
-        #: to say -- see `show_impact`.
-        #: The estimate as it is *drawn*, which is not always the same
-        #: control as the one holding its words.
-        #:
-        #: An amount and the token it is in are one fact, and the panels
-        #: mark tokens everywhere else -- in the coin picker, in the amount
-        #: fields, beside every reward. Only the line that says what you
-        #: get had a bare symbol. So when there is something to mark, this
-        #: row holds a mark and a figure per coin; when there is not -- an
-        #: error, a balance warning -- it holds `estimate` itself, which is
-        #: also where the words always live, whether or not they are the
-        #: control on screen. Everything that reasons about the line
-        #: (`_sync_alarm`, `summary`, the tests) reads `estimate.value`.
         self.estimate_line = ft.Row(
             [self.estimate],
             spacing=6,
@@ -451,36 +258,16 @@ class ActionTab:
         )
         self.estimate_panel = self._band(self.estimate_line)
         self.impact_panel = self._band(self.impact, visible=False, kind="impact")
-        #: What sending this will cost in fees, on its own quiet line.
-        #: Hidden until there is a figure: it depends on a simulation, and
-        #: an action that cannot be simulated yet -- a deposit before its
-        #: approval -- has no honest number to show.
         self.fee = ft.Text("", size=SMALL, color=ft.Colors.ON_SURFACE_VARIANT)
         self.fee_panel = self._band(self.fee, visible=False, kind="fee")
-        #: The approval this panel is waiting on, as `_sync_approval` last
-        #: found it. Held rather than asked for again: it is one allowance
-        #: read, and `show_gas` runs in the same refresh.
         self._pending_approval: tuple[str, str, int] | None = None
-        #: Chain fees change per block, not per keystroke. Read once and
-        #: kept for a block's worth of typing.
         self._fees: tuple[int, int, int, bool] | None = None
         self._fees_read_at = 0.0
-        #: Which band is flashing, if any, and which run of the pulse is
-        #: the current one -- see `_alarm`.
         self._alarm_panel: ft.Container | None = None
         self._alarm_run = 0
-        #: What the two lines are currently saying, as the alarm sees it.
         self._estimate_problem = False
         self._impact_high = False
 
-        # Every read here goes through the *wallet's* provider, so it lands
-        # on whatever network the wallet is on -- not the one being
-        # browsed. Picking Gnosis in the header while the wallet sits on
-        # Ethereum therefore quotes Gnosis addresses against Ethereum,
-        # where they hold no code, and every estimate comes back "the pool
-        # did not answer". That looked like a pool this app could not
-        # handle. It is worth saying plainly instead, with the one button
-        # that fixes it.
         self.network_note = ft.Text("", size=SMALL, expand=True)
         self.switch_button = ft.TextButton("Switch", on_click=self._switch_network)
         self.network_panel = ft.Container(
@@ -492,11 +279,6 @@ class ActionTab:
             shadow=theme.panel_shadow(page, inset=True),
         )
 
-        # Labels go through `content`, not `text`: `ft.Button` has no `text`
-        # property, so assigning one sets an attribute nobody reads and the
-        # button keeps whatever it was built with. That is how Unstake stayed
-        # labelled "Stake", and why the numbered "2. Deposit" step never
-        # appeared next to "1. Approve".
         self.approve_button = buttons.Themed(
             "1. Approve",
             page=page,
@@ -510,37 +292,12 @@ class ActionTab:
             on_click=self._submit_clicked,
             disabled=True,
         )
-        # Wrapped for the shadow. `visible` is still set on the buttons
-        # themselves everywhere below -- the wrapper follows it.
         self._approve_box = buttons.shadowed(self.approve_button, page)
         self._submit_box = buttons.shadowed(self.submit_button, page)
-        # STRETCH, so every field fills the panel. Without it a Column
-        # gives each child its intrinsic width, and Material's idea of how
-        # wide a text field wants to be left the amounts ending short of
-        # the right edge -- by about the width of the slippage box, which
-        # made it look like they were dodging it.
-        #
-        # Two columns rather than one, and this is what puts the button
-        # against the bottom of the panel. The panel's height is a guess
-        # -- `TabBarView` cannot size to its content, see
-        # `pool_detail.actions_height` -- so whatever the guess is over by
-        # has to go somewhere, and in a single top-aligned column it went
-        # *under* the button: a 46px moat below it against 14px of padding
-        # at its sides. Here the fields take the slack instead, because
-        # they are the flexible part, and the buttons stay where a card's
-        # buttons belong.
-        # Neither expanding nor scrolling. Both were for a panel of a
-        # guessed height: expanding pushed the buttons to the bottom of it
-        # and scrolling coped with the guess coming up short. The panel is
-        # as tall as its content now (`pool_detail._actions`), so the
-        # buttons follow the fields and there is nothing to scroll.
         self.control = ft.Column(
             spacing=12, horizontal_alignment=ft.CrossAxisAlignment.STRETCH
         )
         self.frame = ft.Column(
-            #: Wider than the twelve between the fields, so the button
-            #: reads as the end of the panel rather than as another field.
-            #: A spacing, not a size: nothing here is told how tall it is.
             spacing=BUTTON_GAP,
             horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
         )
@@ -562,27 +319,13 @@ class ActionTab:
         return None
 
     async def _quote(self, contract: PoolContract, amounts: list[int]) -> int:
-        """What this action produces for `amounts`, asked of the pool.
-
-        A list even where the action takes a single number, because the
-        impact probe scales whatever is here by a common factor and has no
-        business knowing which action it is measuring.
-        """
+        """What this action produces for `amounts`, asked of the pool."""
         raise NotImplementedError
 
     async def measure_impact(
         self, contract: PoolContract, amounts: list[int], out: int
     ) -> float | None:
-        """Quote a twentieth of the same action and compare the two rates.
-
-        One extra `eth_call` per keystroke, deliberately. The alternative
-        is re-deriving the pool's invariant in Python, and this file's
-        second rule is that every number on screen came from the pool.
-
-        A probe that fails says nothing at all: the estimate above it is
-        still good, and a pool that answered the real quote and not this
-        one has nothing wrong with it worth reporting twice.
-        """
+        """Quote a twentieth of the same action and compare the two rates."""
         probe = impact_probe(amounts)
         if probe is None:
             return None
@@ -593,14 +336,7 @@ class ActionTab:
         return price_impact(probe_out, out)
 
     def show_estimate(self, text: str, *, problem: bool = False) -> None:
-        """The result line -- or the reason there is no result.
-
-        `problem` is for the things that would revert if they were sent:
-        a quote the pool refused, an amount larger than the balance behind
-        it. Those get the same red band a punishing price impact gets,
-        because they are the same kind of message -- stop, and type
-        something else -- and the panel has exactly one place to say it.
-        """
+        """The result line -- or the reason there is no result."""
         self.estimate.value = text
         self.estimate.color = ft.Colors.ERROR if problem else ft.Colors.ON_SURFACE
         self.estimate_line.controls = [self.estimate]
@@ -608,18 +344,7 @@ class ActionTab:
         self._sync_alarm()
 
     def show_receipts(self, receipts: list[tuple[ft.Control, str]]) -> None:
-        """The same line, with each amount behind the mark of its token.
-
-        `receipts` is `(mark, "1,234.00 USDT")` per coin, already
-        formatted -- the marks come from the caller because only it knows
-        whether the thing arriving is a coin (`token_mark`) or a share of
-        the pool itself (`pool_stack`, as the Deposit panel's own field
-        draws it).
-
-        `estimate.value` is set to the plain reading either way, so
-        nothing that reasons about this line has to know it was drawn
-        twice over.
-        """
+        """The same line, with each amount behind the mark of its token."""
         if not receipts:
             self.show_estimate("")
             return
@@ -644,42 +369,18 @@ class ActionTab:
         self._sync_alarm()
 
     def preview(self, contract: PoolContract) -> tuple[str, str] | None:
-        """The transaction `submit` would send, without sending it.
-
-        None where the panel has nothing to send yet, which is most of the
-        time. Built through the same `build_` the sender uses -- see
-        `PoolContract._send` -- so the fee quoted is the fee of the
-        transaction that will actually be signed.
-        """
+        """The transaction `submit` would send, without sending it."""
         return None
 
     def prelude(self, contract: PoolContract) -> tuple[str, tuple[str, str]] | None:
-        """The transaction that has to go first, and what to call it.
-
-        An approval, for every panel that needs one. It matters because
-        the main action *cannot be simulated* until this has landed --
-        `add_liquidity` reverts under `eth_estimateGas` without an
-        allowance, exactly as it would on chain -- so without this the
-        panel showed no fee at all during the part of the flow where
-        somebody is deciding whether to go ahead.
-        """
+        """The transaction that has to go first, and what to call it."""
         if self._pending_approval is None:
             return None
         token, spender, amount = self._pending_approval
         return "to approve first", contract.build_approve(token, spender, amount)
 
     async def show_gas(self, contract: PoolContract | None) -> None:
-        """Price the transaction this panel would send, or say nothing.
-
-        Two attempts, because a flow with a preamble cannot simulate its
-        main action until the preamble has run: the action itself, and
-        then whatever `prelude` says must go first. The line names which
-        one it priced, since "the fee for approving" and "the fee for
-        depositing" are different answers to the same question.
-
-        Nothing is still an ordinary outcome -- no wallet, nothing typed,
-        a quote the pool refused -- and not a failure worth colouring.
-        """
+        """Price the transaction this panel would send, or say nothing."""
         self.fee_panel.visible = False
         self.fee.value = ""
         if contract is None or not contract.can_send:
@@ -717,12 +418,7 @@ class ActionTab:
     async def _chain_fees(
         self, contract: PoolContract
     ) -> tuple[int, int, int, bool] | None:
-        """The chain's own numbers, at most once a block.
-
-        Three reads per keystroke on top of a quote and an impact probe is
-        three too many, and a base fee that changed between one character
-        and the next would not be worth them.
-        """
+        """The chain's own numbers, at most once a block."""
         now = time.monotonic()
         if self._fees is None or now - self._fees_read_at > FEE_TTL:
             fees = await read_fees(contract.provider)
@@ -751,12 +447,7 @@ class ActionTab:
         return self.page
 
     def _sync_alarm(self) -> None:
-        """Whichever line is worth flashing, or neither.
-
-        The estimate wins where both would qualify, though in practice
-        they cannot both be set: a quote that failed has no impact to
-        measure, and one that succeeded is not a problem.
-        """
+        """Whichever line is worth flashing, or neither."""
         if self._estimate_problem:
             self._alarm(self.estimate_panel)
         elif self._impact_high:
@@ -765,24 +456,15 @@ class ActionTab:
             self._alarm(None)
 
     def _alarm(self, panel: ft.Container | None) -> None:
-        """Start the pulse on `panel`, or stop whatever is pulsing.
-
-        Only on a *change*, not on every refresh: the panel re-quotes on
-        each keystroke, and a pulse restarted every character would never
-        get past its first flash.
-        """
+        """Start the pulse on `panel`, or stop whatever is pulsing."""
         if panel is self._alarm_panel:
             return
         if self._alarm_panel is not None:
-            # Back to whatever the band is normally, which for the two
-            # annotated ones is a colour rather than nothing.
             self._alarm_panel.alarming = False
             self._alarm_panel.bgcolor = theme.note_tint(
                 self.page, self._alarm_panel.kind
             )
         self._alarm_panel = panel
-        # Whatever is pulsing now belongs to the previous run, and checks
-        # this number before each step. Bumping it retires it.
         self._alarm_run += 1
         if panel is not None:
             panel.alarming = True
@@ -803,18 +485,11 @@ class ActionTab:
         if panel is None:
             return
         panel.bgcolor = ft.Colors.with_opacity(opacity, ft.Colors.ERROR)
-        # A page that has gone away is not an error worth propagating out
-        # of a decoration: the message itself is already on screen.
         with contextlib.suppress(Exception):
             self.page.update()
 
     async def suggest_slippage(self, contract: PoolContract | None) -> None:
-        """Set the tolerance from the pool's own fee, once, quietly.
-
-        Never against what the user typed: the moment they touch the box it
-        is theirs. And never on a failed read -- a pool that will not answer
-        `fee()` leaves the default standing rather than an empty field.
-        """
+        """Set the tolerance from the pool's own fee, once, quietly."""
         if contract is None or not self.uses_slippage or self._slippage_is_theirs:
             return
         key = self.fee_key()
@@ -837,11 +512,7 @@ class ActionTab:
         raise NotImplementedError
 
     def clear_inputs(self) -> None:
-        """Empty the amount fields after a confirmed transaction.
-
-        The number that was there has been spent; leaving it in place
-        invites sending it twice.
-        """
+        """Empty the amount fields after a confirmed transaction."""
 
     async def approval_needed(self, contract: PoolContract) -> tuple[str, str, int] | None:
         """Return `(token, spender, amount)` still needing an allowance."""
@@ -853,17 +524,11 @@ class ActionTab:
         self.control.controls = [
             self.network_panel,
             *self.build(),
-            # Next to the amounts it protects. Down by the button it read
-            # as part of the action rather than as a setting for it.
             *([_aside(self.slippage)] if self.uses_slippage else []),
             self.estimate_panel,
             *([self.impact_panel] if self.shows_impact else []),
             self.fee_panel,
         ]
-        # The status line goes with the buttons rather than with the
-        # fields: it is what the button did, and it appears while a
-        # transaction is in flight -- which is exactly when a panel must
-        # not be scrolled away from the thing it is saying.
         self.frame.controls = [
             self.control,
             self._approve_box,
@@ -873,13 +538,7 @@ class ActionTab:
         return self.frame
 
     async def network_ok(self, contract: PoolContract | None) -> bool:
-        """Is the wallet on the network these pools are on?
-
-        False also hides the panel's estimate and greys its buttons, since
-        nothing can be read or sent across a network boundary. A chain the
-        app does not know the id of (0, which is what a pool built from a
-        partial payload has) is not something to complain about.
-        """
+        """Is the wallet on the network these pools are on?"""
         if contract is None or not self.pool.chain_id:
             self.network_panel.visible = False
             return True
@@ -913,8 +572,6 @@ class ActionTab:
         except WalletError as exc:
             self._failed(exc)
             return
-        # The wallet emits `chainChanged`, which the app follows; refresh
-        # anyway in case it was already there and simply said nothing.
         await self.refresh()
 
     def _slippage_edited(self, _e: AnyEvent) -> None:
@@ -933,22 +590,12 @@ class ActionTab:
     def _say(
         self, message: str, colour: str | None = None, *, pending: bool = False
     ) -> None:
-        """Show a status. `pending` means a spinner and a neutral tint.
-
-        The tint is derived from the text colour rather than passed in, so
-        a caller cannot say "green" and get an amber panel.
-        """
+        """Show a status. `pending` means a spinner and a neutral tint."""
         self.status_panel.say(message, colour, pending=pending)
         self.page.update()
 
     def _failed(self, error: WalletError) -> None:
-        """Report a wallet failure -- or, for a refusal, report nothing.
-
-        Dismissing a wallet prompt is not an error to be shown back: the
-        person who dismissed it knows what they did, and "Rejected in the
-        wallet" in red says something went wrong. The line goes back to
-        empty, which is where it was before the button was pressed.
-        """
+        """Report a wallet failure -- or, for a refusal, report nothing."""
         self._say("" if error.rejected_by_user else str(error), FAILED)
 
     def _busy(self, busy: bool) -> None:
@@ -957,41 +604,18 @@ class ActionTab:
         self.page.update()
 
     async def _step(self, contract: PoolContract, tx: str, done: str) -> None:
-        """Wait for a transaction that is *not* the last one in this action.
-
-        Same wait as `_confirm` -- receipt, then the endpoint's own head
-        reaching that block -- because the next step reads state the
-        previous one wrote, and reading it early reads the state before.
-        What differs is the line: it says what just landed and that more is
-        coming, so a second wallet prompt is expected rather than alarming.
-        """
+        """Wait for a transaction that is *not* the last one in this action."""
         self._say(f"{done} Waiting for {tx[:14]}… to confirm.", pending=True)
         await wait_for_confirmation(contract.provider, tx, interval=CONFIRM_INTERVAL)
 
     async def _confirm(self, contract: PoolContract, tx: str, done: str) -> None:
-        """Wait for the transaction, then let the panel read the result.
-
-        Everything the panel shows next -- the allowance that ungreys the
-        submit button, the balances, the position -- is read back from the
-        chain, and reading it while the transaction is still in the mempool
-        shows the state before it. That is why an approval used to land and
-        leave the button disabled.
-
-        The block the receipt named still governs those reads; it is simply
-        not worth saying. What the line reports is what was sent, in the
-        numbers that were typed.
-        """
+        """Wait for the transaction, then let the panel read the result."""
         self._say(f"Waiting for {tx[:14]}… to confirm.", pending=True)
         await wait_for_confirmation(contract.provider, tx, interval=CONFIRM_INTERVAL)
         self._say(done, DONE)
 
     def amount_label(self, address: str, amount: int) -> str:
-        """`1,000 USDC` -- an amount in the units of whatever token it is.
-
-        Every coin the pool knows about, decomposed list included, so this
-        also names the underlying coins the zap route deals in. Anything
-        else is the LP token, which has no entry of its own.
-        """
+        """`1,000 USDC` -- an amount in the units of whatever token it is."""
         for coin in self.pool.coins:
             if coin.address.lower() == address.lower():
                 return (
@@ -1039,8 +663,6 @@ class ActionTab:
         self._busy(True)
         try:
             self._say("Confirm in your wallet…", pending=True)
-            # Read before sending: `clear_inputs` empties the fields the
-            # summary is built from.
             done = self.done_message()
             tx = await self.submit(contract)
             await self._confirm(contract, tx, done)
@@ -1055,8 +677,6 @@ class ActionTab:
     async def _sync_approval(self, contract: PoolContract | None) -> None:
         """Show or hide the approve step based on the current allowance."""
         if contract is None or not contract.can_send:
-            # A public node can quote but has no account to spend from and
-            # no key to sign with -- see `curve.rpc`.
             self.approve_button.visible = False
             self.submit_button.disabled = True
             self.submit_button.content = self.submit_label
@@ -1065,24 +685,17 @@ class ActionTab:
             pending = await self.approval_needed(contract)
         except WalletError:
             pending = None
-        # Kept so `show_gas` can price it without a second allowance read.
         self._pending_approval = pending
         self.approve_button.visible = pending is not None
         self.approve_button.disabled = pending is None
         self.submit_button.content = (
             f"2. {self.submit_label}" if pending is not None else self.submit_label
         )
-        # Curve gates the action behind the approval; so does this, because
-        # a deposit sent without one just reverts and costs gas.
         self.submit_button.disabled = pending is not None
 
 
 def _max_button(on_click) -> ft.TextButton:
-    """The "MAX" affordance that lives inside an amount field.
-
-    Small and quiet: it is a shortcut for typing, not an action, and it
-    sits inside the box it fills rather than under it.
-    """
+    """The "MAX" affordance that lives inside an amount field."""
     return ft.TextButton(
         "MAX",
         on_click=on_click,
@@ -1096,23 +709,10 @@ def _max_button(on_click) -> ft.TextButton:
 def _amount_field(
     label: str, on_change, mark: ft.Control | None = None, on_max=None
 ) -> ft.TextField:
-    """An amount input, with the token's mark in front of it.
-
-    `prefix_icon`, not `prefix`: Material only reveals a `prefix` once the
-    field is focused or has text, so a logo put there is invisible exactly
-    when it is most useful -- before you have typed anything.
-
-    The slot is sized from the mark itself, because an LP field's mark is a
-    stack of every coin in the pool and would otherwise be clipped to the
-    width of one.
-    """
+    """An amount input, with the token's mark in front of it."""
     constraints = None
     if mark is not None:
         width = (getattr(mark, "width", None) or 20) + 16
-        # Material gives the icon slot no inset of its own, so a wide mark
-        # ends up flush against the field's border. The padding is part of
-        # the mark rather than the constraint because the constraint only
-        # reserves space -- it does not move anything.
         height = (getattr(mark, "height", None) or 20) + 12
         mark = ft.Container(
             mark,
@@ -1137,13 +737,7 @@ def _amount_field(
 
 
 class _AmountRows:
-    """The amount fields for one deposit route, as a block that can hide.
-
-    A metapool has two of these -- one per coin the contract holds, one per
-    underlying coin the zap accepts -- and they are built together and
-    swapped by visibility rather than rebuilt on every toggle, so a number
-    typed into one is still there after a look at the other.
-    """
+    """The amount fields for one deposit route, as a block that can hide."""
 
     def __init__(self, coins, chain: str, on_change, on_max) -> None:
         self.coins = list(coins)
@@ -1183,15 +777,7 @@ class _AmountRows:
 
 
 def underlying_swap_spender(pool: Pool) -> str | None:
-    """Who moves the coins for an underlying swap, or None if nobody can.
-
-    A StableSwap metapool swaps its underlying itself, so the pool is the
-    spender as it is for any other swap. A crypto metapool has no
-    `exchange_underlying` at all and its per-pool zap carries one instead
-    -- so there the zap is what gets approved. The factory zaps of either
-    kind have no swap functions, so a crypto metapool served only by one
-    of those has no underlying swap route at all.
-    """
+    """Who moves the coins for an underlying swap, or None if nobody can."""
     if not pool.has_underlying:
         return None
     if pool.is_stableswap:
@@ -1201,12 +787,7 @@ def underlying_swap_spender(pool: Pool) -> str | None:
 
 
 def _route_picker(on_change, *, underlying: bool) -> ft.RadioGroup:
-    """Underlying or pool tokens: which coins the amounts are denominated in.
-
-    Underlying first, and selected, wherever it is available: it is the one
-    denominated in coins people actually hold. The base pool's LP token is
-    the specialist case -- you have some only if you went and made some.
-    """
+    """Underlying or pool tokens: which coins the amounts are denominated in."""
     return ft.RadioGroup(
         value="underlying" if underlying else "pool",
         content=ft.Row(
@@ -1236,40 +817,17 @@ def _coin_options(coins, chain: str) -> list[ft.DropdownOption]:
 
 
 class DepositTab(ActionTab):
-    """Add liquidity: an amount per coin, quoted as LP tokens out.
-
-    On a metapool there are two sets of coins to offer. The contract holds
-    two -- its own, and the base pool's LP token -- but almost nobody holds
-    that LP token; what they have is USDC. So when a zap exists for this
-    pool, a second route appears whose fields are the *underlying* coins,
-    and everything downstream (the quote, the approvals, the deposit, and
-    the fee the slippage comes from) follows the chosen route.
-
-    **Staking is a checkbox rather than a trip to the Stake tab.** Nobody
-    deposits in order to hold an LP token; they deposit to earn on it, and
-    the LP is the intermediate step. Curve deploys a zap that does both in
-    one transaction -- see `curve.stake_zaps` -- so where that exists the
-    box costs nothing at all. Where it does not, the panel does the same
-    thing in sequence rather than hiding the option on a third of the
-    chains this app lists: deposit, then stake what was minted.
-    """
+    """Add liquidity: an amount per coin, quoted as LP tokens out."""
 
     title = "Deposit"
     submit_label = "Deposit"
     # No `_done_verb`: `done_verb` below is a property, because the line
     # has to say whether the LP was staked as well as minted.
-    #: A deposit prices too. One coin at a time is a trade against the
-    #: pool in all but name -- half of it is swapped into the others -- so
-    #: it pays the same curve a swap does, and the number is worth seeing
-    #: before the LP arrives short.
     shows_impact = True
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.zap = zap_for(self.pool)
-        #: The chain's deposit-and-stake contract, or None where Curve has
-        #: not deployed one. Read once: it is keyed by chain, and a panel
-        #: does not outlive the pool it was built for.
         self.stake_zap = stake_zap_for(self.pool)
         self.stake_box = ft.Checkbox(
             label="Stake",
@@ -1298,9 +856,6 @@ class DepositTab(ActionTab):
             )
         self._apply_route()
         self._expected_lp = 0
-        #: Whether the last quote came back. A zap this app has the address
-        #: of but the chain disagrees with must not be handed an approval,
-        #: so the approve step waits for a quote that worked.
         self._quote_ok = True
 
     # -- which route is live ----------------------------------------------
@@ -1320,24 +875,12 @@ class DepositTab(ActionTab):
 
     @property
     def combined(self) -> bool:
-        """Can this go in one transaction rather than two?
-
-        The deposit-and-stake zap is per chain, so this is false on every
-        network Curve has not deployed it to -- which is where the panel
-        falls back to sending the two transactions itself.
-        """
+        """Can this go in one transaction rather than two?"""
         return self.staking and self.stake_zap is not None
 
     @property
     def spender(self) -> str:
-        """Who moves the coins: the pool, the deposit zap, or the stake zap.
-
-        Whoever is going to call `transferFrom` is who has to be approved,
-        and on the combined route that is the deposit-and-stake zap rather
-        than either of the other two -- it takes the coins and passes them
-        on. Getting this wrong is an allowance granted to a contract that
-        never spends it and a transaction that reverts for want of one.
-        """
+        """Who moves the coins: the pool, the deposit zap, or the stake zap."""
         if self.combined and self.stake_zap is not None:
             return self.stake_zap.address
         return self.zap.address if self.underlying and self.zap else self.pool.address
@@ -1368,13 +911,7 @@ class DepositTab(ActionTab):
         ]
 
     def _stake_toggled(self, _e: AnyEvent) -> None:
-        """Ticking the box changes who gets approved, so re-read that.
-
-        The coins were approved to the pool and now have to be approved to
-        the stake zap -- or the other way round -- and until that is read
-        back the approve step is describing the route that is no longer
-        live.
-        """
+        """Ticking the box changes who gets approved, so re-read that."""
         self.page.run_task(self.refresh)
 
     def _apply_route(self) -> None:
@@ -1388,12 +925,7 @@ class DepositTab(ActionTab):
         self.page.run_task(self.refresh)
 
     def _max_for(self, rows: _AmountRows, index: int) -> None:
-        """Fill one coin's field with the whole wallet balance.
-
-        Full precision, not the shortened form the balance line shows:
-        this is the number that becomes calldata, and a rounded one would
-        either leave dust or exceed what is there.
-        """
+        """Fill one coin's field with the whole wallet balance."""
         coin = rows.coins[index]
         rows.fields[index].value = format_units(
             rows.balances[index], coin.decimals, precision=coin.decimals
@@ -1428,8 +960,6 @@ class DepositTab(ActionTab):
         """A zap deposit passes through both pools, so it pays both fees."""
         fee = await contract.fee()
         if self.underlying:
-            # A base pool that will not answer leaves the metapool's own
-            # fee standing, which is the smaller of the two tolerances.
             with contextlib.suppress(WalletError):
                 fee += await contract.base_fee()
         return fee
@@ -1464,10 +994,6 @@ class DepositTab(ActionTab):
                 floor = token_amount(
                     units_to_float(self.with_slippage(self._expected_lp), 18)
                 )
-                # The pool's own coins, overlapped, because an LP token
-                # has no logo of its own -- the same mark this panel's
-                # amount field already carries, and the one the pool list
-                # draws beside the pool's name.
                 self.show_receipts([
                     (
                         pool_stack(self.pool, ESTIMATE_MARK, limit=4),
@@ -1479,10 +1005,6 @@ class DepositTab(ActionTab):
                 self.show_estimate(str(exc), problem=True)
                 self._quote_ok = False
             else:
-                # After the real quote, not before: the first
-                # `calc_token_amount` is what settles which array shape
-                # this pool speaks, and the probe then asks in that shape
-                # rather than spending its own round trip finding out.
                 impact = await self.measure_impact(
                     contract, amounts, self._expected_lp
                 )
@@ -1497,13 +1019,9 @@ class DepositTab(ActionTab):
         self.page.update()
 
     async def approval_needed(self, contract: PoolContract) -> tuple[str, str, int] | None:
-        # One coin at a time: each ERC-20 needs its own approval, and the UI
-        # walks them in order rather than batching, so the button always
-        # names a single concrete step.
-        #
-        # Nothing is approved on the strength of a quote that failed: the
-        # spender may be a zap, and an allowance is the one thing here that
-        # outlives the mistake that caused it.
+        # One coin at a time: each ERC-20 needs its own approval, and
+        # the UI walks them in order rather than batching, so the
+        # button always names a single concrete step.
         if not self._quote_ok:
             return None
         rows = self.rows
@@ -1545,10 +1063,6 @@ class DepositTab(ActionTab):
                 amounts, floor, underlying=self.underlying
             )
 
-        # Two transactions, and the LP balance is read on both sides of the
-        # first rather than trusting the quote: `floor` is a floor, the mint
-        # is whatever the pool decided, and staking a number that is not the
-        # one that arrived either leaves dust behind or reverts.
         before = await contract.lp_balance() if self.staking else 0
         tx = await (
             contract.zap_add_liquidity(amounts, floor)
@@ -1574,29 +1088,16 @@ class DepositTab(ActionTab):
 
 
 class WithdrawTab(ActionTab):
-    """Remove liquidity, either balanced or all into one coin.
-
-    **Staked LP counts as liquidity.** Someone who deposited and staked has
-    an LP balance of zero, and a Withdraw panel that reads only the wallet
-    tells them they have nothing to withdraw -- which is false, and the fix
-    (go to Stake, unstake, come back) is a sequence they have to work out
-    themselves. So the panel offers to draw on the gauge, and ticks the box
-    itself when the wallet is empty and the gauge is not, because in that
-    case it is the only thing that can be meant.
-
-    There is no zap for this direction -- Curve deploys one for depositing
-    and staking, and nothing for the reverse -- so a withdrawal that needs
-    staked LP unstakes first and then withdraws, as two transactions.
-    """
+    """Remove liquidity, either balanced or all into one coin."""
 
     title = "Withdraw"
     submit_label = "Withdraw"
-    #: One coin out of a pool is a trade against it in all but name -- the
-    #: same reasoning that gave the deposit side its measurement, run
-    #: backwards. Take enough of one reserve and the pool charges for it.
+    #: One coin out of a pool is a trade against it in all but name --
+    #: the same reasoning that gave the deposit side its measurement,
+    #: run backwards.
     shows_impact = True
-    # As on the deposit side: a property, because a withdrawal that had to
-    # unstake first did two things and should say so.
+    # As on the deposit side: a property, because a withdrawal that had
+    # to unstake first did two things and should say so.
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
@@ -1610,12 +1111,7 @@ class WithdrawTab(ActionTab):
             visible=False,
             tooltip="Unstake what this withdrawal needs, then withdraw.",
         )
-        #: Once the box has been touched it stops being set from the
-        #: balances -- the same rule the slippage box follows, and for the
-        #: same reason: a control that fights the user is worse than one
-        #: that guesses wrong once.
         self._use_staked_is_theirs = False
-        # An LP token has no logo of its own; Curve draws the pool's coins.
         self.amount = _amount_field(
             "LP tokens",
             self._changed,
@@ -1627,10 +1123,6 @@ class WithdrawTab(ActionTab):
             self._route_changed, underlying=self.zap is not None
         )
         self.route.visible = self.zap is not None
-        # Kept as its own attribute so the zap route can grey it out: a zap
-        # withdrawal goes into one coin, and there is nothing to quote a
-        # balanced one against -- the base pool's reserves are not on the
-        # metapool, and a floor of zero is no floor at all.
         self.balanced_radio = ft.Radio(value="balanced", label="All coins")
         self.mode = ft.RadioGroup(
             value="balanced",
@@ -1649,13 +1141,8 @@ class WithdrawTab(ActionTab):
             on_select=self._changed,
         )
         self._quote_ok = True
-        #: What the last refresh quoted, so `preview` can build the very
-        #: transaction the panel is describing without asking again.
         self._expected_out = 0
         self._shares: list[int] | None = None
-        # The zap route is the default where it exists, so the receive list
-        # and the single-coin rule have to hold from the start rather than
-        # from the first time the switch is touched.
         self._apply_route()
 
     # -- which route is live ----------------------------------------------
@@ -1685,15 +1172,7 @@ class WithdrawTab(ActionTab):
 
     @property
     def spendable(self) -> int:
-        """LP this withdrawal may use: the wallet's, plus the gauge's if asked.
-
-        Both, not either. A position can be half staked -- deposit twice,
-        stake once -- and making the box choose one balance would mean
-        withdrawing the whole of such a position took two passes for no
-        reason. What the box decides is whether the gauge may be touched at
-        all; the wallet's own LP is always spent first, because unstaking
-        what you already hold is a transaction for nothing.
-        """
+        """LP this withdrawal may use: the wallet's, plus the gauge's if asked."""
         return self.lp_balance + (self.staked if self.drawing_on_gauge else 0)
 
     def _to_unstake(self, amount: int) -> int:
@@ -1707,13 +1186,7 @@ class WithdrawTab(ActionTab):
         self._changed(None)
 
     def _sync_use_staked(self) -> None:
-        """Offer the box where it can do something, and pre-tick it once.
-
-        Hidden when there is nothing staked: a checkbox that cannot change
-        the outcome is noise. Ticked when the wallet holds no LP at all and
-        the gauge does, which is the state depositing-and-staking leaves
-        behind and the one case where not ticking it is certainly wrong.
-        """
+        """Offer the box where it can do something, and pre-tick it once."""
         self.use_staked.visible = self.pool.has_gauge and self.staked > 0
         if not self.use_staked.visible:
             self.use_staked.value = False
@@ -1786,8 +1259,6 @@ class WithdrawTab(ActionTab):
         """A zap withdrawal comes back out through both pools."""
         fee = await contract.fee()
         if self.underlying:
-            # As on the deposit side: a base pool that will not answer
-            # leaves the metapool's own fee standing.
             with contextlib.suppress(WalletError):
                 fee += await contract.base_fee()
         return fee
@@ -1796,30 +1267,14 @@ class WithdrawTab(ActionTab):
         return self.route.value
 
     def prelude(self, contract: PoolContract) -> tuple[str, tuple[str, str]] | None:
-        """The unstake a gauge-drawing withdrawal does first.
-
-        Not an approval: burning LP at the pool needs none. What it needs
-        is the LP in the wallet, and while it is in the gauge the
-        withdrawal reverts under simulation -- which is how an account
-        with 1.5m LP staked came to show no fee at all for withdrawing
-        some of it.
-
-        The zap route keeps the approval instead, since there the LP is
-        moved by a third party. Both cannot be pending at once: the zap
-        route is single-coin and this one only fires when the wallet is
-        short.
-        """
+        """The unstake a gauge-drawing withdrawal does first."""
         if self.drawing_on_gauge and self._lp_amount() > self.lp_balance:
             short = self._lp_amount() - self.lp_balance
             return "to unstake first", contract.build_unstake(short)
         return super().prelude(contract)
 
     def preview(self, contract: PoolContract) -> tuple[str, str] | None:
-        """The withdrawal as it would be sent, in whichever mode is live.
-
-        The balanced arm reuses the shares the panel previewed rather than
-        reading them again -- one source, as `submit` uses.
-        """
+        """The withdrawal as it would be sent, in whichever mode is live."""
         amount = self._lp_amount()
         if amount <= 0 or not self._quote_ok or amount > self.spendable:
             return None
@@ -1843,20 +1298,7 @@ class WithdrawTab(ActionTab):
     async def balanced_shares(
         self, contract: PoolContract, amount: int
     ) -> list[int] | None:
-        """What a balanced withdrawal of `amount` pays, coin by coin.
-
-        The one action in this panel the pool will not quote: there is no
-        `calc_remove_liquidity` anywhere in Curve. None is needed --
-        `remove_liquidity` pays `balances[i] * amount / totalSupply` and
-        nothing else -- so this is the contract's own arithmetic over two
-        numbers read from the contract, not a second implementation of the
-        invariant.
-
-        None when either read fails, which leaves the panel saying nothing
-        rather than guessing. The submit path falls back to the API's
-        reserves in that case, because a floor from a slightly stale
-        number still protects a withdrawal and no floor at all does not.
-        """
+        """What a balanced withdrawal of `amount` pays, coin by coin."""
         if amount <= 0:
             return None
         try:
@@ -1869,13 +1311,7 @@ class WithdrawTab(ActionTab):
         return [reserve * amount // supply for reserve in reserves]
 
     async def _quote(self, contract: PoolContract, amounts: list[int]) -> int:
-        """What `[lp]` comes back as, in the coin that is selected.
-
-        Only ever asked in one-coin mode -- see `refresh`, which does not
-        measure a balanced withdrawal at all. A one-element list because
-        that is the shape `measure_impact` scales, and the coin comes from
-        the dropdown, which does not move between a quote and its probe.
-        """
+        """What `[lp]` comes back as, in the coin that is selected."""
         index = self._coin_index()
         return await (
             contract.zap_calc_withdraw_one_coin(amounts[0], index)
@@ -1884,13 +1320,7 @@ class WithdrawTab(ActionTab):
         )
 
     async def approval_needed(self, contract: PoolContract) -> tuple[str, str, int] | None:
-        """LP tokens the zap has to be allowed to take.
-
-        Only on the zap route. Burning LP at the pool needs no approval --
-        the pool burns the caller's own balance rather than transferring it
-        -- but a zap is a third party, so it has to be allowed to move the
-        LP before it can burn it on your behalf.
-        """
+        """LP tokens the zap has to be allowed to take."""
         if not self.underlying or self.zap is None or not self._quote_ok:
             return None
         amount = self._lp_amount()
@@ -1924,10 +1354,6 @@ class WithdrawTab(ActionTab):
             except WalletError:
                 self.lp_label.value = ""
         else:
-            # Disconnecting has to clear these, not leave the last wallet's
-            # numbers standing: they decide whether the gauge may be drawn
-            # on, and a stale non-zero would offer that against a balance
-            # nobody here holds any more.
             self.lp_balance = self.staked = 0
             self.lp_label.value = ""
         self._sync_use_staked()
@@ -1936,11 +1362,6 @@ class WithdrawTab(ActionTab):
         self._quote_ok = True
         self._expected_out = 0
         self._shares = None
-        # None unless a one-coin withdrawal says otherwise. A balanced one
-        # takes the same share of every reserve, which is what the pool
-        # holds rather than a point on its curve -- there is no size at
-        # which it costs more per LP token, so there is nothing to measure
-        # and a line reading "under 0.01%" would only imply there could be.
         impact = None
         if contract is not None and amount > 0 and self.mode.value == "one":
             index = self._coin_index()
@@ -1965,9 +1386,6 @@ class WithdrawTab(ActionTab):
             else:
                 impact = await self.measure_impact(contract, [amount], out)
         elif contract is not None and amount > 0:
-            # Balanced. Every coin, because that is what arrives -- a
-            # withdrawal that pays three tokens and previews one number is
-            # a preview of a different action.
             shares = await self.balanced_shares(contract, amount)
             self._shares = shares
             if shares is not None:
@@ -1981,10 +1399,6 @@ class WithdrawTab(ActionTab):
                 ])
         self.show_impact(impact)
 
-        # Said before it is sent rather than after it reverts. The number
-        # that matters is `spendable`, not the wallet balance: with the box
-        # ticked, LP still in the gauge is available and the plain balance
-        # would refuse a withdrawal that is perfectly possible.
         over = (
             contract is not None and contract.can_send and amount > self.spendable
         )
@@ -2015,9 +1429,6 @@ class WithdrawTab(ActionTab):
             raise WalletError("Enter an amount to withdraw.")
         unstaking = self._to_unstake(amount)
         if unstaking > 0:
-            # Curve has no unstake-and-withdraw zap -- only the deposit
-            # direction got one -- so this is genuinely two transactions,
-            # and the second reads the balance the first produced.
             tx = await contract.unstake(unstaking)
             await self._step(
                 contract, tx, f"Unstaked {self.amount_label(self.pool.lp_token, unstaking)}."
@@ -2034,22 +1445,8 @@ class WithdrawTab(ActionTab):
             return await contract.remove_liquidity_one_coin(
                 amount, index, self.with_slippage(expected)
             )
-        # Balanced withdrawal: the floor is this LP amount's share of each
-        # reserve, minus slippage. A zero floor would be simpler and is what
-        # many UIs send, but it offers no protection at all against a
-        # sandwich.
-        #
-        # The shares come from the chain, and are the same numbers the panel
-        # previewed -- see `balanced_shares`. They used to be computed from
-        # the API's reserves because the pool's own `balances` getter is
-        # `int128` on old pools and `uint256` on new ones; `reserves` asks
-        # both spellings in one call, so the floor no longer depends on how
-        # fresh an API payload is.
         shares = await self.balanced_shares(contract, amount)
         if shares is None:
-            # Whatever the chain would not say, the API still might, and a
-            # floor from a slightly stale reserve protects a withdrawal
-            # where no floor at all does not.
             shares = []
             with contextlib.suppress(WalletError):
                 supply = await contract.lp_total_supply()
@@ -2080,12 +1477,6 @@ class SwapTab(ActionTab):
         super().__init__(*args, **kwargs)
         self.balance = 0
         self._expected_out = 0
-        # A metapool can swap its underlying coins itself -- it does the
-        # base-pool leg internally -- so unlike depositing, this route
-        # needs no zap and approves nothing but the pool. That is why it
-        # is offered on chains where no zap was ever deployed.
-        #: The pool for a StableSwap metapool, its zap for a crypto one,
-        #: None where the route does not exist.
         self.underlying_spender = underlying_swap_spender(self.pool)
         self.route = _route_picker(
             self._route_changed, underlying=self.underlying_spender is not None
@@ -2111,17 +1502,11 @@ class SwapTab(ActionTab):
             leading_icon=self._mark(to_index),
             on_select=self._to_selected,
         )
-        # Two arrows rather than a word: this is the one control here that
-        # is understood faster as a picture, and Material bundles the icon
-        # font in both builds -- a "⇄" in the label font renders as tofu on
-        # web, which is why the sort arrows are icons too.
         self.flip_button = ft.IconButton(
             ft.Icons.SWAP_HORIZ,
             tooltip="Swap the two coins over",
             on_click=self._flip,
         )
-        # The amount is denominated in whatever "From" currently is, so its
-        # mark follows the dropdown rather than being fixed at build time.
         self.amount = _amount_field(
             "Amount", self._changed, self._mark(0), on_max=self._max
         )
@@ -2177,12 +1562,7 @@ class SwapTab(ActionTab):
         return f"{self.amount_label(coins[i].address, dx)} for {coins[j].symbol}"
 
     async def fee_units(self, contract: PoolContract) -> int:
-        """StableSwap-NG charges per pair, so ask about *this* pair.
-
-        Not on the underlying route: those indices are into a list the
-        pool does not price pairs for, and the trade crosses both pools
-        anyway, so it is charged both fees.
-        """
+        """StableSwap-NG charges per pair, so ask about *this* pair."""
         i, j = self._indices()
         if not self.underlying:
             return await contract.pair_fee(i, j)
@@ -2196,12 +1576,7 @@ class SwapTab(ActionTab):
         return (self.route.value, *self._indices())
 
     async def _quote(self, contract: PoolContract, amounts: list[int]) -> int:
-        """`get_dy` on whichever route is live, for `[dx]`.
-
-        A one-element list because that is the shape `measure_impact`
-        scales; the coins come from the dropdowns, which do not move
-        between a quote and its probe.
-        """
+        """`get_dy` on whichever route is live, for `[dx]`."""
         i, j = self._indices()
         return await (
             contract.get_dy_underlying(i, j, amounts[0])
@@ -2244,12 +1619,7 @@ class SwapTab(ActionTab):
         return str(taken)
 
     def _from_selected(self, e: AnyEvent | None) -> None:
-        """Picking the coin the other side already holds moves that side.
-
-        Rather than leaving the pair equal and printing "pick two different
-        coins", which is a complaint about something the app can simply
-        fix. The side that gives way is the one not just touched.
-        """
+        """Picking the coin the other side already holds moves that side."""
         i, j = self._indices()
         if i == j:
             self.to_coin.value = self._other_index(i)
@@ -2262,12 +1632,7 @@ class SwapTab(ActionTab):
         self._changed(e)
 
     def _flip(self, e: AnyEvent | None) -> None:
-        """Sell what you were buying. The amount stays as typed.
-
-        It is denominated in whichever coin is on the left, so leaving the
-        number alone means the field still says what it says -- and the
-        quote below it is re-read either way.
-        """
+        """Sell what you were buying. The amount stays as typed."""
         self.from_coin.value, self.to_coin.value = (
             self.to_coin.value,
             self.from_coin.value,
@@ -2276,7 +1641,6 @@ class SwapTab(ActionTab):
 
     def _changed(self, _e: AnyEvent | None) -> None:
         i, j = self._indices()
-        # A control cannot be mounted twice, so each side gets its own mark.
         self.from_coin.leading_icon = self._mark(i)
         self.to_coin.leading_icon = self._mark(j)
         self.amount.prefix_icon = self._mark(i)
@@ -2305,9 +1669,6 @@ class SwapTab(ActionTab):
         self.show_estimate("")
         impact: float | None = None
         if i == j:
-            # A nudge rather than a failure: the two dropdowns move each
-            # other out of the way, so this is only reachable at all on a
-            # pool with one coin.
             self.show_estimate("Pick two different coins.")
         elif contract is not None and dx > 0:
             try:
@@ -2375,38 +1736,12 @@ class SwapTab(ActionTab):
 
 
 def claimable(amount: int, decimals: int) -> bool:
-    """Is this enough to be worth a tab, a line and a transaction?
-
-    Not `> 0`, which is what this used to ask and is very nearly always
-    true: CRV is emitted continuously, so a gauge position accrues again
-    in the block after it is claimed, and a few hundred wei of it kept the
-    Claim tab in the bar forever. The panel then showed "CRV 0" over a
-    Claim button, which is a tab that can only disappoint.
-
-    The test is what the panel would *print*. Anything that renders as a
-    number is worth claiming; anything that renders as "0" is not, and
-    would be shown as nothing anyway. Asking it this way keeps the tab,
-    the lines inside it and the button that sends them in agreement by
-    construction -- three separate thresholds is how a tab comes to exist
-    with nothing in it.
-    """
+    """Is this enough to be worth a tab, a line and a transaction?"""
     return token_amount(units_to_float(amount, decimals)) != "0"
 
 
 class ClaimTab(ActionTab):
-    """What the gauge owes you, and the one or two transactions to get it.
-
-    Two kinds of reward, claimed by two different contracts -- CRV is
-    *minted* by the Minter (or the chain's child gauge factory) while
-    incentive tokens are already sitting in the gauge and come out with
-    `claim_rewards()`. See `curve.rewards`. On screen they are one list,
-    which is the point: nobody thinks of their rewards as two categories
-    because of how the emission is implemented.
-
-    So the button sends whichever halves are non-zero, in sequence when
-    both are. Two wallet prompts for one apparent action is worth saying
-    out loud, which is what the status line does between them.
-    """
+    """What the gauge owes you, and the one or two transactions to get it."""
 
     title = "Claim"
     submit_label = "Claim"
@@ -2416,35 +1751,13 @@ class ClaimTab(ActionTab):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.crv_claimable = 0
-        #: `(address, symbol, decimals, amount)` per incentive token.
         self.extras: list[tuple[str, str, int, int]] = []
-        #: Symbol and decimals per token, kept because they cannot change
-        #: and the panel refreshes after every transaction on the page.
         self._meta: dict[str, tuple[str, int]] = {}
         self.rows = ft.Column(spacing=10)
-        #: Set by `_render` when this pool also has a Merkl campaign. The
-        #: button below claims the gauge and only the gauge -- a merkle
-        #: drop is a different contract with a different proof -- so a
-        #: pool paying both would otherwise let somebody claim, see the
-        #: list empty, and conclude the campaign had paid them nothing.
         self.campaign_note = ft.Container()
         self.empty_note = ft.Text(
             "Nothing to claim yet.", size=SMALL, color=ft.Colors.ON_SURFACE_VARIANT
         )
-        #: Why the last read failed, or "" if it did not.
-        #:
-        #: These two numbers used to be set to zero whenever the node would
-        #: not answer, which made "the read failed" and "you are owed
-        #: nothing" the same state -- and since the tab is shown only when
-        #: something is owed, a flaky endpoint made the whole panel vanish
-        #: rather than say anything. It cost four runs of the fork suite to
-        #: find, because a timeout there looked exactly like an account with
-        #: no rewards.
-        #:
-        #: So a failed read now keeps whatever was last known and records
-        #: the reason. A position that was visible stays visible through a
-        #: hiccup, and the reason is on screen instead of implied by an
-        #: absence.
         self.read_error = ""
 
     @property
@@ -2467,12 +1780,7 @@ class ClaimTab(ActionTab):
         return [self.rows, self.campaign_note, self.empty_note]
 
     def _line(self, address: str, symbol: str, decimals: int, amount: int) -> ft.Control:
-        """One reward: its mark, its symbol, and what is owed.
-
-        The mark comes from the same compiled subset as every other token
-        logo, so a reward token upstream has no image for draws its
-        initials rather than a hole -- see `ui.logos.token_mark`.
-        """
+        """One reward: its mark, its symbol, and what is owed."""
         coin = Coin(address=address, symbol=symbol, decimals=decimals)
         return ft.Row(
             [
@@ -2499,22 +1807,11 @@ class ClaimTab(ActionTab):
                 lines.append(self._line(address, symbol, decimals, amount))
         self.rows.controls = lines
         self.campaign_note.content = self._campaign_note()
-        # The reason goes where every other panel puts one. "Nothing to
-        # claim yet" is only said when that is actually known -- saying it
-        # after a failed read is the lie this whole attribute exists to
-        # stop.
         self.show_estimate(self.read_error, problem=bool(self.read_error))
         self.empty_note.visible = not lines and not self.read_error
 
     def _campaign_note(self) -> ft.Control | None:
-        """Say that the button below does not cover the Merkl side.
-
-        `claim_rewards()` transfers what the gauge holds and the Minter
-        mints the CRV; a Merkl campaign is a merkle drop claimed against
-        a proof on Merkl's own distributor, and no transaction from this
-        panel touches it. The pool page's campaigns block says the same
-        thing, but a claim happens here.
-        """
+        """Say that the button below does not cover the Merkl side."""
         campaign = next(iter(self.pool.merkl.all), None)
         if campaign is None:
             return None
@@ -2568,9 +1865,6 @@ class ClaimTab(ActionTab):
             return
 
         if contract is not None and contract.can_send:
-            # Each half keeps its last known figure when the read fails --
-            # see `read_error`. Zeroing here is what made a node that would
-            # not answer look like a gauge that owes nothing.
             self.read_error = ""
             try:
                 self.crv_claimable = await contract.claimable_crv()
@@ -2584,33 +1878,20 @@ class ClaimTab(ActionTab):
                     extras.append((token, symbol, decimals, amount))
                 self.extras = extras
             except WalletError as exc:
-                # The partial list is discarded rather than shown: a token
-                # missing from it is indistinguishable from one paying
-                # nothing, and claiming is all-or-nothing anyway.
                 self.read_error = self.read_error or str(exc)
         else:
-            # No account, nothing accrues to it. Clearing rather than
-            # keeping the last wallet's numbers is what takes the tab out
-            # of the bar on disconnect -- see `ActionTab.available`.
             self.crv_claimable = 0
             self.extras = []
             self.read_error = ""
 
         self._render()
-        # Nothing to approve: both claims move tokens the gauge already
-        # owes, and neither is a `transferFrom` of the user's own balance.
         self.approve_button.visible = False
         self.submit_button.disabled = contract is None or not self.available
         await self.show_gas(contract)
         self.page.update()
 
     def preview(self, contract: PoolContract) -> tuple[str, str] | None:
-        """The first of the one or two transactions a claim comes to.
-
-        CRV where there is CRV, because that is the one sent first. A
-        claim of both is two transactions and this prices the leading one
-        -- `submit` says so on the line between them.
-        """
+        """The first of the one or two transactions a claim comes to."""
         if claimable(self.crv_claimable, CRV_DECIMALS):
             return contract.build_claim_crv()
         if self.available:
@@ -2618,10 +1899,8 @@ class ClaimTab(ActionTab):
         return None
 
     async def submit(self, contract: PoolContract) -> str:
-        # The same test the tab and its lines use, so the button sends
-        # exactly what the panel showed -- see `claimable`. A dust half is
-        # not worth a second wallet prompt, and claiming it would move
-        # nothing anybody could see.
+        # The same test the tab and its lines use, so the button
+        # sends exactly what the panel showed -- see `claimable`.
         owed = self.crv_claimable
         crv = claimable(owed, CRV_DECIMALS)
         extras = any(
@@ -2642,15 +1921,7 @@ class ClaimTab(ActionTab):
 
 
 class StakeTab(ActionTab):
-    """Move LP tokens in and out of the pool's gauge.
-
-    Shown only when there is something to move. Depositing is now able to
-    stake on its own and withdrawing to unstake on its own, so this panel is
-    the *manual* control: it earns a place in the bar when the wallet holds
-    LP that is not staked, or the gauge holds LP that could come out, and
-    not otherwise. An empty Stake tab on a pool nobody has any position in
-    is a tab that can only disappoint.
-    """
+    """Move LP tokens in and out of the pool's gauge."""
 
     title = "Stake"
     submit_label = "Stake"
@@ -2680,13 +1951,7 @@ class StakeTab(ActionTab):
 
     @property
     def available(self) -> bool:
-        """Is there LP to move, in either direction?
-
-        Both balances, because the tab serves both directions: LP in the
-        wallet is something to stake, LP in the gauge something to unstake.
-        Zero of each -- including the no-wallet case, where both reads are
-        skipped and stay zero -- means the panel has nothing to act on.
-        """
+        """Is there LP to move, in either direction?"""
         return self.pool.has_gauge and (self.lp_balance > 0 or self.staked > 0)
 
     @property
@@ -2741,10 +2006,6 @@ class StakeTab(ActionTab):
             self.page.update()
             return
 
-        # `can_send`, because both reads are balances *of the account* and
-        # a public node has none -- see `curve.rpc`. It also keeps both
-        # numbers at zero with no wallet connected, which is what takes the
-        # tab out of the bar rather than showing one that reads "0 LP".
         if contract is not None and contract.can_send:
             try:
                 self.lp_balance = await contract.lp_balance()
@@ -2756,9 +2017,6 @@ class StakeTab(ActionTab):
             except WalletError:
                 self.balances_label.value = ""
         else:
-            # Same reason as the withdraw panel: these two numbers are what
-            # `available` is computed from, so a disconnect has to take the
-            # tab away rather than leave it offering the last account's LP.
             self.lp_balance = self.staked = 0
             self.balances_label.value = ""
 
@@ -2770,7 +2028,6 @@ class StakeTab(ActionTab):
         if staking:
             await self._sync_approval(contract)
         else:
-            # Unstaking burns the gauge's own token; no allowance involved.
             self.approve_button.visible = False
             self.submit_button.disabled = contract is None
         if contract is not None and amount <= 0:

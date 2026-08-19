@@ -59,11 +59,6 @@ def test_incentives_sort_counts_crv_and_reward_tokens() -> None:
 
 
 def test_ties_break_deterministically() -> None:
-    """Hundreds of pools share a volume of exactly zero.
-
-    Without a total order the list reshuffles on every refresh, which reads
-    as a flicker, so equal rows fall back to TVL and then address.
-    """
     a = make_pool(address="0x" + "a" * 40, volume=0, tvl=5)
     b = make_pool(address="0x" + "b" * 40, volume=0, tvl=5)
     c = make_pool(address="0x" + "c" * 40, volume=0, tvl=9)
@@ -124,7 +119,6 @@ def test_compact_usd_handles_negatives_and_trillions() -> None:
 
 
 def test_percent_marks_tiny_but_nonzero_values() -> None:
-    """A live gauge paying 0.000015% must not render as a flat 0%."""
     assert percent(0) == "0%"
     assert percent(1.27) == "1.27%"
     assert percent(1.5674e-05) == "< 0.01%"
@@ -137,11 +131,6 @@ def test_apr_range_collapses_when_ends_match() -> None:
 
 
 def test_user_visible_strings_stay_within_ascii() -> None:
-    """The web build's font renders arrows and similar as tofu boxes.
-
-    Desktop shows them fine, so this is the kind of regression that only
-    appears after `flet publish`. Pin it here instead.
-    """
     samples = [
         apr_range(2.93, 7.32),
         apr_range(5.0, 5.0),

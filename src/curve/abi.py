@@ -1,23 +1,4 @@
-"""Calldata for the Curve contracts this app talks to.
-
-Selectors are *computed* here rather than hard-coded, which is the opposite
-of what `wallet/erc20.py` does, and the difference is deliberate. ERC-20 has
-five fixed signatures. Curve does not: the signature depends on the pool.
-
-  * coin indices are `int128` on StableSwap and `uint256` on CryptoSwap, so
-    `exchange` alone has two selectors;
-  * `add_liquidity` takes a *fixed-size* array, so a 2-coin pool and a
-    3-coin pool are different functions again.
-
-That is dozens of variants, and a wrong one does not fail loudly -- it is
-just a call the pool does not implement, which reverts with no message. So
-the signature is written out in full at each call site and keccak'd, using
-the implementation the wallet package already ships for EIP-55.
-
-ABI note: `uint256[N]` is a *static* type, so it encodes inline as N
-consecutive words with no offset/length header. Every payload here is
-therefore a plain concatenation of 32-byte words.
-"""
+"""Calldata for the Curve contracts this app talks to."""
 
 from __future__ import annotations
 
@@ -104,14 +85,7 @@ def _array(values: list[int]) -> str:
 
 
 def _dyn_array(values: list[int]) -> str:
-    """The *tail* of a `uint256[]`: a length word, then the elements.
-
-    Dynamic arguments are split in two. The head, in argument order, holds
-    a byte offset from the start of the argument block; the tail holds the
-    data. So a caller has to place the offset itself -- which is why this
-    returns only the tail and every dynamic encoder below spells out its
-    own head.
-    """
+    """The *tail* of a `uint256[]`: a length word, then the elements."""
     return _uint(len(values)) + _array(values)
 
 
@@ -130,9 +104,7 @@ def _call(sig: str, *words: str) -> str:
 
 
 # -- ERC-20 additions ------------------------------------------------------
-#
-# `wallet.erc20` covers transfer/balanceOf/decimals/symbol/name. Depositing
-# and staking also need the approval pair.
+# `wallet.erc20` covers transfer/balanceOf/decimals/symbol/name.
 
 
 def encode_approve(spender: str, amount: int) -> str:
@@ -144,18 +116,11 @@ def encode_allowance(owner: str, spender: str) -> str:
 
 
 def encode_total_supply() -> str:
-    """LP tokens outstanding -- the denominator of a pool share.
-
-    Read from the LP token rather than the pool, even though on newer pools
-    they are the same contract: `totalSupply()` is ERC-20 and unambiguous,
-    while the pool's own `balances` getter is declared `int128` on the old
-    registry pools and `uint256` on the new ones.
-    """
+    """LP tokens outstanding -- the denominator of a pool share."""
     return _call("totalSupply()")
 
 
 # -- fees ------------------------------------------------------------------
-#
 # Curve states fees as a fraction of 1e10, so 1_500_000 is 0.015%.
 
 #: The denominator Curve's `fee()` is expressed in. 1e10 == 100%.
@@ -168,39 +133,12 @@ def encode_fee() -> str:
 
 
 def encode_parameter(name: str) -> str:
-    """A no-argument `uint256` getter, by name.
-
-    All the pool parameters are shaped alike -- `A()`, `gamma()`,
-    `mid_fee()`, `offpeg_fee_multiplier()`, `get_virtual_price()` -- so
-    they need one encoder rather than ten. Which of them a given pool
-    implements is a question for the pool; see `curve.parameters`.
-    """
+    """A no-argument `uint256` getter, by name."""
     return _call(f"{name}()")
 
 
 def decode_uint_array(data: str) -> list[int]:
-    """A `uint256[N]` or a `DynArray[uint256, N]` return value.
-
-    Both are in the wild for the same method, which is why this sniffs
-    rather than trusting a declaration. `stored_rates()` on the stETH
-    factory pool answers two bare words:
-
-        0de0b6b3a7640000  0de0b6b3a7640000            -> [1e18, 1e18]
-
-    and on a stableswap-ng pool it answers four, the first two being the
-    offset and the length that a dynamic array carries:
-
-        20  02  0ef2cef8b2a2279a  103b99ff5b536808    -> [1.077e18, 1.170e18]
-
-    So a leading `32` followed by a length that accounts for the rest is
-    read as the dynamic form. Nothing real collides: a fixed array whose
-    first element is 32 would be a rate multiplier of thirty-two wei, and
-    its second would have to equal the number of words left over.
-
-    Returns `[]` for empty or unreadable data -- for this app's purposes
-    the same as a method that is not implemented, which is how most pools
-    answer this one.
-    """
+    """A `uint256[N]` or a `DynArray[uint256, N]` return value."""
     body = data[2:] if data.startswith("0x") else data
     if not body or len(body) % 64:
         return []
@@ -211,39 +149,17 @@ def decode_uint_array(data: str) -> list[int]:
 
 
 def encode_indexed_parameter(name: str, index: int) -> str:
-    """The same getter, on a pool that holds several of them.
-
-    Tricrypto pools take an index for `price_oracle` and `price_scale`;
-    twocrypto and the stable factories take none. There is no way to tell
-    from the registry, so callers try both.
-    """
+    """The same getter, on a pool that holds several of them."""
     return _call(f"{name}(uint256)", _uint(index))
 
 
 def encode_balances_int128(index: int) -> str:
-    """`balances(int128)`, the old registry's spelling of one reserve.
-
-    3pool, the lending pools and the other originals declare the index
-    `int128`; everything from the factories on declares `uint256`, which
-    `encode_indexed_parameter("balances", i)` covers. A pool answers one
-    and reverts on the other, so callers try both -- the same dance
-    `encode_total_supply` sidesteps by reading the LP token instead.
-    """
+    """`balances(int128)`, the old registry's spelling of one reserve."""
     return _call("balances(int128)", _int(index))
 
 
 def encode_dynamic_fee(i: int, j: int) -> str:
-    """The fee for one particular pair, on the pools that price pairs.
-
-    StableSwap-NG only, and its indices are `int128`, so there is no
-    CryptoSwap spelling to dispatch between -- a pool without the method
-    answers with a revert (older Vyper) or empty data (newer), and both
-    reach the caller as a failed read.
-
-    Verified on mainnet: PayPool (stableswap-ng) answers 1_000_283 where
-    its flat `fee()` is 1_000_000; 3pool, stETH-ng and the crypto pools do
-    not implement it at all.
-    """
+    """The fee for one particular pair, on the pools that price pairs."""
     return _call("dynamic_fee(int128,int128)", _int(i), _int(j))
 
 
@@ -282,17 +198,7 @@ def encode_exchange(i: int, j: int, dx: int, min_dy: int, *, stableswap: bool) -
 
 
 def encode_get_dy_underlying(i: int, j: int, dx: int, *, stableswap: bool) -> str:
-    """Quote a swap between two *underlying* coins of a metapool.
-
-    A metapool holds its own coin and the base pool's LP token, but it can
-    swap anything in the base pool for its own coin in one call: it does
-    the base-pool leg itself. No zap, no approval to anything but the pool
-    -- which is why this route exists on every chain, including the ones
-    with no zap deployed at all.
-
-    Indices are into the *underlying* list -- the metapool's coin, then the
-    base pool's -- rather than the two the contract holds.
-    """
+    """Quote a swap between two *underlying* coins of a metapool."""
     return _call(
         "get_dy_underlying(int128,int128,uint256)"
         if stableswap
@@ -324,15 +230,7 @@ def encode_exchange_underlying(
 def encode_add_liquidity(
     amounts: list[int], min_mint: int, *, dynamic: bool = False
 ) -> str:
-    """Deposit.
-
-    Two spellings, and they are different functions rather than different
-    encodings of one: on the classic pools the array is `uint256[N]`, so
-    its length is part of the signature; on StableSwap-NG it is a
-    `DynArray`, so the signature is length-agnostic and the calldata
-    carries an offset and a length. Sending one to a pool that speaks the
-    other reverts.
-    """
+    """Deposit."""
     if dynamic:
         return _call(
             "add_liquidity(uint256[],uint256)",
@@ -347,14 +245,7 @@ def encode_add_liquidity(
 def encode_calc_token_amount(
     amounts: list[int], *, deposit: bool = True, dynamic: bool = False
 ) -> str:
-    """Estimate LP tokens out. Note the two-argument caveat below.
-
-    StableSwap and the NG crypto pools take `(amounts, is_deposit)`. The
-    older CryptoSwap pools (`crypto`, `factory-crypto`) declare it with the
-    amounts alone. Callers should try this and fall back to
-    `encode_calc_token_amount_no_flag` when the call reverts -- the two
-    cannot be told apart from API metadata.
-    """
+    """Estimate LP tokens out. Note the two-argument caveat below."""
     if dynamic:
         return _call(
             "calc_token_amount(uint256[],bool)",
@@ -375,26 +266,7 @@ def encode_calc_token_amount_no_flag(amounts: list[int]) -> str:
 
 
 # -- metapools, through a zap ----------------------------------------------
-#
-# A metapool holds two coins: its own, and the base pool's LP token. So
-# depositing USDC into a USD1/crv2pool metapool means minting crv2pool
-# first, which is two transactions and a token nobody wanted to hold.
-#
-# The zap does both in one call. It takes the *underlying* list -- the
-# metapool's own coin followed by the base pool's coins -- and every
-# function carries the pool address as its first argument, because one zap
-# serves every metapool from its factory.
-#
-# The `uint256[]`/`uint256[N]` split is the same one the pools have, and
-# for the same reason: the StableSwap-NG zap was written against NG pools.
-# Both dialects are verified against deployed Ethereum zaps --
-# 0xE07a16358aA878CBDa2D49A88E5106871E0db307 (dynamic) and
-# 0xA79828DF1850E8a3A3064576f380D90aECDD3359 (fixed, 3pool metapools) --
-# by running a deposit and a withdrawal through each on a mainnet fork.
-#
-# Only the arrays differ. `calc_withdraw_one_coin` and
-# `remove_liquidity_one_coin` are identical in both, `int128` included:
-# every metapool with a zap is a StableSwap pool.
+# A metapool holds two coins: its own, and the base pool's LP token.
 
 
 def encode_zap_calc_token_amount(
@@ -405,18 +277,7 @@ def encode_zap_calc_token_amount(
     dynamic: bool = False,
     stableswap: bool = True,
 ) -> str:
-    """Estimate LP out, in whichever dialect this zap speaks.
-
-    Three axes, all of them observed on deployed zaps:
-
-      * `dynamic` -- StableSwap-NG's `uint256[]` against everyone else's
-        `uint256[N]`;
-      * `pool` -- a factory zap serves every metapool on its base pool and
-        so takes the pool address; a per-pool zap is deployed for one pool
-        and takes none. `None` means the latter;
-      * `stableswap` -- the stable zaps take the `is_deposit` flag that
-        the pools take, and the crypto ones do not have it at all.
-    """
+    """Estimate LP out, in whichever dialect this zap speaks."""
     if dynamic:
         return _call(
             "calc_token_amount(address,uint256[],bool)",
@@ -573,10 +434,7 @@ def encode_calc_withdraw_one_coin(amount: int, i: int, *, stableswap: bool) -> s
 
 
 # -- staking ---------------------------------------------------------------
-#
-# Liquidity gauges take the LP token and mint CRV against it. `deposit`
-# and `withdraw` are the whole staking surface; the balance read is plain
-# ERC-20 `balanceOf`, since a gauge is itself a token.
+# Liquidity gauges take the LP token and mint CRV against it.
 
 
 def encode_gauge_deposit(amount: int) -> str:
@@ -588,15 +446,8 @@ def encode_gauge_withdraw(amount: int) -> str:
 
 
 # -- claiming --------------------------------------------------------------
-#
 # Two halves, because a gauge pays two kinds of reward -- see
-# `curve.rewards`. The one thing to know here is that
-# `claimable_tokens(address)` is `nonpayable` in the ABI while
-# `claimable_reward(address,address)` is `view`: the CRV figure
-# checkpoints before it answers, so a typed client tries to *send* it.
-# Both are read with `eth_call` here, which is what makes the difference
-# invisible to the caller -- the checkpoint happens in a simulated state
-# and is discarded, and the return value is the number to display.
+# `curve.rewards`.
 
 
 def encode_claimable_tokens(owner: str) -> str:
@@ -623,35 +474,12 @@ def encode_claim_rewards() -> str:
 
 
 def encode_working_balances(owner: str) -> str:
-    """The boosted balance the gauge pays CRV on.
-
-    Curve pays CRV on `working_balance`, not on what you staked:
-
-        working = min(0.4 * b + 0.6 * S * veShare, b)
-
-    so a position with no veCRV earns on 40% of itself and a fully boosted
-    one on all of it. The ratio between the two is the boost, 1x to 2.5x,
-    and it is the only per-account input to what an APR means for *you* --
-    everything else in the rate is a property of the pool.
-    """
+    """The boosted balance the gauge pays CRV on."""
     return _call("working_balances(address)", _address(owner))
 
 
 def encode_mint_many(gauges: list[str], slots: int) -> str:
-    """Mint CRV across several gauges in one transaction.
-
-    A fixed-size array, and the width differs by deployment: Ethereum's
-    Minter takes eight, the sidechain gauge factories take thirty-two.
-    Unused slots are the zero address, which both implementations treat as
-    "stop here" rather than as a gauge -- so a short list is padded rather
-    than split.
-
-    This exists because the obvious alternative does not work. Multicall3
-    would be `msg.sender`, and `mint` credits whoever calls it, so batching
-    CRV claims through it mints to the multicall contract. Tried on a fork:
-    the transaction succeeds and the tokens are simply gone from the
-    caller's point of view.
-    """
+    """Mint CRV across several gauges in one transaction."""
     if len(gauges) > slots:
         raise ValueError(f"{len(gauges)} gauges into {slots} slots")
     padded = list(gauges) + [_ZERO_ADDRESS] * (slots - len(gauges))
@@ -661,35 +489,17 @@ def encode_mint_many(gauges: list[str], slots: int) -> str:
 
 
 def encode_claim_rewards_for(owner: str) -> str:
-    """Claim a gauge's incentive tokens on behalf of `owner`.
-
-    Kept distinct from `encode_claim_rewards` because the two are not
-    interchangeable: this spelling names the account being claimed for
-    instead of taking `msg.sender`, which is what lets a whole portfolio
-    go through Multicall3 in one transaction -- see `earnings.ClaimPlan`.
-    """
+    """Claim a gauge's incentive tokens on behalf of `owner`."""
     return _call("claim_rewards(address)", _address(owner))
 
 
 def encode_minter_mint(gauge: str) -> str:
-    """Mint the CRV this gauge has recorded for the caller.
-
-    Sent to the Minter on Ethereum and to the child gauge factory
-    elsewhere; the signature is the same on both.
-    """
+    """Mint the CRV this gauge has recorded for the caller."""
     return _call("mint(address)", _address(gauge))
 
 
 # -- depositing and staking in one call ------------------------------------
-#
-# Curve's deposit-and-stake zap. Two dynamic arrays in one argument list,
-# which is the only place in this file where two heads point at two tails,
-# so the offsets are worked out rather than written down: the second tail
-# begins after the first one's length word and its elements.
-#
-# The two spellings are `curve.stake_zaps`' business, not this file's --
-# see that module for which chains take which, and why guessing is a
-# selector for a function that does not exist.
+# Curve's deposit-and-stake zap.
 
 
 def _dyn_address_array(values: list[str]) -> str:
@@ -709,19 +519,7 @@ def encode_deposit_and_stake(
     pool: str,
     use_underlying: bool | None = None,
 ) -> str:
-    """Deposit `amounts` of `coins` and stake the LP that comes back.
-
-    `deposit` is where the coins go -- the pool itself, or its deposit zap
-    on the underlying route -- and `pool` is the metapool a factory zap has
-    to be told about, or the zero address when there is none. They are two
-    arguments because they are two different things: the zap is what gets
-    called, the pool is what it is called *for*.
-
-    `use_underlying` present means the ten-argument spelling; None means
-    the nine-argument one. Not a default, because there is no safe default:
-    sending the wrong arity is calldata for a function the contract does
-    not have.
-    """
+    """Deposit `amounts` of `coins` and stake the LP that comes back."""
     if len(coins) != len(amounts):
         raise ValueError(f"{len(coins)} coins against {len(amounts)} amounts")
     flags = (
@@ -733,7 +531,6 @@ def encode_deposit_and_stake(
         "deposit_and_stake(address,address,address,uint256,address[],uint256[],"
         + ("uint256,bool,bool,address)" if use_underlying is not None else "uint256,bool,address)")
     )
-    # Head: three addresses, n_coins, two offsets, min_mint, the flags, pool.
     head_words = 7 + len(flags) + 1
     coins_tail = _dyn_address_array(coins)
     return _call(
@@ -743,7 +540,6 @@ def encode_deposit_and_stake(
         _address(gauge),
         _uint(len(coins)),
         _offset(head_words),
-        # Past the coins tail: its length word plus one word per address.
         _offset(head_words + 1 + len(coins)),
         _uint(min_mint),
         *flags,
@@ -757,17 +553,11 @@ def encode_deposit_and_stake(
 
 
 def apply_slippage(amount: int, tolerance_pct: float) -> int:
-    """Turn an estimate into the `min_*` floor that goes on-chain.
-
-    Integer math on purpose: this number is a guarantee the contract
-    enforces, and float rounding at 1e18 scale is real. Rounds down, so the
-    floor is never accidentally set above what the estimate supports.
-    """
+    """Turn an estimate into the `min_*` floor that goes on-chain."""
     if amount <= 0:
         return 0
     if not 0 <= tolerance_pct < 100:
         raise ValueError(f"slippage must be in [0, 100): {tolerance_pct}")
-    # basis-point-of-a-basis-point resolution, enough for any UI slider
     scale = 1_000_000
     keep = round((100.0 - tolerance_pct) / 100.0 * scale)
     return amount * keep // scale

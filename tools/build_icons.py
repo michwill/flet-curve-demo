@@ -1,33 +1,5 @@
 #!/usr/bin/env python3
-"""Render the app icon and favicon from the Curve mark.
-
-The source is `src/assets/curve/branding/logo.svg`, which comes out of the
-curve-assets submodule via `build_assets.py`. That directory is generated
-and gitignored; the PNGs this writes are **committed**, because a site
-needs a favicon whether or not whoever cloned it has initialised a
-submodule, and because `flet build` cannot read an SVG at all.
-
-    python tools/build_icons.py
-
-Four kinds of output, and they differ for reasons worth stating:
-
-  * `favicon.png` -- 32px, what a browser tab shows. Transparent: tab bars
-    are light or dark depending on the theme and the mark reads on both.
-  * `icons/icon-{192,512}.png` -- the PWA's own icons, same treatment.
-  * `icons/icon-maskable-*.png` and `apple-touch-icon-192.png` -- these get
-    *cropped* to whatever shape the platform likes (a circle, a squircle)
-    and iOS composites transparency onto black. So they are drawn on an
-    opaque background, inset to Android's safe zone: a maskable icon may
-    lose everything outside the middle 80%.
-  * `icon.png` -- 1024px, the one `flet build` slices up for desktop and
-    mobile packages;
-  * `icons/loading-animation.png` -- what the page shows while the Python
-    runtime starts, in place of Flet's own logo.
-
-Rendering goes through `rsvg-convert` at each output size rather than
-downscaling one big raster: the mark is a mesh gradient, and letting the
-renderer antialias at the target size keeps the 32px version legible.
-"""
+"""Render the app icon and favicon from the Curve mark."""
 
 from __future__ import annotations
 
@@ -45,7 +17,7 @@ LOGO = ROOT / "src" / "assets" / "curve" / "branding" / "logo.svg"
 ASSETS = ROOT / "src" / "assets"
 
 #: Android crops a maskable icon to an arbitrary shape and guarantees only
-#: the middle 80% survives. 0.78 keeps a little margin on top of that.
+#: the middle 80% survives.
 SAFE_ZONE = 0.78
 
 #: What the cropped icons sit on. White rather than the page background,
@@ -111,11 +83,6 @@ def main() -> int:
         write(render(size), ASSETS / "icons" / f"icon-{size}.png")
         write(on_backdrop(size), ASSETS / "icons" / f"icon-maskable-{size}.png")
     write(on_backdrop(192), ASSETS / "icons" / "apple-touch-icon-192.png")
-    # The image the page shows while Pyodide starts. Flet ships its own
-    # logo there; this is the same override as the favicon -- same name,
-    # copied over theirs at publish time. 512px because the loading
-    # screen's CSS scales it down to ~40% and then zooms it away, so it is
-    # briefly large on a high-density screen.
     write(render(512), ASSETS / "icons" / "loading-animation.png")
     write_x11_icon(ASSETS / "window_icon.argb")
     print("These overwrite Flet's defaults on `flet publish` and `flet build`.")
@@ -123,36 +90,21 @@ def main() -> int:
 
 
 def write_ico(path: Path) -> None:
-    """A real `favicon.ico`, for the path browsers probe on their own.
-
-    The link tag is what a modern browser uses, but every one of them
-    still asks for `/favicon.ico` first, and answering that with a 404 is
-    the sort of thing that looks like a broken build in a network log.
-    """
+    """A real `favicon.ico`, for the path browsers probe on their own."""
     icon = render(48)
     icon.save(path, "ICO", sizes=[(16, 16), (32, 32), (48, 48)])
     print(f"  {path.relative_to(ROOT)}  16/32/48px  {path.stat().st_size:,} B")
 
 
 #: Sizes for the X11 window icon. A window manager picks whichever is
-#: closest to what it is drawing -- a titlebar wants 24, a task switcher
-#: 48 or 64 -- and having a small one rendered rather than downscaled is
-#: the difference between a legible titlebar and a smear.
+#: closest to what it is drawing -- a titlebar wants 24, a task switcher 48
+#: or 64 -- and having a small one rendered rather than downscaled is the
+#: difference between a legible titlebar and a smear.
 X11_SIZES = (16, 24, 32, 48, 64, 128)
 
 
 def write_x11_icon(path: Path) -> None:
-    """The window icon, pre-decoded into what `_NET_WM_ICON` wants.
-
-    That property is a list of `width, height, then width*height pixels`
-    in 0xAARRGGBB, repeated once per size. Writing it here rather than
-    decoding a PNG at runtime keeps the app itself free of any image
-    library: `ui.window_icon` reads this with `struct` and nothing else.
-
-    Little-endian `uint32` on disk. The X11 side wants C `long`s, which
-    are eight bytes on 64-bit, so the reader widens them -- doing that
-    here instead would make the file architecture-specific.
-    """
+    """The window icon, pre-decoded into what `_NET_WM_ICON` wants."""
     import struct
 
     words: list[int] = []

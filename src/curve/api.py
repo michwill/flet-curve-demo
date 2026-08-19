@@ -1,21 +1,4 @@
-"""Clients for Curve's APIs.
-
-Pool data comes from the **Prices API v2** (`prices.curve.finance/v2`) and
-charts from **v1** (`prices.curve.finance/v1`), because v2 has no OHLC
-endpoints. Neither needs a key.
-
-Why v2 for pools: it returns TVL, volume, base APR, the CRV boost range,
-extra reward tokens and merkle rewards in one object, where the v1 main API
-split those across `getPools` and `getVolumes` and needed a join by address.
-It also sorts, searches and filters server-side.
-
-The one constraint that shapes this file: **`pagination` is capped at 50.**
-There is no "give me everything" call, so the list is a cursor
-(`PoolFeed`) that pulls a page at a time and lets the server do the
-ordering -- see the note on `PoolFeed`.
-
-See docs/curve-api.md for the full endpoint survey.
-"""
+"""Clients for Curve's APIs."""
 
 from __future__ import annotations
 
@@ -64,47 +47,30 @@ PRICES_V1 = "https://prices.curve.finance/v1"
 #: The v2 hard cap on `pagination`; anything larger is a 422.
 MAX_PAGE_SIZE = 50
 
-#: Per-pool detail requests in flight at once, when `pool_rates` has to
-#: fall back to asking one at a time.
+#: Per-pool detail requests in flight at once, when `pool_rates` has to fall
+#: back to asking one at a time.
 DETAIL_REQUESTS = 8
 
 #: Below this the list is mostly dust: thousands of abandoned factory pools
-#: with no liquidity. v1's `getPools/big` drew the line in the same place,
-#: and it takes Ethereum from 2210 pools to 385.
+#: with no liquidity.
 DEFAULT_MIN_TVL = 10_000.0
 
 #: Prices data is cached at the edge for ~5 minutes; match it.
 CACHE_TTL = 300.0
 
 #: How long to wait on Merkl or on GitHub before doing without them.
-#:
-#: The same five seconds `LITE_TIMEOUT` uses and for the same reason: both
-#: are read alongside the pool list rather than after it, so a slow third
-#: party is a pool list that looks like it is loading forever. Neither is
-#: load-bearing -- what is lost is the campaign lines on the rows, and the
-#: next page asks again.
 CAMPAIGN_TIMEOUT = 5.0
 
-#: Pages of Merkl opportunities to walk before deciding something is
-#: wrong. One page is 100 and there were 44 live Curve opportunities
-#: across every chain when this was written, so reaching two means the
-#: filter stopped working rather than that Curve grew tenfold overnight.
+#: Pages of Merkl opportunities to walk before deciding something is wrong.
 MERKL_MAX_PAGES = 5
 
-#: How many candles to ask for, whatever their size. The window follows from
-#: the candle: 200 x 15m is about two days, 200 x 1d is about seven months.
-#: Curve's own chart works the same way -- you pick the candle, not the span.
+#: How many candles to ask for, whatever their size.
 CANDLE_COUNT = 200
 
 
 @dataclass(slots=True, frozen=True)
 class CandleSize:
-    """One entry in the candle-size picker, and its API aggregation.
-
-    `agg_units` is one of `minute`, `hour`, `day` -- the whole enum the
-    Prices API accepts. Every combination below was checked against
-    `lp_ohlc` and returns candles at exactly `seconds` apart.
-    """
+    """One entry in the candle-size picker, and its API aggregation."""
 
     label: str
     agg_number: int
@@ -165,25 +131,7 @@ class Candle:
 
 
 def pool_composition(raw: dict[str, Any]) -> float:
-    """What a pool holds, in USD, from its own reserves.
-
-    `balances_usd` rather than `tvl_usd`, and the difference is not
-    academic. A position is priced by its share of what the pool holds,
-    so a wrong total is multiplied by however small the supply is -- and
-    on a pool drained to its rounding floor that factor is enormous.
-
-    Two of them on Ethereum say so in one object: ETHx/wstETH reports
-    `balances_usd` of `[6.9e-11, 7.8e-11]` and `tvl_usd` of `30.03`,
-    which put a dust position that nobody can withdraw anything from at
-    thirty dollars on the Portfolio page. The reserves agree with the
-    chain to the wei; the total does not agree with anything.
-
-    So the total is derived rather than taken. `tvl_usd` remains the
-    fallback for a payload that carries no reserves at all, where a
-    number of unknown provenance still beats no pool at all -- it decides
-    only whether the pool is worth scanning, and every position in it is
-    priced from this sum.
-    """
+    """What a pool holds, in USD, from its own reserves."""
     balances = raw.get("balances_usd")
     if isinstance(balances, list) and balances:
         return sum(float(value or 0.0) for value in balances)
@@ -191,12 +139,7 @@ def pool_composition(raw: dict[str, Any]) -> float:
 
 
 def _rates_key(chain_id: int, address: str) -> str:
-    """Where one pool's published rates live in the cache.
-
-    Separate from the `detail:` key even though a detail payload can fill
-    it, because the two are not the same promise: this one says only that
-    the APR fields are present, which is all the list endpoint carries.
-    """
+    """Where one pool's published rates live in the cache."""
     return f"rates:{chain_id}:{address.lower()}"
 
 
@@ -206,12 +149,7 @@ class CurveApi:
     def __init__(self, ttl: float = CACHE_TTL) -> None:
         self._ttl = ttl
         self._cache: dict[str, tuple[float, Any]] = {}
-        #: Requests it would take to page each chain's pool list, learned
-        #: from the last listing rather than asked for -- see `pool_rates`.
         self._pages: dict[int, int] = {}
-        #: How many per-pool requests may be in flight at once. Enough that
-        #: a wallet in a dozen pools is one wait, few enough that this is
-        #: not a burst against somebody else's API.
         self._details = asyncio.Semaphore(DETAIL_REQUESTS)
 
     # -- caching ----------------------------------------------------------
@@ -240,23 +178,11 @@ class CurveApi:
         if not isinstance(payload, dict):
             raise ApiError(f"Unexpected response shape from {path}")
         if "detail" in payload and "data" not in payload and "pools" not in payload:
-            # FastAPI's error envelope, e.g. a 422 on a bad query value.
             raise ApiError(f"Curve API rejected {path}: {payload['detail']}")
         return payload
 
     async def chains(self) -> dict[str, int]:
-        """Chain name -> numeric chain id, across both APIs.
-
-        v2 addresses chains by id, not by the name v1 used, so this mapping
-        is needed before any pool call. Worth reading rather than
-        hardcoding: v2 currently covers 12 chains against v1's 21, and the
-        list will move.
-
-        Curve Lite chains are folded in here, so the picker offers one list
-        and everything downstream takes a chain id. Where a name is in both
-        -- Avalanche and Fantom are -- v2 wins, because it has volume and
-        charts and the Lite entry has neither.
-        """
+        """Chain name -> numeric chain id, across both APIs."""
         cached = self._cached("chains")
         if cached is not None:
             return cached
@@ -273,11 +199,7 @@ class CurveApi:
     # -- Curve Lite -------------------------------------------------------
 
     async def lite_chains(self) -> dict[str, LiteChain]:
-        """The Curve Lite deployments, or nothing if that API is down.
-
-        Nothing rather than an error: a failure here should cost the Lite
-        chains from the picker, not the whole list of chains.
-        """
+        """The Curve Lite deployments, or nothing if that API is down."""
         cached = self._cached("lite:chains")
         if cached is not None:
             return cached
@@ -288,16 +210,11 @@ class CurveApi:
         return self._store("lite:chains", parse_platforms(payload))
 
     async def lite_chain_ids(self) -> set[int]:
-        """Which chain ids are served by the Lite API rather than v2.
-
-        Only the ones v2 does not have: a chain in both is a full
-        deployment that the Lite API also happens to list.
-        """
+        """Which chain ids are served by the Lite API rather than v2."""
         cached = self._cached("lite:ids")
         if cached is not None:
             return cached
         lite = await self.lite_chains()
-        # `chains()` calls this, so read v2 directly rather than recursing.
         payload = await self._v2("/pools/chains/")
         big = {
             int(entry["chain_id"])
@@ -311,12 +228,7 @@ class CurveApi:
         return chain_id in await self.lite_chain_ids()
 
     async def _lite_pools(self, chain_id: int, chain: str) -> list[Pool]:
-        """Every pool on a Lite chain, in one request and then cached.
-
-        There is no paging on this API and no need for one: the largest
-        Lite chain is a couple of hundred pools, which is one response and
-        the whole chain, so the list can be ordered and searched locally.
-        """
+        """Every pool on a Lite chain, in one request and then cached."""
         key = f"lite:pools:{chain_id}"
         cached = self._cached(key)
         if cached is not None:
@@ -335,18 +247,11 @@ class CurveApi:
             return self._store("lite:hidden", set())
         return self._store("lite:hidden", parse_hidden(payload))
 
-    # -- campaigns Curve does not publish ---------------------------------
-    #
+    # -- campaigns Curve does not publish ----------------------------------
     # Two more sources, neither of them Curve's: Merkl, which pays both
     # staked and unstaked liquidity and is the only place points campaigns
-    # are reported at all, and the `external-rewards` directory in
-    # curve-frontend, which is the only record of the rest. See
-    # `curve.merkl` and `curve.external`.
-    #
-    # Both are optional in the strongest sense: every path through here
-    # returns an empty index rather than raising, and the emptiness is
-    # cached, so a host that is down is asked once per TTL rather than
-    # once per page of pools.
+    # are reported at all, and the `external-rewards` directory in curve-
+    # frontend, which is the only record of the rest.
 
     async def merkl_campaigns(self, chain_id: int) -> dict[str, list[MerklCampaign]]:
         """Live Merkl campaigns on this chain, keyed by what they watch."""
@@ -372,8 +277,6 @@ class CurveApi:
                     timeout=CAMPAIGN_TIMEOUT,
                 )
             except ApiError:
-                # Keep whatever earlier pages gave: a partial answer is
-                # better than none, and the next TTL asks again anyway.
                 break
             found += parse_opportunities(payload)
             if not isinstance(payload, list) or len(payload) < MAX_ITEMS:
@@ -381,13 +284,7 @@ class CurveApi:
         return self._store(key, by_identifier(await self._unwrap(found)))
 
     async def _unwrap(self, campaigns: list[MerklCampaign]) -> list[MerklCampaign]:
-        """Find out what the wrapper-denominated campaigns actually pay.
-
-        One request for the whole chain -- `/v4/tokens` takes `id` more
-        than once -- and none at all for a chain with no wrappers on it,
-        which is most of them. A lookup that fails leaves the wrapper's
-        own symbol showing, which is what Merkl itself shows.
-        """
+        """Find out what the wrapper-denominated campaigns actually pay."""
         wanted = sorted(underlying_ids(campaigns))
         if not wanted:
             return campaigns
@@ -403,12 +300,7 @@ class CurveApi:
     async def external_campaigns(
         self,
     ) -> dict[tuple[str, str], list[ExternalCampaign]]:
-        """curve-frontend's point campaigns, keyed by `(chain, address)`.
-
-        Not per chain, because the files are not: one manifest and a
-        couple of dozen small files describe every chain at once, so this
-        is fetched once a session however many chains get browsed.
-        """
+        """curve-frontend's point campaigns, keyed by `(chain, address)`."""
         key = "external:campaigns"
         cached = self._cached(key)
         if cached is not None:
@@ -446,13 +338,7 @@ class CurveApi:
     async def attach_campaigns(
         self, chain_id: int, chain: str, pools: Sequence[Pool]
     ) -> None:
-        """Fill in `pool.merkl` and `pool.points` for these pools.
-
-        Idempotent and cheap after the first call, which is what lets the
-        pool page re-run it: the list endpoint carries no LP token, so a
-        campaign watching an old-registry pool's LP token cannot be found
-        until the detail has landed and filled that in.
-        """
+        """Fill in `pool.merkl` and `pool.points` for these pools."""
         if not pools:
             return
         merkl, external = await self._campaign_indexes(chain_id)
@@ -471,29 +357,11 @@ class CurveApi:
         search: str = "",
         min_tvl: float | None = DEFAULT_MIN_TVL,
     ) -> tuple[list[Pool], int]:
-        """One page of pools, plus the total count matching the filters.
-
-        Ordering, searching and filtering are all done by the server: with
-        a 50-row cap there is no way to sort correctly on the client
-        without first pulling every page.
-
-        The Merkl and external-campaign lookups go out **beside** the pool
-        request rather than after it, so what they cost the first page is
-        whichever of the three is slowest rather than the sum -- and after
-        that they are cached and cost nothing at all.
-        """
+        """One page of pools, plus the total count matching the filters."""
         if await self.is_lite(chain_id):
-            # Same contract, served from one cached response: a page and
-            # the total count, ordered and filtered the way v2 would have.
             listing, campaigns = await asyncio.gather(
                 self._lite_pools(chain_id, chain), self._campaign_indexes(chain_id)
             )
-            # Every pool on the chain, not just the page: a Lite chain is
-            # ordered *here* rather than by a server, and the incentives
-            # sort reads `incentives_apr`, which a Merkl campaign is part
-            # of. Attaching after the slice would sort on figures the page
-            # then contradicts. A dict lookup per pool, on a list that is
-            # already in memory.
             for pool in listing:
                 pool.attach_campaigns(*campaigns, chain=chain)
             pools, total = select(
@@ -537,17 +405,7 @@ class CurveApi:
         return self._store(key, payload)
 
     async def usd_price(self, chain: str, address: str) -> float:
-        """What one token is worth, for pricing rewards.
-
-        The pool payloads carry a price for every *incentive* token, so
-        the only thing this is needed for is CRV -- which is paid by the
-        Minter rather than streamed by the gauge and so appears in no
-        pool's reward list. A v1 endpoint, because v2 has no equivalent.
-
-        Zero when it cannot be had. A reward with no price is shown as an
-        amount without a value, which is honest; refusing to show the
-        amount because the price is missing would not be.
-        """
+        """What one token is worth, for pricing rewards."""
         key = f"price:{chain}:{address.lower()}"
         cached = self._cached(key)
         if cached is not None:
@@ -560,18 +418,7 @@ class CurveApi:
         return self._store(key, price)
 
     async def get_pool(self, chain_id: int, address: str, chain: str = "") -> Pool:
-        """One pool by address, without paging a list to find it.
-
-        What a deep link needs: someone opens `/ethereum/0xC09e…` and the
-        pool it names may be nowhere near the first page, or below the TVL
-        floor, or on a chain whose list has not loaded yet.
-
-        The two APIs answer differently. v2 has a detail endpoint that
-        returns a whole pool, so it is read and merged in one go. Curve
-        Lite has no such endpoint -- but it hands over the entire chain in
-        one request anyway, and that response is already cached, so this
-        is a lookup rather than a fetch.
-        """
+        """One pool by address, without paging a list to find it."""
         if await self.is_lite(chain_id):
             for pool in await self._lite_pools(chain_id, chain):
                 if pool.address.lower() == address.lower():
@@ -583,23 +430,11 @@ class CurveApi:
             raise ApiError(f"No pool at {address} on this network.")
         pool = Pool.from_v2(payload, chain)
         pool.merge_detail(payload)
-        # After the merge, not before: the LP token is one of the three
-        # addresses a Merkl campaign can be watching and only the detail
-        # payload carries it.
         await self.attach_campaigns(chain_id, chain, [pool])
         return pool
 
     async def chain_totals(self, chain_id: int) -> dict[str, float | None]:
-        """Headline TVL and volume for the chain, for the list header.
-
-        v2 has no totals endpoint, so this comes from v1's per-chain
-        summary, which reports them for every pool rather than just the
-        ones above the TVL floor.
-
-        A Lite chain has a TVL and no volume at all, and `None` is how that
-        is said -- the header omits the clause rather than printing a zero
-        that reads as "nobody traded today".
-        """
+        """Headline TVL and volume for the chain, for the list header."""
         key = f"totals:{chain_id}"
         cached = self._cached(key)
         if cached is not None:
@@ -625,27 +460,7 @@ class CurveApi:
             return {"tvl": 0.0, "volume": 0.0}
 
     async def portfolio_targets(self, chain: str, chain_id: int) -> list[Target]:
-        """Every pool worth asking about, with its LP token and gauge.
-
-        This is the expensive half of a portfolio scan -- the chain part
-        is under a second, see `curve.portfolio` -- so it is worth knowing
-        where the requests go:
-
-          * `/v1/chains/{chain}` lists every pool on the chain with its LP
-            token and TVL, in one request. That is the only endpoint that
-            carries the LP token for *all* of them, and it matters because
-            an old-registry pool's LP token is a different contract from
-            the pool. Roughly 2.4MB on Ethereum;
-          * gauges come from v2, which pages at fifty, so that is twenty
-            or so requests -- issued together rather than in sequence.
-
-        A Lite chain needs neither: its own endpoint returns pools, LP
-        tokens and gauges in one answer.
-
-        Pools with no TVL at all are dropped. There are over a thousand of
-        them on Ethereum -- more than half of everything ever deployed --
-        and a balance in one is worth nothing by definition.
-        """
+        """Every pool worth asking about, with its LP token and gauge."""
         if await self.is_lite(chain_id):
             return [
                 Target(
@@ -690,12 +505,7 @@ class CurveApi:
         return targets
 
     async def _all_gauges(self, chain_id: int) -> dict[str, str]:
-        """Pool address -> live gauge, for every pool on the chain.
-
-        v2 is the only list that carries gauges and it pages at fifty, so
-        this is twenty-odd requests. They go out together: in sequence it
-        is the slowest thing on the page by a wide margin.
-        """
+        """Pool address -> live gauge, for every pool on the chain."""
         gauges: dict[str, str] = {}
         for raw in await self._list_pools(chain_id):
             gauge = _first_live_gauge(raw.get("gauges"))
@@ -704,19 +514,7 @@ class CurveApi:
         return gauges
 
     async def _list_pools(self, chain_id: int) -> list[dict[str, Any]]:
-        """Every pool on the chain, as the list endpoint describes it.
-
-        Each entry is kept under its own key on the way past, because the
-        list carries the *published rates* -- `crv_apr`, `crv_apr_boosted`
-        and `extra_rewards_apr`, the last complete with each token's
-        address, decimals and price -- and those are exactly what the
-        portfolio's earnings pass needs. Checked against the detail
-        endpoint: identical fields, identical values.
-
-        Whoever wanted the whole list has therefore already paid for every
-        rate on the chain, and `pool_rates` below can answer from here
-        rather than asking again per pool.
-        """
+        """Every pool on the chain, as the list endpoint describes it."""
         first = await self._list_page(chain_id, 1)
         rest = await asyncio.gather(
             *[
@@ -732,20 +530,12 @@ class CurveApi:
         return pools
 
     async def _list_page(self, chain_id: int, page: int) -> list[dict[str, Any]]:
-        """One page of the list, with every rate on it kept.
-
-        Also records what paging this chain would cost, which is the only
-        thing `pool_rates` needs a request to find out and the reason it
-        is worth spending one.
-        """
+        """One page of the list, with every rate on it kept."""
         payload = await self._v2(
             "/pools/",
             {"chain_id": chain_id, "page": page, "pagination": MAX_PAGE_SIZE},
         )
         count = int(payload.get("count") or 0)
-        # Rounded up, not `count // size + 1` -- which asks for one page
-        # past the end whenever the count divides exactly, and got an
-        # empty answer for the trouble.
         self._pages[chain_id] = max(1, -(-count // MAX_PAGE_SIZE))
         pools = list(payload.get("pools") or [])
         for raw in pools:
@@ -755,28 +545,7 @@ class CurveApi:
     async def pool_rates(
         self, chain_id: int, addresses: Sequence[str]
     ) -> dict[str, dict[str, Any]]:
-        """The published rates for these pools, in as few requests as it takes.
-
-        Three routes, cheapest first:
-
-          * **nothing** -- the portfolio scan lists every pool on the chain
-            to find the gauges, and `_list_pools` keeps what it saw. On the
-            page this actually runs on, that covers everything;
-          * **the list** -- one request per page of the chain, which beats
-            asking per pool once there are more pools to look up than the
-            chain has pages. Ethereum is 45 pages against 300 positions;
-          * **per pool** -- one request each, which is fewer when a wallet
-            is in a handful of pools. Most wallets are.
-
-        The choice is arithmetic, not a guess, and the one number it needs
-        -- how many pages the chain has -- costs a request to learn. So it
-        is only bought when a wallet is in enough pools that the answer
-        could go either way, and the page it arrives on is kept and
-        counted, leaving `pages - 1` as what the list route still owes.
-
-        A pool nothing answers for is left out rather than raised: it costs
-        that row its rate and no more.
-        """
+        """The published rates for these pools, in as few requests as it takes."""
         wanted = [address.lower() for address in addresses]
 
         def known() -> dict[str, dict[str, Any]]:
@@ -794,9 +563,6 @@ class CurveApi:
         pages = self._pages.get(chain_id)
         first: list[dict[str, Any]] | None = None
         if pages is None and len(missing) >= MAX_PAGE_SIZE:
-            # Never listed, and enough pools wanted that the list might
-            # win. One page settles it -- and fills fifty rates whichever
-            # way it goes, so it is not wasted even when it loses.
             first = await self._list_page(chain_id, 1)
             rates = known()
             missing = [address for address in wanted if address not in rates]
@@ -827,10 +593,8 @@ class CurveApi:
                 rates[address] = self._store(_rates_key(chain_id, address), payload)
         return rates
 
-    # -- v1: charts -------------------------------------------------------
-    #
-    # v2 has no OHLC endpoints at all, so these stay on v1. Note the paths
-    # are top level, not nested under /pools/.
+    # -- v1: charts --------------------------------------------------------
+    # v2 has no OHLC endpoints at all, so these stay on v1.
 
     async def _v1(self, path: str, params: dict[str, Any] | None = None) -> Any:
         payload = await get_json(build_url(PRICES_V1, path, params))
@@ -876,21 +640,7 @@ class CurveApi:
         count: int = CANDLE_COUNT,
         now: int | None = None,
     ) -> list[Candle]:
-        """Candles for `base` priced in `quote`, within a single pool.
-
-        Named the way a pair is read: "WBTC/USDC" is the price of WBTC in
-        USDC, so `base` is WBTC and `quote` is USDC. Both are coin
-        addresses; the pool address only says which market to read them
-        from.
-
-        **The endpoint's own parameters are the other way round.** It
-        returns the price of `reference_token` *denominated in*
-        `main_token`, so the quote coin goes in `main_token`. Measured
-        rather than assumed, on tricryptoUSDC: `main_token=WBTC,
-        reference_token=USDC` answers 0.0000156, and swapping them answers
-        63,586. Reading the names as base/quote is the natural mistake and
-        it inverts every pair chart.
-        """
+        """Candles for `base` priced in `quote`, within a single pool."""
         end = int(now if now is not None else time.time())
         key = f"ohlc:{chain}:{pool}:{base}:{quote}:{size.label}:{count}"
         cached = self._cached(key)
@@ -912,23 +662,7 @@ class CurveApi:
 
 
 class PoolFeed:
-    """A paginated, server-ordered cursor over one chain's pools.
-
-    v2 caps a page at 50 rows, so the alternatives were to pull every page
-    up front (eight requests for Ethereum, before the first row paints) or
-    to page as the list scrolls. This is the second: the first page appears
-    after one request and the rest arrive as they are needed.
-
-    The consequence, and the reason ordering moved server-side: a client
-    cannot sort a list it has not fully loaded. So changing the sort or the
-    search resets the cursor and asks the server again, which also means
-    the top of the list is always the true top, not the top of whatever
-    happened to be in memory.
-
-    `generation` guards against a reset landing mid-flight: a page that
-    comes back for a superseded query is discarded rather than appended to
-    the wrong list.
-    """
+    """A paginated, server-ordered cursor over one chain's pools."""
 
     def __init__(
         self,
@@ -945,9 +679,6 @@ class PoolFeed:
         self.api = api
         self.chain = chain
         self.chain_id = chain_id
-        #: A Curve Lite chain: paged from one cached response rather than
-        #: from the server, and with no volume or base APR to show. The
-        #: view reads this to decide which columns exist at all.
         self.lite = lite
         self.sort_by = sort_by
         self.direction = direction
@@ -992,18 +723,12 @@ class PoolFeed:
         self.total = None
         self.error = ""
         self._page = 0
-        # Anything already in flight belongs to the previous query.
         self._generation += 1
 
     # -- loading ----------------------------------------------------------
 
     async def load_more(self) -> list[Pool]:
-        """Fetch the next page and append it. Returns the new pools only.
-
-        Safe to call spuriously -- a scroll handler fires often -- and
-        returns an empty list when a load is already running, when the feed
-        is exhausted, or when the query changed underneath it.
-        """
+        """Fetch the next page and append it. Returns the new pools only."""
         if self.loading or self.exhausted:
             return []
         generation = self._generation
@@ -1031,8 +756,6 @@ class PoolFeed:
 
         self._page = page
         self.total = total
-        # A short page means the server has nothing more, whatever the
-        # count said -- treat it as the end rather than paging forever.
         if not pools:
             self.total = len(self.pools)
             return []

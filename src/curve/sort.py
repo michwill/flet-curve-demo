@@ -1,13 +1,4 @@
-"""The pool list's ordering options.
-
-These are now *server-side*: the v2 API caps a page at 50 rows, so a client
-cannot order a list it has not fully loaded, and every sort key here has to
-be one the API understands (`PoolSortField` in its OpenAPI spec).
-
-`local` is kept alongside each option purely so tests -- and any caller
-holding a complete list -- can reproduce the server's ordering without a
-network round trip. It is not what the list view uses.
-"""
+"""The pool list's ordering options."""
 
 from __future__ import annotations
 
@@ -29,12 +20,6 @@ class SortOption:
 
 #: Volume first: it is the default Curve's own UI opens on, and the closest
 #: single proxy for "which pools are actually being used".
-#:
-#: "Incentives" maps to `aggregate_apr`, which is the API's combined figure
-#: -- base + CRV + token rewards + merkle. It is the only server-side field
-#: that accounts for reward tokens at all; there is no rewards-without-base
-#: equivalent. In practice the difference is immaterial, since base APR is
-#: low single digits where incentive APRs run to hundreds of percent.
 SORTS: tuple[SortOption, ...] = (
     SortOption("volume", "Volume", "volume", lambda p: p.volume_24h),
     SortOption("tvl", "TVL", "tvl", lambda p: p.tvl),
@@ -63,12 +48,7 @@ def sort_field(key: str) -> str:
 
 
 def sort_pools(pools: list[Pool], key: str = DEFAULT_SORT) -> list[Pool]:
-    """Order an in-memory list the way the server would, descending.
-
-    Ties break on TVL then address so the order is total: without that a
-    re-sort can shuffle equal rows -- very common, since hundreds of pools
-    share a volume of exactly zero -- which reads as a flicker.
-    """
+    """Order an in-memory list the way the server would, descending."""
     option = get_sort(key)
     return sorted(
         pools,
@@ -77,12 +57,7 @@ def sort_pools(pools: list[Pool], key: str = DEFAULT_SORT) -> list[Pool]:
 
 
 def search_pools(pools: list[Pool], query: str) -> list[Pool]:
-    """Filter an in-memory list by name, symbol, coin or address.
-
-    The list view sends the query to the server instead (`search_string`),
-    which searches the whole chain rather than the pages already loaded.
-    This stays for tests and for filtering a list already in hand.
-    """
+    """Filter an in-memory list by name, symbol, coin or address."""
     text = (query or "").strip().lower()
     if not text:
         return pools

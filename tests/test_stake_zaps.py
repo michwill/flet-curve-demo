@@ -1,19 +1,4 @@
-"""Deposit-and-stake: the calldata, the gating, and the two-transaction path.
-
-The encoder is the part worth testing hardest. `deposit_and_stake` is the
-only call in this app with **two** dynamic arrays in one argument list, so
-it is the only one where a head word has to be computed rather than
-written down -- and an offset that is one word out does not fail, it
-decodes as a different array. So the tests here decode the calldata back
-rather than comparing it to a golden string: a golden string only proves
-the encoder still does what it did, which is no help when what it did was
-wrong.
-
-The other half is which route the panels take. Ticking "Stake" changes who
-gets approved -- the coins go to the deposit-and-stake zap rather than to
-the pool -- and an allowance granted to the wrong contract is the one
-mistake here that outlives the transaction that caused it.
-"""
+"""Deposit-and-stake: the calldata, the gating, and the two-transaction path."""
 
 from __future__ import annotations
 
@@ -53,8 +38,6 @@ class FakeProvider(WalletProvider):
         self.sent: list[dict] = []
         self.default = word(0)
         self.chain = 1
-        #: Balances handed back by `balanceOf`, in call order, so a test
-        #: can say "no LP before the deposit, some after".
         self.balances: list[int] | None = None
 
     async def request(self, method: str, params=None):
@@ -134,11 +117,7 @@ async def _noop() -> None:
 
 
 def decode_deposit_and_stake(data: str, *, use_underlying: bool) -> dict:
-    """Decode the calldata the way the contract's ABI decoder would.
-
-    Written out rather than reusing the encoder's own arithmetic, so an
-    offset the encoder gets wrong is not also read wrong here.
-    """
+    """Decode the calldata the way the contract's ABI decoder would."""
     body = data[10:]
     words = [body[i : i + 64] for i in range(0, len(body), 64)]
 
@@ -149,7 +128,6 @@ def decode_deposit_and_stake(data: str, *, use_underlying: bool) -> dict:
         return "0x" + words[index][24:]
 
     def as_array(offset_word: int, addresses: bool) -> list:
-        # The offset is in bytes from the start of the argument block.
         start = as_int(offset_word) // 32
         length = as_int(start)
         return [
@@ -174,11 +152,6 @@ def decode_deposit_and_stake(data: str, *, use_underlying: bool) -> dict:
 
 @pytest.mark.parametrize("use_underlying", [None, False, True])
 def test_both_spellings_decode_back_to_what_went_in(use_underlying) -> None:
-    """Every argument survives the round trip, in both arities.
-
-    Three coins rather than two on purpose: with two, the amounts tail
-    happens to start at a word that several wrong offsets also point at.
-    """
     coins = [USDT, CRVUSD, "0x" + "cc" * 20]
     amounts = [1, 2, 3]
     data = abi.encode_deposit_and_stake(
@@ -206,7 +179,6 @@ def test_both_spellings_decode_back_to_what_went_in(use_underlying) -> None:
 
 
 def test_the_two_arities_are_different_functions() -> None:
-    """Not a flag the contract ignores -- a different selector entirely."""
     common = {
         "coins": [USDT], "amounts": [1], "min_mint": 0,
         "use_dynarray": False, "pool": ZERO_ADDRESS,
@@ -229,7 +201,6 @@ def test_the_two_arities_are_different_functions() -> None:
 
 
 def test_a_coin_without_an_amount_is_refused() -> None:
-    """The two arrays are indexed together; a mismatch is a silent misalignment."""
     with pytest.raises(ValueError):
         abi.encode_deposit_and_stake(
             POOL_ADDRESS, LP_TOKEN, GAUGE, [USDT, CRVUSD], [1],
@@ -256,7 +227,6 @@ def test_addresses_are_well_formed() -> None:
 
 
 def test_no_gauge_means_no_route() -> None:
-    """Nothing to stake into, so the combined call has no meaning."""
     assert stake_zap_for(make_pool(gauge="")) is None
 
 
@@ -268,7 +238,6 @@ def test_a_chain_with_no_zap_deployed_gets_none() -> None:
 
 
 def test_ticking_stake_moves_the_approval_to_the_stake_zap() -> None:
-    """Whoever calls `transferFrom` is who has to be approved."""
     tab = deposit_tab(FakeProvider())
     assert tab.spender == POOL_ADDRESS
 
@@ -296,7 +265,6 @@ async def test_deposit_and_stake_goes_to_the_zap_in_one_transaction() -> None:
     assert decoded["deposit"] == POOL_ADDRESS.lower()
     assert decoded["gauge"] == GAUGE.lower()
     assert decoded["amounts"] == [100 * 10**6, 0]
-    # Not a metapool route, so there is no pool to name.
     assert decoded["pool"] == ZERO_ADDRESS
     assert decoded["use_underlying"] is False
 
@@ -316,16 +284,8 @@ async def test_without_the_box_the_deposit_is_unchanged() -> None:
 
 
 async def test_a_chain_without_a_zap_deposits_then_stakes(monkeypatch) -> None:
-    """Two transactions rather than no checkbox.
-
-    Roughly a third of the chains this app lists have no deposit-and-stake
-    zap, and on those the option is still worth offering -- it is the same
-    two transactions the user would otherwise send by hand, in the right
-    order and without having to work out the amount.
-    """
     monkeypatch.setattr(actions, "CONFIRM_INTERVAL", 0)
     provider = FakeProvider({"0x3883e119": word(500 * 10**18)})
-    # No LP before the deposit; 500 after it, which is what gets staked.
     provider.balances = [0, 500 * 10**18]
     tab = deposit_tab(provider, chain_id=1313161554)  # Aurora: no zap
     tab.stake_box.value = True
@@ -335,7 +295,6 @@ async def test_a_chain_without_a_zap_deposits_then_stakes(monkeypatch) -> None:
     await tab.submit(tab.get_contract())
 
     assert [tx["to"] for tx in provider.sent] == [POOL_ADDRESS, LP_TOKEN, GAUGE]
-    # The gauge is staked the amount that actually arrived, not the quote.
     assert abi.decode_uint("0x" + provider.sent[-1]["data"][10:]) == 500 * 10**18
 
 
@@ -351,7 +310,6 @@ def test_use_staked_is_ticked_when_everything_is_staked() -> None:
 
 
 def test_use_staked_is_offered_but_not_forced_on_a_split_position() -> None:
-    """Part staked, part not: the user picks, because either can be meant."""
     tab = withdraw_tab(FakeProvider())
     tab.lp_balance, tab.staked = 5 * 10**18, 5 * 10**18
     tab._sync_use_staked()
@@ -380,7 +338,6 @@ def test_touching_the_box_stops_it_being_set_for_you() -> None:
 
 
 def test_the_wallet_is_spent_before_the_gauge() -> None:
-    """Unstaking what you already hold is a transaction for nothing."""
     tab = withdraw_tab(FakeProvider())
     tab.lp_balance, tab.staked = 4 * 10**18, 6 * 10**18
     tab.use_staked.value = True
@@ -451,7 +408,6 @@ def test_stake_is_never_available_without_a_gauge() -> None:
 
 
 def test_the_other_panels_are_always_available() -> None:
-    """A quote is worth reading before you own anything."""
     pool = make_pool()
     for cls in (DepositTab, WithdrawTab):
         assert cls(StubPage(), pool, lambda: None, _noop).available is True

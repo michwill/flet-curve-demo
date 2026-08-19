@@ -1,17 +1,4 @@
-"""Connecting is asked for; disconnecting is remembered.
-
-Two rules, both of which have been broken at some point:
-
-  * a session that was live should come back when the app reopens, so
-    closing a tab is not the same as disconnecting;
-  * a *deliberate* disconnect must survive the process. Otherwise the
-    desktop build -- which connects at startup by design, because a local
-    wallet raises no popup -- reconnects the moment it is relaunched, and
-    the user who just disconnected has no way to stay disconnected.
-
-The marker lives in a file, so every test here points `XDG_STATE_HOME` at
-a tmp directory: the real one belongs to whoever is running the tests.
-"""
+"""Connecting is asked for; disconnecting is remembered."""
 
 from __future__ import annotations
 
@@ -93,7 +80,6 @@ def test_connecting_restores_it() -> None:
 
 
 def test_the_decision_outlives_the_process(isolated_state) -> None:
-    """Nothing is cached in memory: a relaunch reads the same marker."""
     consent.record_disconnect()
     assert (isolated_state / "flet-curve" / "disconnected").exists()
     assert not consent.autoconnect_allowed()
@@ -119,14 +105,12 @@ def test_the_desktop_connects_at_startup(monkeypatch) -> None:
 
 
 def test_but_not_after_the_user_disconnected(monkeypatch) -> None:
-    """The regression this file exists for: relaunching reconnected."""
     as_desktop(monkeypatch)
     consent.record_disconnect()
     assert not autoconnect()
 
 
 def test_a_browser_never_connects_at_startup(monkeypatch) -> None:
-    """`eth_requestAccounts` on page load is a popup nobody asked for."""
     from wallet import session
 
     monkeypatch.setattr(session, "is_browser", lambda: True)
@@ -143,7 +127,6 @@ async def test_disconnecting_a_live_wallet_records_it(monkeypatch) -> None:
 
 
 async def test_connecting_again_clears_it(monkeypatch) -> None:
-    """An explicit connect *is* the answer to the question."""
     provider = FakeProvider()
     use(monkeypatch, provider)
     consent.record_disconnect()
@@ -166,8 +149,6 @@ async def test_restoring_a_session_counts_as_connecting(monkeypatch) -> None:
 
 
 async def test_connecting_asks_when_there_is_a_choice(monkeypatch) -> None:
-    """Reconnecting after a disconnect must not silently reuse the last
-    wallet -- the whole point of disconnecting was to stop using it."""
     provider = FakeProvider(
         [
             {"uuid": "a", "name": "qeth", "rdns": "org.qeth", "connector": "injected"},
@@ -188,7 +169,6 @@ async def test_connecting_asks_when_there_is_a_choice(monkeypatch) -> None:
 
 
 async def test_change_wallet_asks_even_with_one(monkeypatch) -> None:
-    """Otherwise the command reconnects to the same wallet and looks dead."""
     provider = FakeProvider(
         [{"uuid": "only", "name": "qeth", "rdns": "org.qeth", "connector": "injected"}]
     )
@@ -206,7 +186,6 @@ async def test_change_wallet_asks_even_with_one(monkeypatch) -> None:
 async def test_a_first_connection_does_not_ask_about_a_single_wallet(
     monkeypatch,
 ) -> None:
-    """There is nothing to ask: clicking Connect already answered it."""
     provider = FakeProvider(
         [{"uuid": "only", "name": "qeth", "rdns": "org.qeth", "connector": "injected"}]
     )
@@ -241,11 +220,6 @@ async def test_cancelling_the_picker_connects_nothing(monkeypatch) -> None:
 
 
 async def test_closing_a_session_says_nothing_about_intent(monkeypatch) -> None:
-    """Used when one live session replaces another.
-
-    The transport has to be released either way, but the user did not ask
-    to be disconnected -- so nothing is remembered and nothing is forgotten.
-    """
     provider = FakeProvider()
     forgotten = []
     provider.forget = lambda: forgotten.append(True)  # type: ignore[assignment]
@@ -279,29 +253,17 @@ async def test_disconnecting_does_both(monkeypatch) -> None:
 
 
 def _preselect(wallets: list[dict[str, Any]]) -> str:
-    """The rule `wallet.browser.discover` applies to a single wallet.
-
-    The function it comes from needs a live bridge, so the condition is
-    restated here against the same data shape the bridge returns.
-    """
+    """The rule `wallet.browser.discover` applies to a single wallet."""
     if len(wallets) == 1 and not wallets[0].get("deliberate"):
         return wallets[0]["uuid"]
     return ""
 
 
 def test_a_lone_injected_wallet_is_still_settled_up_front() -> None:
-    """There is nothing to choose between and resolving it is free: it is
-    `window.ethereum`, already in the page."""
     assert _preselect([{"uuid": "metamask", "connector": "injected"}]) == "metamask"
 
 
 def test_a_lone_walletconnect_is_not_chosen_for_you() -> None:
-    """A browser with no extension installed has exactly one entry --
-    WalletConnect -- and this runs on every page load through
-    `Wallet.restore`. Pre-selecting it fetched the whole module graph,
-    built the Web3Modal and put a QR code in front of a page somebody was
-    only reading. Measured against the deployed build: 924 requests before
-    any click, and none once this rule was in."""
     assert (
         _preselect(
             [
@@ -317,7 +279,6 @@ def test_a_lone_walletconnect_is_not_chosen_for_you() -> None:
 
 
 def test_a_choice_of_wallets_is_never_settled_up_front() -> None:
-    """Two entries means a picker, whatever they are."""
     assert (
         _preselect(
             [
@@ -334,10 +295,6 @@ def test_a_choice_of_wallets_is_never_settled_up_front() -> None:
 
 
 def test_the_bridge_and_python_agree_on_the_flag() -> None:
-    """The flag is the contract between the two halves: `wallet_bridge.js`
-    sets it on the entry, `wallet/browser.py` reads it. A rename on either
-    side turns the guard off silently, which is the failure mode that let
-    the eager load ship in the first place."""
     from pathlib import Path
 
     src = Path(__file__).resolve().parent.parent / "src"

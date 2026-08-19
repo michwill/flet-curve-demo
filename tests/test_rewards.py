@@ -1,18 +1,4 @@
-"""Claiming: which contract gets asked, and which gets sent to.
-
-The whole feature turns on one asymmetry. CRV is *minted* -- the gauge only
-records what you are owed, and a separate contract creates the tokens -- so
-the claim goes to the Minter (or, off Ethereum, the chain's child gauge
-factory) and names the gauge. Incentive tokens are already sitting in the
-gauge and come out with `claim_rewards()`. Sending either to the other's
-address is a revert.
-
-The preview side has the matching trap: `claimable_tokens(address)` is
-declared `nonpayable` in every gauge ABI, so a client that dispatches on
-state mutability tries to broadcast it. Here it is an `eth_call` like any
-other read, and the test that matters is that asking for the CRV figure
-never puts anything in the sent-transaction list.
-"""
+"""Claiming: which contract gets asked, and which gets sent to."""
 
 from __future__ import annotations
 
@@ -70,9 +56,6 @@ class FakeProvider(WalletProvider):
             self.calls.append(params[0])
             return self.answers.get(params[0]["data"][:10], self.default)
         if method == "eth_estimateGas":
-            # The panel prices what it would send -- see `show_gas`. The
-            # fee line still stays hidden here, because this double
-            # reports no base fee for it to be priced at.
             return hex(150_000)
         if method == "eth_sendTransaction":
             self.sent.append(params[0])
@@ -134,7 +117,6 @@ def test_a_pool_with_no_gauge_has_nowhere_to_claim_from() -> None:
 
 
 def test_a_chain_with_no_crv_is_absent_rather_than_zero() -> None:
-    """X Layer, Mantle and HyperEVM publish a zero CRV address."""
     for chain_id in (196, 5000, 999):
         assert chain_id not in REWARDS
         assert rewards_for(make_pool(chain_id=chain_id)) is None
@@ -157,11 +139,6 @@ def test_crv_token_is_empty_off_table_rather_than_wrong() -> None:
 
 
 async def test_reading_claimable_crv_sends_no_transaction() -> None:
-    """`claimable_tokens` is `nonpayable`; reading it must stay a call.
-
-    This is the trap the feature exists around -- a typed client would
-    broadcast this and charge gas for a number meant for a label.
-    """
     provider = FakeProvider({"0x33134583": word(7 * 10**18)})  # claimable_tokens
     amount = await contract_for(provider).claimable_crv()
 
@@ -171,7 +148,6 @@ async def test_reading_claimable_crv_sends_no_transaction() -> None:
 
 
 async def test_claimable_crv_is_zero_where_crv_is_not_minted() -> None:
-    """Not an error: those pools still have incentive tokens to claim."""
     provider = FakeProvider({"0x33134583": word(7 * 10**18)})
     assert await contract_for(provider, chain_id=196).claimable_crv() == 0
     assert provider.calls == [], "no point asking a gauge on a chain with no CRV"
@@ -189,7 +165,6 @@ async def test_reward_tokens_walks_the_gauge_list() -> None:
 
 
 async def test_a_gauge_with_no_reward_count_reports_none() -> None:
-    """An old gauge without the method is the same outcome as zero."""
     provider = FakeProvider()  # every read answers 0
     assert await contract_for(provider).reward_tokens() == []
 
@@ -235,9 +210,6 @@ async def test_the_tab_appears_once_crv_accrues() -> None:
 
 
 async def test_a_block_s_worth_of_crv_does_not_earn_a_tab() -> None:
-    """CRV is emitted continuously, so a position accrues again in the
-    block after it is claimed. `> 0` therefore meant "always", and the tab
-    sat in the bar forever showing "CRV 0" over a Claim button."""
     provider = FakeProvider({"0x33134583": word(130)})  # 1.3e-16 CRV
     tab = claim_tab(provider)
     await tab.refresh()
@@ -248,8 +220,6 @@ async def test_a_block_s_worth_of_crv_does_not_earn_a_tab() -> None:
 
 
 async def test_what_the_panel_prints_is_what_puts_it_in_the_bar() -> None:
-    """The tab, its lines and the button that sends them ask one question,
-    so a tab that appears always has something in it."""
     from ui.actions import claimable
 
     provider = FakeProvider({"0x33134583": word(5 * 10**13)})  # 0.00005 CRV
@@ -269,8 +239,6 @@ async def test_what_the_panel_prints_is_what_puts_it_in_the_bar() -> None:
 
 
 async def test_a_dust_half_is_not_worth_its_own_wallet_prompt() -> None:
-    """Two prompts for one apparent action is worth it for two real
-    rewards, not for one real one and a rounding error."""
     provider = FakeProvider(
         {
             "0x33134583": word(200),  # dust CRV
@@ -295,8 +263,6 @@ async def test_a_dust_half_is_not_worth_its_own_wallet_prompt() -> None:
 
 
 async def test_an_incentive_token_is_named_and_scaled_from_the_chain() -> None:
-    """Symbol and decimals are read, not assumed: 6-decimal reward tokens
-    exist, and rendering one as 18 is wrong by a factor of a trillion."""
     provider = FakeProvider(
         {
             "0x963c94b9": word(1),  # reward_count()
@@ -317,7 +283,6 @@ async def test_an_incentive_token_is_named_and_scaled_from_the_chain() -> None:
 
 
 async def test_both_kinds_owed_is_two_transactions(monkeypatch) -> None:
-    """One apparent action, two contracts -- because that is what exists."""
     monkeypatch.setattr(actions, "CONFIRM_INTERVAL", 0)
     provider = FakeProvider(
         {
@@ -334,10 +299,6 @@ async def test_both_kinds_owed_is_two_transactions(monkeypatch) -> None:
     await tab.submit(tab.get_contract())
 
     assert [tx["to"] for tx in provider.sent] == [MINTER_ETHEREUM, GAUGE]
-    # The line between the two prompts names what the first one took, so
-    # the second is expected rather than alarming. It reads the *amount*,
-    # which is a different thing from whether the amount was worth
-    # claiming -- conflating the two turned this into "Claimed 0 CRV."
     assert "Claimed 1 CRV." in tab.status.value
 
 
@@ -386,12 +347,6 @@ class FailingProvider(FakeProvider):
 
 
 async def test_a_failed_read_keeps_the_last_known_figures() -> None:
-    """Zeroing here is what made a flaky node hide the whole panel.
-
-    The tab is shown only when something is owed, so reporting a failed
-    read as nothing owed did not surface an error -- it removed the place
-    an error could have been shown.
-    """
     provider = FailingProvider({"0x33134583": word(3 * 10**18)})
     tab = claim_tab(provider)
     await tab.refresh()
@@ -432,7 +387,6 @@ async def test_a_recovered_read_clears_the_message() -> None:
 
 
 async def test_disconnecting_still_clears_everything() -> None:
-    """A wallet going away is not a failure -- there is genuinely nothing."""
     provider = FailingProvider({"0x33134583": word(3 * 10**18)})
     pool = make_pool()
     contract = PoolContract(provider, pool, ACCOUNT)

@@ -1,16 +1,4 @@
-"""Desktop transport: JSON-RPC over localhost to Frame / qeth.
-
-This is the easy half, and the reason it is easy is worth stating: Frame
-(and qeth, which is Frame-compatible) run an HTTP JSON-RPC server on
-127.0.0.1:1248. That endpoint *is* an EIP-1193 provider -- wallet methods
-are answered locally by the wallet UI (which is what pops the approval
-dialog), and everything else is proxied to the current chain's node. So a
-desktop Python app needs no wallet SDK, no keys, and no RPC URL: one HTTP
-POST per request and the user approves in the wallet they already trust.
-
-Deliberately stdlib-only (`urllib`). Adding `httpx`/`aiohttp` here would
-also add it to the Pyodide dependency set for the web build, for no gain.
-"""
+"""Desktop transport: JSON-RPC over localhost to Frame / qeth."""
 
 from __future__ import annotations
 
@@ -28,18 +16,10 @@ from .base import RpcError, WalletProvider, WalletUnavailable
 #: Frame's port, which qeth reuses so the same dapps work unchanged.
 DEFAULT_ENDPOINT = os.environ.get("FLET_PAY_RPC", "http://127.0.0.1:1248")
 
-#: How the wallet identifies us in its approval dialog. Frame and qeth both
-#: display the request Origin so the user can see who is asking.
+#: How the wallet identifies us in its approval dialog.
 ORIGIN = "http://flet-pay-example.localhost"
 
 #: How often to ask the wallet whether the account or chain moved.
-#:
-#: A browser wallet pushes `accountsChanged`; an HTTP endpoint cannot push
-#: anything, so the only way to notice someone switching account in Frame
-#: or qeth is to ask. `eth_accounts` is not interactive -- it reports what
-#: is already authorised and raises no dialog -- so this is cheap and
-#: invisible. Four seconds is under the time it takes to switch account and
-#: look back at the app.
 POLL_INTERVAL = 4.0
 
 #: A read should fail fast; a signature waits on a human.
@@ -74,8 +54,6 @@ class DesktopWalletProvider(WalletProvider):
         self._handlers: dict[str, list[Callable[[Any], None]]] = {}
         self._watch: asyncio.Task[None] | None = None
         self._closed = False
-        #: Last `(accounts, chain_id)` seen by the poller. None until the
-        #: first pass, which seeds rather than reports.
         self._seen: tuple[tuple[str, ...], str] | None = None
 
     # -- transport ---------------------------------------------------------
@@ -96,8 +74,6 @@ class DesktopWalletProvider(WalletProvider):
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 return json.loads(response.read())
         except urllib.error.HTTPError as exc:
-            # A wallet may answer 4xx/5xx with a JSON-RPC error body; prefer
-            # that over the bare status code because it is far more useful.
             try:
                 return json.loads(exc.read())
             except Exception:
@@ -133,11 +109,7 @@ class DesktopWalletProvider(WalletProvider):
         return response.get("result") if isinstance(response, dict) else None
 
     # -- events ------------------------------------------------------------
-    #
     # There is no push channel here, so these are synthesised by polling.
-    # The events and their payloads are exactly the browser's -- a list of
-    # accounts, a hex chain id -- so `Wallet` cannot tell the difference and
-    # neither can the UI.
 
     def on(self, event: str, handler: Callable[[Any], None]) -> None:
         self._handlers.setdefault(event, []).append(handler)
@@ -150,27 +122,23 @@ class DesktopWalletProvider(WalletProvider):
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
-            # Subscribed outside async context; the next subscribe starts it.
             return
         self._watch = loop.create_task(self._poll())
 
     def _emit(self, event: str, data: Any) -> None:
         for handler in list(self._handlers.get(event, [])):
-            # A bad handler must not kill the poller.
             with contextlib.suppress(Exception):
                 handler(data)
 
     async def _poll(self) -> None:
-        # Reads first, sleeps after: the opening pass seeds the baseline, so
-        # a switch made in the first few seconds is still caught.
+        # Reads first, sleeps after: the opening pass seeds the
+        # baseline, so a switch made in the first few seconds is
+        # still caught.
         while not self._closed:
             try:
                 accounts = await self.request("eth_accounts")
                 chain_id = await self.request("eth_chainId")
             except (WalletUnavailable, RpcError):
-                # The wallet is locked, restarting, or gone. Say nothing and
-                # try again: a transient failure is not a disconnection, and
-                # announcing one would drop a session that is about to work.
                 await asyncio.sleep(POLL_INTERVAL)
                 continue
 
@@ -224,9 +192,5 @@ async def discover(endpoint: str = DEFAULT_ENDPOINT) -> DesktopWalletProvider:
             "Both serve JSON-RPC on 127.0.0.1:1248.\n"
             "Set FLET_PAY_RPC to use a different endpoint."
         )
-    # No probe can name the wallet: `web3_clientVersion` is one of the
-    # methods proxied straight through to the node, so asking it reports
-    # the *node* software ("erigon") and never the wallet. Frame and qeth
-    # are interchangeable at this endpoint, so say so and stop guessing.
     provider.name = f"Frame / qeth ({endpoint.removeprefix('http://')})"
     return provider

@@ -1,16 +1,4 @@
-"""How much of the UI fits, as a pure function of the window width.
-
-Every responsive decision in the app comes from `layout_for(width)`, so the
-breakpoints live in one place and can be checked exhaustively without a
-window -- which matters here, because Flet's integration tests run at a
-fixed size and cannot resize the page in device mode.
-
-The pool list has five columns and they do not all survive a phone. The
-order they are dropped in is by how much they help you *choose* a pool:
-base APY goes first (it is the smallest number and the least decisive),
-then the table becomes cards, because five columns squeezed into 400px is
-worse than two lines of text.
-"""
+"""How much of the UI fits, as a pure function of the window width."""
 
 from __future__ import annotations
 
@@ -21,31 +9,16 @@ CARD_BREAKPOINT = 760.0
 #: Below this the table drops its least decisive column.
 COMPACT_BREAKPOINT = 1000.0
 #: Below this the pool page stacks the chart above the action panel instead
-#: of putting them side by side. A 360px action panel next to a chart needs
-#: roughly this much before the chart stops being a sliver.
+#: of putting them side by side.
 STACK_BREAKPOINT = 900.0
 
 #: How wide the page is allowed to get before it stops growing and starts
 #: centring instead.
-#:
-#: A pool row is a name on the left and four numbers on the right. Stretched
-#: across a 2560px monitor it puts a hand's width of empty paper between the
-#: two halves, and the row stops reading as one row -- which is the only
-#: thing a table is for. Picked against the table itself rather than from a
-#: list of standard breakpoints: at 1440 the space between a pool's name and
-#: its APY is a column gap, and by 2000 it is a gulf.
-#:
-#: This is a cap on the *window*, which is a thing that can be asked how big
-#: it is. Nothing inside is given a size by it.
 MAX_CONTENT_WIDTH = 1440.0
 
 
 def content_width(page_width: float) -> float | None:
-    """How wide the page's content should be, or None to fill the window.
-
-    None below the cap, so an ordinary window is laid out exactly as it was
-    and only a window wider than the content wants is changed at all.
-    """
+    """How wide the page's content should be, or None to fill the window."""
     return MAX_CONTENT_WIDTH if page_width > MAX_CONTENT_WIDTH else None
 
 

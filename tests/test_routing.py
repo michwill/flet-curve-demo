@@ -1,16 +1,4 @@
-"""The address bar: what it says, and what the app does about it.
-
-On web, `page.route` is the browser's URL and `page.go` pushes a history
-entry, so a pool page can be linked to and the Back button can mean what
-it looks like it means. Two halves are tested here:
-
-  * `ui.routing` -- pure string work, so the awkward inputs (junk paths,
-    trailing slashes, an address in the wrong case, a chain that does not
-    exist) need no browser;
-  * `CurveApp.apply_route` -- the handler the browser calls, which has to
-    be idempotent: it is fired both by this app navigating and by the user
-    pressing Back, and there is no way to tell those apart.
-"""
+"""The address bar: what it says, and what the app does about it."""
 
 from __future__ import annotations
 
@@ -51,8 +39,6 @@ def test_routes_are_read(raw, expected) -> None:
     ["/ethereum/deposit", "/ethereum/0x123", "/ethereum/" + "z" * 42, "/ethereum/0x"],
 )
 def test_a_second_segment_that_is_not_an_address_is_dropped(raw: str) -> None:
-    """`/ethereum/deposit` is a chain and some noise, not a pool page --
-    and the alternative is asking an API for a pool called "deposit"."""
     assert routing.parse(raw) == routing.Route("ethereum")
 
 
@@ -75,7 +61,6 @@ def test_a_built_route_reads_back() -> None:
 
 
 def test_a_pool_address_keeps_its_case_but_compares_without_it() -> None:
-    """Checksummed in one link, lowercased in another; the same pool."""
     assert routing.build("ethereum", WL).endswith(WL)
     assert routing.same_pool(WL, WL.lower())
     assert not routing.same_pool(WL, "0x" + "11" * 20)
@@ -121,9 +106,7 @@ class StubPage:
         pass
 
     def run_task(self, handler, *args):
-        # Navigation is applied rather than queued. A stub that only
-        # recorded it would make every "pushed no history entry" assertion
-        # below pass whether or not the app pushed one.
+        # Navigation is applied rather than queued.
         if getattr(handler, "__name__", "") == "push_route":
             self.push(*args)
             return
@@ -160,16 +143,12 @@ def make_app(route: str = "/", *, pool=_DEFAULT, chain: str = "ethereum"):
     app._page_name = "pools"
     app._route_applied = True
     app.body = ft.Container()
-    # The page sits in a box that survives every `_show`, because that box
-    # is what carries the width cap on a wide window. See `_apply_width`.
     app._page_box = ft.Container()
     app.list_view = ft.Container()
     app.progress = ft.ProgressBar(visible=False)
     app.error = ft.Text("", visible=False)
     app.chain_picker = ft.Dropdown(options=[], value=chain)
     app.nav = ft.Container()          # the header's page links
-    # The same links as a menu, which is what a phone gets. `_sync_nav`
-    # fills both, so both have to exist.
     app.menu = ft.PopupMenuButton()
     app._icons = False
     app._totals = []
@@ -205,15 +184,12 @@ def _noop_loader(app):
 
 
 async def test_a_chain_the_api_does_not_know_is_ignored() -> None:
-    """A rotted link should land somewhere, not nowhere."""
     app = make_app("/nosuchchain", chain="ethereum")
     await app.apply_route("/nosuchchain")
     assert app.chain == "ethereum"
 
 
 async def test_the_same_pool_again_is_not_reopened() -> None:
-    """The handler fires when *this app* navigates too, so acting on a
-    route already on screen would reload the page under the user."""
     app = make_app(f"/ethereum/{WL}")
     await app.apply_route(app.page.route)
     await app.apply_route(app.page.route)
@@ -228,8 +204,6 @@ async def test_the_same_pool_in_another_case_is_still_the_same() -> None:
 
 
 async def test_going_back_to_a_chain_route_closes_the_pool() -> None:
-    """Which is what Back does from a pool page: the browser hands over
-    the previous route and the app has to catch up with it."""
     app = make_app(f"/ethereum/{WL}")
     await app.apply_route(app.page.route)
     assert app._detail is not None
@@ -240,8 +214,6 @@ async def test_going_back_to_a_chain_route_closes_the_pool() -> None:
 
 
 async def test_going_back_does_not_push_another_entry() -> None:
-    """Otherwise Back would be a loop: pop to the list, push the list,
-    and the next Back returns to the pool."""
     app = make_app(f"/ethereum/{WL}")
     await app.apply_route(app.page.route)
     app.page.route = "/ethereum"      # as the browser leaves it after Back
@@ -261,8 +233,6 @@ async def test_a_pool_that_cannot_be_fetched_says_so_and_shows_the_list() -> Non
 
 
 async def test_a_deep_link_asks_the_api_for_that_one_pool() -> None:
-    """It may be below the TVL floor or on page nine; paging until it
-    turns up would be slow and might never."""
     app = make_app(f"/ethereum/{WL}")
     await app.apply_route(app.page.route)
     assert app.api.asked == [(1, WL)]
@@ -272,13 +242,6 @@ async def test_a_deep_link_asks_the_api_for_that_one_pool() -> None:
 
 
 def test_picking_the_chain_you_are_already_on_does_nothing() -> None:
-    """A dropdown reports a selection, not a change.
-
-    Opening the picker on a pool page and choosing the network already
-    shown arrives at the handler looking exactly like a real switch --
-    and everything the handler does closes the pool page and reloads the
-    list, which is an answer to a question nobody asked.
-    """
     app = make_app(f"/ethereum/{WL}")
     app.open_pool(make_pool())
     app.page.pushed.clear()
@@ -310,8 +273,6 @@ def test_picking_a_different_chain_does_switch() -> None:
 
 
 def test_portfolio_is_a_page_not_a_pool() -> None:
-    """It sits where a pool address goes, and cannot be mistaken for one:
-    every other second segment has to look like an address."""
     route = routing.parse("/ethereum/portfolio")
     assert route == routing.Route("ethereum", page="portfolio")
     assert route.is_portfolio and not route.is_pool
@@ -332,9 +293,6 @@ def test_a_pool_route_is_not_a_portfolio() -> None:
 
 
 def test_a_route_can_be_asked_for_on_the_command_line(monkeypatch) -> None:
-    """For looking at the app: every visual check otherwise starts with
-    hovering a logo and clicking through, and the desktop build has no
-    address bar to shortcut that with."""
     import main as app_module
 
     monkeypatch.setenv(app_module.ROUTE_ENV, "/ethereum/portfolio")
@@ -365,8 +323,6 @@ def test_a_theme_that_is_not_one_is_ignored(monkeypatch, junk) -> None:
 
 
 def test_nothing_asked_for_is_nothing_forced(monkeypatch) -> None:
-    """A normal launch is unchanged: the platform's route, the remembered
-    theme."""
     import main as app_module
 
     monkeypatch.delenv(app_module.ROUTE_ENV, raising=False)

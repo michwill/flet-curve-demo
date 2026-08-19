@@ -1,11 +1,4 @@
-"""Finding an address's deposits, and remembering them between visits.
-
-The awkward parts are all about alignment. A pool with a gauge asks two
-questions and a pool without one asks one, so the answers do not line up
-with the pools unless something walks them back together -- and getting
-that wrong would attribute one pool's balance to another, which is the
-kind of bug that looks like a working page.
-"""
+"""Finding an address's deposits, and remembering them between visits."""
 
 from __future__ import annotations
 
@@ -21,8 +14,7 @@ UNIT = LP_UNIT
 
 
 def address(tag: str) -> str:
-    """A real-shaped address, because the encoder checks. Distinct per
-    tag so a test can tell one contract from another."""
+    """A real-shaped address, because the encoder checks."""
     return "0x" + (tag.encode().hex() * 40)[:40]
 
 
@@ -43,8 +35,6 @@ def target(name: str, *, gauge: str = "", tvl: float = 0.0, supply: float = 0.0)
 
 
 def test_a_gauge_is_asked_about_too() -> None:
-    """A staked position lives in the gauge and nowhere else: the LP
-    balance of an address that has staked everything is zero."""
     plan = calls_for([target("one", gauge=address("g1")), target("two")])
     assert plan == [address("lone"), address("g1"), address("ltwo")]
 
@@ -55,13 +45,10 @@ def test_pools_without_a_gauge_only_cost_one_call() -> None:
 
 
 def test_the_lp_token_is_asked_not_the_pool() -> None:
-    """On the old registries they are different contracts, and those are
-    the pools people have held the longest."""
     assert calls_for([target("x")])[0] == address("lx")
 
 
 def test_a_pool_with_no_lp_token_falls_back_to_itself() -> None:
-    """Which is true of every factory pool: the pool *is* the token."""
     bare = Target(address=address("bare"), name="p", chain="ethereum", lp_token="")
     assert calls_for([bare]) == [address("bare")]
 
@@ -71,7 +58,6 @@ def test_a_pool_with_no_lp_token_falls_back_to_itself() -> None:
 
 def test_answers_line_up_with_the_pools_that_asked() -> None:
     targets = [target("a", gauge=address("ga")), target("b"), target("c", gauge=address("gc"))]
-    #             a.lp  a.gauge  b.lp  c.lp  c.gauge
     answers = [5 * UNIT, 3 * UNIT, 0, 0, 7 * UNIT]
 
     holdings = {h.name: h for h in holdings_from(targets, answers)}
@@ -84,8 +70,6 @@ def test_answers_line_up_with_the_pools_that_asked() -> None:
 
 
 def test_a_staked_only_position_is_still_a_position() -> None:
-    """The one this feature exists for -- it is invisible to a scan that
-    only asks LP tokens. On mainnet, `tacETH` is exactly this case."""
     found = holdings_from([target("t", gauge=address("g"))], [0, 42])
     assert len(found) == 1
     assert found[0].staked == 42
@@ -96,15 +80,12 @@ def test_pools_with_nothing_in_them_are_left_out() -> None:
 
 
 def test_a_call_that_failed_reads_as_zero_not_as_a_crash() -> None:
-    """`None` is what a reverting `balanceOf` comes back as, and among a
-    thousand contracts a few always do."""
     assert holdings_from([target("a"), target("b")], [None, 5]) == holdings_from(
         [target("a"), target("b")], [0, 5]
     )
 
 
 def test_a_short_answer_does_not_shift_every_row() -> None:
-    """Better one missing row than a thousand wrong ones."""
     found = holdings_from([target("a"), target("b"), target("c")], [7])
     assert [h.name for h in found] == ["a"]
 
@@ -113,8 +94,6 @@ def test_a_short_answer_does_not_shift_every_row() -> None:
 
 
 def test_value_is_the_pools_own_accounting() -> None:
-    """`tvl / supply` per LP token: what the pool would pay out, not what
-    a market would."""
     holding = Holding(
         address="0x", name="p", chain="ethereum",
         wallet=2 * UNIT, staked=3 * UNIT, tvl=1_000.0, supply=100.0,
@@ -125,8 +104,6 @@ def test_value_is_the_pools_own_accounting() -> None:
 
 
 def test_an_empty_pool_is_worth_nothing_rather_than_raising() -> None:
-    """Supply zero is what an emptied pool reports, and dividing by it is
-    an exception rather than a price."""
     holding = Holding(address="0x", name="p", chain="ethereum", wallet=UNIT, tvl=5.0)
     assert holding.value == 0.0
     assert holding.share == 0.0
@@ -162,9 +139,6 @@ class BatchProvider:
         from tests.test_parameters import aggregate3_response
 
         assert to == MULTICALL3
-        # The targets are one per element; pull them back out of the
-        # calldata rather than tracking them, so the test exercises the
-        # encoder the app actually sends.
         body = data[10:]
         count = int(body[64:128], 16)
         self.batches.append(count)
@@ -194,14 +168,11 @@ async def test_a_scan_reads_wallets_and_gauges_and_prices_them() -> None:
 
     assert len(holdings) == 1
     assert holdings[0].wallet == 4 * UNIT and holdings[0].staked == 6 * UNIT
-    # Supply came from the chain, not from the listing.
     assert holdings[0].supply == 100.0
     assert holdings[0].value == 100.0        # 10 of 100 LP in a $1,000 pool
 
 
 async def test_progress_is_reported_in_calls() -> None:
-    """A scan is over a thousand of them and takes a second or two; a
-    second with no feedback reads as a broken page."""
     targets = [target(str(n)) for n in range(250)]
     seen: list[tuple[int, int]] = []
 
@@ -241,17 +212,12 @@ def test_a_remembered_scan_survives_a_round_trip() -> None:
 
 
 def test_balances_survive_being_json() -> None:
-    """They are up to 256 bits and JSON numbers are doubles, so they go as
-    strings -- a balance that came back rounded would be a wrong number
-    shown as a right one."""
     big = 123_456_789_012_345_678_901_234_567_890
     saved = json.dumps(portfolio.to_json([holding(wallet=big)], "0xu", "ethereum"))
     assert portfolio.from_json(json.loads(saved), "0xu", "ethereum")[0].wallet == big
 
 
 def test_another_account_remembers_nothing() -> None:
-    """Two addresses in one browser is a normal day, and showing one
-    person's positions to another is not a cosmetic bug."""
     saved = portfolio.to_json([holding()], "0xUSER", "ethereum")
     assert portfolio.from_json(saved, "0xother", "ethereum") == []
 
@@ -267,7 +233,5 @@ def test_junk_in_storage_is_nothing_remembered(junk) -> None:
 
 
 def test_a_remembered_holding_can_be_re_read_on_its_own() -> None:
-    """The point of remembering the LP token and the gauge: the rows on
-    screen can be corrected before the API has said anything."""
     targets = portfolio.targets_for([holding()])
     assert calls_for(targets) == ["0x" + "1" * 40, "0x" + "2" * 40]

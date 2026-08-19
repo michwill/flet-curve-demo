@@ -1,18 +1,4 @@
-"""Boost, the rate it implies, and how many transactions a claim takes.
-
-The arithmetic is the whole feature. Curve pays CRV on a *working*
-balance, so the published APR is nobody's actual rate: an account with no
-veCRV earns on 40% of its deposit and a fully boosted one on all of it,
-which is the 1x to 2.5x spread. Getting that wrong shows somebody a number
-they cannot earn.
-
-The second half is the claim, and it is a counting problem rather than a
-maths one. CRV batches eight gauges at a time on Ethereum and thirty-two
-elsewhere, because that is the array `mint_many` declares; the incentive
-tokens batch without limit, because `claim_rewards(address)` names the
-account it pays and so goes through Multicall3. Neither count is a guess
-the page may make on its own -- it is what the buttons say out loud.
-"""
+"""Boost, the rate it implies, and how many transactions a claim takes."""
 
 from __future__ import annotations
 
@@ -48,7 +34,6 @@ def staked(**kw) -> Earning:
 
 
 def test_no_ve_crv_is_the_floor_not_a_penalty() -> None:
-    """`working = 0.4 * balance` is what everyone gets for free: 1x."""
     assert staked(working=400).boost == 1.0
 
 
@@ -57,12 +42,10 @@ def test_a_full_working_balance_is_the_ceiling() -> None:
 
 
 def test_the_boost_is_clamped_to_what_the_protocol_allows() -> None:
-    """A gauge mid-checkpoint can report more than the deposit briefly."""
     assert staked(working=99999).boost == 2.5
 
 
 def test_an_unstaked_position_has_no_boost_rather_than_the_minimum() -> None:
-    """0.0, not 1.0. It earns no CRV at all, and "1.00x" says otherwise."""
     assert Earning(pool="p", gauge="g", staked=0, wallet=500).boost == 0.0
 
 
@@ -78,11 +61,6 @@ def test_the_rate_is_the_published_one_times_the_boost() -> None:
 
 
 def test_rewards_are_paid_on_the_staked_part_only() -> None:
-    """One LP staked and nine loose earns a tenth of the headline rate.
-
-    The published APR is a property of the gauge; what an account earns is
-    a property of its position, and most of this one is not in the gauge.
-    """
     position = Earning(
         pool="p", gauge="g", staked=100, wallet=900, working=100, crv_apr=10.0
     )
@@ -91,7 +69,6 @@ def test_rewards_are_paid_on_the_staked_part_only() -> None:
 
 
 def test_incentives_are_staked_only_but_never_boosted() -> None:
-    """Boost is a CRV mechanism; a reward token is streamed pro rata."""
     position = Earning(
         pool="p", gauge="g", staked=500, wallet=500, working=500,
         incentives=(Incentive("ARB", "0x" + "ab" * 20, 4.0),),
@@ -112,7 +89,6 @@ def test_the_two_rates_add_up() -> None:
 
 
 def test_a_reward_is_valued_in_its_own_decimals() -> None:
-    """2.5 USDC at $1 is $2.50, not $2.5e-12."""
     assert USDC.whole == pytest.approx(2.5)
     assert USDC.value == pytest.approx(2.5)
 
@@ -123,7 +99,6 @@ def test_the_value_owed_is_every_token_together() -> None:
 
 
 def test_a_token_with_no_price_still_counts_as_owed() -> None:
-    """Unpriced is not worthless -- the claim button must still appear."""
     position = staked(rewards=(Reward("0xtok", "MYSTERY", 18, 10**18, 0.0),))
     assert position.claimable_value == 0.0
     assert position.has_extras is True
@@ -137,13 +112,6 @@ def test_crv_and_extras_are_told_apart() -> None:
 
 
 def test_crv_streamed_as_an_incentive_is_claimed_from_the_gauge() -> None:
-    """Some gauges pay CRV twice over: minted, and streamed on top.
-
-    The streamed half comes out of `claim_rewards` like any other token,
-    so telling them apart by symbol would send the wrong transaction --
-    and, on a gauge with only the streamed half, would put it in a
-    `mint_many` slot that mints nothing.
-    """
     streamed = Reward("0x" + "cc" * 20, "CRV", 18, 10**18, 0.5)
     position = staked(rewards=(streamed,))
     assert position.has_crv is False
@@ -153,7 +121,6 @@ def test_crv_streamed_as_an_incentive_is_claimed_from_the_gauge() -> None:
 
 
 def test_a_reward_that_is_owed_nothing_is_not_a_reason_to_send_anything() -> None:
-    """A zero in either half claims nothing and must cost nothing."""
     nothing = staked(
         rewards=(
             Reward("", "CRV", 18, 0, 0.5, minted=True),
@@ -169,7 +136,6 @@ def test_a_reward_that_is_owed_nothing_is_not_a_reason_to_send_anything() -> Non
 
 
 def test_crv_batches_eight_at_a_time_on_ethereum() -> None:
-    """`mint_many(address[8])`, so ten gauges is two transactions."""
     many = [
         Earning(pool=f"p{i}", gauge=f"0x{i:040x}", staked=1, rewards=(CRV,))
         for i in range(10)
@@ -180,7 +146,6 @@ def test_crv_batches_eight_at_a_time_on_ethereum() -> None:
 
 
 def test_crv_batches_thirty_two_at_a_time_elsewhere() -> None:
-    """The child gauge factories declare `address[32]`."""
     many = [
         Earning(pool=f"p{i}", gauge=f"0x{i:040x}", staked=1, rewards=(CRV,))
         for i in range(10)
@@ -189,8 +154,6 @@ def test_crv_batches_thirty_two_at_a_time_elsewhere() -> None:
 
 
 def test_incentives_batch_however_many_gauges_there_are() -> None:
-    """`claim_rewards(address)` pays the address it is given rather than
-    its caller, so the whole lot goes through Multicall3 in one send."""
     many = [
         Earning(pool=f"p{i}", gauge=f"0x{i:040x}", staked=1, rewards=(ARB,))
         for i in range(30)
@@ -212,7 +175,6 @@ def test_a_gauge_owing_nothing_is_left_out_of_the_plan() -> None:
 
 
 def test_a_chain_with_no_crv_offers_no_crv_claim() -> None:
-    """X Layer and friends: the incentive half still works."""
     positions = [Earning(pool="a", gauge="0xg", staked=1, rewards=(CRV, ARB))]
     plan = claim_plan(196, positions)
     assert plan.crv == ()
@@ -239,13 +201,6 @@ class Recorder:
 
 
 async def test_incentives_go_out_as_one_multicall_naming_the_owner() -> None:
-    """Three gauges, one transaction, and the owner in every call.
-
-    `claim_rewards()` with no argument would credit whoever sent the
-    transaction -- which is the same address here, so it would look
-    correct -- but the batched form is Multicall3's call, and Multicall3
-    would keep the tokens.
-    """
     account = "0x" + "11" * 20
     plan = claim_plan(
         1,
@@ -261,9 +216,6 @@ async def test_incentives_go_out_as_one_multicall_naming_the_owner() -> None:
     (tx,) = provider.sent
     assert tx["to"] == MULTICALL3
     assert tx["from"] == account
-    # Three `claim_rewards(account)` calls, none of them allowed to fail
-    # quietly: `allowFailure` is what turns a refusal into a mined no-op,
-    # and this is the one call site that must never permit it.
     assert tx["data"] == encode_aggregate3(
         [(f"0x{i:040x}", encode_claim_rewards_for(account)) for i in range(3)],
         allow_failure=False,
@@ -285,7 +237,8 @@ class Chain:
 
 class SlowChain:
     """A Multicall3 that takes its time, and records how many callers are
-    inside it at once."""
+    inside it at once.
+    """
 
     def __init__(self, answer: int = 1) -> None:
         self.answer = answer
@@ -303,15 +256,11 @@ class SlowChain:
         self.at_once = max(self.at_once, self.running)
         await asyncio.sleep(0.01)
         self.running -= 1
-        # One answer per call in the batch; the count is in the second word.
         count = int(data[2 + 8 + 64 : 2 + 8 + 128], 16)
         return aggregate3_response([self.answer] * count)
 
 
 async def test_the_chunks_of_a_round_go_out_together() -> None:
-    """A round is one question asked of many gauges, so nothing in it
-    waits on anything else in it. Sent one after another, an address in
-    three hundred gauges paid for five round trips to ask one thing."""
     from curve.earnings import CHUNK, CONCURRENCY, _batch
 
     chain = SlowChain()
@@ -326,8 +275,6 @@ async def test_the_chunks_of_a_round_go_out_together() -> None:
 
 
 async def test_a_round_wider_than_the_gate_still_waits_its_turn() -> None:
-    """Together is not unbounded: this is the user's own endpoint and it
-    may rate-limit by request."""
     from curve.earnings import CHUNK, CONCURRENCY, _batch
 
     chain = SlowChain()
@@ -340,8 +287,6 @@ async def test_a_round_wider_than_the_gate_still_waits_its_turn() -> None:
 
 
 async def test_answers_keep_their_order_however_they_arrive() -> None:
-    """The caller indexes into this list by gauge, so a chunk that
-    finishes early must not move ahead of one that started before it."""
     import asyncio
 
     from curve.earnings import CHUNK, _batch
@@ -355,7 +300,6 @@ async def test_answers_keep_their_order_however_they_arrive() -> None:
             count = int(data[2 + 8 + 64 : 2 + 8 + 128], 16)
             index = len(order)
             order.append(index)
-            # The later chunks come back first.
             await asyncio.sleep(0.02 - 0.005 * index)
             return aggregate3_response([index] * count)
 
@@ -388,12 +332,6 @@ async def test_a_chunk_that_fails_costs_only_its_own_calls() -> None:
 
 
 async def test_a_reward_token_owing_nothing_never_becomes_a_reward() -> None:
-    """Dropped where it is read, so nothing downstream has to know.
-
-    The gauge streams two tokens and owes one of them; a portfolio holding
-    it must offer to claim the one, and must not send a transaction that
-    would move the other.
-    """
     paid = "0x" + "ab" * 20
     dry = "0x" + "cd" * 20
     me = "0x" + "11" * 20
@@ -450,11 +388,6 @@ def test_the_published_rates_are_taken_off_the_payload() -> None:
 
 
 def test_crv_in_the_reward_list_is_not_counted_twice() -> None:
-    """Some pools report CRV as an extra reward as well as in `crv_apr`.
-
-    `Pool.from_v2` drops it there for the same reason; adding it here too
-    would state the CRV rate twice and call the total an APR.
-    """
     seeded, meta = seed_from_detail(
         staked(),
         {

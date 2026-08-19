@@ -1,15 +1,4 @@
-"""What a `Wallet` does when the wallet itself changes something.
-
-These are the events nobody clicks: the user picks another account in
-MetaMask, switches network, or revokes the site, and the page has to
-notice. There is no request/response to hang the behaviour off -- the
-provider simply pushes -- so the whole contract is "did the session update
-and did the app get told".
-
-Nothing here touches a browser: `Wallet` subscribes through
-`WalletProvider.on`, which the fake below implements by keeping the
-handlers in a dict and calling them on demand.
-"""
+"""What a `Wallet` does when the wallet itself changes something."""
 
 from __future__ import annotations
 
@@ -85,21 +74,18 @@ def test_a_new_account_replaces_the_old_one() -> None:
 
 
 def test_a_lowercase_account_is_checksummed_on_the_way_in() -> None:
-    """Wallets are inconsistent about case; the UI should not be."""
     provider, wallet, _ = make_wallet()
     provider.emit("accountsChanged", [OTHER.lower()])
     assert wallet.address == OTHER
 
 
 def test_an_empty_account_list_is_a_disconnection() -> None:
-    """How an extension says the site was revoked."""
     provider, _wallet, counts = make_wallet()
     provider.emit("accountsChanged", [])
     assert counts == {"change": 0, "gone": 1}
 
 
 def test_a_disconnect_event_is_also_a_disconnection() -> None:
-    """How WalletConnect says the same thing."""
     provider, _wallet, counts = make_wallet()
     provider.emit("disconnect", {"code": 4900, "message": "Session closed"})
     assert counts["gone"] == 1
@@ -107,7 +93,6 @@ def test_a_disconnect_event_is_also_a_disconnection() -> None:
 
 @pytest.mark.parametrize("payload", ["0xa4b1", 42161])
 def test_the_chain_follows_either_spelling(payload: object) -> None:
-    """`chainChanged` carries hex from a browser and an int from qeth."""
     provider, wallet, counts = make_wallet()
     provider.emit("chainChanged", payload)
     assert wallet.chain.chain_id == 42161
@@ -115,7 +100,6 @@ def test_the_chain_follows_either_spelling(payload: object) -> None:
 
 
 def test_an_unparseable_chain_is_ignored() -> None:
-    """Better a stale chain than a crash inside a provider callback."""
     provider, wallet, counts = make_wallet()
     provider.emit("chainChanged", "not-a-chain")
     assert wallet.chain.chain_id == 1
@@ -130,11 +114,6 @@ def test_an_unknown_chain_still_produces_a_usable_one() -> None:
 
 
 def test_one_bad_handler_does_not_stop_the_others() -> None:
-    """A UI callback that raises must not break the event stream.
-
-    The handlers are Flet callbacks; one of them touching an unmounted
-    control would otherwise swallow every later account change.
-    """
     provider, wallet, _ = make_wallet()
     seen: list[str] = []
     wallet.on_change(lambda: (_ for _ in ()).throw(RuntimeError("boom")))
@@ -144,7 +123,6 @@ def test_one_bad_handler_does_not_stop_the_others() -> None:
 
 
 def test_the_short_form_follows_the_new_account() -> None:
-    """What the header actually draws."""
     provider, wallet, _ = make_wallet()
     provider.emit("accountsChanged", [OTHER])
     assert wallet.short_address == f"{OTHER[:6]}…{OTHER[-4:]}"
@@ -189,7 +167,6 @@ PIXEL = "data:image/png;base64,iVBORw0KGgo="
 
 
 async def test_the_wallet_keeps_the_icon_of_the_one_that_was_chosen(monkeypatch) -> None:
-    """The panel draws it, so the choice has to outlive the picker."""
 
     async def choose(options):
         return options[1].uuid
@@ -207,7 +184,6 @@ async def test_the_wallet_keeps_the_icon_of_the_one_that_was_chosen(monkeypatch)
 
 
 async def test_a_single_wallet_still_has_a_face(monkeypatch) -> None:
-    """No picker appears, but the panel still needs the icon."""
     wallet = await connect_with(
         monkeypatch, [{"uuid": "only", "name": "Rabby", "icon": PIXEL}]
     )
@@ -215,7 +191,6 @@ async def test_a_single_wallet_still_has_a_face(monkeypatch) -> None:
 
 
 async def test_walletconnect_falls_back_to_the_bundled_icon(monkeypatch) -> None:
-    """It announces none, being a protocol rather than a wallet."""
     wallet = await connect_with(
         monkeypatch,
         [{"uuid": "wc", "name": "WalletConnect", "connector": "walletconnect"}],
@@ -224,17 +199,11 @@ async def test_walletconnect_falls_back_to_the_bundled_icon(monkeypatch) -> None
 
 
 async def test_a_wallet_with_no_icon_at_all_has_none(monkeypatch) -> None:
-    """The UI draws a lettered tile; None is the signal for it."""
     wallet = await connect_with(monkeypatch, [{"uuid": "x", "name": "Nameless"}])
     assert wallet.icon is None
 
 
 async def test_a_remote_icon_url_is_refused(monkeypatch) -> None:
-    """A relative or http src would be resolved against the asset bundle.
-
-    `_safe_icon` already guards the picker; the same guard has to hold for
-    the icon the session carries around.
-    """
     wallet = await connect_with(
         monkeypatch,
         [{"uuid": "x", "name": "Sketchy", "icon": "https://example.com/icon.png"}],
@@ -245,17 +214,14 @@ async def test_a_remote_icon_url_is_refused(monkeypatch) -> None:
 async def test_a_desktop_provider_announces_nothing_and_still_connects(
     monkeypatch,
 ) -> None:
-    """qeth has no wallet list; `connect` must not index into an empty one."""
     wallet = await connect_with(monkeypatch, [])
     assert wallet.address == CHECKSUMMED
     assert wallet.icon is None
 
 
 # -- the desktop poller ----------------------------------------------------
-#
 # An HTTP endpoint cannot push, so `DesktopWalletProvider` synthesises the
-# same events by asking. These drive it through one pass at a time rather
-# than waiting on the real interval.
+# same events by asking.
 
 
 class ScriptedDesktop(DesktopWalletProvider):
@@ -293,14 +259,12 @@ async def run_poller(provider: DesktopWalletProvider, monkeypatch) -> None:
 
 
 async def test_the_first_pass_only_seeds(monkeypatch) -> None:
-    """Connecting is not an account change."""
     provider = ScriptedDesktop([([CHECKSUMMED], "0x1")])
     await run_poller(provider, monkeypatch)
     assert provider.events == []
 
 
 async def test_switching_account_in_the_wallet_is_reported(monkeypatch) -> None:
-    """The whole point: nothing in the app clicked anything."""
     provider = ScriptedDesktop([([CHECKSUMMED], "0x1"), ([OTHER], "0x1")])
     await run_poller(provider, monkeypatch)
     assert provider.events == [("accounts", [OTHER])]
@@ -313,7 +277,6 @@ async def test_switching_network_in_the_wallet_is_reported(monkeypatch) -> None:
 
 
 async def test_locking_the_wallet_reports_no_accounts(monkeypatch) -> None:
-    """Which `Wallet` reads as a disconnection, exactly as in a browser."""
     provider = ScriptedDesktop([([CHECKSUMMED], "0x1"), ([], "0x1")])
     await run_poller(provider, monkeypatch)
     assert provider.events == [("accounts", [])]
@@ -329,11 +292,6 @@ async def test_a_steady_wallet_says_nothing(monkeypatch) -> None:
 async def test_a_wallet_that_stops_answering_is_not_a_disconnection(
     monkeypatch,
 ) -> None:
-    """A locked or restarting wallet must not drop the session.
-
-    `request` raising is the transient case; only an empty account list
-    means the site was actually revoked.
-    """
     provider = ScriptedDesktop([([CHECKSUMMED], "0x1")])
     await run_poller(provider, monkeypatch)  # runs dry, then raises
     assert provider.events == []
@@ -400,12 +358,10 @@ async def test_the_previous_wallet_comes_back(monkeypatch) -> None:
     assert wallet is not None
     assert wallet.address == CHECKSUMMED
     assert wallet.icon == PIXEL
-    # Matched by rdns: the uuid is regenerated on every page load.
     assert provider.silently == ["fresh-uuid"]
 
 
 async def test_restoring_never_prompts(monkeypatch) -> None:
-    """`eth_accounts` reports what is already authorised; the other one asks."""
     provider = RestoringProvider(
         [{"uuid": "u", "name": "Rabby", "rdns": "io.rabby"}],
         {"rdns": "io.rabby", "connector": "injected"},
@@ -434,7 +390,6 @@ async def test_an_uninstalled_wallet_is_not_waited_for(monkeypatch) -> None:
 
 
 async def test_walletconnect_is_matched_by_its_connector(monkeypatch) -> None:
-    """Its entry is synthesised by the bridge, not announced by a wallet."""
     provider = RestoringProvider(
         [
             {"uuid": "walletconnect", "name": "WalletConnect", "rdns": "", "connector": "walletconnect"},
@@ -455,7 +410,6 @@ async def test_nothing_remembered_means_nothing_happens(monkeypatch) -> None:
 
 
 async def test_disconnecting_stops_the_app_remembering(monkeypatch) -> None:
-    """Otherwise the next page load would reconnect what you just left."""
     provider = RestoringProvider(
         [{"uuid": "u", "name": "Rabby", "rdns": "io.rabby"}],
         {"rdns": "io.rabby", "connector": "injected"},
@@ -468,12 +422,6 @@ async def test_disconnecting_stops_the_app_remembering(monkeypatch) -> None:
 
 
 async def test_another_wallet_of_the_same_kind_is_not_restored(monkeypatch) -> None:
-    """rdns is an identity; "injected" is a category.
-
-    Falling back to the category when an rdns was stored restores whatever
-    is first in the list -- which is how a remembered mock wallet came back
-    as the qeth extension sitting above it.
-    """
     provider = RestoringProvider(
         [
             {"uuid": "q", "name": "qeth", "rdns": "org.qeth", "connector": "injected"},
@@ -497,11 +445,8 @@ async def test_a_remembered_wallet_that_is_gone_does_not_take_a_stand_in(
 
 
 # -- following the network picker ------------------------------------------
-#
-# Every read goes through the wallet's provider, so browsing one network
-# with a wallet on another quotes addresses that hold no code there. The
-# panels say so; picking a chain in the header also asks the wallet to
-# come along, which is the fix rather than the warning.
+# Every read goes through the wallet's provider, so browsing one network with
+# a wallet on another quotes addresses that hold no code there.
 
 
 class SwitchingProvider(WalletProvider):
@@ -578,7 +523,6 @@ async def test_picking_a_chain_takes_the_wallet_with_it() -> None:
 
 
 async def test_a_wallet_already_there_is_left_alone() -> None:
-    """No prompt for a switch that would change nothing."""
     provider = SwitchingProvider(chain=100, knows={1, 100})
     app = curve_app(provider, chain="xdai")
     app.wallet = Wallet(provider, ACCOUNT, get_chain(100))
@@ -589,7 +533,6 @@ async def test_a_wallet_already_there_is_left_alone() -> None:
 
 
 async def test_a_refusal_is_reported_and_nothing_else_happens() -> None:
-    """Refusing is a perfectly good answer; the panels' own notice stands."""
     provider = SwitchingProvider(chain=1, knows={1, 100})
     provider.refuse = True
     app = curve_app(provider, chain="xdai")
@@ -602,9 +545,6 @@ async def test_a_refusal_is_reported_and_nothing_else_happens() -> None:
 
 
 async def test_an_unknown_lite_chain_is_offered_to_the_wallet() -> None:
-    """4902 means the wallet has never heard of it, which for a Curve Lite
-    chain is the normal case -- and their API is the only place publishing
-    what EIP-3085 needs."""
     provider = SwitchingProvider(chain=1, knows={1})
     app = curve_app(provider, chain="monad")
 
@@ -616,8 +556,6 @@ async def test_an_unknown_lite_chain_is_offered_to_the_wallet() -> None:
 
 
 async def test_an_unknown_chain_with_no_metadata_says_so() -> None:
-    """Gnosis is not a Lite chain, so nothing here can describe it to a
-    wallet that does not know it. Saying so beats a silent no-op."""
     provider = SwitchingProvider(chain=1, knows={1})
     app = curve_app(provider, chain="xdai")
     app.api = FakeLiteApi(chains={})
@@ -636,10 +574,6 @@ async def test_no_wallet_is_not_an_error() -> None:
 
 
 async def test_forgetting_survives_a_bridge_that_is_already_gone() -> None:
-    """`forget` runs on an explicit disconnect, when the bridge may have
-    stopped answering -- and the `except WalletError` that covers that used
-    to name something the module had not imported, so the handler itself
-    raised `NameError`. Found by ruff, which is why it is now pinned."""
     from wallet.browser import BrowserWalletProvider
 
     provider = BrowserWalletProvider.__new__(BrowserWalletProvider)
@@ -665,14 +599,6 @@ class Answering(WalletProvider):
 
 
 async def test_a_chain_id_that_arrives_as_a_number() -> None:
-    """The bug a user hit: disconnect, reconnect with WalletConnect, and
-    "int() can't convert non-string with explicit base".
-
-    WalletConnect answers `eth_chainId` from its own state rather than the
-    wire, so it hands back a JavaScript number -- and the bridge's wrapper,
-    which turns that back into hex, was being skipped on a second connect.
-    The wrapper is fixed; this makes the Python side stop caring.
-    """
     assert await Answering(1).chain_id() == 1
     assert await Answering(100).chain_id() == 100
 
@@ -684,8 +610,6 @@ async def test_a_chain_id_in_the_shape_the_spec_asks_for() -> None:
 
 
 async def test_no_answer_at_all_is_a_sentence_not_a_TypeError() -> None:
-    """`int(None, 16)` raises the same inscrutable message. What reaches
-    the user should say which wallet call came back empty."""
     with pytest.raises(WalletError, match="did not say what the network is"):
         await Answering(None).chain_id()
 
@@ -694,6 +618,5 @@ async def test_no_answer_at_all_is_a_sentence_not_a_TypeError() -> None:
 
 
 def test_a_boolean_is_not_a_quantity() -> None:
-    """`True` is an `int` in Python and would silently become chain 1."""
     with pytest.raises(WalletError):
         quantity(True, "the network")

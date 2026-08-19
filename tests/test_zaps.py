@@ -1,21 +1,4 @@
-"""Metapools: depositing the underlying coins through a zap.
-
-A metapool contract holds two coins -- its own, and the base pool's LP
-token -- and almost nobody holds that LP token. The zap route lets the
-underlying coins be deposited directly, and everything in this file is
-about the ways that route differs from the plain one:
-
-  * a different contract to send to, carrying the pool as an argument;
-  * a different set of coins, and so a different set of approvals, whose
-    spender is the zap rather than the pool;
-  * two ABI dialects, `uint256[]` and `uint256[N]`, as in the pools;
-  * two fees, because the deposit passes through both pools.
-
-The selectors below were read off the deployed Ethereum zaps, and the
-whole flow was run on a mainnet fork through titanoboa: the calldata these
-encoders produce was accepted by both zaps, minted above the floor, and
-came back out again. See docs/slippage.md for the fee measurements.
-"""
+"""Metapools: depositing the underlying coins through a zap."""
 
 from __future__ import annotations
 
@@ -40,11 +23,7 @@ def metapool(
     coins: int = 4,
     chain_id: int = 1,
 ) -> Pool:
-    """A metapool as v2 reports one: coins decomposed, `n_coins` = 2.
-
-    Four coins means `[USD1, crv2pool, USDC, USDT]` -- the base LP in
-    second place, which `display_coins` drops.
-    """
+    """A metapool as v2 reports one: coins decomposed, `n_coins` = 2."""
     pool = Pool(
         address=META,
         name="World Liberty USD1 Pool",
@@ -73,8 +52,6 @@ def test_an_ng_metapool_gets_the_ng_zap() -> None:
 
 
 def test_an_old_factory_metapool_gets_the_fixed_array_zap() -> None:
-    """3pool has two zaps -- an NG one and the old factory's -- and which
-    applies follows the *pool's* implementation, not the base pool's."""
     zap = zap_for(metapool(registry="factory", base_pool=THREEPOOL, coins=5))
     assert zap is not None
     assert zap.address == LEGACY_ZAP
@@ -82,9 +59,6 @@ def test_an_old_factory_metapool_gets_the_fixed_array_zap() -> None:
 
 
 def test_the_oldest_metapools_are_not_offered_a_zap() -> None:
-    """`main`-registry metapools predate the factory: each has its own
-    deposit contract taking no pool argument, and its LP token is a
-    separate contract the factory zap would fail to hand back."""
     assert zap_for(metapool(registry="main", base_pool=THREEPOOL, coins=5)) is None
 
 
@@ -99,15 +73,10 @@ def test_an_unknown_base_pool_has_no_zap() -> None:
 
 
 def test_the_same_base_pool_on_another_chain_is_not_assumed() -> None:
-    """Curve deploys one zap per factory per chain; addresses do not carry
-    across, and an approval to the wrong one would be an approval to
-    whatever happens to live there."""
     assert zap_for(metapool(chain_id=8453)) is None
 
 
 def test_a_coin_list_that_does_not_match_the_zap_is_refused() -> None:
-    """The fixed dialect encodes N in the signature, so a mismatch is a
-    call to a function that does not exist. Better no zap than that."""
     assert zap_for(metapool(coins=5)) is None  # 4 underlying, zap expects 3
 
 
@@ -121,7 +90,6 @@ def test_every_registered_zap_has_a_plausible_shape() -> None:
 
 
 # -- calldata --------------------------------------------------------------
-#
 # Selectors read off the deployed zaps; the fixed-array ones are the 3pool
 # zap's, whose N is 4.
 
@@ -135,8 +103,8 @@ def test_every_registered_zap_has_a_plausible_shape() -> None:
         "calc_token_amount(address,uint256[4],bool)": "861cdef0",
         "add_liquidity(address,uint256[4],uint256)": "384e03db",
         "remove_liquidity(address,uint256,uint256[4])": "ad5cc918",
-        # Identical in both dialects: every zapped metapool is StableSwap,
-        # so the coin index is `int128` either way.
+        # Identical in both dialects: every zapped metapool is
+        # StableSwap, so the coin index is `int128` either way.
         "calc_withdraw_one_coin(address,uint256,int128)": "41b028f3",
         "remove_liquidity_one_coin(address,uint256,int128,uint256)": "29ed2862",
     }.items(),
@@ -163,7 +131,6 @@ def test_the_fixed_deposit_is_inline_and_its_length_is_in_the_signature() -> Non
 
 
 def test_the_two_dialects_are_different_functions() -> None:
-    """Not two encodings of one: sending the wrong one reverts."""
     amounts = [1, 2, 3, 4]
     assert (
         abi.encode_zap_calc_token_amount(META, amounts, dynamic=True)[:10]
@@ -262,23 +229,17 @@ def test_a_plain_pool_shows_no_route_picker() -> None:
 def test_a_metapool_offers_both_routes() -> None:
     tab, _ = deposit_tab()
     assert tab.route.visible is True
-    # Two fields on the pool route (the contract's own coins), three on the
-    # underlying one (the base LP replaced by what it is made of).
     assert [f.label for f in tab.routes["pool"].fields] == ["C0", "C1"]
     assert [f.label for f in tab.routes["underlying"].fields] == ["C0", "C2", "C3"]
 
 
 def test_the_underlying_route_is_the_default_where_there_is_one() -> None:
-    """It is the one denominated in coins people actually hold. Holding the
-    base pool's LP token is the specialist case."""
     tab, _ = deposit_tab()
     assert tab.route.value == "underlying"
     assert tab.underlying is True
     assert tab.fields is tab.routes["underlying"].fields
     assert tab.routes["underlying"].control.visible is True
     assert tab.routes["pool"].control.visible is False
-    # And it reads first, because a default buried second is a default
-    # nobody sees.
     assert [radio.value for radio in tab.route.content.controls] == [
         "underlying",
         "pool",
@@ -345,8 +306,6 @@ async def test_the_pool_route_still_deposits_into_the_pool() -> None:
 
 
 async def test_the_underlying_route_approves_the_zap_not_the_pool() -> None:
-    """The spender is whoever moves the coins, and on this route that is
-    the zap. Approving the pool would leave the deposit reverting."""
     tab, _ = deposit_tab()
     tab.fields[1].value = "1000"
 
@@ -369,9 +328,6 @@ async def test_the_pool_route_approves_the_pool() -> None:
 
 
 async def test_nothing_is_approved_while_the_quote_is_failing() -> None:
-    """An allowance outlives the mistake that caused it. If the zap this
-    app has the address of will not quote, it does not get approved --
-    which is the whole guard against a stale or wrong registry entry."""
     tab, provider = deposit_tab()
     tab.fields[1].value = "1000"
     from wallet.base import RpcError
@@ -387,9 +343,6 @@ async def test_nothing_is_approved_while_the_quote_is_failing() -> None:
 
 
 async def test_the_zap_slippage_covers_both_pools_fees() -> None:
-    """A zap deposit pays the base pool's fee on the way in and the
-    metapool's after it, so the suggestion is their sum plus the drift
-    constant -- measured on a fork at 0.045% against 0.055% allowed."""
     from ui.actions import QUOTE_DRIFT
 
     tab, provider = deposit_tab()
@@ -411,8 +364,6 @@ async def test_the_pool_route_charges_one_fee() -> None:
 
 
 async def test_switching_route_re_reads_the_fee() -> None:
-    """The two routes have different fees, so the suggestion has to be
-    invalidated by the switch rather than cached for the pool."""
     tab, provider = deposit_tab()
     provider.answers["0xddca3f43"] = word(4_000_000)
     await tab.suggest_slippage(tab.get_contract())
@@ -442,8 +393,6 @@ def test_the_receive_list_is_the_underlying_coins_by_default() -> None:
     tab, _ = withdraw_tab()
     assert tab.route.value == "underlying"
     assert [o.text for o in tab.coin_picker.options] == ["C0", "C2", "C3"]
-    # The single-coin rule applies from the start, not from the first time
-    # the switch is touched.
     assert tab.mode.value == "one"
     assert tab.balanced_radio.disabled is True
 
@@ -454,9 +403,6 @@ def test_the_receive_list_is_the_underlying_coins_by_default() -> None:
 
 
 def test_the_zap_route_withdraws_into_one_coin_only() -> None:
-    """There is nothing to floor a balanced zap withdrawal against: the
-    base pool's reserves are not on the metapool, and a zero floor is no
-    floor. So the option is greyed rather than silently unprotected."""
     tab, _ = withdraw_tab()
 
     assert tab.mode.value == "one"
@@ -469,8 +415,6 @@ def test_the_zap_route_withdraws_into_one_coin_only() -> None:
 
 
 async def test_the_zap_route_needs_the_lp_approved_to_the_zap() -> None:
-    """Burning at the pool needs no approval -- it burns your own balance
-    -- but a zap has to be allowed to take the LP first."""
     tab, _ = withdraw_tab()
     tab.amount.value = "10"
 
@@ -531,16 +475,11 @@ def test_a_pool_without_a_zap_hides_the_withdraw_route_picker() -> None:
 
 
 # -- swapping the underlying, without any zap ------------------------------
-#
-# A metapool does the base-pool leg itself, so `exchange_underlying` needs
-# no zap and approves nothing but the pool. That matters well beyond
-# convenience: it is the only underlying route that works on the chains
-# where no zap was ever deployed -- Gnosis's NG metapools have none.
+# A metapool does the base-pool leg itself, so `exchange_underlying` needs no
+# zap and approves nothing but the pool.
 
 
 def test_underlying_swap_selectors_match_the_deployed_pools() -> None:
-    """Read off mainnet, and both flavours exist for the same reason the
-    plain `get_dy` has two: StableSwap indexes with int128."""
     assert abi.selector("get_dy_underlying(int128,int128,uint256)") == "07211ef7"
     assert abi.selector("exchange_underlying(int128,int128,uint256,uint256)") == "a6417ed6"
     assert abi.selector("get_dy_underlying(uint256,uint256,uint256)") == "85f11d1e"
@@ -557,8 +496,6 @@ def test_the_underlying_quote_is_indexed_into_the_underlying_list() -> None:
 
 
 async def test_an_underlying_swap_goes_to_the_pool_itself() -> None:
-    """No zap in sight: the difference from a plain swap is the selector
-    and which coin list the indices count in."""
     pool = metapool()
     provider = FakeProvider({"0x07211ef7": word(999 * 10**18)})
     contract = PoolContract(provider, pool, ACCOUNT)
@@ -573,9 +510,6 @@ async def test_an_underlying_swap_goes_to_the_pool_itself() -> None:
 
 
 def test_only_a_decomposed_metapool_has_underlying() -> None:
-    """A metapool, and one the API decomposed -- which is what says what
-    the underlying even are. Curve Lite sends the two real coins and no
-    base pool, so there is nothing to decompose."""
     assert metapool().has_underlying is True
 
     plain = metapool()
@@ -654,8 +588,6 @@ async def test_the_underlying_swap_is_approved_to_the_pool_not_a_zap() -> None:
 
 
 async def test_the_underlying_swap_pays_both_pools_fees() -> None:
-    """`dynamic_fee` prices pairs of the *contract's* coins, so it says
-    nothing about an underlying pair -- and the trade crosses both pools."""
     from ui.actions import SLIPPAGE_OF_FEE
 
     tab, provider = swap_tab()
@@ -681,18 +613,7 @@ async def test_the_pool_route_asks_about_the_pair() -> None:
 
 
 # -- the other two dialects ------------------------------------------------
-#
-# Four exist, and none can be inferred from the others. Two more beyond the
-# NG and old-factory zaps above:
-#
-#   * the crypto factory's shared zaps -- a pool argument like the stable
-#     ones, but no `is_deposit` flag and uint256 indices;
-#   * the older crypto metapools' per-pool zaps -- no pool argument at all,
-#     so the calldata is exactly what the pool itself would take.
-#
-# All four were probed against deployed contracts, and the quotes below
-# were reproduced through `PoolContract` against live chains: EURe/3Crv on
-# Gnosis, cvxCRV/crvFRAX on Ethereum, World Liberty USD1, and MAI/x3CRV.
+# Four exist, and none can be inferred from the others.
 
 EURE_3CRV = "0x056C6C5e684CeC248635eD86033378Cc444459B0"  # Gnosis, per-pool zap
 EURE_ZAP = "0xE3FFF29d4DC930EBb787FeCd49Ee5963DADf60b6"
@@ -719,8 +640,6 @@ def gnosis_crypto_metapool() -> Pool:
 
 
 def test_a_crypto_metapool_gets_its_own_zap() -> None:
-    """Keyed by the pool, not the base pool: these were deployed one per
-    pool, so there is nothing else to key them by."""
     zap = zap_for(gnosis_crypto_metapool())
     assert zap is not None
     assert zap.address == EURE_ZAP
@@ -729,9 +648,6 @@ def test_a_crypto_metapool_gets_its_own_zap() -> None:
 
 
 def test_the_per_pool_zap_takes_the_calldata_a_pool_would() -> None:
-    """No pool argument, no `is_deposit` flag, uint256 indices. Verified
-    against the deployed Gnosis zap, which answers this and reverts on
-    every spelling that carries a pool address."""
     data = abi.encode_zap_calc_token_amount(None, [0, 5, 0, 0], stableswap=False)
     assert data[:10] == "0x" + abi.selector("calc_token_amount(uint256[4])")
     assert words_of(data) == [0, 5, 0, 0]
@@ -748,7 +664,6 @@ def test_the_crypto_factory_zap_takes_a_pool_but_no_flag() -> None:
 
 
 def test_the_four_dialects_are_four_functions() -> None:
-    """The whole reason the flags exist: same operation, four selectors."""
     amounts = [1, 2, 3]
     selectors = {
         abi.encode_zap_calc_token_amount(META, amounts, dynamic=True)[:10],
@@ -769,14 +684,10 @@ async def test_a_per_pool_zap_is_addressed_without_the_pool() -> None:
 
     sent = provider.sent[-1]
     assert sent["to"] == EURE_ZAP
-    # First word is an amount, not an address: no pool argument at all.
     assert words_of(sent["data"])[0] == 0
 
 
 async def test_a_crypto_withdrawal_indexes_with_uint256() -> None:
-    """int128 and uint256 encode the same for a positive index, but the
-    selector differs -- and a wrong selector is a call that does not
-    exist."""
     pool = gnosis_crypto_metapool()
     provider = FakeProvider()
     contract = PoolContract(provider, pool, ACCOUNT)
@@ -787,10 +698,6 @@ async def test_a_crypto_withdrawal_indexes_with_uint256() -> None:
 
 
 def test_a_crypto_metapool_swaps_through_its_zap() -> None:
-    """The *pool* has no `get_dy_underlying` -- but its per-pool zap does,
-    along with `exchange_underlying`, in all seven of them. So the route
-    exists there too; what changes is who performs it, and therefore who
-    gets approved."""
     from ui.actions import underlying_swap_spender
 
     pool = gnosis_crypto_metapool()
@@ -819,8 +726,6 @@ async def test_a_crypto_underlying_swap_is_sent_to_the_zap() -> None:
 
 
 async def test_the_crypto_swap_approves_the_zap_not_the_pool() -> None:
-    """The one place the two routes differ beyond the address: on a
-    StableSwap metapool the pool moves the coins, here the zap does."""
     from ui.actions import SwapTab
 
     pool = gnosis_crypto_metapool()
@@ -836,10 +741,6 @@ async def test_the_crypto_swap_approves_the_zap_not_the_pool() -> None:
 
 
 async def test_a_metapool_with_no_swapping_zap_is_refused() -> None:
-    """The factory zaps -- stable and crypto alike -- have no swap
-    functions at all, checked in their bytecode. A crypto metapool served
-    only by one of those cannot swap its underlying, and says so rather
-    than sending calldata nothing implements."""
     pool = gnosis_crypto_metapool()
     contract = PoolContract(FakeProvider(), pool, ACCOUNT)
     contract.zap = None
@@ -848,8 +749,6 @@ async def test_a_metapool_with_no_swapping_zap_is_refused() -> None:
 
 
 def test_the_stable_registry_reaches_gnosis_now() -> None:
-    """The gap that started this: the sweep behind the table used the
-    wrong name for Gnosis, so its metapools had no zap at all."""
     pool = Pool(
         address="0x" + "44" * 20,
         name="MAI/x3CRV",
@@ -866,8 +765,6 @@ def test_the_stable_registry_reaches_gnosis_now() -> None:
 
 @pytest.mark.parametrize("table", ["ZAPS", "CRYPTO_ZAPS", "POOL_ZAPS"])
 def test_every_table_is_keyed_lowercase(table: str) -> None:
-    """Addresses arrive checksummed from the API and are looked up from
-    `pool.address.lower()`; a mixed-case key is a silent miss."""
     from curve import zaps
 
     for key in getattr(zaps, table):

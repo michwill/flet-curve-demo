@@ -1,22 +1,4 @@
-"""The domain objects, parsed out of Curve's API shapes.
-
-Everything here is a plain dataclass with no Flet and no network in sight,
-which is what makes the sorting, formatting and math testable without a
-running app. The API's own shapes leak into the `from_*` classmethods and
-stop there.
-
-These are built on the **Prices API v2** (`prices.curve.finance/v2`), which
-returns TVL, volume, base APR, the CRV boost range and extra reward tokens
-in a single object -- the v1 main API split those across two endpoints that
-had to be joined by address. Two v2 quirks are handled here rather than
-leaked upward:
-
-  * `gauges` is a list of *objects* (`{address, is_killed}`) on the list
-    endpoint and a list of *strings* on the detail endpoint;
-  * the list endpoint omits `lp_token_address`, `balances` and per-coin
-    `usd_price`, so a pool starts partial and is filled in by
-    `merge_detail` when its page is opened.
-"""
+"""The domain objects, parsed out of Curve's API shapes."""
 
 from __future__ import annotations
 
@@ -28,9 +10,7 @@ from .merkl import NO_REWARDS, MerklRewards
 from .merkl import split as merkl_split
 
 #: `pool_type`/`registry_type` values whose pools use the StableSwap ABI:
-#: `int128` coin indices. Both the v2 spellings and the older hyphenated v1
-#: registry ids are listed, so a Pool built from either source dispatches
-#: correctly.
+#: `int128` coin indices.
 STABLE_POOL_TYPES = frozenset(
     {
         # v2
@@ -40,16 +20,7 @@ STABLE_POOL_TYPES = frozenset(
     }
 )
 #: Pool types whose amount arrays are Vyper `DynArray`s -- `uint256[]`
-#: rather than `uint256[N]`. StableSwap-NG rewrote `add_liquidity`,
-#: `remove_liquidity` and `calc_token_amount` that way, so the calldata is
-#: an offset and a length rather than N inline words, and a fixed-array
-#: call to one of these pools reverts.
-#:
-#: Confirmed against mainnet, one pool per implementation: PayPool,
-#: Strategic USD Reserves and weETH/WETH (all stableswap-ng) answer the
-#: dynamic spelling and revert on the fixed one; 3pool, crvUSD/USDT,
-#: stETH-ng, TricryptoUSDC, tricrypto2 and YB-WETH (twocrypto-ng) do the
-#: opposite. The crypto NG pools kept fixed arrays.
+#: rather than `uint256[N]`.
 DYNAMIC_ARRAY_TYPES = frozenset(
     {
         "stableswapng",
@@ -93,12 +64,7 @@ def _int(value: Any, default: int = 0) -> int:
 
 @dataclass(slots=True)
 class Coin:
-    """One asset in a pool.
-
-    `balance` is a human number, not smallest units: v2 reports pool
-    reserves already scaled. It is display-only either way -- anything
-    headed for calldata is parsed from user input as an integer.
-    """
+    """One asset in a pool."""
 
     address: str
     symbol: str
@@ -137,13 +103,7 @@ class Incentive:
 
     @classmethod
     def from_lite(cls, raw: dict[str, Any]) -> Incentive:
-        """Curve Lite's gauge reward entry.
-
-        `apy` is null wherever the token has no price -- which on these
-        chains is most of the time -- and that is left as zero rather than
-        guessed at from the emission rate: a rate without a price is not
-        an APR.
-        """
+        """Curve Lite's gauge reward entry."""
         return cls(
             symbol=raw.get("symbol") or "?",
             token_address=raw.get("token_address") or raw.get("address") or "",
@@ -152,13 +112,7 @@ class Incentive:
 
 
 def _first_live_gauge(raw: Any) -> str:
-    """Pull a usable gauge address out of either shape v2 returns.
-
-    The list endpoint gives `[{"address": …, "is_killed": false}]` and the
-    detail endpoint gives `["0x…"]`. Killed gauges are skipped: they still
-    accept deposits but pay nothing, so offering one to stake into would be
-    actively misleading.
-    """
+    """Pull a usable gauge address out of either shape v2 returns."""
     if not isinstance(raw, list):
         return ""
     for entry in raw:
@@ -189,107 +143,59 @@ class Pool:
     #: veCRV boost range: (unboosted, max-boost) APR in percent.
     crv_apr: tuple[float, float] = (0.0, 0.0)
     incentives: list[Incentive] = field(default_factory=list)
-    #: Off-gauge campaign rewards, claimed via a merkle drop. v1 had no
-    #: equivalent, so this column simply did not exist before.
-    #:
-    #: One number for what is usually two campaigns, and it is the staked
-    #: one: measured against Merkl, this matches the *gauge* opportunity
-    #: to the digit and omits the one paying unstaked liquidity. It also
-    #: names no token and counts no points campaign, since a points
-    #: campaign has no price and so no APR to add. `merkl` below is the
-    #: same money read from the source; this stays as the fallback for
-    #: when Merkl cannot be reached.
+    #: Off-gauge campaign rewards, claimed via a merkle drop.
     merkle_apr: float = 0.0
     #: What Merkl itself says is being paid here, staked and unstaked,
-    #: with the tokens named. Empty until `CurveApi` has attached it, and
-    #: empty for good on a chain Merkl does not cover -- which is not an
-    #: error, it is most chains.
+    #: with the tokens named.
     merkl: MerklRewards = NO_REWARDS
     #: Point campaigns from curve-frontend's own `external-rewards`
-    #: directory. No rate attaches to any of them; see `curve.external`.
+    #: directory.
     points: tuple[ExternalCampaign, ...] = ()
     is_meta: bool = False
     #: Address of the pool this one is built on, when it is a metapool.
     base_pool: str = ""
-    #: How many coins the *contract* has, from the detail endpoint. For a
-    #: metapool this is 2 while `coins` lists four or five, because v2
-    #: decomposes the base pool into the same list. 0 until detail loads.
+    #: How many coins the *contract* has, from the detail endpoint.
     onchain_coins: int = 0
     amplification: float = 0.0
     virtual_price: float = 0.0
-    #: False until `merge_detail` has run: the list endpoint omits the LP
-    #: token, the reserves and per-coin prices.
+    #: False until `merge_detail` has run: the list endpoint omits the
+    #: LP token, the reserves and per-coin prices.
     detailed: bool = False
-    #: True for a pool from a **Curve Lite** deployment, which is served by
-    #: a different API (`api2.curve.finance`) that tracks no trading at
-    #: all. Volume, base APR and the CRV boost range are not zero on these
-    #: -- they are *unknown*, and the list shows them as such rather than
-    #: printing a nought that looks like a measurement.
+    #: True for a pool from a **Curve Lite** deployment, which is served
+    #: by a different API (`api2.curve.finance`) that tracks no trading
+    #: at all.
     lite: bool = False
     #: Which array shape the pool actually answered, once something has
-    #: asked it. None until then, when the registry decides. A new factory
-    #: this app has never heard of is thereby handled by asking rather than
-    #: by guessing -- and the answer is remembered, because a *write* has
-    #: no second chance to try the other spelling.
+    #: asked it.
     observed_dynamic: bool | None = None
 
     # -- derived ----------------------------------------------------------
 
     @property
     def registry_key(self) -> str:
-        """The pool type, in one spelling.
-
-        Three sources name the same implementations three ways: v2 says
-        `stableswapng`, the v1 registry ids say `factory-stable-ng`, and
-        Curve Lite says `factory_stable_ng`. Underscores fold to hyphens
-        so the type tables below need only two spellings rather than six.
-        """
+        """The pool type, in one spelling."""
         return (self.registry or "").lower().replace("_", "-")
 
     @property
     def is_stableswap(self) -> bool:
-        """Which exchange ABI this pool speaks.
-
-        StableSwap declares coin indices as `int128` and CryptoSwap as
-        `uint256`. Same argument values, different function selectors, and
-        a wrong guess produces a call that returns empty data rather than
-        reverting -- see `curve.pool`. The registry is the only reliable
-        discriminator available from the API.
-        """
+        """Which exchange ABI this pool speaks."""
         registry = self.registry_key
         if registry in CRYPTO_POOL_TYPES:
             return False
         if registry in STABLE_POOL_TYPES:
             return True
-        # An unknown type is far likelier to be a new stable factory than a
-        # new crypto one, and a StableSwap `get_dy` that fails is visible
-        # immediately in the UI rather than silently mispricing.
         return True
 
     @property
     def dynamic_arrays(self) -> bool:
-        """Does this pool take `uint256[]` where the others take `uint256[N]`?
-
-        From the registry, because it is a property of the implementation
-        rather than of the pool -- unless a call has already proved
-        otherwise, which is how an unknown new factory is handled.
-        """
+        """Does this pool take `uint256[]` where the others take `uint256[N]`?"""
         if self.observed_dynamic is not None:
             return self.observed_dynamic
         return self.registry_key in DYNAMIC_ARRAY_TYPES
 
     @property
     def pool_coins(self) -> list[Coin]:
-        """The coins the pool contract actually has.
-
-        For a metapool that is `[metaToken, basePoolLpToken]` -- two --
-        while `coins` lists the decomposed four or five. Everything that
-        touches the chain must use this: `add_liquidity` takes a
-        `uint256[N]` whose N is part of the function signature, so building
-        it from the decomposed list produces calldata for a function the
-        pool does not have. `balances` from the API lines up with this list
-        too, not with `coins`.
-        """
+        """The coins the pool contract actually has."""
         if self.onchain_coins and self.onchain_coins <= len(self.coins):
             return self.coins[: self.onchain_coins]
         return list(self.coins)
@@ -305,40 +211,14 @@ class Pool:
 
     @property
     def display_coins(self) -> list[Coin]:
-        """The assets a depositor is actually exposed to.
-
-        v2 already decomposes a metapool for us: `coins` comes back as
-        `[metaToken, basePoolLpToken, ...underlying]` -- so the World
-        Liberty pool reports `USD1, crv2pool, USDC, USDT`. The LP token in
-        the middle is plumbing, not an asset, and Curve's own UI does not
-        show it either, so it is dropped.
-
-        Index 1 rather than an address match: on newer pools the base LP
-        token *is* the base pool contract and could be matched by address,
-        but on older ones (3Crv, crvFRAX) it is a separate contract and
-        cannot. A Curve metapool always has exactly two real coins, the
-        second being the base LP, so its position is the reliable part.
-
-        Only when the list was actually decomposed -- with two coins there
-        is nothing underlying and dropping one would lose a real asset.
-        """
+        """The assets a depositor is actually exposed to."""
         if self.base_pool and len(self.coins) > 2:
             return [self.coins[0], *self.coins[2:]]
         return list(self.coins)
 
     @property
     def has_underlying(self) -> bool:
-        """Does this pool have *underlying* coins distinct from its own?
-
-        Only a metapool does, and only where the API decomposed the coin
-        list -- which is what says what the underlying even are. Curve
-        Lite sends a metapool's two real coins and no base pool address,
-        so there is nothing to decompose and this is false there.
-
-        Whether they can be *swapped* is a separate question, answered by
-        `PoolContract.underlying_swap_target`: a StableSwap metapool does
-        it itself, a crypto one needs its zap.
-        """
+        """Does this pool have *underlying* coins distinct from its own?"""
         return bool(self.base_pool) and len(self.display_coins) > len(self.pool_coins)
 
     @property
@@ -347,29 +227,12 @@ class Pool:
 
     @property
     def campaign_apr(self) -> float:
-        """The Merkl rate, from Merkl where it answered and Curve otherwise.
-
-        Never both. The two are the same money -- `merkle_apr` is Curve's
-        reading of the gauge campaign -- so adding them would report a
-        yield twice and a sort would put this pool above pools that pay
-        more. Merkl wins where it is present because it also sees the
-        campaign paying unstaked liquidity, which Curve's field does not.
-        """
+        """The Merkl rate, from Merkl where it answered and Curve otherwise."""
         return self.merkl.apr if self.merkl else self.merkle_apr
 
     @property
     def incentives_apr(self) -> float:
-        """Total rewards APR: max-boost CRV, every incentive token, campaigns.
-
-        This is what the "incentives" sort orders by. Max boost rather than
-        minimum because it is the number a depositor can actually reach, and
-        it is the top of the range Curve's own UI prints.
-
-        Points contribute nothing, because they have no price. That is not
-        a gap to be filled with an estimate: a pool can be worth being in
-        entirely for its points, and the honest way to say so is to name
-        the campaign rather than to invent a percentage for it.
-        """
+        """Total rewards APR: max-boost CRV, every incentive token, campaigns."""
         return (
             self.crv_apr[1] + sum(i.apr for i in self.incentives) + self.campaign_apr
         )
@@ -402,14 +265,7 @@ class Pool:
         *,
         chain: str = "",
     ) -> Pool:
-        """Look this pool up in the two campaign indexes. Mutates and returns.
-
-        Safe to run twice, and worth running twice: the first pass happens
-        on a list row, which has no LP token, and a Merkl campaign can be
-        watching one. Nothing here is cumulative -- both fields are
-        replaced -- so the second pass is a strictly better answer rather
-        than a doubled one.
-        """
+        """Look this pool up in the two campaign indexes."""
         self.merkl = merkl_split(
             merkl_index,
             pool=self.address,
@@ -435,16 +291,12 @@ class Pool:
             lp_token=raw.get("lp_token_address") or "",
             tvl=_float(raw.get("tvl_usd")),
             volume_24h=_float(raw.get("trading_volume_24h")),
-            # Weekly rather than daily: a single day's fees on a quiet pool
-            # swing wildly, and weekly is what Curve's own list column shows.
             base_apr=_float(raw.get("base_weekly_apr")),
             gauge=_first_live_gauge(raw.get("gauges")),
             crv_apr=(_float(raw.get("crv_apr")), _float(raw.get("crv_apr_boosted"))),
             incentives=[
                 Incentive.from_v2(r)
                 for r in raw.get("extra_rewards_apr") or []
-                # CRV shows up here on some pools; it is already counted in
-                # crv_apr_boosted and would otherwise be added twice.
                 if (r.get("symbol") or "").upper() != "CRV"
             ],
             merkle_apr=_float(raw.get("merkle_apr")),
@@ -453,13 +305,7 @@ class Pool:
         )
 
     def merge_detail(self, raw: dict[str, Any]) -> Pool:
-        """Fold in the extra fields only `/pools/{chain_id}/{address}` has.
-
-        Mutates in place and returns self, so a cached list entry gains its
-        detail once and keeps it. Everything here is absent from the list
-        payload: without it there is no LP token to withdraw or stake, and
-        no reserves to draw a composition table from.
-        """
+        """Fold in the extra fields only `/pools/{chain_id}/{address}` has."""
         self.lp_token = raw.get("lp_token_address") or self.lp_token or self.address
         self.registry = raw.get("registry_type") or raw.get("pool_type") or self.registry
         if raw.get("gauges"):
@@ -485,24 +331,7 @@ class Pool:
 
     @classmethod
     def from_lite(cls, raw: dict[str, Any], chain: str = "") -> Pool:
-        """Build from one entry of Curve Lite's `get_pools/{chain_id}`.
-
-        A different API for a different kind of deployment: Curve Lite runs
-        the contracts without the indexing that the main chains have, so
-        there is no volume, no base APR, no CRV boost range and no price
-        history. What it does give in one call is everything the *pool*
-        knows -- reserves, prices, LP token, gauge, amplification -- so
-        unlike a v2 list entry this arrives complete and `detailed` is
-        true from the start.
-
-        The two other shape differences worth naming:
-
-          * amounts are raw integers with `decimals` as a string, where v2
-            sends reserves already scaled;
-          * a metapool's coins are the contract's own two, not the
-            decomposed list, so nothing needs dropping -- and with no base
-            pool address there is no zap route to offer either.
-        """
+        """Build from one entry of Curve Lite's `get_pools/{chain_id}`."""
         coins = []
         for index, entry in enumerate(raw.get("coins") or []):
             decimals = _int(entry.get("decimals"), 18)
@@ -537,7 +366,6 @@ class Pool:
             is_meta=bool(raw.get("is_meta_pool")),
             onchain_coins=len(coins),
             amplification=_float(raw.get("amplification_coefficient")),
-            # Reported in 1e18 fixed point, where v2 sends it as a float.
             virtual_price=_float(raw.get("virtual_price")) / 1e18,
             detailed=True,
             lite=True,

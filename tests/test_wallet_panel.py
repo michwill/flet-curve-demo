@@ -1,16 +1,4 @@
-"""The wallet panel, built rather than described.
-
-This exists because the panel shipped broken: its action list referenced a
-handler defined below it, so every click on the address raised instead of
-opening anything. Nothing caught it -- the unit tests never built the
-dialog and the browser check that turn only went as far as the picker.
-
-Building it is enough to catch that class of mistake, and building it
-needs no page: `_wallet_dialog` only touches `self.page` inside the
-handlers it installs. So the app object is made without `__init__` (which
-would want a real Flet page) and given the two attributes the method
-actually reads.
-"""
+"""The wallet panel, built rather than described."""
 
 from __future__ import annotations
 
@@ -26,8 +14,8 @@ ADDRESS = "0x6B175474E89094C44Da98b954EedeAC495271d0F"
 
 
 class StubPage:
-    #: `flet run --web` sets this while Python stays on the host, which is
-    #: the case the panel explains.
+    #: `flet run --web` sets this while Python stays on the host, which
+    #: is the case the panel explains.
     web = False
 
     def __init__(self) -> None:
@@ -80,14 +68,11 @@ def texts(control) -> list[str]:
 
 
 def test_the_panel_builds_at_all() -> None:
-    """The regression: this raised NameError before anything was drawn."""
     dialog = make_app()._wallet_dialog(make_wallet())
     assert isinstance(dialog, ft.AlertDialog)
 
 
 def test_it_shows_the_whole_address() -> None:
-    """The reason the panel exists -- the header only has room for eleven
-    characters of it."""
     dialog = make_app()._wallet_dialog(make_wallet())
     assert ADDRESS in texts(dialog.content)
 
@@ -105,8 +90,6 @@ def test_the_browser_can_change_wallet(monkeypatch) -> None:
 
 
 def test_the_desktop_is_told_where_to_change_it_instead(monkeypatch) -> None:
-    """One endpoint, no choice to offer -- but the wallet's own switcher
-    now reaches the app, so say that rather than showing a dead button."""
     monkeypatch.setattr(main, "is_browser", lambda: False)
     dialog = make_app()._wallet_dialog(make_wallet())
     assert buttons(dialog) == ["Copy", "Disconnect", "Close"]
@@ -115,7 +98,6 @@ def test_the_desktop_is_told_where_to_change_it_instead(monkeypatch) -> None:
 
 @pytest.mark.parametrize("icon", [None, "data:image/svg+xml;base64,PHN2Zy8+"])
 def test_every_button_has_a_handler(icon: str | None, monkeypatch) -> None:
-    """A handler defined after the list it goes in is not a handler."""
     monkeypatch.setattr(main, "is_browser", lambda: True)
     dialog = make_app()._wallet_dialog(make_wallet(icon))
     assert all(callable(button.on_click) for button in dialog.actions)
@@ -143,14 +125,11 @@ def test_an_announced_icon_is_drawn_and_a_missing_one_is_not() -> None:
     with_icon = main.wallet_mark("data:image/png;base64,iVBORw0KGgo=", "Rabby")
     without = main.wallet_mark(None, "Frame / qeth (127.0.0.1:1248)")
     assert isinstance(with_icon, ft.Image)
-    # Not a lettered tile: "Frame / qeth" is two wallets and the letter
-    # would name the wrong one.
     assert isinstance(without, ft.CircleAvatar)
     assert isinstance(without.content, ft.Icon)
 
 
 def test_wallet_art_is_not_decoded_at_a_pixel_size() -> None:
-    """It is usually SVG, which has none, and asking for one fails."""
     mark = main.wallet_mark("data:image/svg+xml;base64,PHN2Zy8+", "WalletConnect")
     assert mark.cache_width is None
 
@@ -175,8 +154,6 @@ def test_a_published_browser_build_says_nothing_either(monkeypatch) -> None:
 
 
 def test_flet_run_web_explains_why_there_are_no_browser_wallets(monkeypatch) -> None:
-    """Python on the host, client in a browser: the page looks published
-    but the wallet layer is the local one, and nothing else is reachable."""
     monkeypatch.setattr(main, "is_browser", lambda: False)
     app = make_app()
     app.page.web = True
@@ -222,10 +199,6 @@ def app_with(wallet) -> main.CurveApp:
     app._detail = None
     app._page_name = "pools"      # not the portfolio, so nothing reloads
     app._address_expanded = False
-    # Connecting aligns the wallet to the network on screen, so these are
-    # now part of "just enough". Ethereum on both sides, which is the
-    # case where alignment has nothing to do: a test about the header
-    # should not also be arranging a chain switch.
     app.chain = "ethereum"
     app.chains = {"ethereum": 1}
     app.account_label = ft.Text("")
@@ -236,8 +209,6 @@ def app_with(wallet) -> main.CurveApp:
 
 
 async def test_cancelling_a_change_keeps_the_wallet_you_had(monkeypatch) -> None:
-    """The bug: "change wallet" dropped the session before offering the
-    picker, so backing out of the picker left you disconnected."""
     from wallet.session import ConnectionCancelled
 
     previous = Recorder()
@@ -256,12 +227,6 @@ async def test_cancelling_a_change_keeps_the_wallet_you_had(monkeypatch) -> None
 
 
 async def test_backing_out_of_the_picker_says_nothing(monkeypatch) -> None:
-    """Cancelling is a choice, not a failure.
-
-    It used to print "Wallet selection cancelled." in the error colour,
-    which tells the user only what they just did and looks like a fault.
-    The button comes back; the line under it stays empty.
-    """
     from wallet.session import ConnectionCancelled
 
     async def refuse(**kwargs):
@@ -280,8 +245,6 @@ async def test_backing_out_of_the_picker_says_nothing(monkeypatch) -> None:
 
 
 async def test_a_successful_change_releases_the_old_one(monkeypatch) -> None:
-    """Released, not disconnected: nothing about intent has changed, so the
-    remembered wallet and the consent marker must survive the swap."""
     previous, chosen = Recorder(), Recorder("0x" + "22" * 20)
 
     async def accept(**kwargs):
@@ -298,7 +261,6 @@ async def test_a_successful_change_releases_the_old_one(monkeypatch) -> None:
 async def test_a_failed_first_connection_still_offers_the_button(
     monkeypatch,
 ) -> None:
-    """Nothing to fall back to, so the Connect button has to come back."""
     from wallet.base import WalletUnavailable
 
     async def fail(**kwargs):
@@ -317,17 +279,6 @@ async def test_a_failed_first_connection_still_offers_the_button(
 
 
 def test_the_address_chip_is_never_told_how_wide_to_be() -> None:
-    """It used to be told, once per state, from widths measured against
-    one font at one text scale.
-
-    Anything that draws text wider than that measurement then cut the
-    address off mid-character: on the desktop app at a text scale of 1.2
-    -- HiDPI, GTK text scaling, an accessibility setting -- the last
-    character of the full address was sliced in half, which reads as a
-    rendering fault rather than a layout one. A width for text cannot be
-    calibrated into a right one, so there is no width; the box takes its
-    size from the address in it, in either state.
-    """
     app = app_with(Recorder())
 
     app._show_account(expanded=False)
@@ -350,9 +301,6 @@ def app_that_reads() -> main.CurveApp:
 
 
 def test_a_connected_wallet_gets_the_public_endpoints_behind_it() -> None:
-    """The reported failure: a portfolio scan over WalletConnect came back
-    "Load failed" and the page gave up, because the wallet was the only
-    thing that could be asked."""
     app, provider = app_that_reads(), StubProvider()
     reader = app.reader(1, provider)
 
@@ -363,8 +311,6 @@ def test_a_connected_wallet_gets_the_public_endpoints_behind_it() -> None:
 
 
 def test_the_public_node_behind_a_wallet_is_the_cached_one() -> None:
-    """One node per chain, so the endpoint that just worked is the one the
-    next read starts from rather than walking the list again."""
     app, provider = app_that_reads(), StubProvider()
     first = app.reader(1, provider).sources[1]
 
@@ -373,16 +319,11 @@ def test_the_public_node_behind_a_wallet_is_the_cached_one() -> None:
 
 
 def test_a_chain_we_cannot_name_is_read_through_the_wallet_alone() -> None:
-    """No chain id, no public node to put behind it. Wrapping it in a
-    fallback with nothing to fall back to would only add a layer."""
     app, provider = app_that_reads(), StubProvider()
     assert app.reader(0, provider) is provider
 
 
 def test_walletconnect_is_read_past_rather_than_through() -> None:
-    """A portfolio scan is six Multicall3 batches of three hundred
-    entries. Over a relay into a phone that came back "Load failed"; the
-    fix is not to send it there in the first place."""
     app, provider = app_that_reads(), StubProvider()
     provider.connector = "walletconnect"
     reader = app.reader(1, provider)
@@ -393,8 +334,6 @@ def test_walletconnect_is_read_past_rather_than_through() -> None:
 
 
 def test_an_injected_wallet_keeps_being_read_first() -> None:
-    """It is a node in the same browser -- there is no relay to route
-    around, and its own view of the chain is the better one."""
     app, provider = app_that_reads(), StubProvider()
     provider.connector = "injected"
     reader = app.reader(1, provider)
@@ -404,14 +343,6 @@ def test_an_injected_wallet_keeps_being_read_first() -> None:
 
 
 def test_a_wallet_on_another_chain_is_not_in_the_read_order() -> None:
-    """The reported failure: qeth was on Fraxtal while the page showed
-    Ethereum, and every `balanceOf` came back `0x` -- successfully, from a
-    chain where none of those contracts exist. The portfolio said "No
-    deposits in any Ethereum pool" for an account holding eight positions.
-
-    A source that answers the wrong question cannot be fallen back from,
-    so it does not get asked.
-    """
     app, provider = app_that_reads(), StubProvider()
     app.wallet.chain = chains.get_chain(252)
     reader = app.reader(1, provider)
@@ -422,8 +353,6 @@ def test_a_wallet_on_another_chain_is_not_in_the_read_order() -> None:
 
 
 def test_a_wallet_on_the_chain_being_browsed_is_read_first_as_before() -> None:
-    """The check is a mismatch, not a suspicion: agreeing is the normal
-    case and it must cost nothing."""
     app, provider = app_that_reads(), StubProvider()
     app.wallet.chain = chains.get_chain(1)
 
@@ -431,9 +360,6 @@ def test_a_wallet_on_the_chain_being_browsed_is_read_first_as_before() -> None:
 
 
 def test_with_no_wallet_there_is_nothing_to_disagree_with() -> None:
-    """`reader` is called with a bare provider in places that have no
-    `Wallet` around it. Nothing is known against it, so nothing is done
-    about it."""
     app, provider = app_that_reads(), StubProvider()
     app.wallet = None
 
@@ -443,11 +369,6 @@ def test_with_no_wallet_there_is_nothing_to_disagree_with() -> None:
 async def test_restoring_a_session_asks_the_wallet_for_the_chain_on_screen(
     monkeypatch,
 ) -> None:
-    """The path the failure came in on: a remembered wallet, a page opened
-    on Ethereum, and a wallet still on whatever it was last used for. The
-    app only ever *followed* a chain change (`_follow_wallet_chain`), so a
-    disagreement that was already there when the page opened was followed
-    nowhere and mentioned nowhere."""
     wallet = Recorder()
     wallet.chain = chains.get_chain(252)
     switched: list[int] = []
@@ -474,9 +395,6 @@ async def test_restoring_a_session_asks_the_wallet_for_the_chain_on_screen(
 async def test_a_wallet_that_will_not_come_across_still_reads_correctly(
     monkeypatch,
 ) -> None:
-    """Refusing is a perfectly good answer -- and the one that used to
-    leave the page silently empty. Now it only leaves the wallet where it
-    is: the reads go to the public node, pinned to the network on screen."""
     from wallet.base import RpcError
 
     wallet = Recorder()
@@ -505,8 +423,6 @@ async def test_a_wallet_that_will_not_come_across_still_reads_correctly(
 
 
 def test_a_longer_address_does_not_change_how_the_chip_is_built() -> None:
-    """The point of having no width: nothing here has an opinion about
-    how wide any particular address is."""
     wide = Recorder("0x" + "D" * 40)
     app = app_with(wide)
 

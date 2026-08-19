@@ -1,35 +1,4 @@
-"""Browser transport: Pyodide worker <-> main thread <-> wallet connector.
-
-This is the half that needs an explanation, because of one hard constraint:
-
-    Flet runs your Python inside a **Web Worker**, and a Web Worker has no
-    `window`. `window.ethereum` and every wallet connector (wagmi, RainbowKit,
-    Web3Modal, EIP-6963 discovery) live on the **main thread**. Python
-    therefore *cannot* reach the wallet directly, no matter what it imports.
-
-So something has to carry calls across the worker boundary, and Flet's own
-worker channel is not it -- that channel is Flet's private MessagePack
-protocol between Dart and Python, and piggybacking on it means patching
-Flet internals that will move under you.
-
-The clean seam is `BroadcastChannel`: a standard same-origin message bus
-available in *both* a Window and a Worker. Opening one on each side gives a
-private channel that Flet neither knows nor cares about, needs zero patching
-of the generated bundle, and survives Flet upgrades.
-
-    Python (Pyodide, worker)          JS (main thread, assets/wallet_bridge.js)
-    -------------------------         ----------------------------------------
-    BrowserWalletProvider   <---- BroadcastChannel("flet-wallet") ---->  bridge
-        .request(m, p)  --> {dir:"req", id, method, params}
-                        <-- {dir:"res", id, result|error}
-                        <-- {dir:"evt", event, data}          provider.request()
-                                                                      |
-                                                              EIP-6963 / wagmi
-                                                                      |
-                                                            MetaMask, Rabby, ...
-
-Everything above `request()` is the same code the desktop build runs.
-"""
+"""Browser transport: Pyodide worker <-> main thread <-> wallet connector."""
 
 from __future__ import annotations
 
@@ -64,11 +33,7 @@ _INTERACTIVE = frozenset(
 
 #: Picking a wallet is interactive too, and not only for a click: the
 #: WalletConnect connector opens a QR modal here and waits for the user to
-#: scan it with a phone. That deserves far longer than a normal request --
-#: but not *forever*. A connector that never settles (a dead relay, a modal
-#: closed without rejecting its promise) would otherwise leave the UI
-#: spinning on "Connecting..." with no way out. Three minutes is far more
-#: than any real scan takes, and failing loudly beats hanging silently.
+#: scan it with a phone.
 CONNECT_TIMEOUT = 180.0
 
 
@@ -88,27 +53,16 @@ class BrowserWalletProvider(WalletProvider):
 
         self._js = js
         self._channel = js.BroadcastChannel.new(CHANNEL_NAME)
-        # create_proxy keeps the Python callable alive across the FFI
-        # boundary; without it the callback is collected and messages
-        # silently stop arriving.
         self._on_message_proxy = create_proxy(self._on_message)
         self._channel.onmessage = self._on_message_proxy
 
-        # Who this provider is, on a channel every tab on the origin
-        # shares. One bridge serves the whole origin (see wallet_bridge.js),
-        # and stamps every reply and every wallet event with the client it
-        # belongs to, so a second tab's app never consumes ours.
         self._client = f"{js.Math.floor(js.Math.random() * 1e12):.0f}"
         self._pending: dict[str, asyncio.Future] = {}
         self._handlers: dict[str, list[Callable[[Any], None]]] = {}
         self._counter = 0
         self._closed = False
         self.name = "Browser wallet"
-        #: Populated by the handshake -- what the connector found.
         self.wallets: list[dict[str, Any]] = []
-        #: The wallet used last time, as `{"rdns", "connector"}`, if the
-        #: page remembers one. Matched by rdns rather than uuid: an
-        #: EIP-6963 uuid is generated afresh on every page load.
         self.remembered: dict[str, Any] | None = None
 
     # -- plumbing ----------------------------------------------------------
@@ -116,9 +70,6 @@ class BrowserWalletProvider(WalletProvider):
     def _to_js(self, value: Any):
         from pyodide.ffi import to_js
 
-        # dict_converter is required, and applies recursively, so nested tx
-        # dicts arrive as real JS objects rather than Maps (which the wallet
-        # would reject).
         return to_js(value, dict_converter=self._js.Object.fromEntries)
 
     def _on_message(self, event) -> None:
@@ -129,7 +80,6 @@ class BrowserWalletProvider(WalletProvider):
         if not isinstance(message, dict) or message.get("v") != PROTOCOL_VERSION:
             return
 
-        # Addressed to another tab's app: not ours to act on.
         client = message.get("client")
         if client is not None and client != self._client:
             return
@@ -137,7 +87,6 @@ class BrowserWalletProvider(WalletProvider):
         direction = message.get("dir")
         if direction == "evt":
             for handler in self._handlers.get(message.get("event", ""), []):
-                # A bad handler must not kill the channel.
                 with contextlib.suppress(Exception):
                     handler(message.get("data"))
             return
@@ -189,11 +138,6 @@ class BrowserWalletProvider(WalletProvider):
         try:
             return await asyncio.wait_for(future, timeout)
         except asyncio.CancelledError:
-            # Somebody above stopped waiting -- `curve.rpc.READ_DEADLINE`
-            # does exactly this to a wallet that has gone quiet. The reply
-            # may still arrive, and `_on_message` drops a reply nobody is
-            # holding, so the only thing left to do is not accumulate an
-            # entry per abandoned request.
             self._pending.pop(request_id, None)
             raise
         except TimeoutError:
@@ -212,9 +156,9 @@ class BrowserWalletProvider(WalletProvider):
         self._handlers.setdefault(event, []).append(handler)
 
     async def close(self) -> None:
-        # Idempotent per the base-class contract: disconnect can arrive twice
-        # (a click plus an empty `accountsChanged`), and destroying an
-        # already-destroyed JsProxy raises.
+        # Idempotent per the base-class contract: disconnect can
+        # arrive twice (a click plus an empty `accountsChanged`), and
+        # destroying an already-destroyed JsProxy raises.
         if self._closed:
             return
         self._closed = True
@@ -224,7 +168,6 @@ class BrowserWalletProvider(WalletProvider):
             self._on_message_proxy.destroy()
 
     # -- bridge-only methods -----------------------------------------------
-    #
     # These never reach a wallet; assets/wallet_bridge.js answers them.
 
     async def handshake(self) -> dict[str, Any]:
@@ -258,33 +201,20 @@ class BrowserWalletProvider(WalletProvider):
             ) from None
 
     async def configure(self, values: dict[str, Any]) -> None:
-        """Hand local settings to the bridge before discovery.
-
-        Config travels Python -> JS rather than living in a JS file so that
-        a plain `flet publish` produces a configured build; see
-        `wallet/settings.py`.
-        """
+        """Hand local settings to the bridge before discovery."""
         if values:
             await self.request("bridge_configure", [values])
 
     async def forget(self) -> None:
         """Stop remembering the last wallet. Called on an explicit disconnect."""
-        # Nothing to forget, or the bridge is already gone.
         with contextlib.suppress(WalletError):
             await self.request("bridge_forget")
 
     async def select_wallet(self, uuid: str, *, silent: bool = False) -> dict[str, Any]:
-        """Choose which discovered wallet subsequent requests go to.
-
-        `silent` is the restore path: resolve the connector without showing
-        anything. A WalletConnect entry with no live session fails here
-        rather than opening a QR modal nobody asked for.
-        """
+        """Choose which discovered wallet subsequent requests go to."""
         info = await self.request("bridge_selectWallet", [uuid, {"silent": silent}])
         if isinstance(info, dict):
             self.name = info.get("name") or self.name
-            # Which connector won changes what eth_sendTransaction means
-            # (see WalletProvider.defers_execution), so it has to come back.
             self.connector = info.get("connector") or ""
         return info or {}
 
@@ -295,13 +225,6 @@ async def discover() -> BrowserWalletProvider:
         raise WalletUnavailable("Not running in a browser.")
 
     provider = BrowserWalletProvider()
-    # Push local settings before asking what is available: whether the
-    # WalletConnect connector can offer itself depends on the projectId.
-    #
-    # Printed, because "why is WalletConnect not in the list" has exactly
-    # one answer -- the build has no projectId -- and it is otherwise
-    # invisible: a missing `local_config.toml` is not an error, it is just
-    # a connector that never appears.
     print(f"[wallet] {settings.describe()}")
     await provider.configure(settings.bridge_config())
     hello = await provider.handshake()
@@ -314,20 +237,6 @@ async def discover() -> BrowserWalletProvider:
             "Install MetaMask, Rabby, Frame's extension, or any wallet that "
             "announces itself via EIP-6963, then reload."
         )
-    # One wallet, so there is nothing to choose between: settle it now and
-    # a later connect needs no picker for a list of one.
-    #
-    # **Unless choosing it costs something.** This runs on every page load,
-    # through `Wallet.restore`, and a browser with no extension installed
-    # has exactly one entry -- WalletConnect. So the shortcut fired for
-    # precisely the people who had not asked for a wallet: resolving it
-    # fetched its whole module graph, around nine hundred requests, built
-    # the Web3Modal and put a QR code in front of a page somebody was
-    # only reading. A wallet extension made two entries and hid all of it.
-    #
-    # Left unselected, nothing is loaded until a real request arrives, and
-    # the bridge picks it up then (see `handle` in wallet_bridge.js) --
-    # which is the moment someone has clicked Connect.
     if len(provider.wallets) == 1 and not provider.wallets[0].get("deliberate"):
         await provider.select_wallet(provider.wallets[0]["uuid"])
     return provider

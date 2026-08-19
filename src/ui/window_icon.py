@@ -1,23 +1,4 @@
-"""Give the desktop window an icon, on the one platform that lets us.
-
-`flet run` starts a prebuilt Flutter host, and that host sets no
-`_NET_WM_ICON` at all -- verified with `xprop` -- so the window shows
-whatever generic icon the desktop falls back to. Flet's own hook,
-`page.window.icon`, is documented as Windows-only and does nothing here.
-
-X11 lets any client set a property on any window, which is how `xseticon`
-and friends work, so this finds the host's window by its `WM_CLASS` and
-sets the property itself through `libX11`. The pixels come pre-decoded
-from `assets/window_icon.argb` (see `tools/build_icons.py`), so nothing
-in the app has to depend on an image library.
-
-Everything here is best-effort and silent. No X11, no display, a Wayland
-session without XWayland, a window that has not appeared yet, a missing
-asset file -- all of them mean the app runs exactly as before with the
-icon it had. This is a workaround for a limitation, not a feature to
-build on: the supported way to ship an icon is `flet build`, which reads
-`assets/icon.png`.
-"""
+"""Give the desktop window an icon, on the one platform that lets us."""
 
 from __future__ import annotations
 
@@ -42,15 +23,7 @@ ANY_PROPERTY_TYPE = 0
 
 
 def _in_our_job(pid: int) -> bool:
-    """Is `pid` part of the same job this app was started as?
-
-    The Flutter host is not a child of this process -- `flet run` spawns
-    the app and the host as siblings -- but everything in that launch
-    shares a process group, and a second Flet app started from the same
-    shell gets a group of its own. So this is what tells our window apart
-    from some other Flet app's, which matters because they all share the
-    `flet` WM_CLASS: the class identifies the toolkit, not the program.
-    """
+    """Is `pid` part of the same job this app was started as?"""
     try:
         return os.getpgid(pid) == os.getpgid(0)
     except (OSError, ProcessLookupError):
@@ -69,14 +42,7 @@ def _load_icon() -> list[int] | None:
 
 
 class _ClassHint(ctypes.Structure):
-    """`XClassHint`: the instance name and the class name.
-
-    The fields are raw `char *` rather than `c_char_p` on purpose. ctypes
-    turns a `c_char_p` field into a Python `bytes` on access, and the
-    pointer X allocated is then unrecoverable -- handing that bytes object
-    back to `XFree` aborts the process with "free(): invalid size", which
-    is precisely what happened here.
-    """
+    """`XClassHint`: the instance name and the class name."""
 
     _fields_ = [
         ("res_name", ctypes.POINTER(ctypes.c_char)),
@@ -93,13 +59,7 @@ def _text(pointer) -> str:
 
 
 def _declare(xlib) -> None:
-    """Give ctypes the real signatures.
-
-    Not optional. Without `argtypes` ctypes passes a Python int as a C
-    `int`, which truncates the 64-bit `Display *` to 32 bits and segfaults
-    the interpreter -- silently, since a crash in a shared library is not
-    an exception. That is exactly what the first version of this did.
-    """
+    """Give ctypes the real signatures."""
     xlib.XOpenDisplay.restype = ctypes.c_void_p
     xlib.XOpenDisplay.argtypes = [ctypes.c_char_p]
     xlib.XCloseDisplay.argtypes = [ctypes.c_void_p]
@@ -209,11 +169,7 @@ def _windows_named(xlib, display, root: int, wanted: tuple[str, ...]) -> list[in
 
 
 def apply_window_icon() -> int:
-    """Set the icon on every Flet host window. Returns how many were set.
-
-    Zero is the normal answer everywhere except an X11 desktop session,
-    and is not worth reporting to the user.
-    """
+    """Set the icon on every Flet host window. Returns how many were set."""
     if sys.platform not in ("linux", "linux2") or not os.environ.get("DISPLAY"):
         return 0
     icon = _load_icon()
@@ -235,15 +191,10 @@ def apply_window_icon() -> int:
         windows = []
         for window in _windows_named(xlib, display, root, HOST_WM_CLASS):
             pid = _window_pid(xlib, display, window, pid_atom)
-            # A window that publishes no PID is still taken: better a
-            # stray icon than none on a setup that omits the property.
             if pid is None or _in_our_job(pid):
                 windows.append(window)
         if not windows:
             return 0
-        # Format 32 means "C long" in Xlib's client API, which is eight
-        # bytes here rather than four. Passing a uint32 array would set a
-        # property of interleaved pixels and zeroes.
         payload = (ctypes.c_ulong * len(icon))(*icon)
         for window in windows:
             xlib.XChangeProperty(

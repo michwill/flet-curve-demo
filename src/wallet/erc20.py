@@ -1,21 +1,10 @@
-"""ERC-20 call encoding, ABI decoding and EIP-55 checksums -- no dependencies.
-
-`web3.py`/`eth-abi` would do all of this, but they drag in compiled
-dependencies (`ckzg`, `pycryptodome`, ...) that make a Pyodide build either
-impossible or enormous. The subset a "send a token" app actually needs is
-about a hundred lines, so we write it, and the exact same code then runs on
-CPython and on wasm32 with no build step.
-
-Function selectors are hard-coded rather than derived, so keccak is only
-needed for EIP-55 checksums.
-"""
+"""ERC-20 call encoding, ABI decoding and EIP-55 checksums -- no dependencies."""
 
 from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
 
 # -- keccak-256 ------------------------------------------------------------
-#
 # Note this is original Keccak padding (0x01), not SHA-3's (0x06);
 # hashlib.sha3_256 is a *different* hash and cannot be substituted here.
 
@@ -50,22 +39,18 @@ def _rotl(value: int, shift: int) -> int:
 
 def _keccak_f(a: list[list[int]]) -> None:
     for rc in _ROUND_CONSTANTS:
-        # theta
         c = [a[x][0] ^ a[x][1] ^ a[x][2] ^ a[x][3] ^ a[x][4] for x in range(5)]
         d = [c[(x - 1) % 5] ^ _rotl(c[(x + 1) % 5], 1) for x in range(5)]
         for x in range(5):
             for y in range(5):
                 a[x][y] ^= d[x]
-        # rho + pi
         b = [[0] * 5 for _ in range(5)]
         for x in range(5):
             for y in range(5):
                 b[y][(2 * x + 3 * y) % 5] = _rotl(a[x][y], _ROTATIONS[x][y])
-        # chi
         for x in range(5):
             for y in range(5):
                 a[x][y] = b[x][y] ^ (~b[(x + 1) % 5][y] & _MASK & b[(x + 2) % 5][y])
-        # iota
         a[0][0] ^= rc
 
 
@@ -117,12 +102,7 @@ def to_checksum_address(value: str) -> str:
 
 
 def is_checksum_address(value: str) -> bool:
-    """True if the address carries a *valid* EIP-55 checksum.
-
-    All-lower/all-upper addresses carry no checksum at all, so they are not
-    "invalid" -- they are merely unverifiable. Callers should treat those as
-    a warning, not an error.
-    """
+    """True if the address carries a *valid* EIP-55 checksum."""
     return is_address(value) and value == to_checksum_address(value)
 
 
@@ -179,13 +159,7 @@ def decode_uint(data: str) -> int:
 
 
 def decode_string(data: str) -> str:
-    """Decode a string return value, tolerating the bytes32 variant.
-
-    Tokens predating the finalised ERC-20 ABI (MKR is the famous one)
-    declare `symbol()` as `bytes32`, which decodes as a right-padded raw
-    string rather than the offset/length pair a real `string` uses. Sniff
-    which one we got instead of trusting the ABI.
-    """
+    """Decode a string return value, tolerating the bytes32 variant."""
     raw = data[2:] if data.startswith("0x") else data
     if not raw:
         return ""

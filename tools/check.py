@@ -1,24 +1,5 @@
 #!/usr/bin/env python3
-"""Everything that has an opinion about this code, in one command.
-
-    python tools/check.py            # ruff, mypy, pytest
-    python tools/check.py --fix      # let ruff fix what it safely can first
-
-Three tools, in the order that fails fastest:
-
-  * **ruff** for the things a linter sees -- it is the one that found an
-    `except WalletError` in a module that never imported the name, which
-    would have raised `NameError` from the handler meant to swallow an
-    error;
-  * **mypy** for the things only a type checker sees. The app code and the
-    tools are checked without exception; the tests are checked for
-    everything except the codes a test double trips by existing;
-  * **pytest** last, because it is the slowest and the other two catch
-    whole classes of failure without running anything.
-
-Configuration for all three lives in `pyproject.toml`, so an editor
-integration and this script agree by construction.
-"""
+"""Everything that has an opinion about this code, in one command."""
 
 from __future__ import annotations
 

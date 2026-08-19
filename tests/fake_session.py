@@ -1,29 +1,4 @@
-"""A Flet session with no Flutter on the other end of it.
-
-Most of the tests here build controls and read their properties back.
-That finds constructor bugs and logic bugs, and it misses an entire class
-of bug that only exists because Flet keeps a *previous* tree and diffs
-against it -- the one that shipped: assigning to a control that a rebuild
-had frozen, which raises inside an event handler where nothing can catch
-it.
-
-The diffing machinery turns out to be usable without a client. A real
-update is two steps:
-
-  * `ObjectPatch.from_diff(root, root, control_cls=BaseControl)` compares
-    the tree against the snapshots taken when it was last serialised, and
-    marks anything it matched **by key** as `_frozen`;
-  * whatever it reports as *added* is serialised, which is what leaves the
-    snapshots behind for the next diff (`protocol.py` writes
-    `__prev_lists` and friends as a side effect of encoding).
-
-Do those two, in that order, and a keyed control that was re-made behaves
-exactly as it does in the browser -- `Frozen controls cannot be updated`
-on the next assignment. That is what `Session.flush()` below is, and it is
-what makes the stateful tests worth running.
-
-Nothing here reaches the network, a display, or a wallet.
-"""
+"""A Flet session with no Flutter on the other end of it."""
 
 from __future__ import annotations
 
@@ -76,13 +51,7 @@ class FakePreferences:
 
 
 class Session:
-    """Enough of `ft.Page` to build the app against, plus the diff.
-
-    `run_task` records rather than runs: there is no loop during a
-    stateful test, and which of the app's own follow-up tasks get run --
-    and when -- is something the test should decide, not something that
-    happens behind it.
-    """
+    """Enough of `ft.Page` to build the app against, plus the diff."""
 
     def __init__(self, route: str = "/", width: float = 1400.0) -> None:
         self.window = Window()
@@ -126,10 +95,10 @@ class Session:
         self.push(route)
 
     def run_task(self, handler: Any, *args: Any) -> None:
-        # Navigation happens here rather than at the next `pump()`: the
-        # state machine's transitions are written around a route change
-        # landing before the next one is asked for, which is what the
-        # sync `page.go` used to give them.
+        # Navigation happens here rather than at the next `pump()`:
+        # the state machine's transitions are written around a route
+        # change landing before the next one is asked for, which is
+        # what the sync `page.go` used to give them.
         if getattr(handler, "__name__", "") == "push_route":
             self.push(*args)
             return
@@ -138,11 +107,7 @@ class Session:
     # -- the part a real client causes -------------------------------------
 
     def flush(self) -> None:
-        """One round trip: diff the tree, then serialise what was added.
-
-        This is where controls get frozen, so a test that never flushes is
-        testing a world that does not exist.
-        """
+        """One round trip: diff the tree, then serialise what was added."""
         if self.root is None:
             return
         self.flushes += 1
@@ -172,19 +137,7 @@ class Point:
 
 
 class Event:
-    """A stand-in for the several event classes Flet actually sends.
-
-    A fuzzer fires handlers it knows nothing about, so this carries the
-    union of the fields those handlers read, with **type-correct**
-    defaults. That matters more than it sounds: an earlier version
-    answered `None` to anything it had not thought of, and a canvas
-    resize handler then built a plot of `None x None` and raised -- a
-    failure in this file wearing the app's traceback. Events that cannot
-    happen do not prove anything.
-
-    Anything still unmodelled reads as None, which is a loud enough
-    failure to point back here rather than at the app.
-    """
+    """A stand-in for the several event classes Flet actually sends."""
 
     def __init__(
         self,
@@ -198,13 +151,10 @@ class Event:
         self.control = control
         self.data = data
         self.name = "event"
-        # A scrollable, at the end of its extent.
         self.pixels = pixels
         self.max_scroll_extent = max_scroll_extent
-        # A canvas, with a size a chart can be drawn in.
         self.width = width
         self.height = height
-        # A pointer, somewhere inside it.
         self.local_position = Point(width / 2, height / 2)
         self.global_position = Point(width / 2, height / 2)
         self.local_delta = Point(1.0, 1.0)

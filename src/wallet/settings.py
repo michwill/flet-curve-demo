@@ -1,24 +1,4 @@
-"""Local, per-installation configuration.
-
-Read from `src/local_config.toml` (gitignored) with environment variables
-taking precedence, so CI can set values without a file.
-
-Why the file lives under `src/` rather than at the repo root: `flet publish`
-tars the *script directory* into the archive Pyodide unpacks, so anything
-under `src/` is readable by Python in the browser and anything outside it is
-not. Keeping it here means a plain `flet publish` produces a correctly
-configured build -- no post-processing step to forget.
-
-That matters more than it sounds. The first version of this put the value in
-a JS file and patched it in after the build; skipping the wrapper script
-produced a build that looked fine and silently dropped WalletConnect. Config
-that only works if you remember an extra step is config that will be wrong.
-
-NOTHING HERE IS A SECRET. Everything in this file is bundled into the app
-and served to every visitor. A WalletConnect projectId is public by design
--- it is account-scoped, so it is kept out of the repo to avoid a clone
-spending your quota, not to hide it. Do not put real credentials here.
-"""
+"""Local, per-installation configuration."""
 
 from __future__ import annotations
 
@@ -48,12 +28,7 @@ _BRIDGE_KEYS = {
 
 @lru_cache(maxsize=1)
 def _file_values() -> dict[str, Any]:
-    """Parse the config file. Missing or malformed is not fatal.
-
-    An example app must still start when the file is absent -- that is the
-    fresh-clone case -- and a typo in it should degrade to "unconfigured"
-    rather than a traceback on launch.
-    """
+    """Parse the config file. Missing or malformed is not fatal."""
     try:
         return tomllib.loads(CONFIG_PATH.read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -73,11 +48,7 @@ def get(section: str, key: str, default: Any = None) -> Any:
 
 
 def bridge_config() -> dict[str, Any]:
-    """Settings to hand to the browser bridge, in its own key names.
-
-    Only non-empty values are included, so the bridge keeps its built-in
-    defaults for everything unset.
-    """
+    """Settings to hand to the browser bridge, in its own key names."""
     resolved: dict[str, Any] = {}
     for (section, key), bridge_key in _BRIDGE_KEYS.items():
         value = get(section, key)

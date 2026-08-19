@@ -1,20 +1,4 @@
-"""Curve Lite: a second API, and rather less of it.
-
-These chains run the Curve contracts without the indexing the big ones
-have, and are served by `api2.curve.finance` instead of the Prices API.
-Three differences drive everything here, and all three are about *absence*:
-
-  * no volume, no base APR, no CRV boost range, no price history. Not
-    zero -- unmeasured. A list that printed 0.00% would be reporting a
-    measurement nobody took, so the columns come out instead;
-  * the whole chain arrives in one response rather than a page at a time,
-    so ordering, searching and paging happen locally, and must come out
-    the same shape `PoolFeed` already expects;
-  * a pool arrives complete, so there is no detail call to make.
-
-Every payload below is trimmed from a real response: Etherlink and Sonic
-through `get_pools`, and the `get_platforms` metadata as it stands.
-"""
+"""Curve Lite: a second API, and rather less of it."""
 
 from __future__ import annotations
 
@@ -72,11 +56,7 @@ def lite_pool(
     broken: bool = False,
     chain_id: int = 42793,
 ) -> dict:
-    """One `pool_data` entry, shaped as the API sends it.
-
-    Note the string decimals and the raw `pool_balance`: v2 sends reserves
-    already scaled, this does not.
-    """
+    """One `pool_data` entry, shaped as the API sends it."""
     return {
         "id": "factory_stable_ng-0",
         "chain_id": chain_id,
@@ -126,8 +106,6 @@ def test_mainnets_are_offered() -> None:
 
 
 def test_testnets_are_not() -> None:
-    """They are real entries with real pools and no use to anyone opening
-    a pool list."""
     assert "bsc_testnet" not in parse_platforms(PLATFORMS)
 
 
@@ -136,7 +114,6 @@ def test_an_entry_with_no_chain_id_is_skipped() -> None:
 
 
 def test_nothing_at_all_is_not_an_error() -> None:
-    """A Lite API that is down should cost its chains, not the app."""
     assert parse_platforms(None) == {}
     assert parse_platforms({"data": {}}) == {}
 
@@ -157,22 +134,17 @@ def test_a_pool_carries_what_the_chain_knows() -> None:
     assert pool.coin_symbols == ["mBASIS", "USDC"]
     assert pool.lp_token == pool.address
     assert pool.amplification == 500
-    # 1e18 fixed point there, a plain float here.
     assert pool.virtual_price == pytest.approx(1.041077047347782)
-    # Complete on arrival: there is no detail endpoint to fill it in.
     assert pool.detailed is True
 
 
 def test_what_is_unmeasured_stays_at_zero_but_is_marked() -> None:
-    """The `lite` flag is what stops a nought being read as a measurement:
-    the view drops those columns rather than printing them."""
     (pool,) = parse_pools(payload(lite_pool()), "etherlink")
     assert (pool.volume_24h, pool.base_apr, pool.crv_apr) == (0.0, 0.0, (0.0, 0.0))
     assert pool.lite is True
 
 
 def test_reserves_are_scaled_by_their_own_decimals() -> None:
-    """Raw integers and string decimals, where v2 sends human numbers."""
     (pool,) = parse_pools(payload(lite_pool()), "etherlink")
     mbasis, usdc = pool.coins
     assert mbasis.balance == pytest.approx(933_686.0064)
@@ -182,8 +154,6 @@ def test_reserves_are_scaled_by_their_own_decimals() -> None:
 
 
 def test_the_registry_id_still_picks_the_right_abi() -> None:
-    """Underscores where v2 writes nothing and v1 writes hyphens. Getting
-    this wrong sends a fixed-array deposit to a DynArray pool."""
     (ng,) = parse_pools(payload(lite_pool(registry="factory_stable_ng")), "etherlink")
     assert ng.is_stableswap is True
     assert ng.dynamic_arrays is True
@@ -202,8 +172,6 @@ def test_a_killed_gauge_is_no_gauge() -> None:
 
 
 def test_broken_pools_are_dropped() -> None:
-    """The API marks these itself, and a pool that cannot be read is worse
-    than one that is absent."""
     assert parse_pools(payload(lite_pool(broken=True)), "etherlink") == []
 
 
@@ -212,13 +180,10 @@ def test_hidden_pools_are_dropped() -> None:
         {"data": [{"chain_id": 42793, "address": "0x" + "AB" * 20}]}
     )
     assert parse_pools(payload(lite_pool()), "etherlink", hidden) == []
-    # Same address, another chain: not the same pool.
     assert len(parse_pools(payload(lite_pool(chain_id=196)), "x-layer", hidden)) == 1
 
 
 def test_a_reward_without_a_price_is_not_an_apr() -> None:
-    """`apy` is null wherever the token has no price, which on these chains
-    is most of the time. The emission rate is not a substitute."""
     raw = lite_pool()
     raw["gauge_extra_rewards"] = [
         {
@@ -234,8 +199,6 @@ def test_a_reward_without_a_price_is_not_an_apr() -> None:
 
 
 def test_a_metapool_keeps_the_coins_the_contract_has() -> None:
-    """v2 decomposes a metapool and this API does not, so there is nothing
-    to drop -- and with no base pool address, no zap route either."""
     raw = lite_pool(name="crvUSD/2CRV")
     raw["is_meta_pool"] = True
     (pool,) = parse_pools(payload(raw), "x-layer")
@@ -248,7 +211,6 @@ def test_a_metapool_keeps_the_coins_the_contract_has() -> None:
 
 
 # -- the local page ---------------------------------------------------------
-#
 # `select` stands in for what v2 does with query parameters, and has to
 # return the same (page, total) contract so `PoolFeed` cannot tell.
 
@@ -303,19 +265,12 @@ def test_search_matches_name_symbol_or_address() -> None:
 
 
 def test_search_narrows_the_total_too() -> None:
-    """The count is what the list prints and what tells the feed when to
-    stop paging, so it has to be the *matching* count."""
-    # Every pool in `spread` carries the same two coins, so the query has
-    # to be the one thing that differs -- the name.
     pools = spread(5) + parse_pools(payload(lite_pool()), "etherlink")
     page, total = select(pools, sort_local=get_sort("tvl").local, search="mBASIS/USDC")
     assert total == 1 and len(page) == 1
 
 
 def test_the_floor_is_zero_by_default() -> None:
-    """Whole Lite deployments are smaller than the $10k floor the big
-    chains use -- Sonic's pools come to about $200k between them -- so the
-    same cut would empty the list."""
     assert LITE_MIN_TVL == 0
     _page, total = select(spread(5), sort_local=get_sort("tvl").local)
     assert total == 5  # including "Pool 0", worth nothing at all
@@ -330,10 +285,6 @@ def test_a_floor_still_applies_when_asked_for() -> None:
 
 
 async def test_the_platforms_call_gives_up_quickly() -> None:
-    """It is on the critical path for *every* chain: `chains()` folds the
-    Lite deployments into the picker, so the first page of Ethereum pools
-    waits on it. At the 30-second default a slow api2 is a pool list that
-    looks like it is loading forever."""
     from curve import api as api_module
     from curve.lite import LITE_TIMEOUT
 
@@ -358,8 +309,6 @@ async def test_the_platforms_call_gives_up_quickly() -> None:
 
 
 async def test_a_lite_api_that_never_answers_costs_only_the_lite_chains() -> None:
-    """The degradation `lite_chains` promises: the picker loses them, the
-    main chains carry on."""
     from curve import api as api_module
     from curve.http import ApiError
 

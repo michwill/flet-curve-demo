@@ -1,10 +1,4 @@
-"""Chain metadata and a small curated token list.
-
-Only what the UI needs to render sensibly: a name, the native symbol, and
-an explorer to link a submitted transaction to. Token addresses are the
-canonical ones per chain; anything not listed can be pasted in as a custom
-address and the app reads `symbol()`/`decimals()` off-chain.
-"""
+"""Chain metadata and a small curated token list."""
 
 from __future__ import annotations
 

@@ -1,21 +1,4 @@
-"""The API the app actually uses.
-
-`base.WalletProvider` is the portability seam -- one method, EIP-1193, one
-implementation per platform. This module is the layer above it: everything
-a *token-sending app* needs, expressed in domain terms rather than RPC ones.
-
-The split matters. A UI written against raw EIP-1193 ends up carrying the
-whole wallet protocol -- discovery, account prompts, chain reads, ABI
-encoding, the native-versus-ERC-20 branch -- as boilerplate. Everything in
-this file is that boilerplate, written once:
-
-    wallet = await Wallet.connect()
-    for token in wallet.known_tokens():
-        print(token.symbol, wallet.format(await wallet.balance_of(token), token))
-    tx = await wallet.send(token=usdc, to="0x…", amount="12.5")
-
-Nothing here imports Flet, and nothing here knows which platform it is on.
-"""
+"""The API the app actually uses."""
 
 from __future__ import annotations
 
@@ -51,32 +34,14 @@ class ConnectionCancelled(WalletError):
 
 
 def _safe_icon(icon: object) -> str | None:
-    """Accept `data:image/…` URIs and nothing else.
-
-    Two reasons, and they happen to point the same way:
-
-      * Security -- anything with a scheme or a host would let a wallet
-        extension name a URL for the app to fetch merely by appearing in the
-        picker, which leaks that the user opened it. EIP-6963 mandates a
-        data URI precisely so a dapp never has to fetch anything.
-      * Portability -- a *relative* path is not off-origin, but it renders
-        on desktop and silently draws nothing on Flutter web (which resolves
-        it against its own asset bundle, not the site root). Refusing it
-        here means that trap cannot be re-introduced by accident; bundled
-        icons go through `wallet.icons`, which returns data URIs.
-    """
+    """Accept `data:image/…` URIs and nothing else."""
     if isinstance(icon, str) and icon.startswith("data:image/"):
         return icon
     return None
 
 
 class WalletChoice:
-    """One option offered when a platform found several wallets.
-
-    `icon` is a `data:` URI ready to hand straight to an image widget --
-    either announced by the wallet or bundled by this app -- or None, in
-    which case draw a fallback from `initial`.
-    """
+    """One option offered when a platform found several wallets."""
 
     __slots__ = ("icon", "name", "rdns", "uuid")
 
@@ -97,19 +62,7 @@ Chooser = Callable[[list[WalletChoice]], Awaitable[str | None]]
 
 
 def autoconnect() -> bool:
-    """Should the app connect at startup, without waiting for a click?
-
-    Yes on desktop: the wallet is a local daemon the user already chose to
-    run, there is nothing to select, and no popup is triggered by asking --
-    so a "Connect wallet" button is pure ceremony. Either it is there and we
-    use it, or it is not and the app should say so immediately.
-
-    Unless the user disconnected. That is a decision, and reconnecting on
-    the next launch would override it silently -- see `wallet.consent`.
-
-    No in a browser: `eth_requestAccounts` raises a wallet popup, and doing
-    that unprompted on page load is both hostile and likely to be blocked.
-    """
+    """Should the app connect at startup, without waiting for a click?"""
     return not is_browser() and consent.autoconnect_allowed()
 
 
@@ -126,17 +79,11 @@ class Wallet:
         self.provider = provider
         self.address = address
         self.chain = chain
-        #: The chosen wallet's own icon as a `data:` URI, if it announced
-        #: one. Kept from the choice rather than re-derived: only `connect`
-        #: knows which of the announced wallets won.
         self.icon = _safe_icon(icon)
         self._change_handlers: list[Callable[[], Any]] = []
         self._disconnect_handlers: list[Callable[[], Any]] = []
         provider.on("accountsChanged", self._accounts_changed)
         provider.on("chainChanged", self._chain_changed)
-        # An extension announces a revoked site by sending an empty
-        # `accountsChanged`; WalletConnect closes the session and sends
-        # `disconnect` instead. Both mean the same thing here.
         provider.on("disconnect", lambda _data: self._fire(self._disconnect_handlers))
 
     # -- lifecycle --------------------------------------------------------
@@ -145,18 +92,7 @@ class Wallet:
     async def connect(
         cls, choose: Chooser | None = None, *, always_choose: bool = False
     ) -> Wallet:
-        """Find a wallet, authorise an account, and return a live session.
-
-        `choose` is consulted when a platform offers more than one wallet --
-        in practice, a browser with several connectors available. Omit it
-        and the first is taken. Raises `WalletError` on every failure path,
-        so callers need exactly one `except`.
-
-        `always_choose` asks even when there is a single option. That is for
-        "change wallet", where skipping the picker makes the command look
-        broken: the app reconnects to the wallet you were already using and
-        nothing on screen moves.
-        """
+        """Find a wallet, authorise an account, and return a live session."""
         provider = await connect_provider()
 
         options = [
@@ -164,9 +100,6 @@ class Wallet:
                 w["uuid"],
                 w.get("name", "Wallet"),
                 w.get("rdns", ""),
-                # A wallet's own announced icon wins; otherwise fall back to
-                # one this app bundles (WalletConnect announces none, being a
-                # protocol rather than a wallet).
                 w.get("icon") or icons.for_connector(w.get("connector")),
             )
             for w in getattr(provider, "wallets", [])
@@ -185,12 +118,9 @@ class Wallet:
                 "The wallet returned no accounts. Is it unlocked?"
             )
 
-        # Which option won -- for its icon. With one wallet there was no
-        # choice to make, but it still has a face.
         chosen = next(
             (o for o in options if o.uuid == uuid), options[0] if options else None
         )
-        # Connecting answers the question a previous disconnect asked.
         consent.record_connect()
         chain = chains.get_chain(await provider.chain_id())
         return cls(
@@ -201,23 +131,11 @@ class Wallet:
         )
 
     async def close(self) -> None:
-        """Let go of the transport, without calling it a disconnection.
-
-        For swapping one live session for another: the old channel (or
-        poller) has to be released, but nothing about the user's intent has
-        changed, so neither the remembered wallet nor the consent marker is
-        touched.
-        """
+        """Let go of the transport, without calling it a disconnection."""
         await self.provider.close()
 
     async def disconnect(self) -> None:
-        """End the session because the user said so.
-
-        Deliberate, so it is remembered: the page stops remembering this
-        wallet and the marker covers the transports with no page storage --
-        a desktop build otherwise connects again the moment it is
-        relaunched.
-        """
+        """End the session because the user said so."""
         consent.record_disconnect()
         forget = getattr(self.provider, "forget", None)
         if forget is not None:
@@ -226,19 +144,7 @@ class Wallet:
 
     @classmethod
     async def restore(cls) -> Wallet | None:
-        """Reconnect to the wallet used last time, or return None.
-
-        Closing a tab should not mean starting over, but reconnecting must
-        not put a dialog in front of someone who only opened a page. So
-        this asks `eth_accounts` -- what is *already* authorised -- and
-        never `eth_requestAccounts`, which is the one that prompts. No
-        authorisation, no session, and nothing is shown.
-
-        The wallet is matched by rdns rather than uuid because an EIP-6963
-        uuid is generated per page load, and by connector as a fallback so
-        WalletConnect (whose entry is synthesised, not announced) is found
-        the same way.
-        """
+        """Reconnect to the wallet used last time, or return None."""
         provider = await connect_provider()
         wanted = getattr(provider, "remembered", None)
         options = getattr(provider, "wallets", [])
@@ -247,10 +153,6 @@ class Wallet:
             return None
 
         def is_the_one(entry: dict[str, Any]) -> bool:
-            # rdns is an identity; connector is only a category. Falling
-            # back to the category when an rdns was stored would restore
-            # "some injected wallet" -- in practice the first one in the
-            # list, which is not the one that was connected.
             if wanted.get("rdns"):
                 return bool(entry.get("rdns")) and entry["rdns"] == wanted["rdns"]
             return bool(wanted.get("connector")) and (
@@ -259,7 +161,6 @@ class Wallet:
 
         match = next((w for w in options if is_the_one(w)), None)
         if match is None:
-            # Uninstalled, or a different browser profile.
             await provider.close()
             return None
 
@@ -272,8 +173,6 @@ class Wallet:
             await provider.close()
             return None
         if not accounts:
-            # Still installed, but the site is no longer authorised (or the
-            # wallet is locked). Not an error: just not connected.
             await provider.close()
             return None
 
@@ -316,7 +215,6 @@ class Wallet:
 
     def _fire(self, handlers: list[Callable[[], Any]]) -> None:
         for handler in handlers:
-            # A bad handler must not kill the event stream.
             with contextlib.suppress(Exception):
                 handler()
 
@@ -342,12 +240,7 @@ class Wallet:
         return [chains.native_token(self.chain), *self.chain.tokens]
 
     async def token_at(self, address: str) -> Token:
-        """Read `symbol()`/`decimals()` off an arbitrary ERC-20.
-
-        Goes through the wallet endpoint like everything else -- see the
-        note in the README about WalletConnect being the one transport that
-        does not proxy reads to the user's own node.
-        """
+        """Read `symbol()`/`decimals()` off an arbitrary ERC-20."""
         if not erc20.is_address(address):
             raise InvalidToken("That is not a valid contract address.")
         try:
@@ -383,18 +276,11 @@ class Wallet:
     # -- sending ----------------------------------------------------------
 
     async def send(self, *, token: Token, to: str, amount: str, balance: int | None = None) -> str:
-        """Validate, build and submit a transfer. Returns the transaction hash.
-
-        Collapses the whole native-versus-ERC-20 distinction: same call
-        either way. Validation raises `InvalidRecipient`/`InvalidAmount` so
-        a UI can point at the offending field; pass `balance` to have the
-        "more than you have" check done here too.
-        """
+        """Validate, build and submit a transfer. Returns the transaction hash."""
         recipient = (to or "").strip()
         if not erc20.is_address(recipient):
             raise InvalidRecipient("Enter a valid 0x address")
         if erc20.has_checksum_case(recipient) and not erc20.is_checksum_address(recipient):
-            # Mixed case that fails EIP-55 is a typo, not an old client.
             raise InvalidRecipient("Address checksum is invalid — check for typos")
         recipient = erc20.to_checksum_address(recipient)
 
@@ -404,8 +290,6 @@ class Wallet:
         if balance is not None and value > balance:
             raise InvalidAmount("More than your balance")
 
-        # Gas and nonce are deliberately omitted: every wallet in scope
-        # fills them in, and knows the chain better than this app does.
         if token.is_native:
             tx = {"from": self.address, "to": recipient, "value": hex(value)}
         else:

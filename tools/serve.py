@@ -1,20 +1,5 @@
 #!/usr/bin/env python3
-"""Serve `dist/` without caching anything.
-
-    python tools/serve.py            # http://127.0.0.1:8000
-    python tools/serve.py 8022 dist
-
-`python -m http.server` sends no cache headers at all, which Chrome reads
-as "cache it heuristically". For a normal static site that is fine; for a
-Flet build it means a reload can quietly keep serving the *previous*
-`app.tar.gz` and `wallet_bridge.js` -- so a fix that is already published
-appears not to work, and the only clue is that the browser and the file on
-disk disagree.
-
-That cost real time twice: a wallet fix that was live in the build but not
-in the running page. So this refuses to cache, and says which build it is
-serving on every start.
-"""
+"""Serve `dist/` without caching anything."""
 
 from __future__ import annotations
 
@@ -28,17 +13,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 class NoCacheHandler(http.server.SimpleHTTPRequestHandler):
     def send_head(self):
-        """Serve `index.html` for any path that is not a file.
-
-        The published build routes on the URL *path* (`/ethereum/0xC09e…`
-        is a pool page), which a static server knows nothing about: it
-        looks for a directory of that name and 404s. Every single-page app
-        needs this fallback, and without it a shared link only works if
-        you were already in the app.
-
-        Real files are still served as files, so this cannot shadow the
-        assets -- only paths that do not exist reach the app.
-        """
+        """Serve `index.html` for any path that is not a file."""
         path = Path(self.translate_path(self.path))
         if not path.exists() and "." not in path.name:
             self.path = "/index.html"
@@ -60,11 +35,6 @@ def main() -> int:
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8000
     directory = ROOT / (sys.argv[2] if len(sys.argv) > 2 else "dist")
 
-    # Either name: `flet publish` writes the archive, and
-    # `tools/publish_ipfs.py` replaces it with the base64 wrapper an IPFS
-    # gateway will actually serve. Both are the app, and serving one build
-    # while checking for the other is a "run flet publish" for a build that
-    # is already there.
     archive = next(
         (
             candidate

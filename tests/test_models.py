@@ -1,10 +1,4 @@
-"""Parsing the Prices API v2 shapes, and the numbers the UI sorts on.
-
-The fixtures below are trimmed copies of real `/v2/pools/` and
-`/v2/pools/{chain_id}/{address}` responses, including the awkward parts:
-`gauges` arriving as objects on one endpoint and strings on the other, and
-a list payload that simply lacks the LP token and the reserves.
-"""
+"""Parsing the Prices API v2 shapes, and the numbers the UI sorts on."""
 
 from __future__ import annotations
 
@@ -12,9 +6,7 @@ from curve.external import ExternalCampaign, by_pool
 from curve.merkl import MerklCampaign, MerklToken, by_identifier
 from curve.models import Pool
 
-#: A pool paying a Merkl campaign, and one paying only points. Built
-#: directly rather than parsed -- `tests/test_merkl.py` owns the parsing;
-#: what is being checked here is what the numbers do once attached.
+#: A pool paying a Merkl campaign, and one paying only points.
 MERKL_POOL = "0xd50492de3541d75e61edc34d1aa79c7dc2d20da9"
 POINTS_POOL = "0xf4d0cf32908b2c7f1021339c43df0f77f06896d7"
 _PIKU = MerklToken("PIKU", "0x2e4039e8")
@@ -116,7 +108,6 @@ def test_parses_a_list_entry() -> None:
 
 
 def test_base_apr_comes_straight_off_the_pool() -> None:
-    """v2 needs no join: v1 had to merge getVolumes onto getPools by address."""
     pool = Pool.from_v2(LIST_3POOL)
     assert pool.base_apr == 0.0002  # weekly, matching Curve's own column
 
@@ -130,13 +121,11 @@ def test_gauge_parsed_from_the_list_shape() -> None:
 
 
 def test_gauge_parsed_from_the_detail_shape() -> None:
-    """The two endpoints disagree: objects on the list, strings on detail."""
     pool = Pool.from_v2(LIST_3POOL).merge_detail(DETAIL_3POOL)
     assert pool.gauge == "0xbFcF63294aD7105dEa65aA58F8AE5BE2D9d0952A"
 
 
 def test_killed_gauges_are_ignored() -> None:
-    """A killed gauge takes deposits and pays nothing; never offer it."""
     pool = Pool.from_v2(
         {"gauges": [{"address": "0xdead", "is_killed": True}]}
     )
@@ -170,7 +159,6 @@ def test_pool_type_decides_the_abi_variant() -> None:
 
 
 def test_v1_registry_spellings_still_dispatch() -> None:
-    """Kept as aliases so a Pool from either API generation is safe."""
     assert Pool.from_v2({"pool_type": "factory-stable-ng"}).is_stableswap
     assert not Pool.from_v2({"pool_type": "factory-twocrypto"}).is_stableswap
 
@@ -195,7 +183,6 @@ def test_crv_is_not_double_counted_as_an_incentive() -> None:
 
 
 def test_incentives_apr_includes_merkle() -> None:
-    """v1 had no merkle field at all, so this column is new."""
     pool = Pool.from_v2(
         {"crv_apr": 1.0, "crv_apr_boosted": 2.0, "merkle_apr": 322.4}
     )
@@ -203,12 +190,6 @@ def test_incentives_apr_includes_merkle() -> None:
 
 
 def test_merkl_replaces_curves_merkle_figure_rather_than_adding_to_it() -> None:
-    """They are the same money read two ways, and adding both doubles it.
-
-    Curve's `merkle_apr` is the gauge campaign; Merkl reports that one
-    *and* the one paying unstaked liquidity. Summing them would put this
-    pool above pools that genuinely pay more.
-    """
     pool = Pool.from_v2(
         {"address": MERKL_POOL, "crv_apr_boosted": 2.0, "merkle_apr": 325.06}
     )
@@ -220,11 +201,6 @@ def test_merkl_replaces_curves_merkle_figure_rather_than_adding_to_it() -> None:
 
 
 def test_points_add_nothing_to_any_total() -> None:
-    """A points campaign has no price, so it has no rate to contribute.
-
-    The pool is worth being in for them; the way to say so is to name the
-    campaign, not to invent a percentage.
-    """
     pool = Pool.from_v2({"address": POINTS_POOL, "crv_apr_boosted": 2.0}, "ethereum")
     pool.attach_campaigns(_MERKL_INDEX, _POINTS_INDEX)
     assert pool.merkl.points
@@ -233,7 +209,6 @@ def test_points_add_nothing_to_any_total() -> None:
 
 
 def test_attaching_twice_replaces_rather_than_accumulates() -> None:
-    """The pool page runs the lookup a second time once the LP token lands."""
     pool = Pool.from_v2({"address": MERKL_POOL, "crv_apr_boosted": 2.0})
     pool.attach_campaigns(_MERKL_INDEX, {})
     pool.attach_campaigns(_MERKL_INDEX, {})
@@ -258,8 +233,6 @@ def test_display_name_strips_curve_prefixes() -> None:
 
 def test_merge_detail_supplies_what_the_list_lacks() -> None:
     pool = Pool.from_v2(LIST_3POOL, "ethereum")
-    # None of this is in the list payload -- and without the LP token there
-    # is nothing to withdraw or stake.
     assert not pool.lp_token
     assert pool.coins[0].balance == 0.0
 
@@ -276,7 +249,6 @@ def test_merge_detail_supplies_what_the_list_lacks() -> None:
 def test_merge_detail_survives_a_sparse_payload() -> None:
     pool = Pool.from_v2(LIST_3POOL).merge_detail({})
     assert pool.detailed
-    # Falls back to the pool's own address so a swap still has a target.
     assert pool.lp_token == LIST_3POOL["address"]
 
 

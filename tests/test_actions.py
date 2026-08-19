@@ -1,17 +1,4 @@
-"""The action panels' calldata, without a running page.
-
-Only `submit()` is exercised here: it is the one path that turns what the
-user typed into a transaction, and the one place where a mistake costs real
-money rather than a redraw. The panels build their controls in `__init__`,
-which needs no page, so they can be constructed outright -- `page` is only
-touched when a status line is updated.
-
-The balanced withdrawal is the interesting case. Its `min_amounts` floor is
-each reserve's share of the LP supply, which means two numbers that come
-from different places (the API's reserves, the chain's supply) and used to
-be conflated: an earlier version divided by the sum of the reserves, which
-is not the LP supply at all.
-"""
+"""The action panels' calldata, without a running page."""
 
 from __future__ import annotations
 
@@ -51,9 +38,6 @@ class FakeProvider(WalletProvider):
         self.estimated: list[dict] = []
         self.default = word(0)
         self.raise_on_call: Exception | None = None
-        #: What network the wallet says it is on. The panels ask, because
-        #: a read aimed at another chain answers "no code here" and that
-        #: reads as a pool this app cannot handle.
         self.chain = 1
 
     async def request(self, method: str, params=None):
@@ -65,10 +49,6 @@ class FakeProvider(WalletProvider):
                 raise self.raise_on_call
             return self.answers.get(params[0]["data"][:10], self.default)
         if method == "eth_estimateGas":
-            # The panels price what they would send -- see `show_gas`.
-            # A flat answer is enough: the fee line stays hidden anyway
-            # unless the chain also reports a base fee, which this double
-            # does not.
             self.estimated.append(params[0])
             return "0x30d40"
         if method == "eth_sendTransaction":
@@ -127,24 +107,17 @@ def words_of(data: str) -> list[int]:
 
 
 class ReservedProvider(FakeProvider):
-    """A pool that answers `balances(i)` in one of the two spellings.
-
-    Which one is the point: `int128` on the old registry pools, `uint256`
-    on everything since, and a pool answers exactly one. `PoolContract`
-    asks both and takes whichever replies, so both have to be exercised.
-    """
+    """A pool that answers `balances(i)` in one of the two spellings."""
 
     def __init__(self, reserves: list[int], *, old: bool = False, **kw) -> None:
-        # totalSupply, and an LP balance so the panel quotes rather than
-        # reporting an empty wallet over the top of the estimate.
+        # totalSupply, and an LP balance so the panel quotes rather
+        # than reporting an empty wallet over the top of the
+        # estimate.
         super().__init__(
             {"0x18160ddd": word(LP_SUPPLY), "0x70a08231": word(LP_SUPPLY), **kw}
         )
         self.reserves = reserves
-        #: Refuse both spellings, the way a chain that will not answer
-        #: does -- which is a different state from a pool holding nothing.
         self.refuse_reserves = False
-        #: Refuse the one-coin quote, so the line falls back to words.
         self.refuse_quote_all = False
         mine, theirs = ("balances(int128)", "balances(uint256)")
         if not old:
@@ -166,16 +139,12 @@ class ReservedProvider(FakeProvider):
             ):
                 raise RpcError(-32000, "execution reverted")
             if data.startswith(self.wrong):
-                # What a Vyper contract does with a selector it does not
-                # have. Answering zero instead would let the caller take
-                # the first spelling it tried and never reach the right
-                # one -- which is the whole reason both are asked.
                 raise RpcError(-32000, "execution reverted")
         return await super().request(method, params)
 
 
-#: Integer multiplication, not `float * 10**18` -- the latter loses the
-#: low digits and makes an exact share impossible to assert.
+#: Integer multiplication, not `float * 10**18` -- the latter loses the low
+#: digits and makes an exact share impossible to assert.
 RESERVES = [int(USDT_RESERVE) * 10**6, int(CRVUSD_RESERVE) * 10**18]
 
 
@@ -188,18 +157,13 @@ async def test_balanced_withdrawal_floors_each_coin_at_its_share(old: bool) -> N
     contract = tab.get_contract()
     await tab.submit(contract)
 
-    # remove_liquidity(uint256,uint256[2]): amount, then one word per coin.
     amount, usdt_min, crvusd_min = words_of(provider.sent[-1]["data"])
     assert amount == 150_000 * 10**18
-    # A tenth of the pool, less the 1% tolerance, in each coin's own units.
     assert usdt_min == pytest.approx(100_000 * 10**6 * 0.99, rel=1e-9)
     assert crvusd_min == pytest.approx(200_000 * 10**18 * 0.99, rel=1e-9)
 
 
 async def test_a_balanced_withdrawal_previews_every_coin_it_pays() -> None:
-    """It used to preview nothing at all. A withdrawal that pays two
-    tokens and shows one number is a preview of a different action, and
-    showing none is a panel that asks to be trusted."""
     tab = make_tab(ReservedProvider(RESERVES))
     tab.mode.value = "balanced"
     tab.amount.value = "150000"          # a tenth of the supply
@@ -210,7 +174,6 @@ async def test_a_balanced_withdrawal_previews_every_coin_it_pays() -> None:
 
 
 async def test_the_preview_and_the_floor_are_the_same_numbers() -> None:
-    """One source, so the panel cannot show a share it will not protect."""
     provider = ReservedProvider(RESERVES)
     tab = make_tab(provider)
     tab.mode.value = "balanced"
@@ -226,8 +189,6 @@ async def test_the_preview_and_the_floor_are_the_same_numbers() -> None:
 
 
 async def test_a_pool_that_will_not_say_its_reserves_previews_nothing() -> None:
-    """Rather than a guess. The floor still goes out -- see the fallback in
-    `submit` -- because a stale floor protects and no floor does not."""
     provider = ReservedProvider(RESERVES)
     provider.refuse_reserves = True
     tab = make_tab(provider)
@@ -240,10 +201,7 @@ async def test_a_pool_that_will_not_say_its_reserves_previews_nothing() -> None:
 
 
 # -- the mark beside the amount --------------------------------------------
-#
-# An amount and the token it is in are one fact. These panels mark tokens
-# everywhere else -- the coin picker, the amount fields, every reward line
-# -- and the one line that says what you *get* had a bare symbol on it.
+# An amount and the token it is in are one fact.
 
 
 def marks_on(tab) -> list:
@@ -286,7 +244,6 @@ async def test_a_one_coin_withdrawal_marks_the_coin_it_pays() -> None:
 
 
 async def test_a_swap_marks_the_coin_it_pays_out() -> None:
-    """The coin bought, not the one sold: the line says what arrives."""
     tab = swap_tab(CurvedProvider())
     tab.amount.value = "1000"
 
@@ -297,8 +254,6 @@ async def test_a_swap_marks_the_coin_it_pays_out() -> None:
 
 
 async def test_a_deposit_is_marked_with_the_pool_it_buys_into() -> None:
-    """An LP token has no logo of its own, so Curve draws the pool's coins
-    overlapped -- the same mark this panel's own amount field carries."""
     from ui.actions import ESTIMATE_MARK
 
     provider = FakeProvider({"0x" + abi.selector("calc_token_amount(uint256[2],bool)"):
@@ -309,16 +264,12 @@ async def test_a_deposit_is_marked_with_the_pool_it_buys_into() -> None:
     await tab.refresh()
 
     assert "LP" in tab.estimate.value
-    # A stack of the pool's coins rather than one token's mark: same
-    # height, wider, and the panel's own field is built the same way.
     stack = tab.estimate_line.controls[1].controls[0]
     assert stack.height == ESTIMATE_MARK
     assert stack.width > ESTIMATE_MARK
 
 
 async def test_a_line_with_nothing_to_mark_is_still_just_words() -> None:
-    """An error, or a balance warning. The row falls back to the one Text
-    that has always held the words, so nothing downstream changes."""
     provider = ReservedProvider(RESERVES)
     provider.refuse_quote_all = True
     tab = make_tab(provider)
@@ -333,11 +284,6 @@ async def test_a_line_with_nothing_to_mark_is_still_just_words() -> None:
 
 
 async def test_a_zero_floor_is_sent_when_the_supply_cannot_be_read() -> None:
-    """No protection is better than a transaction that cannot be built.
-
-    The floor is a safety margin, not a requirement: a node that will not
-    answer `totalSupply()` should not stop someone withdrawing.
-    """
     provider = FakeProvider()
     provider.raise_on_call = RpcError(-32000, "execution reverted")
     tab = make_tab(provider)
@@ -349,7 +295,6 @@ async def test_a_zero_floor_is_sent_when_the_supply_cannot_be_read() -> None:
 
 
 async def test_the_supply_read_targets_the_lp_token() -> None:
-    """Not the pool: on older pools they are different contracts."""
     provider = FakeProvider({"0x18160ddd": word(LP_SUPPLY)})
     seen: list[str] = []
 
@@ -377,11 +322,6 @@ async def test_withdrawing_nothing_is_refused_before_any_call() -> None:
 
 
 async def test_a_one_coin_withdrawal_floors_at_the_pool_s_own_quote() -> None:
-    """The floor comes from `calc_withdraw_one_coin`, not from the reserves.
-
-    The pool knows what an imbalanced withdrawal costs; this app does not,
-    and guessing would be a second implementation of the invariant.
-    """
     quote = "0x" + abi.selector("calc_withdraw_one_coin(uint256,int128)")
     provider = FakeProvider({quote: word(99 * 10**6)})
     tab = make_tab(provider)
@@ -400,19 +340,12 @@ async def test_a_one_coin_withdrawal_floors_at_the_pool_s_own_quote() -> None:
 
 
 # -- how the panel is laid out ---------------------------------------------
-#
 # The amounts are the subject of these panels, so they get the panel's full
-# width. They used to stop short of the right edge -- Material gives a text
-# field its own idea of a sensible width unless the column stretches it --
-# which read as if they were dodging the slippage box beside them.
+# width.
 
 
 def tabs():
-    """The four panels, on a pool with a gauge.
-
-    With no gauge the Stake panel is a sentence explaining why there is
-    nothing to stake, which is right but has no fields to lay out.
-    """
+    """The four panels, on a pool with a gauge."""
     from ui.actions import DepositTab, StakeTab, SwapTab, WithdrawTab
 
     pool = make_pool()
@@ -452,8 +385,6 @@ def test_every_panel_stretches_its_fields(index: int) -> None:
 
 
 def test_a_field_and_its_balance_line_stretch_together() -> None:
-    """The inner column has to stretch too, or the field inside it keeps
-    its intrinsic width however wide the panel is."""
     tab = tabs()[0]
     tab.mount()
     pairs = [c for c in tab.control.controls if isinstance(c, ft.Column)]
@@ -461,8 +392,6 @@ def test_a_field_and_its_balance_line_stretch_together() -> None:
 
 
 def test_no_amount_field_sets_its_own_width() -> None:
-    """A fixed width would defeat the stretch. Slippage is the exception --
-    it is deliberately small."""
     for tab in tabs():
         for field in fields_of(tab.mount()):
             if field is tab.slippage:
@@ -484,10 +413,6 @@ def test_slippage_is_small_and_out_of_the_way() -> None:
 
 
 def test_the_buttons_follow_the_fields_with_room_to_spare() -> None:
-    """No pinning, because there is no fixed height to pin against: the
-    panel is as tall as its content. The buttons come after the fields,
-    with a wider gap than the fields have between them so the button reads
-    as the end of the panel rather than as one more field."""
     from ui.actions import BUTTON_GAP
 
     for tab in tabs():
@@ -498,11 +423,6 @@ def test_the_buttons_follow_the_fields_with_room_to_spare() -> None:
 
 
 def test_nothing_inside_the_panel_scrolls() -> None:
-    """The fields used to, for when the guessed height came up short. On a
-    phone that scrollable took the drag meant for the page -- you pulled at
-    the Deposit fields and the page behind them stayed put -- and it drew
-    its own thumb down the side of the amount fields. The guess is sized
-    over its content now, so there is nothing to scroll."""
     for tab in tabs():
         frame = tab.mount()
         assert tab.control.scroll is None
@@ -510,10 +430,6 @@ def test_nothing_inside_the_panel_scrolls() -> None:
 
 
 def test_slippage_sits_with_the_amounts_not_with_the_button() -> None:
-    """Against the submit button it reads as part of the action rather
-    than as a setting for it. They are in different columns now -- the
-    fields scroll and the buttons are pinned to the panel's bottom -- so
-    being in the field column is the whole of it."""
     for tab in tabs():
         if not tab.uses_slippage:
             continue
@@ -525,8 +441,6 @@ def test_slippage_sits_with_the_amounts_not_with_the_button() -> None:
             if isinstance(c, ft.Row) and tab.slippage in (c.controls or [])
         )
         assert slippage_at < fields.index(tab.estimate_panel)
-        # The buttons are in the frame, below the fields, each inside the
-        # container that draws Chad's shadow.
         assert tab.control is frame.controls[0]
         assert [getattr(c, "content", c) for c in frame.controls[1:3]] == [
             tab.approve_button,
@@ -542,8 +456,6 @@ def max_button(field: ft.TextField) -> ft.TextButton | None:
 
 
 def test_every_amount_field_carries_its_own_max() -> None:
-    """It used to be a button underneath, which said nothing about *which*
-    amount it filled -- and on Deposit there is one per coin."""
     for tab in tabs():
         amounts = [f for f in fields_of(tab.mount()) if f is not tab.slippage]
         assert amounts, f"{tab.title}: no amount field"
@@ -578,8 +490,6 @@ def test_deposit_max_fills_that_coin_with_the_whole_balance() -> None:
 
 
 def test_max_keeps_every_decimal_the_token_has() -> None:
-    """The balance line is rounded for reading; the field becomes calldata,
-    and a rounded number would leave dust behind or exceed the balance."""
     tab = tabs()[0]
     tab.mount()
     tab.balances = [1_234_567, 0]  # 1.234567 USDT, more places than shown
@@ -601,7 +511,6 @@ def test_swap_max_follows_the_coin_being_sold() -> None:
 
 
 def test_stake_max_follows_the_direction() -> None:
-    """Staking offers the wallet balance; unstaking offers what is staked."""
     stake = tabs()[3]
     stake.mount()
     stake.lp_balance, stake.staked = 5 * 10**18, 7 * 10**18
@@ -615,18 +524,14 @@ def test_stake_max_follows_the_direction() -> None:
 
 
 def test_staking_offers_no_slippage() -> None:
-    """There is no rate to protect: LP tokens go into the gauge one for one."""
     deposit, _withdraw, _swap, stake = tabs()
     assert deposit.slippage in fields_of(deposit.mount())
     assert stake.slippage not in fields_of(stake.mount())
 
 
 # -- slippage from the pool's own fee --------------------------------------
-#
-# A fixed 0.5% is arbitrary: it is loose for a stable pool charging 0.01%
-# and no better than a guess for a crypto pool charging 1.5%. The fee is
-# what the trade is expected to cost, so it is the scale the tolerance
-# belongs on.
+# A fixed 0.5% is arbitrary: it is loose for a stable pool charging 0.01% and
+# no better than a guess for a crypto pool charging 1.5%.
 
 
 class FeeProvider(FakeProvider):
@@ -660,8 +565,6 @@ def tab_with_fee(cls, flat: int, pair: int | None = None, registry: str = "crvus
 
 
 async def test_deposit_slippage_is_the_fee_plus_a_little() -> None:
-    """The whole rule: a deposit may lose its pool's fee, plus 0.005% for
-    the quote going stale. 3pool charges 0.015%, so 0.02%."""
     from ui.actions import DepositTab
 
     tab, _ = tab_with_fee(DepositTab, 1_500_000, registry="main")
@@ -670,8 +573,6 @@ async def test_deposit_slippage_is_the_fee_plus_a_little() -> None:
 
 
 async def test_the_same_line_holds_whatever_the_implementation() -> None:
-    """One rule, no per-registry branch: the modern pools mint exactly the
-    quote, so a whole fee is margin they do not need but does not hurt."""
     from ui.actions import ESTIMATE_FEE_SHARE, QUOTE_DRIFT, DepositTab, slippage_for
 
     for registry in ("main", "factory", "crvusd", "stableswapng", "twocryptong", "new-2027"):
@@ -682,9 +583,6 @@ async def test_the_same_line_holds_whatever_the_implementation() -> None:
 
 
 async def test_a_tiny_fee_still_gets_the_drift_allowance() -> None:
-    """Strategic USD Reserves charges 0.001%, so the fee term is nothing
-    and the constant is the whole allowance -- not a floor bolted on, just
-    `a * fee + b` with a small fee."""
     from ui.actions import QUOTE_DRIFT, DepositTab
 
     tab, _ = tab_with_fee(DepositTab, 100_000, registry="stableswapng")
@@ -702,8 +600,6 @@ async def test_withdrawing_uses_the_flat_fee_too() -> None:
 
 
 async def test_swapping_stays_tight_because_its_quote_is_exact() -> None:
-    """`get_dy` is the same maths the swap runs, fee included, so there is
-    no estimator error to give back -- a fifth of the fee, not twice."""
     from ui.actions import SwapTab
 
     tab, _ = tab_with_fee(SwapTab, 1_000_000, pair=2_000_000)
@@ -720,7 +616,6 @@ async def test_a_swap_pool_without_dynamic_fee_falls_back() -> None:
 
 
 async def test_a_deposit_is_always_given_more_room_than_a_swap() -> None:
-    """The difference is not a preference; it is that one quote is exact."""
     from ui.actions import DepositTab, SwapTab
 
     for registry in ("main", "crvusd", "stableswapng", "factory_tricrypto"):
@@ -764,7 +659,6 @@ async def test_what_the_user_typed_is_never_overwritten() -> None:
 
 
 async def test_a_pool_that_will_not_answer_keeps_the_default() -> None:
-    """Better a workable default than an empty box."""
     from ui.actions import DEFAULT_SLIPPAGE, DepositTab
 
     tab, _ = tab_with_fee(DepositTab, 0)  # fee() answers zero
@@ -773,7 +667,6 @@ async def test_a_pool_that_will_not_answer_keeps_the_default() -> None:
 
 
 async def test_staking_reads_no_fee_at_all() -> None:
-    """It has no slippage field, so there is nothing to suggest."""
     from ui.actions import StakeTab
 
     tab, provider = tab_with_fee(StakeTab, 1_500_000)
@@ -782,13 +675,6 @@ async def test_staking_reads_no_fee_at_all() -> None:
 
 
 async def test_the_line_covers_every_measured_pool() -> None:
-    """The data the constants were fitted to, kept as a regression.
-
-    Each row is one mainnet pool: its fee, and the tolerance its deposit
-    actually needed -- bisected on a fork until `add_liquidity` stopped
-    reverting, plus what the quote lost by being up to five blocks stale.
-    The line has to sit above every one of them.
-    """
     from ui.actions import ESTIMATE_FEE_SHARE, QUOTE_DRIFT, slippage_for
 
     measured = [                      # (fee in 1e10 units, needed %)
@@ -843,10 +729,6 @@ async def test_the_line_covers_every_measured_pool() -> None:
 
 
 def test_the_slope_is_one_whole_fee() -> None:
-    """Not a fitted constant but a ceiling: the imbalance fee on a fully
-    single-sided deposit approaches the base fee as a two-coin pool skews,
-    so no pool of that shape can need more. The measured worst, cvxCrv/Crv,
-    was 0.91x -- under it, as it must be."""
     from ui.actions import ESTIMATE_FEE_SHARE, QUOTE_DRIFT, slippage_for
 
     assert ESTIMATE_FEE_SHARE == 1.0
@@ -856,8 +738,6 @@ def test_the_slope_is_one_whole_fee() -> None:
 
 
 def test_a_low_constant_is_what_the_slope_buys() -> None:
-    """A pegged pool charging 0.001% should not be given the tolerance a
-    volatile one needs; that is the point of keeping `a` above zero."""
     from ui.actions import ESTIMATE_FEE_SHARE, QUOTE_DRIFT, slippage_for
 
     pegged = slippage_for(100_000, ESTIMATE_FEE_SHARE, QUOTE_DRIFT)     # 0.001% fee
@@ -870,17 +750,13 @@ def test_the_arithmetic_is_a_times_fee_plus_b() -> None:
     from ui.actions import ESTIMATE_FEE_SHARE, QUOTE_DRIFT, SLIPPAGE_OF_FEE, slippage_for
 
     assert (SLIPPAGE_OF_FEE, ESTIMATE_FEE_SHARE, QUOTE_DRIFT) == (0.2, 1.0, 0.005)
-    # 1e10 is 100%, so 10_000_000 is 0.1%.
     assert slippage_for(10_000_000) == pytest.approx(0.02)
     assert slippage_for(0) == 0
     assert slippage_for(10_000_000, ESTIMATE_FEE_SHARE, QUOTE_DRIFT) == pytest.approx(0.105)
-    # The constant is what carries a pool whose fee rounds to nothing.
     assert slippage_for(0, ESTIMATE_FEE_SHARE, QUOTE_DRIFT) == pytest.approx(QUOTE_DRIFT)
 
 
 def test_a_deposit_allows_more_than_a_swap_at_every_fee() -> None:
-    """One quote is exact and the other is not; that ordering must hold
-    whatever the pool charges."""
     from ui.actions import ESTIMATE_FEE_SHARE, QUOTE_DRIFT, SLIPPAGE_OF_FEE, slippage_for
 
     for fee in (0, 100_000, 1_000_000, 5_520_000, 155_010_000):
@@ -890,11 +766,9 @@ def test_a_deposit_allows_more_than_a_swap_at_every_fee() -> None:
 
 
 # -- waiting for the chain -------------------------------------------------
-#
 # The panels used to re-read straight after broadcasting, which reads the
 # state *before* the transaction: an approval landed and left the submit
-# button disabled. Now they wait for the receipt, and for the endpoint to
-# have caught up to the block it names.
+# button disabled.
 
 
 @pytest.fixture(autouse=True)
@@ -926,8 +800,6 @@ class MinedProvider(FakeProvider):
         if method == "eth_call":
             data = (params or [{}])[0].get("data", "")
             if data.startswith("0x" + abi.selector("allowance(address,address)")):
-                # Only true once the transaction has been mined, which is
-                # the whole point: reading earlier shows the old allowance.
                 mined = self.receipts_asked > self.pending
                 return word(10**30 if mined else 0)
             if data.startswith("0x" + abi.selector("fee()")):
@@ -958,8 +830,6 @@ async def test_an_approval_waits_to_be_mined_before_reading_back() -> None:
 
 
 async def test_the_block_the_transaction_landed_in_is_waited_for() -> None:
-    """A load-balanced endpoint can answer from a node a block or two
-    behind, which reads as the transaction having been rolled back."""
     provider = MinedProvider(block=500, pending=0)
     tab = deposit_tab(provider)
     tab.fields[0].value = "1"
@@ -978,8 +848,6 @@ async def test_a_mined_revert_is_reported_not_celebrated() -> None:
 
 
 async def test_a_confirmed_deposit_clears_the_amounts() -> None:
-    """The number that was there has been spent; leaving it invites
-    sending it twice."""
     provider = MinedProvider(pending=0)
     tab = deposit_tab(provider)
     tab.fields[0].value = "1"
@@ -999,10 +867,9 @@ async def _noop() -> None:
 
 
 # -- what the confirmation says --------------------------------------------
-#
 # The block number the receipt named still governs the reads that follow it
-# -- see `curve.confirm` -- but it is not what someone who just deposited
-# wants read back to them. The amount they typed is.
+# -- see `curve.confirm` -- but it is not what someone who just deposited --
+# wants read back to them.
 
 
 async def test_a_confirmed_deposit_names_the_amount_not_the_block() -> None:
@@ -1048,8 +915,6 @@ async def test_an_approval_names_what_it_approved() -> None:
 
 
 async def test_the_summary_is_taken_before_the_fields_are_cleared() -> None:
-    """`clear_inputs` runs on success, so a summary read afterwards would
-    report an empty deposit."""
     provider = MinedProvider(pending=0)
     tab = deposit_tab(provider)
     tab.fields[0].value = "7"
@@ -1096,16 +961,12 @@ async def test_a_swap_names_both_sides() -> None:
 
 
 async def test_nothing_typed_leaves_a_bare_confirmation() -> None:
-    """No amount is not a reason to print an empty one."""
     provider = MinedProvider(pending=0)
     tab = deposit_tab(provider)
     assert tab.done_message() == "Deposited."
 
 
 def test_the_shown_tolerance_is_never_tighter_than_the_computed_one() -> None:
-    """Three significant figures, rounded up: `%.3g` would turn 0.01925
-    into 0.0192, and a floor shown tighter than it was calculated is a
-    floor that reverts."""
     from ui.actions import ESTIMATE_FEE_SHARE, QUOTE_DRIFT, format_slippage, slippage_for
 
     for fee in range(0, 200_000_000, 137_017):
@@ -1114,11 +975,8 @@ def test_the_shown_tolerance_is_never_tighter_than_the_computed_one() -> None:
 
 
 # -- what the buttons say --------------------------------------------------
-#
 # `ft.Button` carries its label in `content`; it has no `text` property, so
-# assigning one silently sets an attribute nobody reads. Both places that
-# rename a button did exactly that -- Unstake stayed labelled "Stake", and
-# the "2." that pairs with "1. Approve" never appeared.
+# assigning one silently sets an attribute nobody reads.
 
 
 async def test_unstaking_says_unstake() -> None:
@@ -1139,7 +997,6 @@ async def test_unstaking_says_unstake() -> None:
 
 
 async def test_the_submit_button_is_numbered_while_an_approval_is_pending() -> None:
-    """"1. Approve" then "2. Deposit" -- the second half never showed."""
     from ui.actions import DepositTab
 
     provider = FeeProvider(1_000_000)
@@ -1177,10 +1034,7 @@ async def test_and_loses_the_number_once_it_is_approved() -> None:
 
 
 # -- the status line -------------------------------------------------------
-#
-# A wallet takes seconds to answer and a block takes twelve. A line of text
-# that just sits there is indistinguishable from one that has stopped, so
-# the waiting states spin and the panel is tinted by what it is saying.
+# A wallet takes seconds to answer and a block takes twelve.
 
 
 def status_of(tab):
@@ -1222,7 +1076,6 @@ async def test_the_panel_hides_when_there_is_nothing_to_say() -> None:
 
 
 def test_each_kind_of_status_gets_its_own_tint() -> None:
-    """Told apart before the words are read."""
     from ui.actions import DepositTab
 
     tab, _ = tab_with_fee(DepositTab, 1_000_000)
@@ -1243,9 +1096,8 @@ def test_each_kind_of_status_gets_its_own_tint() -> None:
 
 
 # -- the swap pickers ------------------------------------------------------
-#
-# Two coins, and the panel should never sit in a state it can complain
-# about but not fix.
+# Two coins, and the panel should never sit in a state it can complain about
+# but not fix.
 
 
 def swap_tab(provider=None):
@@ -1259,8 +1111,6 @@ def swap_tab(provider=None):
 
 
 def test_choosing_the_coin_the_other_side_holds_moves_that_side() -> None:
-    """Rather than leaving the pair equal and printing "pick two different
-    coins", which complains about something the app can just fix."""
     tab = swap_tab()
     assert (tab.from_coin.value, tab.to_coin.value) == ("0", "1")
 
@@ -1285,8 +1135,6 @@ def test_flipping_swaps_the_two_over() -> None:
     tab._flip(None)
 
     assert (tab.from_coin.value, tab.to_coin.value) == ("1", "0")
-    # The amount is denominated in whichever coin is on the left, so the
-    # number stays and the quote is re-read.
     assert tab.amount.value == "100"
 
 
@@ -1298,8 +1146,6 @@ def test_flipping_twice_is_where_it_started() -> None:
 
 
 def test_a_one_coin_pool_cannot_be_made_to_pick_a_second() -> None:
-    """Nothing here should raise on a degenerate pool, even though the
-    list will not offer one."""
     from ui.actions import SwapTab
 
     pool = make_pool()
@@ -1312,12 +1158,8 @@ def test_a_one_coin_pool_cannot_be_made_to_pick_a_second() -> None:
 
 
 # -- the wrong network -----------------------------------------------------
-#
 # Every read goes through the wallet's provider, so it lands on the network
-# the *wallet* is on. Browsing Gnosis with a wallet on Ethereum quotes
-# Gnosis addresses against Ethereum, where they hold no code, and every
-# estimate comes back "the pool did not answer" -- which reads as a pool
-# this app cannot handle rather than as a wallet in the wrong place.
+# the *wallet* is on.
 
 
 async def test_a_wallet_on_another_network_is_said_plainly() -> None:
@@ -1357,8 +1199,6 @@ async def test_the_right_network_says_nothing() -> None:
 
 
 async def test_a_pool_with_no_known_chain_is_not_complained_about() -> None:
-    """A pool built from a partial payload has `chain_id` 0, which is not
-    a mismatch -- it is an absence."""
     provider = FakeProvider()
     pool = make_pool()
     pool.chain_id = 0
@@ -1403,8 +1243,6 @@ async def test_the_switch_button_asks_the_wallet_to_move() -> None:
 
 
 async def test_a_switch_that_failed_is_reported_not_swallowed() -> None:
-    """A wallet that could not move says why. The panel telling the user
-    to switch is still up, and without a reason it looks ignored."""
 
     class Broken(FakeProvider):
         async def request(self, method, params=None):
@@ -1419,10 +1257,6 @@ async def test_a_switch_that_failed_is_reported_not_swallowed() -> None:
 
 
 async def test_a_switch_the_user_declined_says_nothing() -> None:
-    """Declining is an answer. The panel above still says the wallet is on
-    the wrong network, which is the whole of what there is to know -- and
-    "Rejected in the wallet", in red, reports a failure that did not
-    happen."""
 
     class Refusing(FakeProvider):
         async def request(self, method, params=None):
@@ -1451,10 +1285,8 @@ async def _refusing_tab(transport):
 
 
 # -- reading without a wallet ----------------------------------------------
-#
 # A quote needs no account, so the panels show rates before anything is
-# connected -- through a public node (see `curve.rpc`). What must not
-# happen is the rest of the panel pretending it can act.
+# connected -- through a public node (see `curve.rpc`).
 
 
 def read_only_contract(provider=None):
@@ -1486,11 +1318,8 @@ async def test_the_swap_panel_quotes_with_no_wallet() -> None:
 
 
 async def test_the_slippage_suggestion_works_with_no_wallet() -> None:
-    """It comes from `fee()`, which is a read like any other -- so the box
-    is right before connecting rather than stuck on the 0.5% default."""
     from ui.actions import SLIPPAGE_OF_FEE, SwapTab, slippage_for
 
-    # Both spellings: a swap asks `dynamic_fee` first and falls back.
     provider = FakeProvider(
         {"0xddca3f43": word(4_000_000), "0x76a9cd3e": word(4_000_000)}
     )
@@ -1506,8 +1335,6 @@ async def test_the_slippage_suggestion_works_with_no_wallet() -> None:
 
 
 async def test_balances_are_not_read_without_an_account() -> None:
-    """`allowance` and `balanceOf` both take an address, and "" is not
-    one -- encoding it would raise rather than fail politely."""
     from ui.actions import DepositTab
 
     provider = FakeProvider()
@@ -1538,13 +1365,9 @@ async def test_pressing_deposit_without_a_wallet_says_so() -> None:
 
 
 # -- what the size of a trade costs it -------------------------------------
-#
 # The panels measure this by quoting a twentieth of what was typed and
 # comparing the two rates, so a test double whose quote is a straight line
-# proves nothing. These use pools with a curve whose price impact has a
-# closed form -- constant product for the swap, Uniswap's single-sided
-# deposit for the mint -- and check the panel against the algebra rather
-# than against a rerun of the code under test.
+# proves nothing.
 
 #: A constant-product pool: `get_dy` is `Y * dx / (X + dx)`.
 CP_X = 1_000_000 * 10**6       # USDT, the coin being sold
@@ -1553,11 +1376,7 @@ CP_SUPPLY = 1_000_000 * 10**18  # LP outstanding, for the deposit side
 
 
 def swap_impact(dx: int) -> float:
-    """`(X + dx) / (X + dx/20) - 1`, in percent.
-
-    The probe pays `Y/(X + dx/20)` per unit and the trade pays
-    `Y/(X + dx)`; `Y` cancels, and so would any fee charged in proportion.
-    """
+    """`(X + dx) / (X + dx/20) - 1`, in percent."""
     from ui.actions import IMPACT_PROBE_DIVISOR
 
     return ((CP_X + dx) / (CP_X + dx / IMPACT_PROBE_DIVISOR) - 1) * 100
@@ -1588,14 +1407,9 @@ class CurvedProvider(FakeProvider):
     def __init__(self, mint=curved_mint, out_reserve: int = CP_Y) -> None:
         super().__init__()
         self.mint = mint
-        #: The reserve of the coin being bought. Small ones are the point
-        #: of `test_a_swap_whose_output_is_too_coarse_to_divide`.
         self.out_reserve = out_reserve
-        #: Quotes answered so far, so a test can fail the second one.
         self.quotes = 0
         self.fail_quote_number = 0
-        #: Revert every quote, the way a pool does when it is asked for
-        #: more than it holds.
         self.revert_quotes = False
 
     async def request(self, method: str, params=None):
@@ -1618,15 +1432,7 @@ class CurvedProvider(FakeProvider):
 
 
 def calm(band) -> bool:
-    """Is this band at rest -- its own colour rather than the alarm's?
-
-    Not "has no colour": the impact and fee bands now carry a resting
-    tint, so an assertion that they are colourless would pass only while
-    they were unstyled. Nor is it only "not alarming", which would let a
-    band stay red for ever -- it is both, and either the resting colour
-    or none at all, since the resting one is applied when the band is
-    painted and these tests do not always paint.
-    """
+    """Is this band at rest -- its own colour rather than the alarm's?"""
     from ui import theme
 
     return not band.alarming and band.bgcolor in (
@@ -1654,9 +1460,6 @@ async def test_a_swap_is_priced_against_a_twentieth_of_itself() -> None:
 
 
 async def test_the_probe_asks_about_the_same_trade_at_a_twentieth() -> None:
-    """Not a fixed size, and not the other direction: the impact of a
-    hundred thousand USDT is measured with five thousand USDT of the same
-    swap, so what comes back is this trade's own curve."""
     from ui.actions import IMPACT_PROBE_DIVISOR
 
     provider = CurvedProvider()
@@ -1679,8 +1482,6 @@ async def test_the_probe_asks_about_the_same_trade_at_a_twentieth() -> None:
 
 
 async def test_a_swap_big_enough_to_hurt_is_coloured() -> None:
-    """Above a percent the number stops being a footnote. Below it, the
-    line reads like every other caption in the panel."""
     from ui.actions import IMPACT_HIGH
 
     small = swap_tab(CurvedProvider())
@@ -1697,10 +1498,6 @@ async def test_a_swap_big_enough_to_hurt_is_coloured() -> None:
 
 
 async def test_a_trade_too_small_to_measure_says_nothing() -> None:
-    """A twentieth of a tenth of a USDT is five thousand units, and
-    `amount // 20` has thrown away up to one of them -- so the answer would
-    carry more rounding than impact. The estimate is still shown; the line
-    that cannot be trusted is not."""
     tab = swap_tab(CurvedProvider())
     tab.amount.value = "0.1"
 
@@ -1725,8 +1522,6 @@ async def test_a_deposit_is_priced_the_same_way() -> None:
 
 
 async def test_a_deposit_that_mints_in_proportion_reports_no_impact() -> None:
-    """A pool with no curve costs nothing to be big in -- and the line says
-    so in the terms the probe can actually support rather than "0%"."""
     tab = deposit_tab(CurvedProvider(mint=straight_mint))
     tab.fields[0].value = "200000"
 
@@ -1736,8 +1531,6 @@ async def test_a_deposit_that_mints_in_proportion_reports_no_impact() -> None:
 
 
 async def test_a_probe_that_fails_leaves_the_estimate_standing() -> None:
-    """The quote that matters already came back. A pool that answers it and
-    not the follow-up has nothing wrong with it worth saying twice."""
     provider = CurvedProvider()
     provider.fail_quote_number = 2      # the probe, not the quote
     tab = swap_tab(provider)
@@ -1751,23 +1544,14 @@ async def test_a_probe_that_fails_leaves_the_estimate_standing() -> None:
 
 
 async def test_only_the_panels_with_a_price_carry_the_line() -> None:
-    """Staking moves LP into a gauge at no rate at all, and claiming takes
-    what is already owed, so a price impact on either would be a number
-    about nothing. The other three each trade against the curve."""
     for tab in tabs():
         tab.mount()
-        # `is`, not `in`: two hidden bands holding empty text compare
-        # equal by value, so membership finds the fee line and calls it
-        # the impact one.
         drawn = any(control is tab.impact_panel for control in tab.control.controls)
         assert drawn == tab.shows_impact
         assert tab.shows_impact == (tab.title in ("Deposit", "Swap", "Withdraw"))
 
 
 def test_a_deposit_of_the_scarce_coin_is_a_bonus_not_an_error() -> None:
-    """Negative is a real answer: a pool short of a coin mints more than
-    the proportional share for it, and rounding the sign away would hide
-    the one case where being large is in your favour."""
     from ui.actions import (
         IMPACT_MIN_PROBE,
         IMPACT_PROBE_DIVISOR,
@@ -1775,7 +1559,6 @@ def test_a_deposit_of_the_scarce_coin_is_a_bonus_not_an_error() -> None:
         price_impact,
     )
 
-    # The whole deposit mints 10% more than twenty times the probe.
     probe_out = IMPACT_MIN_PROBE
     out = probe_out * IMPACT_PROBE_DIVISOR * 110 // 100
     impact = price_impact(probe_out, out)
@@ -1784,44 +1567,27 @@ def test_a_deposit_of_the_scarce_coin_is_a_bonus_not_an_error() -> None:
 
 
 def test_the_probe_keeps_the_shape_of_the_deposit() -> None:
-    """A coin left empty stays empty. Probing both sides of a one-sided
-    deposit would measure a different deposit -- a balanced one, whose
-    impact is nearly nil -- and report it against the typed amount."""
     from ui.actions import IMPACT_MIN_PROBE, IMPACT_PROBE_DIVISOR, impact_probe
 
     amount = IMPACT_MIN_PROBE * IMPACT_PROBE_DIVISOR
     assert impact_probe([amount, 0]) == [IMPACT_MIN_PROBE, 0]
-    # One unit short of what can be measured to the printed precision.
     assert impact_probe([amount - IMPACT_PROBE_DIVISOR, 0]) is None
-    # And a coin that is present but too small takes the whole thing out,
-    # rather than being quietly dropped from the probe.
     assert impact_probe([amount, 1]) is None
     assert impact_probe([0, 0]) is None
 
 
 class WithdrawingProvider(FakeProvider):
-    """A pool whose one-coin withdrawal pays worse the more is asked of it.
-
-    `out = lp * rate * (1 - lp / depth)`, which is not Curve's invariant --
-    it does not have to be. What the panel measures is the gap between a
-    quote and a twentieth of the same quote scaled back up, so any curve
-    that bends the right way exercises it, and the arithmetic below is
-    reproducible by hand.
-    """
+    """A pool whose one-coin withdrawal pays worse the more is asked of it."""
 
     DEPTH = 10**24                      # LP wei at which the pool is drained
     RATE = 10**6 / 10**18               # LP wei -> 6-decimal coin units
 
     def __init__(self, depth: int | None = None) -> None:
         # A million LP in the wallet, so the panel quotes rather than
-        # reporting an empty balance -- `balanceOf`, which is what both
-        # `lp_balance` and `staked_balance` ask.
+        # reporting an empty balance -- `balanceOf`, which is what
+        # both `lp_balance` and `staked_balance` ask.
         super().__init__({"0x70a08231": word(10**24)})
         self.depth = depth or self.DEPTH
-        #: Refuse the withdrawal quote alone, the way a pool does when the
-        #: amount is impossible -- balances and fees still answer, so the
-        #: panel reaches the branch under test rather than the one about
-        #: an empty wallet.
         self.refuse_quote = False
 
     async def request(self, method: str, params=None):
@@ -1848,9 +1614,6 @@ def withdraw_impact(lp: int, depth: int = WithdrawingProvider.DEPTH) -> float:
 
 
 async def test_taking_one_coin_out_is_priced_like_a_trade() -> None:
-    """Because it is one. A balanced withdrawal takes a slice of every
-    reserve; asking for it all in one coin walks the pool along its curve
-    exactly as a swap does, and costs the same way."""
     provider = WithdrawingProvider()
     tab = make_tab(provider)
     tab.mode.value = "one"
@@ -1866,8 +1629,6 @@ async def test_taking_one_coin_out_is_priced_like_a_trade() -> None:
 
 
 async def test_the_withdrawal_probe_asks_about_the_same_coin() -> None:
-    """A twentieth of *this* withdrawal, into the coin that is selected --
-    not a fixed size and not the first coin in the list."""
     from ui.actions import IMPACT_PROBE_DIVISOR
 
     provider = WithdrawingProvider()
@@ -1894,8 +1655,6 @@ async def test_the_withdrawal_probe_asks_about_the_same_coin() -> None:
 
 
 async def test_a_balanced_withdrawal_is_measured_against_nothing() -> None:
-    """It takes the same share of every reserve, so there is no size at
-    which it costs more per LP token. "under 0.01%" would imply there is."""
     tab = make_tab(WithdrawingProvider())
     tab.mode.value = "balanced"
     tab.amount.value = "50000"
@@ -1906,8 +1665,6 @@ async def test_a_balanced_withdrawal_is_measured_against_nothing() -> None:
 
 
 async def test_a_withdrawal_the_pool_refuses_reports_that_and_not_an_impact() -> None:
-    """The quote failed, so there is no number to compare a probe against
-    -- and two red lines for one refusal is one too many."""
     provider = WithdrawingProvider()
     provider.refuse_quote = True
     tab = make_tab(provider)
@@ -1921,13 +1678,6 @@ async def test_a_withdrawal_the_pool_refuses_reports_that_and_not_an_impact() ->
 
 
 async def test_a_swap_whose_output_is_too_coarse_to_divide_says_nothing() -> None:
-    """The far end of the trade needs the same precision as the near one.
-
-    A dollar of USDT into a tricrypto pool buys about 1,530 units of WBTC.
-    A twentieth of that is 76, the pool answers in whole units, and 76
-    times twenty read as a 0.59% price impact on a one-dollar swap -- off
-    a real mainnet pool, with the input-side guard already in place.
-    """
     thin = CurvedProvider(out_reserve=10 * 10**8)      # ten WBTC, 8 decimals
 
     tab = swap_tab(thin)
@@ -1935,7 +1685,6 @@ async def test_a_swap_whose_output_is_too_coarse_to_divide_says_nothing() -> Non
     await tab.refresh()
     assert tab.impact_panel.visible is False
 
-    # The same pool, at a size whose output has units to spare.
     tab.amount.value = "10000"
     await tab.refresh()
     assert tab.impact_panel.visible is True
@@ -1997,8 +1746,6 @@ async def test_a_small_impact_leaves_the_band_alone() -> None:
 
 
 async def test_the_alarm_is_armed_on_the_crossing_not_on_every_keystroke() -> None:
-    """The panel re-quotes on each character typed. Restarting the pulse
-    every time would leave it forever on its first flash."""
     tab, page = high_impact_tab()
     await tab.refresh()
     tab.amount.value = "200000"      # still red, still the same alarm
@@ -2028,15 +1775,11 @@ async def test_the_pulse_flashes_and_then_settles(monkeypatch) -> None:
     lit = ft.Colors.with_opacity(actions.ALARM_LIT, ft.Colors.ERROR)
     dim = ft.Colors.with_opacity(actions.ALARM_DIM, ft.Colors.ERROR)
     assert page.tints.count(lit) == 3
-    # Three dim steps inside the loop, and the one it settles on.
     assert page.tints.count(dim) == 4
     assert tab.impact_panel.bgcolor == dim
 
 
 async def test_a_retired_pulse_stops_painting(monkeypatch) -> None:
-    """The panel re-quotes under a pulse that is still running. Whatever
-    was flashing for the old number must not go on flashing over the new
-    one -- which is what `_alarm_run` is for."""
     from ui import actions
 
     monkeypatch.setattr(actions, "ALARM_INTERVAL", 0)
@@ -2055,7 +1798,6 @@ async def test_a_retired_pulse_stops_painting(monkeypatch) -> None:
 
 
 def test_the_output_amount_is_sized_like_the_fields_it_answers() -> None:
-    """It is the other half of the trade, not a footnote on it."""
     from ui.typography import BODY
 
     for tab in tabs():
@@ -2063,8 +1805,6 @@ def test_the_output_amount_is_sized_like_the_fields_it_answers() -> None:
 
 
 async def test_the_estimate_points_at_what_you_get() -> None:
-    """An ASCII arrow, like everything else user-visible here: the web
-    build's default font draws U+2192 as a tofu box."""
     tab = swap_tab(CurvedProvider())
     tab.amount.value = "1000"
     await tab.refresh()
@@ -2076,9 +1816,6 @@ async def test_the_estimate_points_at_what_you_get() -> None:
 
 
 async def test_a_reverted_quote_gets_the_band_too() -> None:
-    """Ask a pool for more than it holds and it reverts. That is the same
-    kind of message a punishing price impact is -- stop, type something
-    else -- so it is said in the same place, in the same red."""
     provider = CurvedProvider()
     provider.revert_quotes = True
     tab, page = high_impact_tab()
@@ -2090,13 +1827,10 @@ async def test_a_reverted_quote_gets_the_band_too() -> None:
     assert tab.estimate.color == ft.Colors.ERROR
     assert tab._alarm_panel is tab.estimate_panel
     assert [handler for handler, _args in page.tasks] == [tab._pulse]
-    # Nothing was measured, so there is no second line to flash.
     assert tab.impact_panel.visible is False
 
 
 async def test_the_band_follows_the_message_that_is_actually_showing() -> None:
-    """From a reverted quote to a big-but-real one: the flash moves to the
-    impact line rather than leaving a red band under a good estimate."""
     provider = CurvedProvider()
     provider.revert_quotes = True
     tab, _page = high_impact_tab()
@@ -2113,8 +1847,6 @@ async def test_the_band_follows_the_message_that_is_actually_showing() -> None:
 
 
 async def test_withdrawing_more_than_you_have_is_a_problem_not_a_caption() -> None:
-    """Said before it is sent rather than after it reverts -- which is
-    exactly why it belongs in the red."""
     provider = FakeProvider()
     tab = make_tab(provider)
     tab.mount()
@@ -2129,8 +1861,6 @@ async def test_withdrawing_more_than_you_have_is_a_problem_not_a_caption() -> No
 
 
 async def test_an_empty_line_is_not_a_problem() -> None:
-    """`show_estimate("", problem=True)` must not flash an empty band --
-    a panel with nothing typed into it has nothing to complain about."""
     tab, page = high_impact_tab()
     tab.show_estimate("", problem=True)
     assert tab._alarm_panel is None
@@ -2138,9 +1868,6 @@ async def test_an_empty_line_is_not_a_problem() -> None:
 
 
 async def test_leaving_the_network_takes_both_lines_with_it() -> None:
-    """Nothing can be read across a network boundary, so neither line
-    means anything -- and a band left flashing over a stale number is the
-    worst of the three states."""
     tab, _page = high_impact_tab()
     await tab.refresh()
     assert tab._alarm_panel is tab.impact_panel
@@ -2158,11 +1885,7 @@ async def test_leaving_the_network_takes_both_lines_with_it() -> None:
 
 
 class PricedProvider(CurvedProvider):
-    """A pool that quotes, on a chain that reports a base fee.
-
-    Both halves are needed: with nothing quoted there is no transaction to
-    price, and with no base fee there is no price to quote it at.
-    """
+    """A pool that quotes, on a chain that reports a base fee."""
 
     BASE = 30 * 10**9
     GAS = 150_000
@@ -2192,14 +1915,11 @@ async def test_a_swap_says_what_sending_it_will_cost(monkeypatch) -> None:
 
     await tab.refresh()
 
-    # 150,000 gas at 30 gwei + 5% tip = 0.004725 ETH, at $2,000 = $9.45
     assert tab.fee_panel.visible is True
     assert tab.fee.value == "Network fee 0.004725 ETH  ($9.45)"
 
 
 async def test_the_fee_is_for_the_transaction_that_would_be_sent() -> None:
-    """Not a representative one. The estimate goes out against the same
-    calldata `submit` builds -- see `PoolContract.build_exchange`."""
     provider = PricedProvider()
     tab = swap_tab(provider)
     tab.amount.value = "1000"
@@ -2218,8 +1938,6 @@ async def test_a_panel_with_nothing_typed_prices_nothing() -> None:
 
 
 async def test_a_chain_that_reports_no_fees_shows_no_line() -> None:
-    """A public node behind a wallet that will not answer `eth_gasPrice`
-    is a missing line, not a wrong number."""
     tab = swap_tab(FakeProvider())
     tab.amount.value = "1000"
 
@@ -2231,9 +1949,6 @@ async def test_a_chain_that_reports_no_fees_shows_no_line() -> None:
 async def test_an_action_that_cannot_be_simulated_prices_its_approval(
     monkeypatch,
 ) -> None:
-    """A deposit reverts under simulation until its token is approved --
-    which is exactly the part of the flow where somebody is deciding
-    whether to go ahead, and where the panel used to say nothing."""
     from ui import actions as actions_module
 
     async def priced(_chain, _chain_id):
@@ -2243,7 +1958,8 @@ async def test_an_action_that_cannot_be_simulated_prices_its_approval(
 
     class Unapproved(PricedProvider):
         """The pool quotes; the deposit itself reverts for want of an
-        allowance, and `allowance` reads zero."""
+        allowance, and `allowance` reads zero.
+        """
 
         async def request(self, method: str, params=None):
             if method == "eth_estimateGas":
@@ -2263,8 +1979,6 @@ async def test_an_action_that_cannot_be_simulated_prices_its_approval(
 
 
 async def test_the_main_action_wins_where_both_can_be_priced() -> None:
-    """The approval is the fallback, not the answer. Once it has landed
-    the line goes back to pricing what the button actually does."""
     tab = swap_tab(PricedProvider())
     tab.amount.value = "1000"
 
@@ -2275,9 +1989,6 @@ async def test_the_main_action_wins_where_both_can_be_priced() -> None:
 
 
 async def test_a_withdrawal_from_the_gauge_prices_the_unstake(monkeypatch) -> None:
-    """Not an approval -- burning LP at the pool needs none. What it needs
-    is the LP in the wallet, and while it is staked the withdrawal reverts
-    under simulation."""
     from ui import actions as actions_module
 
     async def priced(_chain, _chain_id):
@@ -2287,7 +1998,8 @@ async def test_a_withdrawal_from_the_gauge_prices_the_unstake(monkeypatch) -> No
 
     class Staked(ReservedProvider):
         """Nothing in the wallet, a million in the gauge, and a withdrawal
-        that reverts until some of it comes out."""
+        that reverts until some of it comes out.
+        """
 
         GAUGE = "0x" + "cc" * 20
 
@@ -2304,10 +2016,6 @@ async def test_a_withdrawal_from_the_gauge_prices_the_unstake(monkeypatch) -> No
                 return hex(90_000)
             if method == "eth_call":
                 call = (params or [{}])[0]
-                # `balanceOf` by *target*: the wallet holds no LP and the
-                # gauge holds a million. One selector, two questions --
-                # answering it by selector alone makes a staked position
-                # indistinguishable from an empty one.
                 if call.get("data", "").startswith("0x70a08231"):
                     staked = call.get("to", "").lower() == self.GAUGE.lower()
                     return word(10**24 if staked else 0)
@@ -2339,9 +2047,6 @@ class ThemedPage(StubPage):
 
 
 def test_the_two_annotations_are_told_apart_by_colour() -> None:
-    """Price impact is a cost of this trade being large; the network fee
-    is a cost of using the chain at all. Two kinds of thing, and the
-    panel has room for one word each."""
     from ui import theme
 
     page = ThemedPage("chad")
@@ -2349,8 +2054,6 @@ def test_the_two_annotations_are_told_apart_by_colour() -> None:
 
 
 def test_every_theme_colours_them_and_none_reuses_the_error() -> None:
-    """A large impact is worth noticing and is still not an error -- the
-    error colour belongs to the pulse, and to a quote the pool refused."""
     from ui import theme
 
     for name in ("chad", "light", "dark"):
@@ -2362,17 +2065,12 @@ def test_every_theme_colours_them_and_none_reuses_the_error() -> None:
 
 
 def test_a_band_with_nothing_to_say_takes_no_colour() -> None:
-    """The estimate line itself: it holds the answer, not a note about
-    it, and a wash behind every quote would be noise."""
     from ui import theme
 
     assert theme.note_tint(ThemedPage("chad"), "") is None
 
 
 def test_chad_fills_where_material_tints() -> None:
-    """Chad is a theme of flat colour -- an alpha there shows the panel
-    through and reads as a smudge -- while a Material surface has to be
-    tinted or the band fights the page."""
     from ui import theme
 
     assert "," not in theme.note_tint(ThemedPage("chad"), "fee")
@@ -2380,8 +2078,6 @@ def test_chad_fills_where_material_tints() -> None:
 
 
 async def test_a_theme_change_repaints_the_bands() -> None:
-    """They are built with the panel and outlive any number of switches,
-    so the colour is re-read before each paint rather than fixed."""
     from ui import theme
 
     page = ThemedPage("light")

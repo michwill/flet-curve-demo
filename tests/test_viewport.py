@@ -1,9 +1,4 @@
-"""Pan, zoom and the pixel<->data mapping.
-
-Pure arithmetic, so the cases that are awkward to reach with a mouse --
-zooming past the ends, panning off the data, a plot box too small to divide
-by -- are cheap to pin down here.
-"""
+"""Pan, zoom and the pixel<->data mapping."""
 
 from __future__ import annotations
 
@@ -46,7 +41,6 @@ def test_pan_is_reversible() -> None:
 
 
 def test_zoom_holds_the_focus_point_still() -> None:
-    """The candle under the cursor must stay under the cursor."""
     original = view()
     for focus in (0.0, 25.0, 50.0, 100.0):
         for factor in (0.5, 0.8, 1.25, 2.0):
@@ -62,7 +56,6 @@ def test_zoom_in_narrows_and_zoom_out_widens() -> None:
 
 
 def test_zoom_leaves_the_price_axis_alone() -> None:
-    """The wheel zooms time only; price is panned by dragging."""
     zoomed = view().zoomed_x(0.5, 50.0)
     assert (zoomed.y_min, zoomed.y_max) == (1.0, 2.0)
 
@@ -98,7 +91,6 @@ def test_clamp_keeps_the_window_over_the_data() -> None:
 
 
 def test_clamp_allows_a_little_overscroll_but_not_the_void() -> None:
-    """Stopping dead on the last candle reads as the chart being stuck."""
     clamped = Viewport(-9999.0, -9899.0, 1.0, 2.0).clamped(200)
     assert clamped.x_min < 0  # some slack past the start
     assert clamped.x_min > -clamped.x_span  # but not unbounded
@@ -120,7 +112,6 @@ def test_clamp_on_an_empty_series_is_a_no_op() -> None:
 
 
 def test_repeated_pan_and_clamp_stays_bounded() -> None:
-    """A user dragging far past the end must not drift the window away."""
     v = Viewport(0.0, 50.0, 1.0, 2.0)
     for _ in range(200):
         v = v.panned(25.0, 0.0).clamped(100)
@@ -164,7 +155,6 @@ def test_pixels_and_data_round_trip() -> None:
 
 
 def test_price_grows_upward_on_screen() -> None:
-    """Screen y grows downward; a chart that inverts prices is unreadable."""
     p, v = plot(), view()
     assert p.data_y(p.top, v) > p.data_y(p.bottom, v)
     assert p.pixel_y(v.y_max, v) < p.pixel_y(v.y_min, v)
@@ -179,7 +169,6 @@ def test_the_edges_of_the_plot_map_to_the_edges_of_the_window() -> None:
 
 
 def test_deltas_scale_with_the_window() -> None:
-    """Zoomed in, the same drag must move fewer candles."""
     p = plot()
     wide = Viewport(0.0, 100.0, 1.0, 2.0)
     narrow = Viewport(0.0, 10.0, 1.0, 2.0)

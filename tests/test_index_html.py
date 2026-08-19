@@ -1,25 +1,4 @@
-"""The custom `index.html`, and the one thing that can silently ruin it.
-
-`flet publish` copies `src/assets/index.html` over its own, which is how
-the wallet bridge gets a script tag and how the icons and theme colours
-get declared. Everything in that head is inert markup, so nothing here
-would ever catch a mistake in it -- except that the head is exactly where
-a mistake stops being inert.
-
-This is what happened: the file opens with a comment explaining which
-markers `patch_index.py` rewrites, and that comment spelled out an HTML
-comment terminator while warning against writing one. The browser ended
-the comment there, found bare prose inside HEAD, and did what the parser
-is specified to do -- implicitly closed HEAD and opened BODY. The base
-tag, the title and both icon links landed in BODY, where a favicon link
-is ignored, so Chrome fell back to `/favicon.ico`, got a 404, and showed
-nothing. The file read correctly, the icon was served correctly, and
-`document.querySelector('link[rel=icon]')` found it. Only
-`document.head.children` gave it away.
-
-So these parse the file the way a browser does and check that the head
-still contains what the head is supposed to contain.
-"""
+"""The custom `index.html`, and the one thing that can silently ruin it."""
 
 from __future__ import annotations
 
@@ -71,19 +50,10 @@ def head() -> HeadReader:
 
 
 def test_no_bare_text_inside_head(head: HeadReader) -> None:
-    """The failure mode itself: text in the head closes the head.
-
-    A browser cannot keep parsing head content after it, so everything
-    below the stray text -- title, icons, manifest -- silently becomes
-    body content. Comment terminators inside comments are the way this
-    happens; there is no other prose in there.
-    """
     assert not head.stray, f"text in <head> closes it early: {head.stray}"
 
 
 def test_the_icon_links_are_in_the_head(head: HeadReader) -> None:
-    """Where a browser is willing to look for them. A `rel=icon` in the
-    body parses fine, resolves fine, and is ignored."""
     rels = {attrs.get("rel"): attrs.get("href", "") for tag, attrs in head.tags
             if tag == "link"}
     assert "icon" in rels, f"no favicon link in <head>, only {sorted(rels)}"
@@ -93,17 +63,12 @@ def test_the_icon_links_are_in_the_head(head: HeadReader) -> None:
 
 
 def test_the_icon_url_is_versioned(head: HeadReader) -> None:
-    """Browsers keep favicons in a store keyed by URL, which no cache
-    header reaches. Changing the URL is the only thing they notice."""
     for tag, attrs in head.tags:
         if tag == "link" and attrs.get("rel") in ("icon", "apple-touch-icon"):
             assert "?v=" in attrs.get("href", ""), attrs
 
 
 def test_the_page_is_named_for_what_it_is() -> None:
-    """"Flet" is how it is built, which interests whoever is reading the
-    source and nobody looking at the page. The tab and the window agree,
-    so a bookmark and an installed shortcut say the same thing."""
     import re
 
     import main
@@ -113,16 +78,12 @@ def test_the_page_is_named_for_what_it_is() -> None:
 
 
 def test_the_title_and_base_are_in_the_head(head: HeadReader) -> None:
-    """Both were casualties of the same bug -- and an empty
-    `document.title` was the first visible symptom."""
     tags = [tag for tag, _ in head.tags]
     assert "title" in tags
     assert "base" in tags
 
 
 def test_the_flet_markers_survive(head: HeadReader) -> None:
-    """`patch_index.py` rewrites these by plain string replacement, and a
-    build with them missing produces a page that never boots."""
     text = INDEX.read_text(encoding="utf-8")
     assert '<base href="/">' in text
     assert "var flet = {" in text

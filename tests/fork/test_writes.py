@@ -1,20 +1,4 @@
-"""Every transaction this app can send, run against a forked mainnet.
-
-One pool throughout -- RLUSD/USDC, a StableSwap-NG factory pool -- because
-it is the rare one that exercises everything: it has a gauge, the gauge
-streams an incentive token *and* CRV, and a real account has both accruing.
-That last part matters. Claiming cannot be tested by depositing and waiting,
-because rewards accrue over blocks nobody wants to mine; it needs somebody
-who was already there, and `--auto-impersonate` lets the test be them.
-
-Each test asserts on **balances before and after**, never on the fact that a
-transaction was sent. A revert is a mined transaction too, and the panels
-report the hash either way, so "it returned a hash" proves nothing.
-
-The panels are driven through their own `submit()` rather than through
-`PoolContract` directly, so what runs is the path a click takes: the panel
-reads its own inputs, quotes, applies slippage and encodes.
-"""
+"""Every transaction this app can send, run against a forked mainnet."""
 
 from __future__ import annotations
 
@@ -45,9 +29,7 @@ USDC = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
 RLUSD = "0x8292Bb45bf1Ee4d140127049757C2E0fF06317eD"
 
 #: Found by scanning the gauge's transfer log for accounts with both kinds
-#: of reward outstanding -- see the finder in the commit message. If this
-#: account ever exits or claims, the claim tests skip with a message rather
-#: than failing: the address is fixture data, not an assertion.
+#: of reward outstanding -- see the finder in the commit message.
 STAKER = "0xd85f8f0ea94e27f94a0ab1e106c90724c31c1a03"
 
 CRV = "0xD533a949740bb3306d119CC777fa900bA034cd52"
@@ -104,12 +86,7 @@ def panel(kind, fork, account: str):
 
 
 async def confirm(fork, tx: str) -> dict:
-    """The receipt, once it exists, asserting the transaction succeeded.
-
-    Polling lives in the fixture -- see `Fork.wait`. Reading the receipt
-    once is a race against the block, and it is the one that failed four of
-    these the first time they ran.
-    """
+    """The receipt, once it exists, asserting the transaction succeeded."""
     return fork.wait(tx)
 
 
@@ -117,17 +94,8 @@ async def confirm(fork, tx: str) -> dict:
 
 
 async def test_claiming_moves_both_kinds_of_reward(fork) -> None:
-    """The path that had never run: CRV from the Minter, RLUSD from the gauge.
-
-    Two transactions, and the assertion is that *both* balances rose --
-    sending only one is the failure this is here to catch, since either
-    alone looks like success.
-    """
     fork.give_eth(STAKER)
-    # A week of accrual, so this does not depend on when the fixture
-    # account last claimed -- see `Fork.advance`.
     fork.advance()
-    # Cold-fork storage, not the app's problem -- see `Fork.warm`.
     fork.warm(GAUGE, abi.encode_claimable_tokens(STAKER))
     tab, contract = panel(ClaimTab, fork, STAKER)
     await tab.refresh()
@@ -151,17 +119,6 @@ async def test_claiming_moves_both_kinds_of_reward(fork) -> None:
 
 
 async def test_the_portfolio_claims_incentives_through_multicall(fork) -> None:
-    """One transaction to Multicall3, and the tokens land with the owner.
-
-    This is the claim the portfolio page sends, and it is here because the
-    app spent a while believing it was impossible. The transaction goes to
-    Multicall3, so **Multicall3 is `msg.sender` at the gauge** -- and the
-    tokens have to reach the staker anyway. They do, because
-    `claim_rewards(address)` pays the address in its argument; only
-    redirecting the payment elsewhere is reserved to the caller. See
-    `curve.earnings.ClaimPlan` for how the opposite came to be written
-    down as fact.
-    """
     fork.give_eth(STAKER)
     fork.advance()
     fork.warm(GAUGE, abi.encode_claim_rewards_for(STAKER))
@@ -181,13 +138,6 @@ async def test_the_portfolio_claims_incentives_through_multicall(fork) -> None:
 
 
 async def test_a_claim_that_cannot_pay_takes_the_batch_down(fork) -> None:
-    """`allowFailure=false`, checked against a contract that is not a gauge.
-
-    With failures allowed this mines successfully and the page says
-    "Claimed" over a transaction that moved nothing. That is not a
-    hypothetical failure mode: it is the one that produced the wrong
-    conclusion this feature was built on.
-    """
     fork.give_eth(STAKER)
     plan = earnings.ClaimPlan(extras=(GAUGE, RLUSD))  # a token, not a gauge
     sent = await earnings.send_claims(fork.provider(), STAKER, plan, crv=False)
@@ -200,23 +150,8 @@ async def test_a_claim_that_cannot_pay_takes_the_batch_down(fork) -> None:
 
 
 async def test_claiming_takes_all_but_the_next_block_s_worth(fork) -> None:
-    """"Claimed" is not "zero", and that is the contract behaving correctly.
-
-    CRV is emitted continuously: the mint takes what was owed as of its own
-    block, and by the time the panel reads back another block has been
-    mined and a few hundred wei have accrued again. Measured here at 1.3e-7
-    CRV against the 1.5e-2 that was claimed.
-
-    Which is what settled the tab rule. `ClaimTab.available` asked `> 0`,
-    so for any live gauge position something was always *technically*
-    owed and the tab was always in the bar -- over a panel reading "CRV 0",
-    because a residue this size prints as nothing. It now asks whether the
-    amount prints as anything at all (`ui.actions.claimable`), so the
-    reading below is exactly the state in which the tab goes away.
-    """
     fork.give_eth(STAKER)
     fork.advance()
-    # Cold-fork storage, not the app's problem -- see `Fork.warm`.
     fork.warm(GAUGE, abi.encode_claimable_tokens(STAKER))
     tab, contract = panel(ClaimTab, fork, STAKER)
     await tab.refresh()
@@ -231,8 +166,6 @@ async def test_claiming_takes_all_but_the_next_block_s_worth(fork) -> None:
         f"{tab.crv_claimable} still owed against {owed} claimed -- that is not "
         "one block's accrual, the mint did not take it"
     )
-    # And the residue is small enough that the tab takes itself out of the
-    # bar, which is the whole point of measuring it here.
     assert not claimable(tab.crv_claimable, CRV_DECIMALS)
 
 
@@ -258,7 +191,6 @@ async def test_unstaking_returns_lp_to_the_wallet(fork) -> None:
 
 
 async def test_staking_puts_lp_into_the_gauge(fork) -> None:
-    """Unstake first to get LP in hand, then put some back."""
     fork.give_eth(STAKER)
     tab, contract = panel(StakeTab, fork, STAKER)
     await tab.refresh()
@@ -286,11 +218,6 @@ async def test_staking_puts_lp_into_the_gauge(fork) -> None:
 
 
 async def test_withdrawing_staked_lp_unstakes_first(fork) -> None:
-    """The two-transaction path: no zap exists for this direction.
-
-    Asserted through the coin balances rather than the transaction count,
-    because what matters is that the LP left the gauge *and* became coins.
-    """
     fork.give_eth(STAKER)
     tab, contract = panel(WithdrawTab, fork, STAKER)
     await tab.refresh()
@@ -332,7 +259,6 @@ async def test_a_balanced_withdrawal_returns_both_coins(fork) -> None:
 
 
 async def test_depositing_mints_lp(fork) -> None:
-    """Coins come from the pool itself, which holds both by definition."""
     fork.give_eth(STAKER)
     fund = 10_000 * 10**6
     fork.fund_erc20(USDC, POOL, STAKER, fund)
@@ -351,11 +277,6 @@ async def test_depositing_mints_lp(fork) -> None:
 
 
 async def test_deposit_and_stake_is_one_transaction_and_skips_the_wallet(fork) -> None:
-    """The zap's whole point: LP is minted straight into the gauge.
-
-    So the wallet's LP balance must *not* move -- if it does, the deposit
-    and the stake happened separately and the combined route did not run.
-    """
     fork.give_eth(STAKER)
     fork.fund_erc20(USDC, POOL, STAKER, 10_000 * 10**6)
 

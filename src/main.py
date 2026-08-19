@@ -707,24 +707,48 @@ class CurveApp:
         safe_update(self.chain_picker)
 
     async def load_pools(self) -> None:
-        """Point the list at a fresh feed for the current chain."""
+        """Point the list at a fresh feed for the current chain.
+
+        Every await here is a place the reader can pick another network,
+        which starts a second run of this. So the chain is read *once*, at
+        the top, and each run carries a number: whatever it was about is
+        no longer on screen the moment a later run starts, and a run that
+        finds itself stale drops what it fetched rather than drawing it.
+
+        Without the number the second run could finish first and be
+        overwritten by the first -- the list then shows the chain nobody
+        chose, and stays there. Without the single read, `chain_id` was
+        captured before two awaits and `self.chain` read after them, so a
+        switch in between built a feed labelled one chain and fetching
+        another.
+        """
+        self._load_generation = generation = getattr(self, "_load_generation", 0) + 1
+        chain = self.chain
         self._apply_layout()
         self.progress.visible = True
         self.error.visible = False
         self.page.update()
         marks = asyncio.create_task(self._load_marks())
+
+        def stale() -> bool:
+            return self._load_generation != generation
+
         try:
             if not self.chains:
                 self.chains = await self.api.chains()
                 self._sync_chain_options()
-            chain_id = self.chains.get(self.chain)
+                chain = self.chain  # `_sync_chain_options` may have moved it
+            chain_id = self.chains.get(chain)
             if chain_id is None:
-                raise ApiError(f"Curve's API does not cover {self.chain}.")
+                raise ApiError(f"Curve's API does not cover {chain}.")
             lite = await self.api.is_lite(chain_id)
             self._lite_chains = await self.api.lite_chains()
+            if stale():
+                marks.cancel()
+                return
             self.feed = PoolFeed(
                 self.api,
-                self.chain,
+                chain,
                 chain_id,
                 sort_by="tvl" if lite else DEFAULT_SORT,
                 lite=lite,
@@ -741,12 +765,16 @@ class CurveApp:
             marks.cancel()
             if rest := getattr(self, "_marks_rest", None):
                 rest.cancel()
+            if stale():
+                return
             self.error.value = str(exc)
             self.error.visible = True
             self.progress.visible = False
             self.page.update()
             return
 
+        if stale():
+            return
         self._show_totals(totals)
         self.progress.visible = False
         self.page.update()

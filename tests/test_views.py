@@ -2759,3 +2759,104 @@ async def test_a_cancelled_bundle_does_not_report_success() -> None:
 
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+# -- two chain switches, one list ------------------------------------------
+
+
+class SlowApi:
+    """An API whose every answer takes a turn of the loop to arrive."""
+
+    def __init__(self) -> None:
+        self.built: list[tuple[str, int]] = []
+
+    async def chains(self) -> dict:
+        await asyncio.sleep(0)
+        return {"ethereum": 1, "arbitrum": 42161}
+
+    async def is_lite(self, _chain_id: int) -> bool:
+        await asyncio.sleep(0)
+        return False
+
+    async def lite_chains(self) -> dict:
+        await asyncio.sleep(0)
+        return {}
+
+    async def chain_totals(self, _chain_id: int) -> dict:
+        await asyncio.sleep(0)
+        return {"tvl": 1.0, "volume": 1.0}
+
+
+def switching_app(api):
+    import main as app_module
+
+    app = app_module.CurveApp.__new__(app_module.CurveApp)
+    app.page = StubPage()
+    app.api = api
+    app.chain = "ethereum"
+    app.chains = {}
+    app.wallet = None
+    app._route_applied = True
+    app._detail = None
+    app.progress = ft.ProgressBar()
+    app.error = ft.Text()
+    app.totals = ft.Text()
+    app.menu = ft.PopupMenuButton(items=[])
+    app._totals = []
+    app._icons = False
+    app._chain_order = ["ethereum", "arbitrum"]
+    app.chain_picker = ft.Dropdown(options=[], value="ethereum")
+    app.list_view = SimpleNamespace(
+        attach=lambda feed: app.__dict__.setdefault("_attached", []).append(feed),
+        load_more=_nothing,
+    )
+    app._apply_layout = lambda *_a, **_k: None
+    app._load_marks = _nothing
+    app._sync_chain_options = lambda: None
+    app._sync_chain_picker = lambda: None
+    app._show_totals = lambda totals: None
+    return app
+
+
+async def _nothing(*_args, **_kwargs) -> None:
+    return None
+
+
+class GatedApi(SlowApi):
+    """Stops inside the load, where the reader's next click lands."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.reached = asyncio.Event()
+        self.go = asyncio.Event()
+
+    async def is_lite(self, chain_id: int) -> bool:
+        self.reached.set()
+        await self.go.wait()
+        return False
+
+
+async def test_switching_chains_mid_load_leaves_the_one_that_was_chosen() -> None:
+    """Every await in `load_pools` is a place the reader can pick another
+    network, and the run that started first can finish last -- which used
+    to leave the list showing the chain nobody chose. The slug and the id
+    were read at different moments too, so a feed could be labelled one
+    chain and fetch another."""
+    api = GatedApi()
+    app = switching_app(api)
+
+    first = asyncio.create_task(app.load_pools())
+    # Held after the chain id has been read and before the feed is built,
+    # which is the window a picker click actually lands in.
+    await api.reached.wait()
+    app.chain = "arbitrum"
+    second = asyncio.create_task(app.load_pools())
+    api.go.set()
+    await asyncio.gather(first, second)
+
+    feeds = app.__dict__.get("_attached", [])
+    assert feeds, "one of them drew a list"
+    assert {(feed.chain, feed.chain_id) for feed in feeds} == {("arbitrum", 42161)}, (
+        "a feed must never carry one chain's slug and another's id, and the "
+        "run that was overtaken must not attach one at all"
+    )

@@ -150,7 +150,14 @@ CHAIN_PICKER_WIDTH = 185
 CHAIN_PICKER_NARROW_WIDTH = 78
 
 #: How wide the *open* menu is, whatever the closed field has shrunk to.
-CHAIN_MENU_WIDTH = 200
+#: How wide the open view is, whatever the bar has shrunk to.
+#:
+#: Wide enough for the longest row rather than for the bar: a mark, the
+#: longest network name ("Hyperliquid", 11 characters) and a TVL beside
+#: it. At 200 -- which was the width of the menu this replaced, before
+#: the rows carried a TVL at all -- Material wrapped the name and drew
+#: "Ethere / um" over two lines.
+CHAIN_MENU_WIDTH = 300
 
 #: How tall the open menu is allowed to be before it scrolls. There are 26
 #: networks and a menu that long covers the page it is over.
@@ -321,8 +328,13 @@ class CurveApp:
                 min_height=CHAIN_BAR_HEIGHT, max_height=CHAIN_BAR_HEIGHT
             ),
             bar_padding=ft.Padding.only(left=8, right=4),
+            # Both bounds, so the view is that width rather than merely
+            # allowed to reach it -- a max alone leaves Material free to
+            # shrink to the bar and wrap the names again.
             view_size_constraints=ft.BoxConstraints(
-                max_width=CHAIN_MENU_WIDTH, max_height=CHAIN_MENU_HEIGHT
+                min_width=CHAIN_MENU_WIDTH,
+                max_width=CHAIN_MENU_WIDTH,
+                max_height=CHAIN_MENU_HEIGHT,
             ),
             view_shape=ft.RoundedRectangleBorder(radius=CHAIN_BAR_RADIUS),
             controls=[self._chain_row(c) for c in PREFERRED_CHAINS],
@@ -641,7 +653,10 @@ class CurveApp:
         tvl = getattr(self, "_chain_tvls", {}).get(chain)
         return ft.ListTile(
             leading=chain_mark(chain, MENU_MARK),
-            title=ft.Text(chain_name(chain), size=BODY),
+            # `no_wrap`, so a name is never split down the middle whatever
+            # the view is sized to: too narrow would ellipsize, which is
+            # legible, where "Ethere / um" is not.
+            title=ft.Text(chain_name(chain), size=BODY, no_wrap=True),
             trailing=(
                 ft.Text(compact_usd(tvl), size=SMALL, color=ft.Colors.ON_SURFACE_VARIANT)
                 if tvl

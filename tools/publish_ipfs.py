@@ -233,6 +233,29 @@ def cdn_build(index: Path) -> bool:
     return "flet.noCdn=true" not in text.replace(" ", "")
 
 
+#: Development scaffolding that must not reach a published site.
+#:
+#: `mock_wallet.js` announces itself as an ordinary EIP-6963 wallet and
+#: answers every call with a fabricated balance, hash and mined receipt.
+#: `wallet.browser.select_wallet` auto-selects a lone announced wallet, so
+#: on a browser with no extension `?mock=1` would connect it without a
+#: click and the app would report transactions as mined that never
+#: happened. index.html also refuses to load it off localhost; this is the
+#: half that means there is nothing to load.
+DEV_ONLY = ("mock_wallet.js",)
+
+
+def drop_dev_files(root: Path) -> list[str]:
+    """Delete the development-only files from the build. Returns what went."""
+    gone = []
+    for name in DEV_ONLY:
+        path = root / name
+        if path.is_file():
+            path.unlink()
+            gone.append(name)
+    return gone
+
+
 def drop_cdn_copies(root: Path) -> list[tuple[str, int]]:
     """Delete the directories a CDN serves. Returns `(name, bytes)` freed."""
     if not cdn_build(root / "index.html"):
@@ -834,6 +857,9 @@ def main() -> int:
             f"{subset_icons.FONT_RELATIVE}: {was / 1024:,.0f} KB -> "
             f"{now / 1024:,.0f} KB, {glyphs} glyphs actually drawn"
         )
+    if gone := drop_dev_files(dist):
+        print(f"dropped {', '.join(gone)} -- development only, never published")
+
     if options.keep_cdn_copies:
         print("keeping the CDN-served directories, as asked")
     elif freed := drop_cdn_copies(dist):

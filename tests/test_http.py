@@ -81,6 +81,33 @@ async def test_a_browser_http_error_is_an_api_error(pyfetch, monkeypatch) -> Non
         await http.get_json("https://chainlist.org/rpcs.json")
 
 
+async def test_a_stalled_bundle_fetch_gives_up_instead_of_hanging(monkeypatch) -> None:
+    """It used to have no deadline at all, and `load_pools` awaits this
+    before drawing the first page of rows -- so a connection that was
+    accepted and never answered meant no pools, ever. A gateway that 504s
+    raises; one that goes quiet did not."""
+    import asyncio
+
+    async def never(url):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(http, "is_browser", lambda: True)
+    monkeypatch.setattr(http, "_browser_bytes", never)
+
+    with pytest.raises(http.ApiError, match="Timed out"):
+        await http.get_bytes("https://curve.eth.limo/curve/chains/marks@80.bin", timeout=0.01)
+
+
+async def test_bytes_that_arrive_are_handed_back(monkeypatch) -> None:
+    async def quick(url):
+        return b"\x89PNG"
+
+    monkeypatch.setattr(http, "is_browser", lambda: True)
+    monkeypatch.setattr(http, "_browser_bytes", quick)
+
+    assert await http.get_bytes("https://x/marks@80.bin") == b"\x89PNG"
+
+
 # -- the desktop half ------------------------------------------------------
 
 

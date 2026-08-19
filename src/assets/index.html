@@ -101,14 +101,20 @@
   <script src="wallet_bridge.js"></script>
 
   <!--
-    Development only: ?mock=1 loads a fake EIP-6963 wallet so the whole
-    send flow can be exercised without a real wallet or real money.
-    Never loaded on a normal visit.
+    Development only: ?mock=1 on localhost loads a fake EIP-6963 wallet, so
+    the send flow can be exercised without a real wallet or real money. It
+    fabricates mined receipts, and the app auto-connects a lone announced
+    wallet, so a published site must not be able to load it at all: the
+    host check is here and `publish_ipfs.py` deletes the file as well.
   -->
   <script>
-    if (new URLSearchParams(location.search).has("mock")) {
-      document.write('<script src="mock_wallet.js"><\/script>');
-    }
+    (function () {
+      var local = ["localhost", "127.0.0.1", "[::1]", ""].indexOf(location.hostname) >= 0;
+      var asked = new URLSearchParams(location.search).get("mock");
+      if (local && asked && asked !== "0" && asked !== "false") {
+        document.write('<script src="mock_wallet.js"><\/script>');
+      }
+    })();
   </script>
 </head>
 

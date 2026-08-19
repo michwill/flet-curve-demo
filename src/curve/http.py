@@ -101,14 +101,29 @@ def _post_blocking(url: str, body: str, timeout: float) -> Any:
 async def get_bytes(url: str, timeout: float = DEFAULT_TIMEOUT) -> bytes:
     """Raw bytes at a URL. For files that are not JSON and not images."""
     if is_browser():
-        from js import fetch as js_fetch
-
-        response = await js_fetch(url)
-        if not response.ok:
-            raise ApiError(f"HTTP {response.status} from {url}")
-        buffer = await response.arrayBuffer()
-        return bytes(buffer.to_py())
+        try:
+            return await asyncio.wait_for(_browser_bytes(url), timeout)
+        except TimeoutError:
+            raise ApiError(f"Timed out after {timeout:.0f}s: {url}") from None
     return await asyncio.to_thread(_read_blocking, url, timeout)
+
+
+async def _browser_bytes(url: str) -> bytes:
+    """The fetch itself. Separated so the deadline above can be tested.
+
+    It needs one: a stalled connection here used to block the pool list
+    indefinitely, because `CurveApp._load_marks` fetches the mark bundles
+    through this and `load_pools` awaits it before the first page of rows.
+    A gateway that answers 504 raises; one that accepts and never replies
+    did not.
+    """
+    from js import fetch as js_fetch
+
+    response = await js_fetch(url)
+    if not response.ok:
+        raise ApiError(f"HTTP {response.status} from {url}")
+    buffer = await response.arrayBuffer()
+    return bytes(buffer.to_py())
 
 
 def _read_blocking(url: str, timeout: float) -> bytes:

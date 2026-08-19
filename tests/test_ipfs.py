@@ -964,6 +964,27 @@ def test_the_whole_archive_family_is_reported_not_just_zip(tmp_path: Path) -> No
     ]
 
 
+# -- what must never be published ------------------------------------------
+
+
+def test_the_mock_wallet_never_reaches_a_published_build(tmp_path: Path) -> None:
+    """It announces itself as an ordinary EIP-6963 wallet and answers with
+    fabricated balances and mined receipts, and the app auto-connects a
+    lone announced wallet -- so `?mock=1` on a published site would connect
+    a fake wallet with no click and report transactions that never
+    happened."""
+    root = build(tmp_path, {"mock_wallet.js": "// fake", "main.dart.js": "//"})
+
+    assert ipfs.drop_dev_files(root) == ["mock_wallet.js"]
+    assert not (root / "mock_wallet.js").exists()
+    assert (root / "main.dart.js").exists()
+
+
+def test_a_build_without_it_is_not_an_error(tmp_path: Path) -> None:
+    """`--no-build` pins a dist/ that has already been through this once."""
+    assert ipfs.drop_dev_files(build(tmp_path, {"main.dart.js": "//"})) == []
+
+
 # -- half the pin nobody fetches -------------------------------------------
 
 

@@ -87,3 +87,22 @@ def test_the_flet_markers_survive(head: HeadReader) -> None:
     text = INDEX.read_text(encoding="utf-8")
     assert '<base href="/">' in text
     assert "var flet = {" in text
+
+
+def test_the_mock_wallet_is_gated_on_a_local_host() -> None:
+    """A fake wallet that fabricates mined receipts must not be one query
+    string away on a published site. `publish_ipfs.py` deletes the file
+    too; this is the half that holds when a build slips through."""
+    source = INDEX.read_text()
+    gate = source[source.index("mock_wallet.js") - 600 : source.index("mock_wallet.js")]
+
+    assert "location.hostname" in gate, "it must ask where it is running"
+    assert "127.0.0.1" in gate and "localhost" in gate
+
+
+def test_asking_for_no_mock_does_not_load_one() -> None:
+    """`.has("mock")` was the bug: `?mock=0` loaded it."""
+    source = INDEX.read_text()
+
+    assert '.get("mock")' in source
+    assert '"0"' in source and '"false"' in source

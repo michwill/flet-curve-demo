@@ -88,10 +88,12 @@
 
   // uuid -> {info, resolve} for everything any connector has offered.
   const catalogue = new Map();
-  // The EIP-1193 provider all non-bridge methods are forwarded to.
-  let selected = null;
-  let selectedInfo = null;
-  let detachers = [];
+  // client -> {provider, info, detachers}. One entry per app, not one for
+  // the origin: a single `selected` meant two tabs shared it, so the tab
+  // that connected last took over the other tab's requests, and a wallet
+  // switch that the Python side then abandoned left the bridge pointing
+  // at the wallet that was never connected.
+  const byClient = new Map();
 
   const log = (...args) => console.log("[wallet-bridge]", ...args);
 
@@ -313,24 +315,32 @@
   // Event forwarding
   // ====================================================================
 
-  function emit(event, data) {
+  function emit(event, data, client) {
     // Addressed to whoever selected this wallet, not broadcast: another
     // tab's app must not act on an account change it did not ask for.
-    channel.postMessage({ v: VERSION, dir: "evt", event, data, client: owner });
+    channel.postMessage({ v: VERSION, dir: "evt", event, data, client });
   }
 
-  function attach(provider) {
-    for (const detach of detachers) detach();
-    detachers = [];
-    if (!provider || typeof provider.on !== "function") return;
+  function release(client) {
+    const held = byClient.get(client);
+    if (!held) return;
+    for (const detach of held.detachers) detach();
+    byClient.delete(client);
+  }
+
+  function attach(provider, info, client) {
+    release(client);
+    const held = { provider, info, detachers: [] };
+    byClient.set(client, held);
+    if (!provider || typeof provider.on !== "function") return held;
 
     for (const name of ["accountsChanged", "chainChanged", "disconnect", "connect"]) {
       const handler = (data) => {
         log("event:", name, data);
-        emit(name, data);
+        emit(name, data, client);
       };
       provider.on(name, handler);
-      detachers.push(() => {
+      held.detachers.push(() => {
         try {
           provider.removeListener(name, handler);
         } catch (_) {
@@ -338,10 +348,8 @@
         }
       });
     }
+    return held;
   }
-
-  // : The client whose selection is live, so events can be addressed.
-  let owner = null;
 
   async function selectWallet(uuid, client, options) {
     const entry = catalogue.get(uuid);
@@ -349,10 +357,8 @@
 
     // resolve() may open a modal and wait on a phone, so it is async
     // and may reject (user closed the QR).
-    selected = await entry.resolve(options || {});
-    selectedInfo = entry.info;
-    owner = client ?? owner;
-    attach(selected);
+    const provider = await entry.resolve(options || {});
+    attach(provider, entry.info, client);
     remember(entry.info);
     log("selected:", entry.info.name);
     return {
@@ -384,7 +390,7 @@
       return {
         ok: true,
         wallets: await discover(),
-        selected: selectedInfo?.uuid ?? null,
+        selected: byClient.get(client)?.info?.uuid ?? null,
         remembered: remembered(),
       };
     }
@@ -393,19 +399,20 @@
     }
     if (method === "bridge_forget") {
       forget();
-      // A deliberate disconnect, so the pairing goes too -- and with
-      // it whatever this bridge had selected, or the next request
-      // would be answered by the wallet that was just disconnected.
+      // A deliberate disconnect, so the pairing goes too -- and with it
+      // this client's selection, or its next request would be answered by
+      // the wallet that was just disconnected. Another tab's selection is
+      // not this one's to end, so only WalletConnect, which is one session
+      // for the origin, is torn down.
+      release(client);
       await endWalletConnect();
-      selected = null;
-      selectedInfo = null;
       return { ok: true };
     }
     if (method === "bridge_listWallets") {
       return await discover();
     }
 
-    if (!selected) {
+    if (!byClient.has(client)) {
       const wallets = await discover();
       if (wallets.length === 0) {
         throw { code: 4900, message: "No wallet available in this browser" };
@@ -415,7 +422,7 @@
 
     // The entire connector integration, once resolved: one EIP-1193
     // call.
-    return await selected.request({ method, params });
+    return await byClient.get(client).provider.request({ method, params });
   }
 
   channel.onmessage = async (event) => {
@@ -426,7 +433,11 @@
     if (!active) return;
 
     const client = message.client ?? null;
-    if (message.method === "bridge_release") return;
+    if (message.method === "bridge_release") {
+      // The page is going away: drop its selection and its listeners.
+      release(client);
+      return;
+    }
 
     const { id, method, params } = message;
     try {

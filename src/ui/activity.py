@@ -22,9 +22,13 @@ TAKEN = ft.Colors.ERROR
 ROW_PADDING = ft.Padding.symmetric(vertical=5, horizontal=6)
 
 #: The columns that hold their width whatever is in them: one glyph, and a
-#: date that is always the same length.
+#: date that is always the same length. A phone gets the tighter date, and
+#: a fixed column for the short address -- there it has 13 characters to
+#: hold and no use for a share of the row.
 ARROW_WIDTH = 26
 DATE_WIDTH = 100
+DATE_NARROW_WIDTH = 88
+SHORT_ADDRESS_WIDTH = 96
 
 #: How the rest is shared. Weighted towards the address, which wants 42
 #: characters where the coins want one amount: full on a wide window, and
@@ -120,7 +124,7 @@ def trade_row(
                     vertical_alignment=ft.CrossAxisAlignment.CENTER,
                 )
             ),
-            _cell(_stamp(trade.time), DATE_WIDTH, end=True),
+            _cell(_stamp(trade.time), DATE_NARROW_WIDTH, end=True),
         ]
         if narrow
         else [
@@ -169,28 +173,32 @@ def liquidity_row(
 ) -> ft.Control:
     """What was put in or taken out, by whom, and when. Three columns."""
     moved = moved_coins(event, pool)
-    sign = "+" if event.added else "−"  # noqa: RUF001 -- a minus, not a hyphen
+    sign = ft.Text(
+        "+" if event.added else "−",  # noqa: RUF001 -- a minus, not a hyphen
+        size=BODY,
+        weight=ft.FontWeight.W_600,
+        color=ADDED if event.added else TAKEN,
+    )
     amounts: list[ft.Control] = [
-        ft.Text(
-            sign,
-            size=BODY,
-            weight=ft.FontWeight.W_600,
-            color=ADDED if event.added else TAKEN,
-        )
-    ]
-    if moved:
-        amounts += [
-            _amount(coin.symbol, coin.address, amount, pool.chain, named=not narrow)
-            for coin, amount in moved
-        ]
-    else:
-        amounts.append(ft.Text("–", size=BODY, color=ft.Colors.OUTLINE))  # noqa: RUF001
+        _amount(coin.symbol, coin.address, amount, pool.chain, named=not narrow)
+        for coin, amount in moved
+    ] or [ft.Text("–", size=BODY, color=ft.Colors.OUTLINE)]  # noqa: RUF001
+    # The sign belongs to the first amount, not to the run of them: on a
+    # phone a wrapping row would leave it stranded on a line of its own
+    # above the coin it applies to, which is what a deposit looked like.
+    first, rest = amounts[0], amounts[1:]
+    led = ft.Row(
+        [sign, first],
+        spacing=6,
+        tight=True,
+        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+    )
     return _linked(
         ft.Row(
             [
                 _cell(
                     ft.Row(
-                        amounts,
+                        [led, *rest],
                         spacing=8,
                         wrap=True,
                         run_spacing=4,
@@ -198,8 +206,16 @@ def liquidity_row(
                     ),
                     flex=COINS_FLEX,
                 ),
-                _cell(_provider(event.provider, narrow=narrow), flex=ADDRESS_FLEX),
-                _cell(_stamp(event.time), DATE_WIDTH, end=True),
+                _cell(
+                    _provider(event.provider, narrow=narrow),
+                    SHORT_ADDRESS_WIDTH if narrow else None,
+                    flex=ADDRESS_FLEX,
+                ),
+                _cell(
+                    _stamp(event.time),
+                    DATE_NARROW_WIDTH if narrow else DATE_WIDTH,
+                    end=True,
+                ),
             ],
             spacing=8,
             vertical_alignment=ft.CrossAxisAlignment.CENTER,

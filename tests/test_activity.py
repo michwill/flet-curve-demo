@@ -10,6 +10,8 @@ from curve.api import ACTIVITY_ROWS, CurveApi, LiquidityEvent, Trade
 from curve.http import ApiError
 from curve.models import Pool
 from ui.activity import (
+    DATE_NARROW_WIDTH,
+    SHORT_ADDRESS_WIDTH,
     liquidity_row,
     moved_coins,
     trade_row,
@@ -422,3 +424,34 @@ def test_the_table_reads_at_the_size_the_composition_does() -> None:
         if isinstance(text, ft.Text) and "DAI" in (text.value or "")
     }
     assert sizes == {BODY}
+
+
+def test_the_sign_stays_with_the_amount_it_applies_to() -> None:
+    """On a phone the coins column wraps, and a "+" left loose in that run
+    landed on a line of its own above the coin it belonged to -- a deposit
+    read as two rows, with the address and date centred between them.
+    """
+    event = LiquidityEvent(1, "0xa", "0xprovider", True, (99736.126773, 0.0, 0.0))
+
+    cells = columns(liquidity_row(event, make_pool(), narrow=True))
+    run = cells[0].content.controls
+
+    assert run[0].tight is True, "sign and first amount are one unwrapping unit"
+    assert texts(run[0])[0] == "+"
+    assert any("99736" in text.replace(",", "") for text in texts(run[0]))
+
+
+def test_a_phone_spends_its_width_on_the_amounts() -> None:
+    """The address is 13 characters there and the date is fixed, so both
+    take what they need and the coins get the rest -- 116px of a 390px
+    screen was not enough to hold "- 99,736.13 USDT" on one line.
+    """
+    event = LiquidityEvent(1, "0xa", "0x" + "ab" * 20, True, (1.0, 0.0, 0.0))
+
+    narrow = columns(liquidity_row(event, make_pool(), narrow=True))
+    wide = columns(liquidity_row(event, make_pool()))
+
+    assert narrow[1].width == SHORT_ADDRESS_WIDTH
+    assert narrow[2].width == DATE_NARROW_WIDTH < wide[2].width
+    assert narrow[0].expand and not narrow[1].expand, "only the coins stretch"
+    assert wide[1].width is None, "a full address grows with the window"

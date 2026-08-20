@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from decimal import Decimal
 
 
@@ -61,6 +62,13 @@ def units_to_float(value: int, decimals: int) -> float:
     if decimals <= 0:
         return float(value)
     return float(Decimal(value) / (Decimal(10) ** decimals))
+
+
+def date_time(stamp: int) -> str:
+    """A Unix second, in the reader's own time zone: "20 Aug 11:36"."""
+    if not stamp:
+        return ""
+    return datetime.fromtimestamp(stamp).strftime("%d %b %H:%M")
 
 
 def short_address(address: str) -> str:

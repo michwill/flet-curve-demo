@@ -6,6 +6,7 @@ import asyncio
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 from .external import (
@@ -66,6 +67,10 @@ MERKL_MAX_PAGES = 5
 
 #: How many candles to ask for, whatever their size.
 CANDLE_COUNT = 200
+
+#: How many trades or liquidity events a table shows. The v1 endpoints cap
+#: `per_page` at 100.
+ACTIVITY_ROWS = 40
 
 
 @dataclass(slots=True, frozen=True)
@@ -717,6 +722,148 @@ class CurveApi:
         )
         candles = [Candle.from_api(c) for c in payload.get("data") or []]
         return self._store(key, candles)
+
+    # -- v1: what went through the pool -----------------------------------
+
+    async def trades(
+        self, chain: str, pool: str, tokens: Sequence[str], *, count: int = ACTIVITY_ROWS
+    ) -> list[Trade]:
+        """The newest swaps through a pool, across every pair it holds.
+
+        The endpoint answers for one pair at a time -- three calls for a
+        three-coin pool, six for four coins -- so they go out together and
+        the answers are merged newest first. A pair that fails is left out
+        rather than taking the table with it; all of them failing is an
+        error, because then there is nothing to show and a reason for it.
+        """
+        addresses = list(dict.fromkeys(a.lower() for a in tokens if a))
+        pairs = [
+            (main, reference)
+            for i, main in enumerate(addresses)
+            for reference in addresses[i + 1 :]
+        ]
+        if not pairs:
+            return []
+        key = f"trades:{chain}:{pool}:{count}"
+        cached = self._cached(key)
+        if cached is not None:
+            return cached
+        answers = await asyncio.gather(
+            *(self._pair_trades(chain, pool, main, ref, count) for main, ref in pairs),
+            return_exceptions=True,
+        )
+        failures = [a for a in answers if isinstance(a, BaseException)]
+        if len(failures) == len(answers):
+            raise failures[0] if isinstance(failures[0], ApiError) else ApiError(
+                f"Could not read trades for {pool}: {failures[0]}"
+            )
+        trades = [t for a in answers if isinstance(a, list) for t in a]
+        trades.sort(key=lambda trade: trade.time, reverse=True)
+        return self._store(key, trades[:count])
+
+    async def _pair_trades(
+        self, chain: str, pool: str, main: str, reference: str, count: int
+    ) -> list[Trade]:
+        """One pair's swaps, in both directions."""
+        payload = await self._v1(
+            f"/trades/{chain}/{pool}",
+            {
+                "main_token": main,
+                "reference_token": reference,
+                "page": 1,
+                "per_page": count,
+            },
+        )
+        head = payload.get("main_token") or {}
+        tail = payload.get("reference_token") or {}
+        return [Trade.from_api(t, head, tail) for t in payload.get("data") or []]
+
+    async def liquidity(
+        self, chain: str, pool: str, *, count: int = ACTIVITY_ROWS
+    ) -> list[LiquidityEvent]:
+        """The newest deposits and withdrawals, newest first."""
+        key = f"liquidity:{chain}:{pool}:{count}"
+        cached = self._cached(key)
+        if cached is not None:
+            return cached
+        payload = await self._v1(
+            f"/liquidity/{chain}/{pool}", {"page": 1, "per_page": count}
+        )
+        events = [LiquidityEvent.from_api(e) for e in payload.get("data") or []]
+        return self._store(key, events)
+
+
+def _stamp(raw: Any) -> int:
+    """The v1 timestamps -- naive ISO, UTC -- as Unix seconds."""
+    try:
+        return int(datetime.fromisoformat(str(raw)).replace(tzinfo=UTC).timestamp())
+    except (TypeError, ValueError):
+        return 0
+
+
+def _side(index: Any, main: dict, reference: dict) -> dict:
+    """Which half of the pair a `sold_id` or `bought_id` names."""
+    for token in (main, reference):
+        if index is not None and index in (
+            token.get("pool_index"),
+            token.get("event_index"),
+        ):
+            return token
+    return main
+
+
+@dataclass(frozen=True)
+class Trade:
+    """One swap through a pool, as a row reads it."""
+
+    time: int
+    tx: str
+    trader: str
+    sold: str
+    sold_address: str
+    sold_amount: float
+    bought: str
+    bought_address: str
+    bought_amount: float
+
+    @classmethod
+    def from_api(cls, raw: dict[str, Any], main: dict, reference: dict) -> Trade:
+        sold = _side(raw.get("sold_id"), main, reference)
+        bought = _side(raw.get("bought_id"), main, reference)
+        return cls(
+            time=_stamp(raw.get("time")),
+            tx=str(raw.get("transaction_hash") or ""),
+            trader=str(raw.get("buyer") or ""),
+            sold=str(sold.get("symbol") or ""),
+            sold_address=str(sold.get("address") or ""),
+            sold_amount=_float(raw.get("tokens_sold")),
+            bought=str(bought.get("symbol") or ""),
+            bought_address=str(bought.get("address") or ""),
+            bought_amount=_float(raw.get("tokens_bought")),
+        )
+
+
+@dataclass(frozen=True)
+class LiquidityEvent:
+    """One deposit into, or withdrawal from, a pool."""
+
+    time: int
+    tx: str
+    provider: str
+    added: bool
+    #: Aligned with the pool's own coins, and zero for the ones untouched.
+    amounts: tuple[float, ...]
+
+    @classmethod
+    def from_api(cls, raw: dict[str, Any]) -> LiquidityEvent:
+        kind = str(raw.get("liquidity_event_type") or "")
+        return cls(
+            time=_stamp(raw.get("time")),
+            tx=str(raw.get("transaction_hash") or ""),
+            provider=str(raw.get("provider") or ""),
+            added=kind.startswith("Add"),
+            amounts=tuple(_float(a) for a in raw.get("token_amounts") or ()),
+        )
 
 
 class PoolFeed:

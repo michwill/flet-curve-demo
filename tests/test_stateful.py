@@ -93,6 +93,12 @@ class FakeApi:
     async def pair_candles(self, *a: Any, **kw: Any) -> list[Any]:
         return []
 
+    async def trades(self, *a: Any, **kw: Any) -> list[Any]:
+        return []
+
+    async def liquidity(self, *a: Any, **kw: Any) -> list[Any]:
+        return []
+
 
 class _NoPublicNodes:
     """The chainlist directory, with nothing in it."""
@@ -129,7 +135,10 @@ def build_app(session: Session):
 OFF_LIMITS = ("connect", "_wallet_clicked", "_change_wallet", "_disconnect_wallet")
 
 #: Tasks the app queues that the machine will run.
-RUNNABLE = ("load_pools", "load_more", "apply_route", "restore_theme", "load", "load_chart")
+RUNNABLE = (
+    "load_pools", "load_more", "apply_route", "restore_theme", "load",
+    "load_chart", "load_selection",
+)
 
 
 def handlers(control: Any, found: list[tuple[Any, str]], seen: set[int]) -> None:

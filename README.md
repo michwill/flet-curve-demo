@@ -1469,6 +1469,33 @@ Both found by looking at the rendered result, and neither is obvious:
 - Derive label precision from the **interval**, not the span, or an axis
   stepping by 0.0001 prints "1.026800" where "1.0268" is the number.
 
+### Trades and liquidity, where the chart was
+
+The series picker ends in two entries under a rule: **Trades** and
+**Liquidity**. They are not a third way of drawing the price, they replace the
+chart with what actually went through the pool — a swap per row, or a deposit
+or withdrawal — each row a link to the transaction on the chain's explorer.
+The candle-size picker goes away with the chart, having nothing to size, and
+the table takes the chart's exact height so the page does not jump.
+
+Both come from prices v1. Liquidity is one request per pool: it answers with
+one amount per coin and a zero for the ones untouched, and an event type that
+says whether it went in or came out.
+
+Trades are **one request per pair**, which is the only awkward part of this.
+`/trades/{chain}/{pool}` requires `main_token` and `reference_token` and
+answers for that pair alone -- both directions, but that pair. So a three-coin
+pool is three requests and a four-coin pool is six; they go out together and
+the answers are merged newest first. A pair that fails is left out rather than
+taking the table with it, and only *every* pair failing is an error -- because
+then there is nothing to show and there is a reason for it, which is a
+different thing from "no swaps yet".
+
+The rows carry pool indices rather than symbols (`sold_id`, `bought_id`), and
+which index is which comes from the `main_token`/`reference_token` the answer
+echoes back. An id that matches neither -- a metapool reporting an underlying
+-- draws the main token rather than raising in the middle of a table.
+
 Charts are also the one place `flet publish` bit: it resolves dependencies
 relative to the **script's** directory, so `flet publish src/main.py` never saw
 the root `pyproject.toml`, fell back to bare `flet`, and the published app died

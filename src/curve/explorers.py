@@ -33,3 +33,10 @@ def address_url(chain_id: int, address: str, published: str = "") -> str:
     if not address:
         return ""
     return f"{base_url(chain_id, published)}/address/{address}"
+
+
+def tx_url(chain_id: int, tx: str, published: str = "") -> str:
+    """A link to one transaction. Empty for an empty hash."""
+    if not tx:
+        return ""
+    return f"{base_url(chain_id, published)}/tx/{tx}"

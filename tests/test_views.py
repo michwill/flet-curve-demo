@@ -12,6 +12,7 @@ import pytest
 from curve.external import ExternalCampaign, by_pool
 from curve.merkl import MerklCampaign, MerklToken, by_identifier
 from curve.models import Pool
+from ui import pool_detail
 from ui.actions import ClaimTab, DepositTab, StakeTab, SwapTab, WithdrawTab
 from ui.candles import CandleChart
 from ui.pool_detail import PoolDetailView
@@ -330,7 +331,8 @@ def test_pool_detail_builds_for_any_coin_count(n_coins: int) -> None:
         on_back=lambda: None,
     )
     assert isinstance(view, ft.Column)
-    assert len(view.series.options) == 1 + n_coins * (n_coins - 1)
+    prices = 1 + n_coins * (n_coins - 1)  # the LP token, then every pair
+    assert len(view.series.options) == prices + 3, "a rule, then the two tables"
 
 
 def test_pool_detail_builds_without_a_gauge() -> None:
@@ -562,6 +564,116 @@ async def test_a_loaded_chart_has_no_line_of_numbers_above_it() -> None:
     assert view.chart._candles
     assert view.chart_caption.value == ""
     assert view.chart_caption.visible is False, "and it takes up no room"
+
+
+class StubActivityApi(StubCandleApi):
+    """Answers the two tables, and can be told to fail."""
+
+    def __init__(self, *, down: bool = False) -> None:
+        self.down = down
+        self.asked: list[str] = []
+
+    async def trades(self, chain, pool, tokens, **_kw):
+        from curve.api import ApiError, Trade
+
+        self.asked.append("trades")
+        if self.down:
+            raise ApiError("prices is down")
+        return [
+            Trade(
+                time=1787225879, tx="0xfeed", trader="0x1",
+                sold="DAI", sold_address="0x6b17", sold_amount=100.0,
+                bought="USDC", bought_address="0xa0b8", bought_amount=99.99,
+            )
+        ]
+
+    async def liquidity(self, chain, pool, **_kw):
+        from curve.api import LiquidityEvent
+
+        self.asked.append("liquidity")
+        return [LiquidityEvent(1787225795, "0xdeed", "0xprovider", True, (1.0, 0.0))]
+
+
+def activity_view(**kwargs):
+    return PoolDetailView(
+        StubPage(), api=StubActivityApi(**kwargs), pool=make_pool(),
+        get_contract=lambda: None, on_back=lambda: None,
+    )
+
+
+def test_the_picker_offers_the_two_tables_under_a_rule() -> None:
+    """They are not a third way of drawing the price, so they do not sit in
+    the same run as the pairs.
+    """
+    view = activity_view()
+
+    keys = [option.key for option in view.series.options]
+    assert keys[-3:] == [pool_detail.SERIES_RULE, "__trades__", "__liquidity__"]
+    assert [o.text for o in view.series.options[-2:]] == ["Trades", "Liquidity"]
+    rule = view.series.options[-3]
+    assert rule.disabled, "a rule is not something you can pick"
+
+
+async def test_choosing_trades_puts_a_table_where_the_chart_was() -> None:
+    view = activity_view()
+    view.series.value = pool_detail.TRADES_SERIES
+
+    await view.load_selection()
+
+    assert view.activity_box.visible
+    assert not view.chart.visible
+    assert not view.size_picker.visible, "a table has no candles to size"
+    assert "100 DAI" in [text.value for text in _texts(view.activity)]
+
+
+async def test_choosing_liquidity_asks_for_liquidity() -> None:
+    view = activity_view()
+    view.series.value = pool_detail.LIQUIDITY_SERIES
+
+    await view.load_selection()
+
+    assert view.api.asked == ["liquidity"]
+    assert view.activity_box.visible
+
+
+async def test_going_back_to_a_price_series_gives_the_chart_its_space() -> None:
+    view = activity_view()
+    view.series.value = pool_detail.TRADES_SERIES
+    await view.load_selection()
+
+    view.series.value = pool_detail.LP_SERIES
+    await view.load_selection()
+
+    assert view.chart.visible
+    assert view.size_picker.visible
+    assert not view.activity_box.visible
+
+
+async def test_a_table_that_cannot_be_read_says_why() -> None:
+    view = activity_view(down=True)
+    view.series.value = pool_detail.TRADES_SERIES
+
+    await view.load_selection()
+
+    assert "prices is down" in view.chart_error.value
+    assert view.chart_caption.value == "", "the wait is over, whatever happened"
+
+
+async def test_a_table_that_lands_late_does_not_draw_over_the_chart() -> None:
+    """Every await in the loader is a place somebody can pick something
+    else; what was in flight belongs to the picker as it was.
+    """
+    view = activity_view()
+    view.series.value = pool_detail.TRADES_SERIES
+
+    async def moved_on(*_a, **_kw):
+        view.series.value = pool_detail.LP_SERIES
+        return []
+
+    view.api.trades = moved_on
+    await view.load_activity()
+
+    assert view.activity.controls == []
 
 
 def test_the_line_above_the_chart_is_kept_for_the_wait() -> None:

@@ -24,7 +24,7 @@ from curve.models import Coin, Pool
 from curve.pool import PoolContract
 from wallet.base import WalletError
 
-from . import AnyEvent, safe_update, theme
+from . import AnyEvent, activity, safe_update, theme
 from .actions import ClaimTab, DepositTab, StakeTab, SwapTab, WithdrawTab
 from .candles import CandleChart
 from .logos import pool_stack, token_mark
@@ -42,6 +42,17 @@ READING = "Reading pool parameters…"
 PARAMETER_DEADLINE = 45.0
 
 LP_SERIES = "__lp__"
+
+#: The two picker entries that put a table where the chart is, and the
+#: rule that separates them from the price series above.
+TRADES_SERIES = "__trades__"
+LIQUIDITY_SERIES = "__liquidity__"
+ACTIVITY_SERIES = (TRADES_SERIES, LIQUIDITY_SERIES)
+SERIES_RULE = "__rule__"
+
+#: The chart's height, which the tables take over unchanged so the page
+#: does not jump when the picker moves between them.
+CHART_HEIGHT = 340
 
 
 def _metric(label: str, value: str) -> ft.Control:
@@ -89,7 +100,13 @@ class PoolDetailView(ft.Column):
 
         self._layout = layout_for(2000.0)
 
-        self.chart = CandleChart(height=340, on_capacity_change=self._chart_resized)
+        self.chart = CandleChart(
+            height=CHART_HEIGHT, on_capacity_change=self._chart_resized
+        )
+        self.activity = ft.Column(spacing=0, scroll=ft.ScrollMode.AUTO)
+        self.activity_box = ft.Container(
+            self.activity, height=CHART_HEIGHT, visible=False
+        )
         self.chart_caption = ft.Text(
             "", size=SMALL, color=ft.Colors.ON_SURFACE_VARIANT, visible=False
         )
@@ -146,6 +163,7 @@ class PoolDetailView(ft.Column):
                 ),
                 self.chart_caption,
                 self.chart,
+                self.activity_box,
                 self.chart_error,
             ]
         )
@@ -767,13 +785,42 @@ class PoolDetailView(ft.Column):
                         key=f"{i}:{j}", text=f"{main.symbol} / {reference.symbol}"
                     )
                 )
+        # Under a rule, because these two are not a third way of drawing the
+        # price: they replace the chart with what actually went through.
+        options.append(
+            ft.DropdownOption(key=SERIES_RULE, content=ft.Divider(height=1), disabled=True)
+        )
+        options.append(ft.DropdownOption(key=TRADES_SERIES, text="Trades"))
+        options.append(ft.DropdownOption(key=LIQUIDITY_SERIES, text="Liquidity"))
         return options
 
+    @property
+    def selection(self) -> str:
+        """What the picker names right now."""
+        return self.series.value or LP_SERIES
+
     def _series_changed(self, _e: AnyEvent) -> None:
-        self._page.run_task(self.load_chart)
+        self._page.run_task(self.load_selection)
+
+    async def load_selection(self) -> None:
+        """Draw whatever the picker names: a price series, or a table."""
+        if self.selection in ACTIVITY_SERIES:
+            await self.load_activity()
+        else:
+            await self.load_chart()
+
+    def _show_activity(self, showing: bool) -> None:
+        """Hand the chart's space to the table, or take it back. The candle
+        size goes with the chart: a table has no candles to size.
+        """
+        self.activity_box.visible = showing
+        self.chart.visible = not showing
+        self.size_picker.visible = not showing
 
     def _chart_resized(self) -> None:
         """The chart got materially wider or narrower -- refetch to suit."""
+        if self.selection in ACTIVITY_SERIES:
+            return  # it is not on screen; its width means nothing
         self._page.run_task(self.load_chart)
 
     def _size_changed(self, _e: AnyEvent) -> None:
@@ -785,6 +832,7 @@ class PoolDetailView(ft.Column):
             return  # nothing to ask; the panel says so instead
         size = get_candle_size(self._candle_size)
         count = self.chart.candle_capacity()
+        self._show_activity(False)
         self.chart_error.value = ""
         self._say_chart("Loading…")
         self._page.update()
@@ -813,6 +861,54 @@ class PoolDetailView(ft.Column):
             return
 
         self.chart.set_candles(candles)
+        self._say_chart("")
+        self._page.update()
+
+    async def load_activity(self) -> None:
+        """Fill the table where the chart was: swaps, or liquidity moved.
+
+        The picker is read once, at the top: every await here is a place
+        somebody can pick something else, and a table that lands after
+        that would draw over whatever they chose instead.
+        """
+        wanted = self.selection
+        self._show_activity(True)
+        self.activity.controls = []
+        self.chart_error.value = ""
+        self._say_chart("Loading…")
+        self._page.update()
+
+        try:
+            if wanted == TRADES_SERIES:
+                trades = await self.api.trades(
+                    self.pool.chain,
+                    self.pool.address,
+                    [coin.address for coin in self.pool.pool_coins],
+                )
+                rows = [
+                    activity.trade_row(
+                        trade, self.pool.chain, self.pool.chain_id, self._explorer
+                    )
+                    for trade in trades
+                ]
+                nothing = activity.NO_TRADES
+            else:
+                events = await self.api.liquidity(self.pool.chain, self.pool.address)
+                rows = [
+                    activity.liquidity_row(event, self.pool, self._explorer)
+                    for event in events
+                ]
+                nothing = activity.NO_LIQUIDITY
+        except ApiError as exc:
+            if self.selection == wanted:
+                self._say_chart("")
+                self.chart_error.value = str(exc)
+                self._page.update()
+            return
+
+        if self.selection != wanted:
+            return
+        self.activity.controls = rows or [activity.empty(nothing)]
         self._say_chart("")
         self._page.update()
 
@@ -857,13 +953,14 @@ class PoolDetailView(ft.Column):
         self._yields_slot.content = self._yields()
         self._right.content = self._actions()
         self.series.options = self._series_options()
-        self.series.value = LP_SERIES
+        if self.selection not in ACTIVITY_SERIES:
+            self.series.value = LP_SERIES
         self._page.update()
 
     async def load(self) -> None:
         # Detail first: the action panels read the LP token it supplies.
         await self._load_detail()
-        await self.load_chart()
+        await self.load_selection()
         await self.refresh_actions()
         # Not the parameters: those wait for somebody to open the
         # fold.

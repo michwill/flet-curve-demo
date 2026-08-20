@@ -532,15 +532,25 @@ def pin(
 #:
 #: The run picks one that can actually serve this pin rather than trusting
 #: a name: dweb.link was hardcoded here and sat at 0/58 for three publishes
-#: running while the same CID came back in 0.3s elsewhere. It and ipfs.io
-#: are one operator and stall together, which is why the fallback is not
-#: another of theirs first. Any of them proves the same thing -- that
-#: something other than the pinning service can find the content.
+#: running, twice while another gateway had the same CID in under a second.
+#:
+#: **Every one of these must be a gateway that returns the bytes.** The
+#: newer public gateways -- inbrowser.link, w3s.link, nftstorage.link --
+#: are service workers: they answer 200 with an HTML bootstrap for *every*
+#: path and do the IPFS retrieval in the visitor's browser. To anything
+#: that is not a browser they cannot fail, which makes them worse than
+#: useless here: one was picked up as "58/58 retrievable in one second" on
+#: a pin no third party could serve at all. `pick_gateway` compares the
+#: bytes for exactly that reason, and the list is kept to real ones.
 VERIFY_GATEWAYS = (
-    "https://{cid}.ipfs.inbrowser.link",
-    "https://{cid}.ipfs.dweb.link",
     "https://ipfs.io/ipfs/{cid}",
+    "https://{cid}.ipfs.dweb.link",
+    "https://trustless-gateway.link/ipfs/{cid}",
 )
+
+#: A small file every build has, fetched whole to tell a gateway that
+#: serves this pin from one that serves something else with a 200 on it.
+GATEWAY_PROBE_FILE = "version.json"
 
 #: The preferred one, and what `verify` uses when it is handed nothing.
 VERIFY_GATEWAY = VERIFY_GATEWAYS[0]
@@ -624,16 +634,34 @@ def probe(
         return type(exc).__name__, time.monotonic() - started
 
 
+def fetch(client, url: str, timeout: float) -> tuple[int | str, bytes, float]:
+    """A whole small file, its status and how long it took."""
+    import httpx
+
+    started = time.monotonic()
+    try:
+        response = client.get(url, timeout=timeout)
+        return response.status_code, response.content, time.monotonic() - started
+    except httpx.HTTPError as exc:
+        return type(exc).__name__, b"", time.monotonic() - started
+
+
 def pick_gateway(
     cid: str,
-    path: str,
+    expected: bytes,
     *,
+    path: str = GATEWAY_PROBE_FILE,
     candidates: tuple[str, ...] = VERIFY_GATEWAYS,
     client=None,
     timeout: float = GATEWAY_PROBE_TIMEOUT,
 ) -> tuple[str, list[tuple[str, int | str, float]]]:
-    """The first of `candidates` that can serve one file of this pin, and
+    """The first of `candidates` that hands back this pin's own bytes, and
     what each of them said on the way there.
+
+    Compared against the file in `dist/` rather than trusting the status,
+    because a 200 is not evidence: a service-worker gateway answers one to
+    everything and leaves the fetching to the browser. Whatever comes back
+    here has to *be* the file.
 
     Tried one at a time rather than all at once: the first is usually the
     answer, and a thread still waiting out a 28-second miss would hold the
@@ -646,16 +674,17 @@ def pick_gateway(
     tried: list[tuple[str, int | str, float]] = []
     try:
         for gateway in candidates:
-            status, seconds = probe(
-                client, f"{gateway.format(cid=cid)}/{path}", timeout=timeout
+            status, body, seconds = fetch(
+                client, f"{gateway.format(cid=cid)}/{path}", timeout
             )
-            tried.append((gateway, status, seconds))
-            if classify(status, seconds) == "served":
+            served = status in (200, 206) and body == expected
+            tried.append((gateway, status if served else "not the file", seconds))
+            if served:
                 return gateway, tried
     finally:
         if owned:
             client.close()
-    return candidates[0], tried
+    return "", tried
 
 
 def verify(
@@ -1010,22 +1039,40 @@ def show_pin(cid: str, *, duplicate: bool = False) -> None:
     print(f"       ipfs://{cid}/")
 
 
-def chosen_gateway(cid: str, paths: list[str], options) -> str:
-    """Which gateway this run proves the pin on."""
+def chosen_gateway(cid: str, options) -> str:
+    """Which gateway this run proves the pin on, or "" if none of them can
+    serve it yet -- which is itself the answer: do not move the name.
+    """
     if options.verify_gateway:
         return str(options.verify_gateway)
-    gateway, tried = pick_gateway(cid, paths[0] if paths else "index.html")
-    for host, status, seconds in tried[:-1]:
-        print(f"  {host.format(cid=cid)} answered {status} in {seconds:.1f}s")
-    if len(tried) > 1:
-        print(f"  -> proving it on {gateway.format(cid=cid)} instead")
+    probe_file = Path(options.dist) / GATEWAY_PROBE_FILE
+    try:
+        expected = probe_file.read_bytes()
+    except OSError:
+        raise SystemExit(
+            f"{probe_file} is missing, and it is what tells a gateway that "
+            f"serves this pin from one that answers 200 to everything."
+        ) from None
+    gateway, tried = pick_gateway(cid, expected)
+    if len(tried) > 1 or not gateway:
+        for host, status, seconds in tried:
+            print(f"  {host.format(cid=cid)} -> {status} in {seconds:.1f}s")
     return gateway
 
 
 def wait_until_findable(cid: str, paths: list[str], options) -> int:
     """Watch the pin become retrievable, and say when it is safe to publish."""
     print(f"\nwaiting for the network to find it: {len(paths)} files, via")
-    gateway = chosen_gateway(cid, paths, options)
+    gateway = chosen_gateway(cid, options)
+    if not gateway:
+        print(
+            "\n  No gateway could hand back this pin's own bytes yet, which is\n"
+            "  the same answer the file-by-file check would take minutes to\n"
+            "  reach: the content is pinned, and nothing else can find it.\n"
+            "  **Do not point ENS at this CID yet.** Try again in a few\n"
+            f"  minutes:\n\n    python tools/publish_ipfs.py --verify-only {cid}"
+        )
+        return 1
     print(f"  {gateway.format(cid=cid)}")
     print("  (token marks skipped -- lazily fetched, and there are 6,716)")
     started = time.monotonic()

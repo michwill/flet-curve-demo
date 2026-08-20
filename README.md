@@ -1478,6 +1478,22 @@ or withdrawal — each row a link to the transaction on the chain's explorer.
 The candle-size picker goes away with the chart, having nothing to size, and
 the table takes the chart's exact height so the page does not jump.
 
+They are laid out as tables rather than as rows of content: four columns for
+a swap (sold, arrow, bought, when) and three for liquidity (what moved, who
+moved it, when), each cell a `Container` with a fixed width or a flex, the
+way `_composition` builds its own table. Amounts are drawn at `BODY`, the
+size the composition table gives its symbols -- 13px read as fine print next
+to it. The provider address is written out in full and left to Flutter to
+elide: the column is weighted to fit all 42 characters on a wide window and
+cuts itself short where it cannot.
+
+A phone gets less of it. The coin symbol goes -- the mark carries it as a
+tooltip anyway -- and the two sides of a swap share one wrapping column, so
+they stay on one line while they fit and take a second when they do not. The
+address falls back to the `0x0c93…7f34` form, there being no width to elide
+into. The rows are rebuilt on a change of width rather than refetched, which
+is why the fetched trades are kept beside the table.
+
 Both come from prices v1. Liquidity is one request per pool: it answers with
 one amount per coin and a zero for the ones untouched, and an event type that
 says whether it went in or came out.

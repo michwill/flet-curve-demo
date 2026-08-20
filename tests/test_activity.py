@@ -295,7 +295,6 @@ def test_only_the_coins_that_moved_are_drawn() -> None:
     assert [coin.symbol for coin, _ in moved_coins(event, make_pool())] == ["USDT"]
     drawn = texts(liquidity_row(event, make_pool()))
     assert any("99736" in text.replace(",", "") for text in drawn)
-    assert "0x0c93…7f34" in drawn
 
 
 def test_a_deposit_and_a_withdrawal_are_told_apart() -> None:
@@ -312,3 +311,114 @@ def test_a_liquidity_row_links_to_its_transaction() -> None:
     row = liquidity_row(event, make_pool())
 
     assert row.url.url == "https://etherscan.io/tx/0xdeed"
+
+
+# -- columns, and what a phone drops ---------------------------------------
+
+
+def columns(row) -> list:
+    """The row's top-level cells."""
+    return row.content.controls
+
+
+def a_trade() -> Trade:
+    return Trade(1787225879, "0xfeed", "0x1", "DAI", DAI, 100.0, "USDC", USDC, 99.99)
+
+
+def test_a_swap_is_four_columns_where_there_is_room() -> None:
+    """Sold, arrow, bought, when -- each its own cell, so they line up down
+    the table rather than wherever the amounts happen to end.
+    """
+    cells = columns(trade_row(a_trade(), "ethereum", 1))
+
+    assert len(cells) == 4
+    assert cells[0].expand == cells[2].expand, "both sides share the space evenly"
+    assert cells[3].width == 100, "the date column is a date wide"
+    assert cells[3].alignment == ft.Alignment.CENTER_RIGHT
+
+
+def test_a_phone_gives_the_two_sides_one_wrapping_column() -> None:
+    """One line while they fit, two when they do not."""
+    cells = columns(trade_row(a_trade(), "ethereum", 1, narrow=True))
+
+    assert len(cells) == 2
+    assert cells[0].content.wrap is True
+
+
+def test_a_phone_keeps_the_mark_and_drops_the_word() -> None:
+    """The symbol is the mark's tooltip either way, so a narrow row loses
+    nothing by leaving the name off.
+    """
+    wide = texts(trade_row(a_trade(), "ethereum", 1))
+    narrow = texts(trade_row(a_trade(), "ethereum", 1, narrow=True))
+
+    assert "100 DAI" in wide
+    assert "100" in narrow and "100 DAI" not in narrow
+
+
+def test_liquidity_is_three_columns() -> None:
+    event = LiquidityEvent(1, "0xa", "0x" + "ab" * 20, True, (1.0, 0.0, 0.0))
+
+    cells = columns(liquidity_row(event, make_pool()))
+
+    assert len(cells) == 3
+    assert cells[2].width == 100
+
+
+def test_an_address_is_shown_in_full_and_elided_by_the_client() -> None:
+    """All 42 characters where the column is wide enough, and Flutter cuts
+    it where it is not -- which is what `overflow` is for.
+    """
+    address = "0x0c93D1A748bC6e6030fb628867d3b69Ce1d77f34"
+    event = LiquidityEvent(1, "0xa", address, True, (1.0, 0.0, 0.0))
+
+    drawn = texts(liquidity_row(event, make_pool()))
+
+    assert address in drawn
+    written = [
+        text
+        for text in _controls(liquidity_row(event, make_pool()))
+        if isinstance(text, ft.Text) and text.value == address
+    ]
+    assert written[0].overflow == ft.TextOverflow.ELLIPSIS
+    assert written[0].no_wrap is True
+
+
+def test_a_phone_shortens_the_address_itself() -> None:
+    """There is no width to elide into on a phone, so it gets the form
+    with the tail kept: the last four characters say which address it is.
+    """
+    address = "0x0c93D1A748bC6e6030fb628867d3b69Ce1d77f34"
+    event = LiquidityEvent(1, "0xa", address, True, (1.0, 0.0, 0.0))
+
+    drawn = texts(liquidity_row(event, make_pool(), narrow=True))
+
+    assert "0x0c93…7f34" in drawn
+    assert address not in drawn
+
+
+def _controls(control, found: list | None = None) -> list:
+    found = [] if found is None else found
+    found.append(control)
+    for name in ("content", "controls"):
+        child = getattr(control, name, None)
+        if isinstance(child, list):
+            for item in child:
+                _controls(item, found)
+        elif child is not None:
+            _controls(child, found)
+    return found
+
+
+def test_the_table_reads_at_the_size_the_composition_does() -> None:
+    """A dense table of numbers at 13px was harder to read than the pool's
+    own composition table beside it, which draws its symbols at `BODY`.
+    """
+    from ui.typography import BODY
+
+    sizes = {
+        text.size
+        for text in _controls(trade_row(a_trade(), "ethereum", 1))
+        if isinstance(text, ft.Text) and "DAI" in (text.value or "")
+    }
+    assert sizes == {BODY}

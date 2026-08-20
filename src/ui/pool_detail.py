@@ -104,6 +104,10 @@ class PoolDetailView(ft.Column):
             height=CHART_HEIGHT, on_capacity_change=self._chart_resized
         )
         self.activity = ft.Column(spacing=0, scroll=ft.ScrollMode.AUTO)
+        #: What the table last fetched, kept so a change of width can draw
+        #: it again without asking for it again.
+        self._activity_rows: list = []
+        self._activity_kind = ""
         self.activity_box = ft.Container(
             self.activity, height=CHART_HEIGHT, visible=False
         )
@@ -199,6 +203,8 @@ class PoolDetailView(ft.Column):
             self._header_slot.content = self._header()
             if self._composition_ready:
                 self._composition_slot.content = self._composition()
+            if self._activity_kind:
+                self._draw_activity()
         if layout.stacked == was.stacked:
             safe_update(self)
             return
@@ -880,25 +886,13 @@ class PoolDetailView(ft.Column):
 
         try:
             if wanted == TRADES_SERIES:
-                trades = await self.api.trades(
+                fetched: list = await self.api.trades(
                     self.pool.chain,
                     self.pool.address,
                     [coin.address for coin in self.pool.pool_coins],
                 )
-                rows = [
-                    activity.trade_row(
-                        trade, self.pool.chain, self.pool.chain_id, self._explorer
-                    )
-                    for trade in trades
-                ]
-                nothing = activity.NO_TRADES
             else:
-                events = await self.api.liquidity(self.pool.chain, self.pool.address)
-                rows = [
-                    activity.liquidity_row(event, self.pool, self._explorer)
-                    for event in events
-                ]
-                nothing = activity.NO_LIQUIDITY
+                fetched = await self.api.liquidity(self.pool.chain, self.pool.address)
         except ApiError as exc:
             if self.selection == wanted:
                 self._say_chart("")
@@ -908,9 +902,39 @@ class PoolDetailView(ft.Column):
 
         if self.selection != wanted:
             return
-        self.activity.controls = rows or [activity.empty(nothing)]
+        self._activity_kind = wanted
+        self._activity_rows = list(fetched)
+        self._draw_activity()
         self._say_chart("")
         self._page.update()
+
+    def _draw_activity(self) -> None:
+        """Build the table out of what was fetched, for the width there is.
+
+        Kept apart from the fetch so that turning a phone sideways redraws
+        the rows -- one column narrower, and the coin names back -- without
+        asking the API again.
+        """
+        narrow = self._layout.cards
+        if self._activity_kind == TRADES_SERIES:
+            rows = [
+                activity.trade_row(
+                    trade,
+                    self.pool.chain,
+                    self.pool.chain_id,
+                    self._explorer,
+                    narrow=narrow,
+                )
+                for trade in self._activity_rows
+            ]
+            nothing = activity.NO_TRADES
+        else:
+            rows = [
+                activity.liquidity_row(event, self.pool, self._explorer, narrow=narrow)
+                for event in self._activity_rows
+            ]
+            nothing = activity.NO_LIQUIDITY
+        self.activity.controls = rows or [activity.empty(nothing)]
 
     def _say_chart(self, message: str) -> None:
         """The line above the chart, which carries the wait and nothing else.

@@ -643,3 +643,85 @@ async def test_a_wallet_that_cannot_say_which_chain_is_not_guessed_for() -> None
     )
     with pytest.raises(WalletError, match="Load failed"):
         await reader.chain_id()
+
+
+# -- what a wallet has to be told to add a network -------------------------
+
+
+FRAXTAL = {
+    "chainId": 252,
+    "name": "Fraxtal",
+    "nativeCurrency": {"name": "Frax", "symbol": "FRAX", "decimals": 18},
+    # As chainlist publishes them: the one that says it keeps nothing is
+    # second in the file and first in the offer.
+    "rpc": [
+        {"url": "https://rpc.frax.com"},
+        {"url": "https://fraxtal.drpc.org", "tracking": "none"},
+    ],
+    "explorers": [{"name": "fraxscan", "url": "https://fraxscan.com"}],
+}
+
+
+def test_a_chainlist_entry_becomes_what_eip_3085_asks_for() -> None:
+    from curve.rpc import chain_params, usable_endpoints
+
+    params = chain_params(FRAXTAL, usable_endpoints(FRAXTAL))
+
+    assert params == {
+        "chainId": "0xfc",
+        "chainName": "Fraxtal",
+        "rpcUrls": ["https://fraxtal.drpc.org", "https://rpc.frax.com"],
+        "nativeCurrency": {"name": "Frax", "symbol": "FRAX", "decimals": 18},
+        "blockExplorerUrls": ["https://fraxscan.com"],
+    }
+
+
+def test_a_chain_with_no_currency_is_not_offered() -> None:
+    """A wallet refuses the request without one, and being refused reads as
+    the app being broken rather than the entry being thin.
+    """
+    from curve.rpc import chain_params
+
+    thin = {"chainId": 252, "name": "Fraxtal", "rpc": [{"url": "https://rpc.frax.com"}]}
+
+    assert chain_params(thin, ["https://rpc.frax.com"]) is None
+
+
+def test_a_chain_with_no_endpoint_is_not_offered() -> None:
+    from curve.rpc import chain_params
+
+    assert chain_params(FRAXTAL, []) is None
+
+
+def test_the_wallet_is_offered_a_list_somebody_could_read() -> None:
+    """Fraxtal has eight usable endpoints and the read path is glad of all
+    of them. This list goes in front of a person approving a network.
+    """
+    from curve.rpc import MAX_OFFERED_ENDPOINTS, chain_params
+
+    many = [f"https://rpc{i}.test" for i in range(8)]
+
+    offered = chain_params(FRAXTAL, many)["rpcUrls"]
+
+    assert offered == many[:MAX_OFFERED_ENDPOINTS]
+
+
+def test_an_explorer_that_is_not_https_is_left_out() -> None:
+    from curve.rpc import chain_params
+
+    entry = dict(FRAXTAL, explorers=[{"url": "http://insecure.test"}])
+
+    assert chain_params(entry, ["https://rpc.frax.com"])["blockExplorerUrls"] == []
+
+
+async def test_the_directory_answers_for_the_chain_it_loaded(monkeypatch) -> None:
+    from curve import rpc as rpc_module
+
+    async def served(_url, timeout=20.0):
+        return [FRAXTAL]
+
+    monkeypatch.setattr(rpc_module, "get_json", served)
+    directory = rpc_module.ChainlistDirectory()
+
+    assert (await directory.chain_params(252))["chainName"] == "Fraxtal"
+    assert await directory.chain_params(9999) is None

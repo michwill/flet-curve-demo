@@ -35,6 +35,45 @@ SOURCE_COOLDOWN = 30.0
 RETRY_AFTER = 30.0
 
 
+#: How many explorers to hand a wallet. It wants a list and uses the first.
+MAX_EXPLORERS = 2
+
+#: And how many endpoints. The wallet shows them to the person approving
+#: the network, so this is a list somebody reads: the three that rank best
+#: on tracking, not all eight the read path is happy to fall through.
+MAX_OFFERED_ENDPOINTS = 3
+
+
+def chain_params(chain: dict[str, Any], endpoints: list[str]) -> dict[str, Any] | None:
+    """One chainlist entry as `wallet_addEthereumChain` wants it (EIP-3085).
+
+    None when the entry is missing anything a wallet insists on: without a
+    symbol or an endpoint the request is refused, and being refused by the
+    wallet reads to the person watching as the app being broken.
+    """
+    native = chain.get("nativeCurrency") or {}
+    symbol = str(native.get("symbol") or "").strip()
+    chain_id = chain.get("chainId")
+    if not endpoints or not symbol or chain_id is None:
+        return None
+    explorers = [
+        entry["url"]
+        for entry in chain.get("explorers") or []
+        if isinstance(entry, dict) and str(entry.get("url", "")).startswith("https://")
+    ]
+    return {
+        "chainId": hex(int(chain_id)),
+        "chainName": str(chain.get("name") or f"Chain {chain_id}"),
+        "rpcUrls": endpoints[:MAX_OFFERED_ENDPOINTS],
+        "nativeCurrency": {
+            "name": str(native.get("name") or symbol),
+            "symbol": symbol,
+            "decimals": int(native.get("decimals") or 18),
+        },
+        "blockExplorerUrls": explorers[:MAX_EXPLORERS],
+    }
+
+
 def usable_endpoints(chain: dict[str, Any], limit: int = MAX_ENDPOINTS) -> list[str]:
     """The endpoints from one chainlist entry this app can actually call."""
     scored: list[tuple[int, str]] = []
@@ -56,6 +95,7 @@ class ChainlistDirectory:
     def __init__(self, url: str = CHAINLIST) -> None:
         self.url = url
         self._by_chain: dict[int, list[str]] = {}
+        self._params: dict[int, dict[str, Any]] = {}
         self._loaded = False
         self._failed_at: float | None = None
         self._lock = asyncio.Lock()
@@ -66,6 +106,13 @@ class ChainlistDirectory:
             if not self._loaded and self._due():
                 await self._load()
         return list(self._by_chain.get(chain_id, ()))
+
+    async def chain_params(self, chain_id: int) -> dict[str, Any] | None:
+        """What a wallet needs to be taught this chain, or None."""
+        async with self._lock:
+            if not self._loaded and self._due():
+                await self._load()
+        return self._params.get(chain_id)
 
     def _due(self) -> bool:
         """Whether a fetch is worth making now. See `RETRY_AFTER`."""
@@ -88,6 +135,8 @@ class ChainlistDirectory:
             endpoints = usable_endpoints(chain)
             if endpoints:
                 self._by_chain[int(chain_id)] = endpoints
+            if params := chain_params(chain, endpoints):
+                self._params[int(chain_id)] = params
         if self._by_chain:
             self._loaded = True
             self._failed_at = None

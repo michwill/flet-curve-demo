@@ -452,12 +452,19 @@ async def test_a_remembered_wallet_that_is_gone_does_not_take_a_stand_in(
 class SwitchingProvider(WalletProvider):
     """Records switches, and can refuse or plead ignorance."""
 
-    def __init__(self, chain: int = 1, *, knows: set[int] | None = None) -> None:
+    def __init__(
+        self,
+        chain: int = 1,
+        *,
+        knows: set[int] | None = None,
+        rejects_add: bool = False,
+    ) -> None:
         self.chain = chain
         self.knows = {1} if knows is None else knows
         self.switched: list[int] = []
         self.added: list[dict] = []
         self.refuse = False
+        self.rejects_add = rejects_add
 
     async def request(self, method, params=None):
         params = params or []
@@ -473,6 +480,8 @@ class SwitchingProvider(WalletProvider):
             self.chain = wanted
             return None
         if method == "wallet_addEthereumChain":
+            if self.rejects_add:
+                raise RpcError(4001, "User rejected the request")
             self.added.append(params[0])
             self.knows.add(int(params[0]["chainId"], 16))
             self.chain = int(params[0]["chainId"], 16)
@@ -491,7 +500,31 @@ def curve_app(provider: SwitchingProvider, chain: str = "ethereum", chains=None)
     app.wallet = Wallet(provider, ACCOUNT, get_chain(provider.chain))
     app.error = ft.Text("", visible=False)
     app.api = FakeLiteApi()
+    app._chainlist = FakeChainlist()
     return app
+
+
+class FakeChainlist:
+    """The public-endpoint directory, which also knows what a wallet needs
+    to be taught a network: `chainlist.org/rpcs.json` carries the currency
+    and the explorer beside the endpoints.
+    """
+
+    def __init__(self, params=None) -> None:
+        self.params = params if params is not None else {
+            252: {
+                "chainId": "0xfc",
+                "chainName": "Fraxtal",
+                "rpcUrls": ["https://rpc.frax.com"],
+                "nativeCurrency": {"name": "Frax", "symbol": "FRAX", "decimals": 18},
+                "blockExplorerUrls": ["https://fraxscan.com"],
+            }
+        }
+        self.asked: list[int] = []
+
+    async def chain_params(self, chain_id: int):
+        self.asked.append(chain_id)
+        return self.params.get(chain_id)
 
 
 class FakeLiteApi:
@@ -559,12 +592,57 @@ async def test_an_unknown_chain_with_no_metadata_says_so() -> None:
     provider = SwitchingProvider(chain=1, knows={1})
     app = curve_app(provider, chain="xdai")
     app.api = FakeLiteApi(chains={})
+    app._chainlist = FakeChainlist(params={})  # nothing to offer
 
     await app.align_wallet_chain()
 
     assert provider.added == []
     assert app.error.visible is True
     assert "does not know" in app.error.value
+
+
+async def test_a_network_the_wallet_lacks_is_offered_to_it() -> None:
+    """Switching to Fraxtal on a wallet that has never heard of it used to
+    end at a red line telling the reader to go and add it themselves. The
+    directory the app already reads for public endpoints has everything
+    EIP-3085 asks for, so the wallet is offered the network instead.
+    """
+    provider = SwitchingProvider(chain=1, knows={1})
+    app = curve_app(provider, chain="fraxtal", chains={"ethereum": 1, "fraxtal": 252})
+    app.api = FakeLiteApi(chains={})
+
+    await app.align_wallet_chain()
+
+    assert app._chainlist.asked == [252]
+    assert [added["chainName"] for added in provider.added] == ["Fraxtal"]
+    assert provider.added[0]["rpcUrls"] == ["https://rpc.frax.com"]
+    assert provider.added[0]["nativeCurrency"]["symbol"] == "FRAX"
+    assert app.error.visible is False, "nothing went wrong, so nothing is said"
+
+
+async def test_a_lite_chain_still_describes_itself() -> None:
+    """Its own deployment names the RPC, and the directory has never heard
+    of it -- that is what makes it Lite.
+    """
+    provider = SwitchingProvider(chain=1, knows={1})
+    app = curve_app(provider, chain="monad")
+    app._chainlist = FakeChainlist(params={})
+
+    await app.align_wallet_chain()
+
+    assert [added["chainName"] for added in provider.added] == ["Monad"]
+    assert app._chainlist.asked == [], "no need to ask a directory that cannot know"
+
+
+async def test_declining_the_offer_is_not_an_error() -> None:
+    """The wallet asks before it adds anything. Saying no is an answer."""
+    provider = SwitchingProvider(chain=1, knows={1}, rejects_add=True)
+    app = curve_app(provider, chain="fraxtal", chains={"ethereum": 1, "fraxtal": 252})
+    app.api = FakeLiteApi(chains={})
+
+    await app.align_wallet_chain()
+
+    assert app.error.visible is False
 
 
 async def test_no_wallet_is_not_an_error() -> None:

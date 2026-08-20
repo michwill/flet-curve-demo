@@ -952,11 +952,29 @@ app cannot handle.
 
 So picking a network in the header now takes the wallet with it —
 `wallet_switchEthereumChain`, which the wallet prompts for and may refuse. A
-wallet that has never heard of the network answers 4902; for a Curve Lite chain
-that is the normal case, and `get_platforms` is the only place publishing the
-RPC, explorer and native symbol that `wallet_addEthereumChain` needs, so the
-offer is made with that. Only on a deliberate pick, never on load, where the
-wallet's own network is a choice the app follows rather than overrides.
+wallet that has never heard of the network answers 4902, and then it is
+offered one: `wallet_addEthereumChain` with the chain's name, native currency,
+explorer and endpoints, which the wallet shows for approval.
+
+Where those come from depends on the chain. A Curve Lite deployment describes
+itself — `get_platforms` publishes the RPC, explorer and native symbol, and is
+the only place that has them. Everything else comes from the chainlist
+directory `curve/rpc.py` already reads for public endpoints: the same
+`rpcs.json` carries `nativeCurrency` and `explorers` beside the RPCs, which is
+all EIP-3085 asks for. All 26 networks the app lists are in it.
+
+Three endpoints are offered, not the eight the read path will happily fall
+through, and privacy-ranked first — this list goes in front of a person
+approving a network, so it is a list somebody reads. An entry missing a
+currency symbol or an endpoint is not offered at all: the wallet would refuse
+the request, and being refused reads as the app being broken rather than the
+directory being thin. That is the one case still answered with "your wallet
+does not know this network", which used to be the answer for every chain that
+was not Lite — Fraxtal on a fresh MetaMask being the report that started this.
+
+Declining the offer is not an error and says nothing: the wallet asked, and no
+is an answer. Only on a deliberate pick, never on load, where the wallet's own
+network is a choice the app follows rather than overrides.
 
 When they still disagree — a refusal, or a wallet moved by hand — each action
 panel says which network to be on and offers the switch, with its estimate

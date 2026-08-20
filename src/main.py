@@ -792,29 +792,49 @@ class CurveApp:
             self._say_chain(str(exc))
             return
 
-        lite = (await self.api.lite_chains()).get(self.chain)
-        if lite is None or not lite.rpc_url:
+        params = await self._teachable(chain_id)
+        if params is None:
             self._say_chain(
-                f"Your wallet does not know {chain_name(self.chain)}. Add the "
+                f"Your wallet does not know {chain_name(self.chain)}, and no "
+                "public endpoint for it could be found to offer. Add the "
                 "network there, then reload."
             )
             return
         try:
-            await wallet.provider.add_chain(
-                {
-                    "chainId": hex(chain_id),
-                    "chainName": lite.label,
-                    "rpcUrls": [lite.rpc_url],
-                    "blockExplorerUrls": [lite.explorer] if lite.explorer else [],
-                    "nativeCurrency": {
-                        "name": lite.native_symbol,
-                        "symbol": lite.native_symbol,
-                        "decimals": 18,
-                    },
-                }
-            )
+            await wallet.provider.add_chain(params)
+        except RpcError as exc:
+            if not exc.rejected_by_user:
+                self._say_chain(
+                    f"Could not add {params['chainName']} to your wallet: {exc}"
+                )
         except WalletError as exc:
-            self._say_chain(f"Could not add {lite.label} to your wallet: {exc}")
+            self._say_chain(
+                f"Could not add {params['chainName']} to your wallet: {exc}"
+            )
+
+    async def _teachable(self, chain_id: int) -> dict | None:
+        """What this network would have to say to be added to a wallet.
+
+        A Lite chain describes itself -- its own deployment names the RPC.
+        Everything else comes from the chainlist directory the app already
+        reads for public endpoints, which carries the currency and the
+        explorer beside them. Without one of those the offer cannot be
+        made, and a wallet that does not know the network is the message.
+        """
+        lite = (await self.api.lite_chains()).get(self.chain)
+        if lite is not None and lite.rpc_url:
+            return {
+                "chainId": hex(chain_id),
+                "chainName": lite.label,
+                "rpcUrls": [lite.rpc_url],
+                "blockExplorerUrls": [lite.explorer] if lite.explorer else [],
+                "nativeCurrency": {
+                    "name": lite.native_symbol,
+                    "symbol": lite.native_symbol,
+                    "decimals": 18,
+                },
+            }
+        return await self._chainlist.chain_params(chain_id)
 
     def _say_chain(self, message: str) -> None:
         self.error.value = message

@@ -504,25 +504,3 @@ def test_a_large_resize_refetches() -> None:
     chart._resized(SimpleNamespace(width=800.0, height=340.0))
     chart._resized(SimpleNamespace(width=1600.0, height=340.0))
     assert calls == [1]
-
-
-def test_summary_reports_the_change_over_the_window() -> None:
-    chart = CandleChart()
-    chart.set_candles(series([(1.0, 1.0, 1.0, 1.0), (1.0, 1.1, 1.0, 1.1)]))
-    assert "+10.00%" in chart.summary
-    chart.set_candles(series([(1.0, 1.0, 1.0, 1.0), (1.0, 1.0, 0.9, 0.9)]))
-    assert "-10.00%" in chart.summary
-
-
-def test_summary_is_empty_without_enough_data() -> None:
-    chart = CandleChart()
-    chart.set_candles([])
-    assert chart.summary == ""
-    chart.set_candles(flat(1))
-    assert chart.summary == ""
-
-
-def test_summary_stays_ascii() -> None:
-    chart = CandleChart()
-    chart.set_candles(series([(1.0, 1.0, 1.0, 1.0), (1.0, 1.1, 1.0, 1.1)]))
-    assert chart.summary.isascii()

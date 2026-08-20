@@ -90,7 +90,9 @@ class PoolDetailView(ft.Column):
         self._layout = layout_for(2000.0)
 
         self.chart = CandleChart(height=340, on_capacity_change=self._chart_resized)
-        self.chart_caption = ft.Text("", size=SMALL, color=ft.Colors.ON_SURFACE_VARIANT)
+        self.chart_caption = ft.Text(
+            "", size=SMALL, color=ft.Colors.ON_SURFACE_VARIANT, visible=False
+        )
         self.chart_error = ft.Text("", size=LABEL, color=ft.Colors.ERROR)
         self._candle_size = DEFAULT_CANDLE_SIZE
 
@@ -784,7 +786,7 @@ class PoolDetailView(ft.Column):
         size = get_candle_size(self._candle_size)
         count = self.chart.candle_capacity()
         self.chart_error.value = ""
-        self.chart_caption.value = "Loading…"
+        self._say_chart("Loading…")
         self._page.update()
 
         try:
@@ -805,18 +807,25 @@ class PoolDetailView(ft.Column):
                 )
         except ApiError as exc:
             self.chart.set_candles([])
-            self.chart_caption.value = ""
+            self._say_chart("")
             self.chart_error.value = str(exc)
             self._page.update()
             return
 
         self.chart.set_candles(candles)
-        self.chart_caption.value = (
-            f"{self.chart.summary}   ·   {len(candles)} x {size.label}"
-            if candles
-            else "No price history for this pair."
-        )
+        self._say_chart("")
         self._page.update()
+
+    def _say_chart(self, message: str) -> None:
+        """The line above the chart, which carries the wait and nothing else.
+
+        It used to read the last price, its change over the window and how
+        many candles were drawn. None of that is worth a line above a chart
+        that shows the first two and is the third, and the chart draws its
+        own "no price history" in the middle of the empty plot.
+        """
+        self.chart_caption.value = message
+        self.chart_caption.visible = bool(message)
 
     async def _load_campaigns(self) -> None:
         """Re-run the campaign lookup now that the LP token is known."""

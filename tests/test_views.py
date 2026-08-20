@@ -531,6 +531,52 @@ def test_candle_chart_builds_and_accepts_an_empty_series() -> None:
     assert chart._empty.visible
 
 
+class StubCandleApi:
+    """Answers the chart with a two-bar series and nothing else."""
+
+    async def lp_candles(self, *_args, **_kwargs):
+        from curve.api import Candle
+
+        return [
+            Candle(time=1, open=1.0, high=1.1, low=1.0, close=1.05),
+            Candle(time=2, open=1.05, high=1.1, low=1.0, close=1.03),
+        ]
+
+
+def chart_view():
+    return PoolDetailView(
+        StubPage(), api=StubCandleApi(), pool=make_pool(),
+        get_contract=lambda: None, on_back=lambda: None,
+    )
+
+
+async def test_a_loaded_chart_has_no_line_of_numbers_above_it() -> None:
+    """The caption read the last price, its change over the window and the
+    candle count: a line of chart furniture over a chart that draws the
+    first two and is the third.
+    """
+    view = chart_view()
+
+    await view.load_chart()
+
+    assert view.chart._candles
+    assert view.chart_caption.value == ""
+    assert view.chart_caption.visible is False, "and it takes up no room"
+
+
+def test_the_line_above_the_chart_is_kept_for_the_wait() -> None:
+    """An empty plot with nothing over it reads as a chart with no data,
+    which is what the chart says in the middle of it when that is true.
+    """
+    view = chart_view()
+
+    view._say_chart("Loading…")
+    assert view.chart_caption.visible
+
+    view._say_chart("")
+    assert not view.chart_caption.visible
+
+
 # -- Curve Lite ------------------------------------------------------------
 # These chains have no volume and no base APR -- nothing indexes their trades
 # -- so those two columns are not empty, they are absent. ------------------

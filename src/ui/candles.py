@@ -11,7 +11,6 @@ import flet.canvas as cv
 import flet_charts as fc
 
 from curve.api import Candle
-from curve.format import token_amount
 
 from . import safe_update
 from .typography import SMALL, TINY
@@ -462,17 +461,3 @@ class CandleChart(ft.Container):
         self._overlay.shapes = []
         if redraw:
             safe_update(self._overlay)
-
-    # -- header caption ---------------------------------------------------
-
-    @property
-    def summary(self) -> str:
-        """A change-over-window caption for the header."""
-        if len(self._candles) < 2:
-            return ""
-        first, last = self._candles[0].open, self._candles[-1].close
-        if not first:
-            return ""
-        change = (last - first) / first * 100
-        arrow = "+" if change >= 0 else "-"
-        return f"{token_amount(last)}   {arrow}{abs(change):.2f}%"

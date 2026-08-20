@@ -245,6 +245,26 @@ runs several edges, so a visitor arriving tomorrow on a cold one gets the
 same coin flip. The durable fix is more peers that can answer — your own
 node, or a second pinning service.
 
+### The warmer asks the registry first
+
+`warm_ipfs.py` reads `curve.eth`'s contenthash from the ENS registry on
+Ethereum — `resolver(namehash)` then `contenthash(namehash)`, two `eth_call`s
+against a public endpoint — and waits for each gateway to serve *that* CID
+before warming it.
+
+This is not tidiness. eth.limo and eth.link cache their own ENS lookups for
+minutes, so a warm started the moment the transaction lands pulls the build
+being replaced through the edge, and looks from the outside like a warm that
+did nothing. It happened, and the way it was found was reading `x-ipfs-path`
+by hand. A gateway cannot be its own witness for "have you noticed the name
+moved?", so the question goes to the chain.
+
+`namehash` runs on `wallet.erc20.keccak256`, the pure-Python one the app
+already carries because Pyodide has no wheel for a hash. `--cid` warms a CID
+you name instead; `--no-wait` skips the registry entirely and warms whatever
+is being served. A registry nobody can reach is a reason to skip the wait,
+not to skip the work — the run says so and warms anyway.
+
 ### Warming again, later
 
 Warming *decays*, and that is measured rather than feared: `main.dart.wasm`

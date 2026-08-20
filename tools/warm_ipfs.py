@@ -9,18 +9,27 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from tools.ens import EnsError, contenthash, name_behind
 from tools.publish_ipfs import (
     DIST,
     WARM_WORKERS,
     boot_files,
     elapsed_text,
     progress_reporter,
+    resolved_cid,
     verify,
 )
 
 #: Both of them, because they are separate infrastructure behind one name
 #: and a visitor does not choose between them.
 GATEWAYS = ("https://curve.eth.limo", "https://curve.eth.link")
+
+#: How long to wait for a gateway to notice the name has moved, and how
+#: often to ask. Their own ENS lookups are cached for minutes, so a warm
+#: started the moment the transaction lands would warm the old build --
+#: which is what happened, and looked like the warm having no effect.
+FLIP_DEADLINE = 900.0
+FLIP_INTERVAL = 20.0
 
 #: Where the compiled marks live inside the build, and how they are named.
 MARKS_DIR = ("curve", "tokens")
@@ -146,6 +155,64 @@ def rate_text(done: int, total: int, done_bytes: int, elapsed: float) -> str:
     )
 
 
+def wanted_cid(host: str, options, *, say=print) -> str:
+    """What the name behind this gateway points at, per the registry.
+
+    Read from Ethereum rather than from a gateway, because the question is
+    whether the gateway is up to date and it cannot be its own witness.
+    """
+    if getattr(options, "cid", ""):
+        return str(options.cid)
+    name = name_behind(host)
+    if not name or getattr(options, "no_wait", False):
+        return ""
+    try:
+        cid = contenthash(name)
+    except EnsError as exc:
+        say(f"  could not read {name} from Ethereum, warming anyway: {exc}")
+        return ""
+    if not cid:
+        say(f"  {name} has no IPFS contenthash, warming whatever is served")
+    return cid
+
+
+def wait_for_flip(
+    host: str,
+    cid: str,
+    options,
+    *,
+    client=None,
+    now=time.monotonic,
+    sleep=time.sleep,
+    say=print,
+) -> bool:
+    """Block until `host` serves `cid`. True if it got there."""
+    import httpx
+
+    owned = client is None
+    client = client or httpx.Client(follow_redirects=True)
+    started = now()
+    try:
+        while True:
+            live = resolved_cid(client, host)
+            if live == cid:
+                if now() - started > FLIP_INTERVAL:
+                    say(f"  it is serving that now, after {elapsed_text(now() - started)}")
+                return True
+            waited = elapsed_text(now() - started)
+            say(f"  {host} is still on {live or 'nothing readable'}   {waited}")
+            if now() - started >= options.flip_deadline:
+                say(
+                    f"  giving up on the wait after {waited} and warming what it\n"
+                    "  serves. Run this again once it has caught up."
+                )
+                return False
+            sleep(FLIP_INTERVAL)
+    finally:
+        if owned:
+            client.close()
+
+
 def warm_one(host: str, paths: list[str], options) -> dict:
     """One gateway, whole files, two at a time."""
     total_bytes = weight(options.dist, paths)
@@ -247,6 +314,23 @@ def main() -> int:
         f"{WARM_WORKERS} when the boot set is included)",
     )
     parser.add_argument("--show", type=int, default=20, help="failures to list")
+    parser.add_argument(
+        "--cid",
+        default="",
+        help="warm this CID rather than whatever the registry says the name "
+        "points at",
+    )
+    parser.add_argument(
+        "--no-wait",
+        action="store_true",
+        help="do not read ENS or wait for the gateway to catch up with it",
+    )
+    parser.add_argument(
+        "--flip-deadline",
+        type=float,
+        default=FLIP_DEADLINE,
+        help=f"seconds to wait for a gateway to notice (default {FLIP_DEADLINE:.0f})",
+    )
     options = parser.parse_args()
 
     if options.boot_only:
@@ -279,6 +363,9 @@ def main() -> int:
     left = 0
     try:
         for host in hosts:
+            if cid := wanted_cid(host, options):
+                print(f"\n{name_behind(host)} points at {cid}")
+                wait_for_flip(host, cid, options)
             left += len(warm_one(host, paths, options))
     except KeyboardInterrupt:
         print(

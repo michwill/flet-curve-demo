@@ -4,8 +4,19 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from tools import publish_ipfs as ipfs
 from tools import warm_ipfs as warm
+
+
+@pytest.fixture(autouse=True)
+def _no_registry(monkeypatch):
+    """No test asks Ethereum what the name points at. The run does, before
+    it warms anything, and four public endpoints at a 20-second timeout is
+    not something a test suite should be doing.
+    """
+    monkeypatch.setattr(warm, "contenthash", lambda *_a, **_kw: "")
 
 
 def build(root: Path, marks: dict[str, list[str]] | None = None) -> Path:

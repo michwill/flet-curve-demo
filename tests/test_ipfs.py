@@ -615,6 +615,27 @@ def run_verify(monkeypatch, gateway: FakeGateway, paths: list[str], **kw) -> dic
     )
 
 
+def test_the_bar_moves_while_a_round_is_still_running(monkeypatch) -> None:
+    """A round is one probe per outstanding file, and a file nobody can
+    find takes the full timeout -- 58 of those, six at a time, is seven
+    minutes. Reported only at the end of a round, that is a bar that has
+    not moved, which reads as a hung script. It was read as one.
+    """
+    gateway = FakeGateway({"a.js": [(200, 0.2)], "b.js": [(200, 0.3)]})
+    seen: list[tuple[int, int]] = []
+
+    monkeypatch.setattr(ipfs, "probe", gateway.probe)
+    ipfs.verify(
+        "bafyfake",
+        ["a.js", "b.js"],
+        client=object(),
+        sleep=lambda _s: None,
+        on_round=lambda served, total, _e: seen.append((served, total)),
+    )
+
+    assert seen == [(1, 2), (2, 2)], "once per file, not once per round"
+
+
 def test_a_pin_that_is_fully_retrievable_passes(monkeypatch) -> None:
     gateway = FakeGateway({"index.html": [(200, 0.2)], "main.dart.js": [(206, 0.4)]})
     assert run_verify(monkeypatch, gateway, ["index.html", "main.dart.js"]) == {}
@@ -876,6 +897,25 @@ def test_the_bar_redraws_in_place_only_on_a_terminal() -> None:
     assert piped.getvalue().count("\n") == 2
     assert terminal.getvalue().count("\r") == 2
     assert "\n" not in terminal.getvalue()
+
+
+def test_a_piped_bar_is_written_at_intervals_and_at_the_end() -> None:
+    """It moves per file now. A terminal redraws in place and can take
+    every one of them; a log would take 58 lines a round.
+    """
+
+    class Pipe(io.StringIO):
+        def isatty(self) -> bool:
+            return False
+
+    piped = Pipe()
+    report = ipfs.progress_reporter(piped, every=20.0)
+    for served in range(1, 8):  # one a second, all within one interval
+        report(served, 58, float(served))
+    report(58, 58, 8.0)
+
+    assert piped.getvalue().count("\n") == 2, "the first, then the finish"
+    assert "58/58" in piped.getvalue()
 
 
 def test_the_cid_is_printed_before_any_waiting(capsys) -> None:

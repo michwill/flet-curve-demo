@@ -725,24 +725,35 @@ def verify(
     started = now()
     try:
         while outstanding:
-            with concurrent.futures.ThreadPoolExecutor(workers) as pool:
-                results = list(
-                    pool.map(
-                        lambda p: (p, *probe(client, f"{base}/{p}", whole=whole)),
-                        outstanding,
-                    )
-                )
             retry = []
-            for path, status, seconds in results:
-                verdict = classify(status, seconds)
-                if verdict == "served":
-                    bad.pop(path, None)
-                    continue
-                bad[path] = (verdict, status, seconds)
-                if verdict in ("unfound", "throttled"):
-                    retry.append(path)
-            if on_round is not None:
-                on_round(len(paths) - len(bad), len(paths), now() - started)
+            # What earlier rounds already settled, counted up from there as
+            # this one lands: `len(paths) - len(bad)` is only the truth once
+            # every file has been probed, so reporting it per file would run
+            # the bar backwards through the first round.
+            landed = len(paths) - len(outstanding)
+            # Reported as each file lands rather than when the round ends.
+            # A round is one probe per outstanding file, and a file nobody
+            # can find takes the full timeout: 58 of those at six at a time
+            # is seven minutes of a bar that has not moved, which is not
+            # something waiting looks like. It looks like a hung script.
+            with concurrent.futures.ThreadPoolExecutor(workers) as pool:
+                pending = {
+                    pool.submit(probe, client, f"{base}/{path}", whole=whole): path
+                    for path in outstanding
+                }
+                for done in concurrent.futures.as_completed(pending):
+                    path = pending[done]
+                    status, seconds = done.result()
+                    verdict = classify(status, seconds)
+                    if verdict == "served":
+                        bad.pop(path, None)
+                        landed += 1
+                    else:
+                        bad[path] = (verdict, status, seconds)
+                        if verdict in ("unfound", "throttled"):
+                            retry.append(path)
+                    if on_round is not None:
+                        on_round(landed, len(paths), now() - started)
             outstanding = retry
             if not outstanding or now() - started >= deadline:
                 break
@@ -772,12 +783,22 @@ def progress_bar(served: int, total: int, elapsed: float) -> str:
     )
 
 
-def progress_reporter(stream=None):
-    """Draw the bar in place on a terminal, one line per pass otherwise."""
+#: How often the bar is written when it is being piped rather than drawn,
+#: for callers that report per file. `warm_ipfs` reports per batch and
+#: wants every one of those, so this is asked for rather than assumed.
+PIPED_INTERVAL = 20.0
+
+
+def progress_reporter(stream=None, every: float = 0.0):
+    """Draw the bar in place on a terminal, and at intervals otherwise."""
     stream = stream or sys.stdout
     inline = hasattr(stream, "isatty") and stream.isatty()
+    last = [-every]
 
     def report(served: int, total: int, elapsed: float) -> None:
+        if not inline and served < total and elapsed - last[0] < every:
+            return
+        last[0] = elapsed
         line = progress_bar(served, total, elapsed)
         stream.write(f"\r{line}" if inline else f"{line}\n")
         stream.flush()
@@ -1077,6 +1098,12 @@ def chosen_gateway(cid: str, options) -> str:
     # about it. Only every candidate answering with something that is not
     # the file leaves nothing to look with.
     real = [host for host, answer, _s in tried if answer != NOT_THIS_FILE]
+    if real:
+        print(
+            "  none of them has it yet, which a fresh pin usually takes some\n"
+            "  minutes to stop being true. Waiting on the first, and asking\n"
+            "  again for what has not landed:"
+        )
     return real[0] if real else ""
 
 
@@ -1097,7 +1124,7 @@ def wait_until_findable(cid: str, paths: list[str], options) -> int:
     print(f"  {gateway.format(cid=cid)}")
     print("  (token marks skipped -- lazily fetched, and there are 6,716)")
     started = time.monotonic()
-    report = progress_reporter()
+    report = progress_reporter(every=PIPED_INTERVAL)
     try:
         bad = verify(
             cid,

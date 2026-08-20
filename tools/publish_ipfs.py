@@ -545,7 +545,6 @@ def pin(
 VERIFY_GATEWAYS = (
     "https://ipfs.io/ipfs/{cid}",
     "https://{cid}.ipfs.dweb.link",
-    "https://trustless-gateway.link/ipfs/{cid}",
 )
 
 #: A small file every build has, fetched whole to tell a gateway that
@@ -556,9 +555,10 @@ GATEWAY_PROBE_FILE = "version.json"
 VERIFY_GATEWAY = VERIFY_GATEWAYS[0]
 
 #: How long a gateway gets to answer for the CID before the next is tried.
-#: One that cannot find it answers 504 in ~28s; one that can takes under a
-#: second, so there is no point waiting out the miss three times.
-GATEWAY_PROBE_TIMEOUT = 12.0
+#: Long enough to outlast a 504, which comes back at ~28s: a gateway that
+#: *can* serve a pin nobody has asked for yet took 11 seconds to do it, and
+#: a shorter deadline read that as a failure and stopped a good publish.
+GATEWAY_PROBE_TIMEOUT = 32.0
 
 #: The gateway people actually use, checked *after* ENS is moved -- which is
 #: the only order available, because eth.limo has no CID gateway at all:
@@ -646,6 +646,20 @@ def fetch(client, url: str, timeout: float) -> tuple[int | str, bytes, float]:
         return type(exc).__name__, b"", time.monotonic() - started
 
 
+#: What a gateway did with the probe. Anything else is its status, which
+#: is a gateway that has not found the content *yet* -- a different thing
+#: from one that cannot be used to look.
+SERVED = "served"
+NOT_THIS_FILE = "200, but not this file"
+
+
+def gateway_answer(status: int | str, body: bytes, expected: bytes) -> str:
+    """What came back, in the terms that matter here."""
+    if status in (200, 206):
+        return SERVED if body == expected else NOT_THIS_FILE
+    return str(status)
+
+
 def pick_gateway(
     cid: str,
     expected: bytes,
@@ -677,9 +691,8 @@ def pick_gateway(
             status, body, seconds = fetch(
                 client, f"{gateway.format(cid=cid)}/{path}", timeout
             )
-            served = status in (200, 206) and body == expected
-            tried.append((gateway, status if served else "not the file", seconds))
-            if served:
+            tried.append((gateway, gateway_answer(status, body, expected), seconds))
+            if tried[-1][1] == SERVED:
                 return gateway, tried
     finally:
         if owned:
@@ -1055,9 +1068,16 @@ def chosen_gateway(cid: str, options) -> str:
         ) from None
     gateway, tried = pick_gateway(cid, expected)
     if len(tried) > 1 or not gateway:
-        for host, status, seconds in tried:
-            print(f"  {host.format(cid=cid)} -> {status} in {seconds:.1f}s")
-    return gateway
+        for host, answer, seconds in tried:
+            print(f"  {host.format(cid=cid)} -> {answer} in {seconds:.1f}s")
+    if gateway:
+        return gateway
+    # None of them has it yet. That is what the check that follows is for,
+    # so it runs anyway -- on a gateway that would at least tell the truth
+    # about it. Only every candidate answering with something that is not
+    # the file leaves nothing to look with.
+    real = [host for host, answer, _s in tried if answer != NOT_THIS_FILE]
+    return real[0] if real else ""
 
 
 def wait_until_findable(cid: str, paths: list[str], options) -> int:
@@ -1066,11 +1086,12 @@ def wait_until_findable(cid: str, paths: list[str], options) -> int:
     gateway = chosen_gateway(cid, options)
     if not gateway:
         print(
-            "\n  No gateway could hand back this pin's own bytes yet, which is\n"
-            "  the same answer the file-by-file check would take minutes to\n"
-            "  reach: the content is pinned, and nothing else can find it.\n"
-            "  **Do not point ENS at this CID yet.** Try again in a few\n"
-            f"  minutes:\n\n    python tools/publish_ipfs.py --verify-only {cid}"
+            "\n  Every gateway answered 200 with something that was not this\n"
+            "  pin's own file -- which is what a service-worker gateway does,\n"
+            "  and it means there is nothing here to check with rather than\n"
+            "  anything known about the pin. Name one that returns bytes:\n\n"
+            "    python tools/publish_ipfs.py --verify-only "
+            f"{cid} --verify-gateway 'https://{{cid}}.ipfs.example/'"
         )
         return 1
     print(f"  {gateway.format(cid=cid)}")

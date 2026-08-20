@@ -1105,7 +1105,7 @@ def test_a_gateway_that_cannot_find_it_is_passed_over(monkeypatch) -> None:
     gateway, tried = choose(monkeypatch, hosts)
 
     assert "dweb.link" in gateway
-    assert [status for _host, status, _s in tried] == ["not the file", 200]
+    assert [answer for _host, answer, _s in tried] == ["504", ipfs.SERVED]
 
 
 def test_a_gateway_that_answers_200_to_everything_is_not_one(monkeypatch) -> None:
@@ -1121,19 +1121,44 @@ def test_a_gateway_that_answers_200_to_everything_is_not_one(monkeypatch) -> Non
     gateway, tried = choose(monkeypatch, hosts)
 
     assert "dweb.link" in gateway
-    assert tried[0][1] == "not the file", "200 is not evidence"
+    assert tried[0][1] == ipfs.NOT_THIS_FILE, "200 is not evidence"
 
 
 def test_no_gateway_serving_it_names_none(monkeypatch) -> None:
-    """An empty answer, so the publish stops rather than proving a pin
-    against a host that cannot fetch it.
-    """
     hosts = Gateways({})
 
     gateway, tried = choose(monkeypatch, hosts)
 
     assert gateway == ""
     assert len(tried) == len(ipfs.VERIFY_GATEWAYS), "all of them were asked"
+
+
+def test_a_pin_nobody_has_yet_is_still_waited_on(monkeypatch, tmp_path) -> None:
+    """A gateway answering 504 has not found it *yet*, which is the whole
+    reason the file-by-file check retries. Reading that as "cannot be
+    checked" stopped a publish whose pin a gateway served 11 seconds later.
+    """
+    (tmp_path / ipfs.GATEWAY_PROBE_FILE).write_bytes(BYTES)
+    hosts = Gateways({})  # every one of them times out
+    monkeypatch.setattr(ipfs, "fetch", hosts.fetch)
+    options = SimpleNamespace(verify_gateway="", dist=str(tmp_path))
+
+    assert ipfs.chosen_gateway("bafyfake", options) == ipfs.VERIFY_GATEWAYS[0]
+
+
+def test_only_a_wall_of_wrong_files_leaves_nothing_to_check_with(
+    monkeypatch, tmp_path
+) -> None:
+    """Every candidate a service-worker gateway is the one case with no
+    answer in it: not a slow pin, an unusable set of gateways.
+    """
+    (tmp_path / ipfs.GATEWAY_PROBE_FILE).write_bytes(BYTES)
+    shim = (200, b"<!DOCTYPE html>", 0.2)
+    hosts = Gateways(dict.fromkeys(("ipfs.io", "dweb.link"), shim))
+    monkeypatch.setattr(ipfs, "fetch", hosts.fetch)
+    options = SimpleNamespace(verify_gateway="", dist=str(tmp_path))
+
+    assert ipfs.chosen_gateway("bafyfake", options) == ""
 
 
 def test_a_named_gateway_is_not_second_guessed(monkeypatch) -> None:
@@ -1157,9 +1182,16 @@ def test_the_probe_file_is_one_every_build_writes(tmp_path: Path) -> None:
     assert ipfs.GATEWAY_PROBE_FILE in str(raised.value)
 
 
-def test_the_probe_gives_a_gateway_less_time_than_the_check_does() -> None:
-    """A miss takes ~28s to come back. Waiting that out three times to pick
-    a host is most of a minute before the check has started.
+def test_the_probe_outlasts_a_gateway_that_is_merely_slow() -> None:
+    """A 504 comes back at ~28s and a cold hit took 11. Cutting the probe
+    at 12 read a working gateway as a failed one, on a real publish.
     """
-    assert ipfs.GATEWAY_PROBE_TIMEOUT < ipfs.VERIFY_TIMEOUT
-    assert ipfs.GATEWAY_PROBE_TIMEOUT < 28.0
+    assert ipfs.GATEWAY_PROBE_TIMEOUT > 28.0
+    assert ipfs.GATEWAY_PROBE_TIMEOUT <= ipfs.VERIFY_TIMEOUT
+
+
+def test_every_candidate_returns_bytes_for_a_plain_get() -> None:
+    """`trustless-gateway.link` was in this list and could never pass: it
+    serves raw blocks and CARs, and answers a plain path GET with a 406.
+    """
+    assert not any("trustless" in gateway for gateway in ipfs.VERIFY_GATEWAYS)

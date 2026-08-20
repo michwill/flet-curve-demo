@@ -1471,7 +1471,14 @@ Both found by looking at the rendered result, and neither is obvious:
 
 ### Trades and liquidity, where the chart was
 
-The series picker ends in two entries under a rule: **Trades** and
+Every price series in the picker is named by its marks: the pool's own stack
+for the LP token, the two coins for a pair, on the menu entry and on the
+closed field alike. They are built fresh for each, because a control belongs
+to one place in the tree — and Flet skips a write whose control compares
+*equal* to the one already there, so on a two-coin pool the field does not
+change between the LP token and the only pair, both being the same two marks.
+
+The picker ends in two entries under a rule: **Trades** and
 **Liquidity**. They are not a third way of drawing the price, they replace the
 chart with what actually went through the pool — a swap per row, or a deposit
 or withdrawal — each row a link to the transaction on the chain's explorer.

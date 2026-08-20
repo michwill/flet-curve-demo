@@ -594,9 +594,9 @@ class StubActivityApi(StubCandleApi):
         return [LiquidityEvent(1787225795, "0xdeed", "0xprovider", True, (1.0, 0.0))]
 
 
-def activity_view(**kwargs):
+def activity_view(coins: int = 2, **kwargs):
     return PoolDetailView(
-        StubPage(), api=StubActivityApi(**kwargs), pool=make_pool(),
+        StubPage(), api=StubActivityApi(**kwargs), pool=make_pool(coins),
         get_contract=lambda: None, on_back=lambda: None,
     )
 
@@ -612,6 +612,52 @@ def test_the_picker_offers_the_two_tables_under_a_rule() -> None:
     assert [o.text for o in view.series.options[-2:]] == ["Trades", "Liquidity"]
     rule = view.series.options[-3]
     assert rule.disabled, "a rule is not something you can pick"
+
+
+def test_each_series_is_named_by_its_marks() -> None:
+    """The pool's own stack for the LP token, and the two coins for a pair
+    -- the same marks the row on the list page draws.
+    """
+    view = activity_view()
+    by_key = {option.key: option for option in view.series.options}
+
+    assert by_key[pool_detail.LP_SERIES].leading_icon is not None
+    assert by_key["0:1"].leading_icon is not None
+    assert by_key["__trades__"].leading_icon is None, "a table has no coins"
+
+
+def test_the_marks_follow_the_selection_onto_the_field() -> None:
+    """Compared by value, not by identity: Flet skips a write whose control
+    compares equal to the one already there, and on a two-coin pool the LP
+    stack and the only pair are the same two marks.
+    """
+    view = activity_view(coins=3)
+
+    view.series.value = "0:1"
+    view._series_changed(None)
+
+    assert view.series.leading_icon == view._series_mark("0:1")
+    assert view.series.leading_icon != view._series_mark(pool_detail.LP_SERIES)
+
+
+def test_picking_a_table_leaves_the_field_unmarked() -> None:
+    view = activity_view()
+
+    view.series.value = pool_detail.TRADES_SERIES
+    view._series_changed(None)
+
+    assert view.series.leading_icon is None
+
+
+def test_a_series_key_naming_no_coin_draws_nothing() -> None:
+    """The options are built from the pool's own coins, so this cannot
+    happen from the menu -- but a route or a stale option could ask.
+    """
+    view = activity_view()
+
+    assert view._series_mark("9:9") is None
+    assert view._series_mark("nonsense") is None
+    assert view._series_mark("") is None
 
 
 async def test_choosing_trades_puts_a_table_where_the_chart_was() -> None:

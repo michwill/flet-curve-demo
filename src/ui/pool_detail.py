@@ -27,7 +27,7 @@ from wallet.base import WalletError
 from . import AnyEvent, activity, safe_update, theme
 from .actions import ClaimTab, DepositTab, StakeTab, SwapTab, WithdrawTab
 from .candles import CandleChart
-from .logos import pool_stack, token_mark
+from .logos import coin_stack, pool_stack, token_mark
 from .pool_list import POINTS_ICON
 from .responsive import Layout, layout_for
 from .typography import BODY, LABEL, METRIC, SMALL, TITLE, TITLE_NARROW
@@ -53,6 +53,9 @@ SERIES_RULE = "__rule__"
 #: The chart's height, which the tables take over unchanged so the page
 #: does not jump when the picker moves between them.
 CHART_HEIGHT = 340
+
+#: How large a mark is in the series picker, beside what it names.
+SERIES_MARK = 18
 
 
 def _metric(label: str, value: str) -> ft.Control:
@@ -120,6 +123,7 @@ class PoolDetailView(ft.Column):
         self.series = ft.Dropdown(
             options=self._series_options(),
             value=LP_SERIES,
+            leading_icon=self._series_mark(LP_SERIES),
             dense=True,
             width=220,
             on_select=self._series_changed,
@@ -780,15 +784,39 @@ class PoolDetailView(ft.Column):
 
     # -- chart ------------------------------------------------------------
 
+    def _series_mark(self, key: str) -> ft.Control | None:
+        """The marks that name a series: the pool's own stack for the LP
+        token, and the two coins for a pair. Built fresh each time -- a
+        control belongs to one place in the tree, and this is drawn in the
+        menu and again on the closed field.
+        """
+        if key == LP_SERIES:
+            return pool_stack(self.pool, size=SERIES_MARK, limit=3)
+        coins = self.pool.pool_coins
+        i, _, j = key.partition(":")
+        if not j.isdigit() or not i.isdigit():
+            return None
+        if int(i) >= len(coins) or int(j) >= len(coins):
+            return None
+        return coin_stack([coins[int(i)], coins[int(j)]], self.pool.chain, SERIES_MARK)
+
     def _series_options(self) -> list[ft.DropdownOption]:
-        options = [ft.DropdownOption(key=LP_SERIES, text="LP token (USD)")]
+        options = [
+            ft.DropdownOption(
+                key=LP_SERIES,
+                text="LP token (USD)",
+                leading_icon=self._series_mark(LP_SERIES),
+            )
+        ]
         for i, main in enumerate(self.pool.pool_coins):
             for j, reference in enumerate(self.pool.pool_coins):
                 if i == j:
                     continue
                 options.append(
                     ft.DropdownOption(
-                        key=f"{i}:{j}", text=f"{main.symbol} / {reference.symbol}"
+                        key=f"{i}:{j}",
+                        text=f"{main.symbol} / {reference.symbol}",
+                        leading_icon=self._series_mark(f"{i}:{j}"),
                     )
                 )
         # Under a rule, because these two are not a third way of drawing the
@@ -806,6 +834,8 @@ class PoolDetailView(ft.Column):
         return self.series.value or LP_SERIES
 
     def _series_changed(self, _e: AnyEvent) -> None:
+        self.series.leading_icon = self._series_mark(self.selection)
+        safe_update(self.series)
         self._page.run_task(self.load_selection)
 
     async def load_selection(self) -> None:
@@ -979,6 +1009,7 @@ class PoolDetailView(ft.Column):
         self.series.options = self._series_options()
         if self.selection not in ACTIVITY_SERIES:
             self.series.value = LP_SERIES
+        self.series.leading_icon = self._series_mark(self.selection)
         self._page.update()
 
     async def load(self) -> None:

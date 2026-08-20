@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import sys
 from functools import lru_cache
@@ -67,9 +68,9 @@ def _exists(relative: str) -> bool:
     return (_LOCAL_ROOT / relative).is_file()
 
 
-#: One bundle at one tier, once fetched: `(directory, tier)` -> bytes per
-#: name.
-_BUNDLES: dict[tuple[str, int], dict[str, bytes]] = {}
+#: One bundle at one tier, once fetched: `(directory, tier)` -> image src
+#: per name.
+_BUNDLES: dict[tuple[str, int], dict[str, str]] = {}
 
 #: Where a chain's coin marks live, and where the network marks do.
 TOKENS = "tokens"
@@ -117,8 +118,18 @@ def bundle_url(directory: str, tier: int, suffix: str, *, rest: bool = False) ->
     return asset_url(*directory.split("/"), f"marks@{tier}{infix}{suffix}")
 
 
+def mark_src(png: bytes) -> str:
+    """A PNG held in memory, as something `ft.Image` will paint.
+
+    A string, never the bytes themselves: WebKit -- so every browser on an
+    iPhone -- draws `src=<bytes>` as nothing at all, and reports no error,
+    so `error_content` never stands in either. Blink draws both.
+    """
+    return f"data:image/png;base64,{base64.b64encode(png).decode()}"
+
+
 def remember_bundle(directory: str, tier: int, blob: bytes, index: dict) -> int:
-    """Cut a fetched bundle into one PNG per address."""
+    """Cut a fetched bundle into one drawable mark per address."""
     marks = dict(_BUNDLES.get((directory, tier), {}))
     for address, span in (index or {}).items():
         try:
@@ -127,7 +138,7 @@ def remember_bundle(directory: str, tier: int, blob: bytes, index: dict) -> int:
             continue
         chunk = blob[start : start + length]
         if len(chunk) == length and chunk[:4] == b"\x89PNG":
-            marks[str(address).lower()] = chunk
+            marks[str(address).lower()] = mark_src(chunk)
     if marks:
         _BUNDLES[(directory, tier)] = marks
     return len(marks)
@@ -167,19 +178,19 @@ async def load_bundle(
     return remember_bundle(directory, tier, bytes(blob), index)
 
 
-def bundled_mark(chain: str, address: str, device_pixels: float) -> bytes | None:
-    """One mark's PNG out of a fetched bundle, or None if it is not there."""
+def bundled_mark(chain: str, address: str, device_pixels: float) -> str | None:
+    """One mark out of a fetched bundle, or None if it is not there."""
     if not chain or not address:
         return None
     return _bundled(token_bundle(chain), address, device_pixels)
 
 
-def bundled_chain(name: str, device_pixels: float) -> bytes | None:
+def bundled_chain(name: str, device_pixels: float) -> str | None:
     """A network's mark out of the `chains` bundle, or None."""
     return _bundled(CHAINS, name, device_pixels)
 
 
-def _held(directory: str, tier: int) -> dict[str, bytes] | None:
+def _held(directory: str, tier: int) -> dict[str, str] | None:
     """The bundle to serve this tier from, out of what was actually fetched."""
     loaded = sorted(
         held for (held_directory, held) in _BUNDLES if held_directory == directory
@@ -190,7 +201,7 @@ def _held(directory: str, tier: int) -> dict[str, bytes] | None:
     return _BUNDLES[(directory, covering[0] if covering else loaded[-1])]
 
 
-def _bundled(directory: str, name: str, device_pixels: float) -> bytes | None:
+def _bundled(directory: str, name: str, device_pixels: float) -> str | None:
     if not directory or not name:
         return None
     marks = _held(directory, bundle_tier(device_pixels))

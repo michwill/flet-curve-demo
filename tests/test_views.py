@@ -1815,6 +1815,13 @@ def test_a_laptop_header_keeps_them() -> None:
     assert not app.menu.visible
 
 
+def from_bundle(src) -> bool:
+    """Did this logo come out of a bundle rather than off a file? Both are
+    strings -- a bundled one carries the PNG itself.
+    """
+    return isinstance(src, str) and src.startswith("data:image/png;base64,")
+
+
 def _picker_marks(app) -> list:
     """What every row in the open view draws its logo from."""
     return [
@@ -1833,7 +1840,7 @@ async def test_the_picker_is_built_again_once_the_network_marks_arrive(
     forget_bundles()
     app = header_app(LAPTOP)
     before = _picker_marks(app)
-    assert before and all(isinstance(src, str) for src in before), (
+    assert before and not any(from_bundle(src) for src in before), (
         "the picker should start on the files, having no bundle yet"
     )
 
@@ -1854,10 +1861,10 @@ async def test_the_picker_is_built_again_once_the_network_marks_arrive(
         await app._marks_rest
 
         after = _picker_marks(app)
-        assert after and all(isinstance(src, bytes) for src in after), (
+        assert after and all(from_bundle(src) for src in after), (
             "every network's logo should now come out of the bundle"
         )
-        assert isinstance(app.chain_picker.bar_leading.content.src, bytes), (
+        assert from_bundle(app.chain_picker.bar_leading.content.src), (
             "including the selected one, which the bar draws"
         )
     finally:
@@ -1890,13 +1897,13 @@ async def test_a_cold_network_bundle_is_asked_for_again_behind_the_page(
     monkeypatch.setattr(app_module.http, "get_bytes", cold_once)
     try:
         await app._load_marks()
-        assert all(isinstance(src, str) for src in _picker_marks(app)), (
+        assert not any(from_bundle(src) for src in _picker_marks(app)), (
             "nothing has landed yet, so the picker is still on the files"
         )
 
         await app._marks_rest
 
-        assert all(isinstance(src, bytes) for src in _picker_marks(app)), (
+        assert all(from_bundle(src) for src in _picker_marks(app)), (
             "the second ask landed, so the picker is drawn from it"
         )
     finally:

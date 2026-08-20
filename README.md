@@ -372,10 +372,16 @@ curve/tokens/xdai/marks@80.json    where each one starts
 ```
 
 **The PNGs are concatenated unchanged**, so every slice is already a valid
-PNG — nothing is decoded at build time, nothing needs a decoder in Pyodide,
-and `ft.Image` takes the bytes directly (`src` is typed `str | bytes`, and
-Flet's transport is msgpack over `postMessage`, so they cross as binary).
-Verified byte-for-byte against the originals: 627/627 on Ethereum.
+PNG — nothing is decoded at build time and nothing needs a decoder in
+Pyodide. Verified byte-for-byte against the originals: 627/627 on Ethereum.
+
+**Each slice reaches `ft.Image` as a `data:` URI, never as bytes.** `src` is
+typed `str | bytes` and both draw on Blink, so `src=<slice>` shipped and the
+marks vanished on every iPhone: WebKit paints an `Image` built from bytes as
+nothing at all, and raises no error, so `error_content` does not stand in
+either — a blank the size of a logo, on the one engine iOS allows. The same
+PNG base64'd into a `data:` URI draws on both. Base64 costs a third more
+memory than the raw slices; a missing logo costs the logo.
 
 `.bin`, because gateways refuse archives **by suffix** — `.zip` or `.tar`
 here would be silently unreachable.

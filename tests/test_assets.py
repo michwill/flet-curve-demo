@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import struct
 from pathlib import Path
@@ -116,12 +117,24 @@ def last_resort(mark):
 
 
 def attempts(mark) -> list[str]:
-    """The URLs a mark will ask for, in order."""
+    """The URLs a mark will ask for, in order. A `data:` src fetches
+    nothing, so it is not one of them.
+    """
     urls, node = [], mark.content
     while isinstance(node, ft.Image):
-        urls.append(node.src)
+        if not (isinstance(node.src, str) and node.src.startswith("data:")):
+            urls.append(node.src)
         node = node.error_content
     return urls
+
+
+def decoded(src: str | None) -> bytes | None:
+    """The PNG carried by a `data:` src."""
+    if src is None:
+        return None
+    head, _, payload = src.partition(",")
+    assert head == "data:image/png;base64"
+    return base64.b64decode(payload)
 
 
 def test_a_missing_image_falls_back_to_the_same_mark() -> None:
@@ -596,8 +609,25 @@ def test_a_slice_is_the_original_file_byte_for_byte() -> None:
     blob, index = make_bundle({"0xaa": PNG_A, "0xbb": PNG_B})
 
     assert remember_bundle(token_bundle("xdai"), 80, blob, index) == 2
-    assert bundled_mark("xdai", "0xAA", 80) == PNG_A
-    assert bundled_mark("xdai", "0xbb", 80) == PNG_B
+    assert decoded(bundled_mark("xdai", "0xAA", 80)) == PNG_A
+    assert decoded(bundled_mark("xdai", "0xbb", 80)) == PNG_B
+
+
+def test_a_bundled_mark_is_a_string_and_never_the_bytes() -> None:
+    """`ft.Image(src=<bytes>)` paints nothing on WebKit -- so on every
+    browser an iPhone has -- and raises no error, so `error_content` does
+    not stand in either. It shipped that way and the phone lost every
+    logo. Blink drew it, which is why it took a WebKit to see.
+    """
+    from ui.assets import bundled_chain, bundled_mark, remember_bundle, token_bundle
+
+    blob, index = make_bundle({"0xaa": PNG_A})
+    remember_bundle(token_bundle("xdai"), 80, blob, index)
+    remember_bundle("chains", 80, *make_bundle({"xdai": PNG_B}))
+
+    for mark in (bundled_mark("xdai", "0xaa", 80), bundled_chain("xdai", 80)):
+        assert isinstance(mark, str)
+        assert mark.startswith("data:image/png;base64,")
 
 
 def test_a_token_not_in_the_bundle_falls_back_rather_than_blanking() -> None:
@@ -665,7 +695,7 @@ async def test_the_tier_asked_for_is_the_one_the_screen_needs() -> None:
 
 
 def test_a_bundled_mark_needs_no_retry_chain() -> None:
-    from ui.assets import remember_bundle, token_bundle
+    from ui.assets import mark_src, remember_bundle, token_bundle
 
     blob, index = make_bundle({USDC.lower(): PNG_A})
     remember_bundle(token_bundle("ethereum"), 80, blob, index)
@@ -674,7 +704,7 @@ def test_a_bundled_mark_needs_no_retry_chain() -> None:
     urls = [src for src in attempts(mark) if isinstance(src, str)]
 
     assert urls == []  # nothing is fetched, so nothing can fail
-    assert mark.content.src == PNG_A
+    assert mark.content.src == mark_src(PNG_A)
     assert mark.content.error_content is not None  # still guards a bad slice
 
 
@@ -707,8 +737,8 @@ def test_the_second_half_adds_to_the_first_rather_than_replacing_it() -> None:
     assert remember_bundle(token_bundle("ethereum"), 80, hot_blob, hot_index) == 1
     assert remember_bundle(token_bundle("ethereum"), 80, rest_blob, rest_index) == 2
 
-    assert bundled_mark("ethereum", "0xaa", 80) == PNG_A
-    assert bundled_mark("ethereum", "0xbb", 80) == PNG_B
+    assert decoded(bundled_mark("ethereum", "0xaa", 80)) == PNG_A
+    assert decoded(bundled_mark("ethereum", "0xbb", 80)) == PNG_B
 
 
 async def test_the_tail_is_asked_for_under_its_own_name() -> None:
@@ -841,7 +871,7 @@ async def test_the_second_ask_is_the_one_that_lands() -> None:
 
     assert await load_bundle(token_bundle("xdai"), 80, warming) == 0
     assert await load_bundle(token_bundle("xdai"), 80, warming) == 1
-    assert bundled_mark("xdai", "0xaa", 80) == PNG_A
+    assert decoded(bundled_mark("xdai", "0xaa", 80)) == PNG_A
 
 
 async def test_two_page_loads_do_not_pull_the_same_bundle_at_once() -> None:
@@ -903,7 +933,7 @@ def test_the_loader_and_the_lookup_agree_on_the_tier() -> None:
     blob, index = make_bundle({"0xaa": PNG_A})
     remember_bundle(token_bundle("xdai"), bundle_tier(drawn), blob, index)
 
-    assert bundled_mark("xdai", "0xaa", drawn) == PNG_A
+    assert decoded(bundled_mark("xdai", "0xaa", drawn)) == PNG_A
 
 
 def test_the_build_and_the_app_share_one_list_of_tiers() -> None:
@@ -922,8 +952,8 @@ def test_the_network_marks_share_one_bundle() -> None:
     blob, index = make_bundle({"ethereum": PNG_A, "xdai": PNG_B})
     remember_bundle(CHAINS, 80, blob, index)
 
-    assert bundled_chain("ethereum", 80) == PNG_A
-    assert bundled_chain("xdai", 80) == PNG_B
+    assert decoded(bundled_chain("ethereum", 80)) == PNG_A
+    assert decoded(bundled_chain("xdai", 80)) == PNG_B
     assert bundled_chain("nowhere", 80) is None
 
 
@@ -941,8 +971,8 @@ def test_the_two_families_do_not_collide() -> None:
     remember_bundle(CHAINS, 80, chain_blob, chain_index)
     remember_bundle(token_bundle("ethereum"), 80, token_blob, token_index)
 
-    assert bundled_chain("ethereum", 80) == PNG_A
-    assert bundled_mark("ethereum", "ethereum", 80) == PNG_B
+    assert decoded(bundled_chain("ethereum", 80)) == PNG_A
+    assert decoded(bundled_mark("ethereum", "ethereum", 80)) == PNG_B
 
 
 def test_a_network_mark_from_the_bundle_needs_no_retry() -> None:
@@ -954,8 +984,7 @@ def test_a_network_mark_from_the_bundle_needs_no_retry() -> None:
 
     mark = chain_mark("ethereum", 18)
 
-    assert mark.src == PNG_A
-    assert isinstance(mark.src, bytes)
+    assert decoded(mark.src) == PNG_A  # the bundle's own slice, not a URL
 
 
 def test_a_bundle_is_read_at_the_tier_it_was_fetched_at() -> None:
@@ -969,8 +998,8 @@ def test_a_bundle_is_read_at_the_tier_it_was_fetched_at() -> None:
         remember_bundle_at(CHAINS, fetched, blob, index)
 
         assert bundle_tier(18 * 2.0) != fetched, "the sizes must disagree"
-        assert bundled_chain("ethereum", 18 * 2.0) == PNG_A
-        assert chain_mark("ethereum", 18).src == PNG_A
+        assert decoded(bundled_chain("ethereum", 18 * 2.0)) == PNG_A
+        assert decoded(chain_mark("ethereum", 18).src) == PNG_A
     finally:
         set_pixel_ratio(2.0)
 
@@ -981,7 +1010,7 @@ def test_a_mark_wanted_larger_than_anything_fetched_uses_the_largest() -> None:
     blob, index = make_bundle({"ethereum": PNG_A})
     remember_bundle_at(CHAINS, 40, blob, index)
 
-    assert bundled_chain("ethereum", 400) == PNG_A
+    assert decoded(bundled_chain("ethereum", 400)) == PNG_A
 
 
 def test_a_tier_that_covers_it_is_preferred_to_a_larger_one() -> None:
@@ -992,5 +1021,5 @@ def test_a_tier_that_covers_it_is_preferred_to_a_larger_one() -> None:
     remember_bundle_at(CHAINS, 40, small, small_index)
     remember_bundle_at(CHAINS, 80, large, large_index)
 
-    assert bundled_chain("ethereum", 30) == PNG_A
-    assert bundled_chain("ethereum", 70) == PNG_B
+    assert decoded(bundled_chain("ethereum", 30)) == PNG_A
+    assert decoded(bundled_chain("ethereum", 70)) == PNG_B

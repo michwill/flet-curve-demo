@@ -636,8 +636,8 @@ def test_the_marks_follow_the_selection_onto_the_field() -> None:
     view.series.value = "0:1"
     view._series_changed(None)
 
-    assert view.series.leading_icon == view._series_mark("0:1")
-    assert view.series.leading_icon != view._series_mark(pool_detail.LP_SERIES)
+    assert view.series.leading_icon == view._field_mark("0:1")
+    assert view.series.leading_icon != view._field_mark(pool_detail.LP_SERIES)
 
 
 def test_picking_a_table_leaves_the_field_unmarked() -> None:
@@ -647,6 +647,52 @@ def test_picking_a_table_leaves_the_field_unmarked() -> None:
     view._series_changed(None)
 
     assert view.series.leading_icon is None
+
+
+def test_the_field_boxes_its_marks_and_the_menu_does_not() -> None:
+    """Material gives a leading icon a slot meant for one 24px glyph. A
+    stack left raw in it rides the top-left corner and touches the frame;
+    a box wider than the widest stack centres it in the field instead.
+    """
+    view = activity_view(coins=3)
+    boxed = view.series.leading_icon
+
+    assert (boxed.width, boxed.height) == pool_detail.FIELD_BOX
+    assert boxed.alignment == ft.Alignment.CENTER
+    assert boxed.width > pool_detail.FIELD_MARK * 2, "wider than what it holds"
+
+    in_menu = view.series.options[0].leading_icon
+    assert not isinstance(in_menu, ft.Container) or in_menu.width != boxed.width
+
+
+def test_a_phone_narrows_the_picker_so_the_candle_size_still_fits() -> None:
+    """270 plus the size picker is more than a 330px screen has."""
+    from ui.responsive import layout_for
+
+    view = activity_view(coins=3)
+    view.set_layout(layout_for(PHONE))
+    narrow = view.series.width
+
+    view.set_layout(layout_for(LAPTOP))
+
+    assert narrow == pool_detail.SERIES_NARROW_WIDTH
+    assert view.series.width == pool_detail.SERIES_WIDTH
+    assert narrow + 110 < PHONE, "the candle size beside it has to fit too"
+
+
+def test_a_phone_drops_the_currency_from_the_lp_series() -> None:
+    """"LP token (USD)" does not fit 200px beside its marks, and the
+    currency is the part you can do without."""
+    from ui.responsive import layout_for
+
+    view = activity_view(coins=3)
+    view.set_layout(layout_for(PHONE))
+
+    assert view.series.options[0].text == pool_detail.LP_LABEL_NARROW
+
+    view.set_layout(layout_for(LAPTOP))
+
+    assert view.series.options[0].text == pool_detail.LP_LABEL
 
 
 def test_a_series_key_naming_no_coin_draws_nothing() -> None:

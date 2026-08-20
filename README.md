@@ -1473,8 +1473,17 @@ Both found by looking at the rendered result, and neither is obvious:
 
 Every price series in the picker is named by its marks: the pool's own stack
 for the LP token, the two coins for a pair, on the menu entry and on the
-closed field alike. They are built fresh for each, because a control belongs
-to one place in the tree — and Flet skips a write whose control compares
+closed field alike. The field's copy is larger and sits in a box of its own:
+Material drops a leading icon into a slot meant for one 24px glyph, and a
+stack left raw in it rides the top-left corner against the frame. A box
+wider and taller than the widest stack centres it in the field — and holds
+the label still while the selection moves between two coins and three. The
+picker is 270px to fit both, and 200px on a phone, where the candle size
+beside it would otherwise go off a 330px edge and the LP series drops its
+"(USD)" to fit.
+
+The marks are built fresh for each place they appear, because a control
+belongs to one place in the tree — and Flet skips a write whose control compares
 *equal* to the one already there, so on a two-coin pool the field does not
 change between the LP token and the only pair, both being the same two marks.
 

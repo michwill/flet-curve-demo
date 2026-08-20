@@ -43,6 +43,12 @@ PARAMETER_DEADLINE = 45.0
 
 LP_SERIES = "__lp__"
 
+#: What the LP series is called. The currency is worth saying where there
+#: is room for it and is the first thing to go where there is not: a phone
+#: has 200px for the picker, marks and arrow included.
+LP_LABEL = "LP token (USD)"
+LP_LABEL_NARROW = "LP token"
+
 #: The two picker entries that put a table where the chart is, and the
 #: rule that separates them from the price series above.
 TRADES_SERIES = "__trades__"
@@ -54,8 +60,22 @@ SERIES_RULE = "__rule__"
 #: does not jump when the picker moves between them.
 CHART_HEIGHT = 340
 
-#: How large a mark is in the series picker, beside what it names.
+#: How large a mark is in the series menu, beside what it names.
 SERIES_MARK = 18
+
+#: And on the closed field, where it is larger and boxed. Material drops a
+#: leading icon into a slot meant for one 24px glyph: a stack left raw
+#: there rides the top-left corner and touches the frame. A box wider and
+#: taller than the widest stack centres it instead, and holds the label
+#: still while the selection moves between two coins and three.
+FIELD_MARK = 22
+FIELD_BOX = (56, 28)
+
+#: How wide the picker is: the longest name plus the box beside it. A
+#: phone gets the narrower one, or the candle size beside it goes off the
+#: edge -- a 330px screen has room for both and nothing to spare.
+SERIES_WIDTH = 270
+SERIES_NARROW_WIDTH = 200
 
 
 def _metric(label: str, value: str) -> ft.Control:
@@ -123,9 +143,11 @@ class PoolDetailView(ft.Column):
         self.series = ft.Dropdown(
             options=self._series_options(),
             value=LP_SERIES,
-            leading_icon=self._series_mark(LP_SERIES),
+            leading_icon=self._field_mark(LP_SERIES),
             dense=True,
-            width=220,
+            # Room for the marks as well as the longest name: the box on
+            # the left is 56 of it.
+            width=SERIES_WIDTH,
             on_select=self._series_changed,
         )
         self._composition_slot = ft.Container(
@@ -203,6 +225,8 @@ class PoolDetailView(ft.Column):
         was = self._layout
         self._layout = layout
         if layout.cards != was.cards:
+            self.series.width = SERIES_NARROW_WIDTH if layout.cards else SERIES_WIDTH
+            self.series.options = self._series_options()
             self._parameters_slot.content = self._parameters()
             self._header_slot.content = self._header()
             if self._composition_ready:
@@ -784,27 +808,39 @@ class PoolDetailView(ft.Column):
 
     # -- chart ------------------------------------------------------------
 
-    def _series_mark(self, key: str) -> ft.Control | None:
+    def _series_mark(self, key: str, size: float = SERIES_MARK) -> ft.Control | None:
         """The marks that name a series: the pool's own stack for the LP
         token, and the two coins for a pair. Built fresh each time -- a
         control belongs to one place in the tree, and this is drawn in the
         menu and again on the closed field.
         """
         if key == LP_SERIES:
-            return pool_stack(self.pool, size=SERIES_MARK, limit=3)
+            return pool_stack(self.pool, size=size, limit=3)
         coins = self.pool.pool_coins
         i, _, j = key.partition(":")
         if not j.isdigit() or not i.isdigit():
             return None
         if int(i) >= len(coins) or int(j) >= len(coins):
             return None
-        return coin_stack([coins[int(i)], coins[int(j)]], self.pool.chain, SERIES_MARK)
+        return coin_stack([coins[int(i)], coins[int(j)]], self.pool.chain, size)
+
+    def _field_mark(self, key: str) -> ft.Control | None:
+        """The same marks on the closed field, boxed so they sit in it
+        rather than on its corner. See `FIELD_BOX`.
+        """
+        mark = self._series_mark(key, FIELD_MARK)
+        if mark is None:
+            return None
+        width, height = FIELD_BOX
+        return ft.Container(
+            mark, width=width, height=height, alignment=ft.Alignment.CENTER
+        )
 
     def _series_options(self) -> list[ft.DropdownOption]:
         options = [
             ft.DropdownOption(
                 key=LP_SERIES,
-                text="LP token (USD)",
+                text=LP_LABEL_NARROW if self._layout.cards else LP_LABEL,
                 leading_icon=self._series_mark(LP_SERIES),
             )
         ]
@@ -834,7 +870,7 @@ class PoolDetailView(ft.Column):
         return self.series.value or LP_SERIES
 
     def _series_changed(self, _e: AnyEvent) -> None:
-        self.series.leading_icon = self._series_mark(self.selection)
+        self.series.leading_icon = self._field_mark(self.selection)
         safe_update(self.series)
         self._page.run_task(self.load_selection)
 
@@ -1009,7 +1045,7 @@ class PoolDetailView(ft.Column):
         self.series.options = self._series_options()
         if self.selection not in ACTIVITY_SERIES:
             self.series.value = LP_SERIES
-        self.series.leading_icon = self._series_mark(self.selection)
+        self.series.leading_icon = self._field_mark(self.selection)
         self._page.update()
 
     async def load(self) -> None:

@@ -48,8 +48,9 @@ BYTECODE = "__pycache__"
 
 PIN_URL = "https://api.pinata.cloud/pinning/pinFileToIPFS"
 
-#: Where to send someone once it is pinned.
-PUBLIC_GATEWAY = "https://dweb.link/ipfs/"
+#: Where to send someone once it is pinned. Every gateway the check would
+#: try, best first, because a fresh pin is not reachable through all of
+#: them at once and a dead link is worse than a list.
 
 #: CIDv1 rather than v0: it is case-insensitive base32, which is what a
 #: subdomain gateway (`https://<cid>.ipfs.dweb.link`) needs to put the CID
@@ -527,8 +528,27 @@ def pin(
 # -- proving the pin before a name points at it ----------------------------
 # Pinning does not publish anything anywhere.
 
-#: Where to prove it. `{cid}` is filled in.
-VERIFY_GATEWAY = "https://{cid}.ipfs.dweb.link"
+#: Where to prove it, in the order they are preferred. `{cid}` is filled in.
+#:
+#: The run picks one that can actually serve this pin rather than trusting
+#: a name: dweb.link was hardcoded here and sat at 0/58 for three publishes
+#: running while the same CID came back in 0.3s elsewhere. It and ipfs.io
+#: are one operator and stall together, which is why the fallback is not
+#: another of theirs first. Any of them proves the same thing -- that
+#: something other than the pinning service can find the content.
+VERIFY_GATEWAYS = (
+    "https://{cid}.ipfs.inbrowser.link",
+    "https://{cid}.ipfs.dweb.link",
+    "https://ipfs.io/ipfs/{cid}",
+)
+
+#: The preferred one, and what `verify` uses when it is handed nothing.
+VERIFY_GATEWAY = VERIFY_GATEWAYS[0]
+
+#: How long a gateway gets to answer for the CID before the next is tried.
+#: One that cannot find it answers 504 in ~28s; one that can takes under a
+#: second, so there is no point waiting out the miss three times.
+GATEWAY_PROBE_TIMEOUT = 12.0
 
 #: The gateway people actually use, checked *after* ENS is moved -- which is
 #: the only order available, because eth.limo has no CID gateway at all:
@@ -587,19 +607,55 @@ def classify(status: int | str, seconds: float) -> str:
     return "refused" if seconds < REFUSAL_SECONDS else "unfound"
 
 
-def probe(client, url: str, *, whole: bool = False) -> tuple[int | str, float]:
+def probe(
+    client, url: str, *, whole: bool = False, timeout: float = VERIFY_TIMEOUT
+) -> tuple[int | str, float]:
     """Fetch `url` and time it."""
     import httpx
 
     started = time.monotonic()
     try:
-        with client.stream("GET", url, timeout=VERIFY_TIMEOUT) as response:
+        with client.stream("GET", url, timeout=timeout) as response:
             for _chunk in response.iter_bytes():
                 if not whole:
                     break
             return response.status_code, time.monotonic() - started
     except httpx.HTTPError as exc:
         return type(exc).__name__, time.monotonic() - started
+
+
+def pick_gateway(
+    cid: str,
+    path: str,
+    *,
+    candidates: tuple[str, ...] = VERIFY_GATEWAYS,
+    client=None,
+    timeout: float = GATEWAY_PROBE_TIMEOUT,
+) -> tuple[str, list[tuple[str, int | str, float]]]:
+    """The first of `candidates` that can serve one file of this pin, and
+    what each of them said on the way there.
+
+    Tried one at a time rather than all at once: the first is usually the
+    answer, and a thread still waiting out a 28-second miss would hold the
+    process open long after the check had moved on.
+    """
+    import httpx
+
+    owned = client is None
+    client = client or httpx.Client(follow_redirects=True)
+    tried: list[tuple[str, int | str, float]] = []
+    try:
+        for gateway in candidates:
+            status, seconds = probe(
+                client, f"{gateway.format(cid=cid)}/{path}", timeout=timeout
+            )
+            tried.append((gateway, status, seconds))
+            if classify(status, seconds) == "served":
+                return gateway, tried
+    finally:
+        if owned:
+            client.close()
+    return candidates[0], tried
 
 
 def verify(
@@ -770,8 +826,11 @@ def main() -> int:
     )
     parser.add_argument(
         "--verify-gateway",
-        default=VERIFY_GATEWAY,
-        help=f"where to prove it, with {{cid}} filled in (default {VERIFY_GATEWAY})",
+        default="",
+        help="where to prove it, with {cid} filled in. Default: whichever of "
+        + ", ".join(g.split("//")[1].split("/")[0].replace("{cid}.ipfs.", "")
+                    for g in VERIFY_GATEWAYS)
+        + " answers for the CID first",
     )
     parser.add_argument(
         "--verify-deadline",
@@ -946,15 +1005,28 @@ def show_pin(cid: str, *, duplicate: bool = False) -> None:
         print("       (already pinned -- identical to a previous build)")
     if gateway := str(config().get("gateway", "")).strip():
         print(f"       {gateway.rstrip('/')}/{cid}/")
-    print(f"       https://{cid}.ipfs.dweb.link/")
-    print(f"       {PUBLIC_GATEWAY}{cid}/")
+    for candidate in VERIFY_GATEWAYS:
+        print(f"       {candidate.format(cid=cid)}/")
     print(f"       ipfs://{cid}/")
+
+
+def chosen_gateway(cid: str, paths: list[str], options) -> str:
+    """Which gateway this run proves the pin on."""
+    if options.verify_gateway:
+        return str(options.verify_gateway)
+    gateway, tried = pick_gateway(cid, paths[0] if paths else "index.html")
+    for host, status, seconds in tried[:-1]:
+        print(f"  {host.format(cid=cid)} answered {status} in {seconds:.1f}s")
+    if len(tried) > 1:
+        print(f"  -> proving it on {gateway.format(cid=cid)} instead")
+    return gateway
 
 
 def wait_until_findable(cid: str, paths: list[str], options) -> int:
     """Watch the pin become retrievable, and say when it is safe to publish."""
     print(f"\nwaiting for the network to find it: {len(paths)} files, via")
-    print(f"  {options.verify_gateway.format(cid=cid)}")
+    gateway = chosen_gateway(cid, paths, options)
+    print(f"  {gateway.format(cid=cid)}")
     print("  (token marks skipped -- lazily fetched, and there are 6,716)")
     started = time.monotonic()
     report = progress_reporter()
@@ -962,7 +1034,7 @@ def wait_until_findable(cid: str, paths: list[str], options) -> int:
         bad = verify(
             cid,
             paths,
-            gateway=options.verify_gateway,
+            gateway=gateway,
             deadline=options.verify_deadline,
             on_round=report,
         )

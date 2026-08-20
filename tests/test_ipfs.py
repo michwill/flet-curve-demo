@@ -9,6 +9,7 @@ import tarfile
 import textwrap
 import types
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -595,8 +596,10 @@ class FakeGateway:
         self.answers = {k: list(v) for k, v in answers.items()}
         self.asked: list[str] = []
 
-    def probe(self, _client, url: str, *, whole: bool = False) -> tuple[int, float]:
-        path = url.split(".ipfs.dweb.link/", 1)[-1].split("curve.eth.limo/", 1)[-1]
+    def probe(
+        self, _client, url: str, *, whole: bool = False, timeout: float = 45.0
+    ) -> tuple[int, float]:
+        path = url.split("/", 3)[-1]  # whichever host it went to
         self.asked.append(path)
         self.whole = whole
         queue = self.answers.get(path, [(200, 0.1)])
@@ -1051,3 +1054,81 @@ def test_dropping_is_measured_so_the_run_can_say_what_it_saved(tmp_path: Path) -
     root = build(tmp_path, {"index.html": "x", "canvaskit/a.wasm": "z" * 1000})
 
     assert dict(ipfs.drop_cdn_copies(root))["canvaskit"] == 1000
+
+
+# -- which gateway proves it ----------------------------------------------
+
+
+class Gateways:
+    """Answers per host, so a run can be watched choosing between them."""
+
+    def __init__(self, answers: dict[str, tuple[int | str, float]]) -> None:
+        self.answers = answers
+        self.asked: list[str] = []
+
+    def probe(self, _client, url: str, *, whole: bool = False, timeout: float = 12.0):
+        host = url.split("/")[2]
+        self.asked.append(host)
+        for name, answer in self.answers.items():
+            if name in host:
+                return answer
+        return 504, 28.0
+
+
+def choose(monkeypatch, hosts: Gateways, **kw):
+    monkeypatch.setattr(ipfs, "probe", hosts.probe)
+    return ipfs.pick_gateway("bafyfake", "index.html", client=object(), **kw)
+
+
+def test_the_first_gateway_that_answers_is_the_one_used(monkeypatch) -> None:
+    hosts = Gateways({"inbrowser.link": (200, 0.3)})
+
+    gateway, tried = choose(monkeypatch, hosts)
+
+    assert "inbrowser.link" in gateway
+    assert hosts.asked == ["bafyfake.ipfs.inbrowser.link"], "no need to ask further"
+    assert len(tried) == 1
+
+
+def test_a_gateway_that_cannot_find_it_is_passed_over(monkeypatch) -> None:
+    """dweb.link sat at 0/58 for three publishes running while the same CID
+    came back in a fraction of a second elsewhere. The run moves on rather
+    than staking the publish on one host.
+    """
+    hosts = Gateways({"inbrowser.link": (504, 28.0), "dweb.link": (200, 0.4)})
+
+    gateway, tried = choose(monkeypatch, hosts)
+
+    assert "dweb.link" in gateway
+    assert [status for _host, status, _s in tried] == [504, 200]
+
+
+def test_no_gateway_answering_falls_back_to_the_first(monkeypatch) -> None:
+    """Every one of them failing is worth reporting per file, which is what
+    the check that follows does -- so it runs, on the preferred host.
+    """
+    hosts = Gateways({})
+
+    gateway, tried = choose(monkeypatch, hosts)
+
+    assert gateway == ipfs.VERIFY_GATEWAYS[0]
+    assert len(tried) == len(ipfs.VERIFY_GATEWAYS), "all of them were asked"
+
+
+def test_a_named_gateway_is_not_second_guessed(monkeypatch) -> None:
+    asked = []
+    monkeypatch.setattr(ipfs, "pick_gateway", lambda *a, **k: asked.append(a) or ("x", []))
+    options = SimpleNamespace(verify_gateway="https://{cid}.example.test")
+
+    assert ipfs.chosen_gateway("bafyfake", ["index.html"], options) == (
+        "https://{cid}.example.test"
+    )
+    assert asked == []
+
+
+def test_the_probe_gives_a_gateway_less_time_than_the_check_does() -> None:
+    """A miss takes ~28s to come back. Waiting that out three times to pick
+    a host is most of a minute before the check has started.
+    """
+    assert ipfs.GATEWAY_PROBE_TIMEOUT < ipfs.VERIFY_TIMEOUT
+    assert ipfs.GATEWAY_PROBE_TIMEOUT < 28.0

@@ -156,6 +156,22 @@ python tools/publish_ipfs.py --verify-only <cid>
 It verifies against a **CID** URL, not the ENS name, on purpose: proving it
 must not be what poisons the cache of the hostname you are about to publish.
 
+**Which CID gateway is decided per run**, not hardcoded. `dweb.link` was, and
+three publishes in a row sat at 0/58 on it — one of them for over an hour —
+while the same CID came back from `inbrowser.link` in 0.3 seconds. It is not
+that the pin was slow to propagate: dweb.link and ipfs.io are one operator
+and stall together, and a fresh Pinata pin is something their provider lookup
+regularly fails to find. So the run asks each candidate for one file, in
+preference order, and proves the pin on the first that answers — 12 seconds
+each, because a gateway that can serve it takes under one and a gateway that
+cannot takes 28. `--verify-gateway` still overrides, and is not second-
+guessed when it is given.
+
+The lesson from the run before that is why it is a list rather than a swap:
+`ipfs.runfission.com` was used once to prove a pin healthy when dweb.link was
+failing, and it has since stopped being an IPFS gateway at all — the domain
+now redirects to an unrelated site. Any single name will do this eventually.
+
 **But a pass there does not mean eth.limo can serve it**, and this is the
 part that bit us. `dweb.link` is Cloudflare-fronted and answers
 `max-age=29030400, immutable`; it was caught serving with `age=3266`, i.e.

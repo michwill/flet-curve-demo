@@ -1777,6 +1777,33 @@ def test_a_phone_header_drops_every_label() -> None:
     assert app.menu.visible
 
 
+def test_a_phone_leaves_no_hint_behind_the_mark() -> None:
+    """A hint is what an emptied box draws, and the box on a phone is
+    empty by design. Left at the network's name it showed through as a
+    sliver of one letter beside the mark, in a bar 78px wide.
+    """
+    app = header_app(PHONE)
+    assert app.chain_picker.bar_hint_text == ""
+
+    app._chain_changed("xdai")
+
+    assert app.chain_picker.value == ""
+    assert app.chain_picker.bar_hint_text == "", "and it stays gone after a switch"
+
+
+def test_the_hint_names_the_network_you_are_on() -> None:
+    """On a laptop the hint is what a cleared box says you will go back
+    to, so it has to follow the switch: set once at build, it named the
+    network you left.
+    """
+    app = header_app(LAPTOP)
+    assert app.chain_picker.bar_hint_text == "Ethereum"
+
+    app._chain_changed("xdai")
+
+    assert app.chain_picker.bar_hint_text == "Gnosis"
+
+
 def _row_label(row) -> str:
     """The name the open view draws for one network."""
     title = getattr(row, "title", None)
@@ -3003,6 +3030,48 @@ def test_a_phone_bar_shows_the_mark_alone() -> None:
 
     assert app.chain_picker.value == ""
     assert app.chain_picker.bar_leading is not None
+
+
+def _closed_with(app) -> list:
+    """The text each `close_view` was asked to leave on the bar."""
+    return [
+        args
+        for handler, args in app.page.tasks
+        if getattr(handler, "__name__", "") == "close_view"
+    ]
+
+
+def phone_picker():
+    """A phone header whose picker knows a network to move to."""
+    app = header_app(PHONE)
+    app.chains = {"ethereum": 1, "xdai": 100}
+    app._chain_tvls = {}
+    app._sync_chain_options()
+    app.show_list = lambda: None
+    return app
+
+
+def test_a_phone_closes_the_picker_on_no_text_at_all() -> None:
+    """`close_view` writes what it is given into the bar, and it lands
+    after `_show_chain_name` has cleared it. Handed the network's name, a
+    phone kept a clipped letter of it beside the mark -- the one thing the
+    bar is wide enough for.
+    """
+    app = phone_picker()
+
+    app._chain_picked("xdai")
+
+    assert _closed_with(app) == [("",)]
+    assert app.chain_picker.value == ""
+
+
+def test_a_laptop_closes_the_picker_on_the_name() -> None:
+    app = picker_app()
+    app.show_list = lambda: None
+
+    app._chain_picked("xdai")
+
+    assert _closed_with(app) == [("Gnosis",)]
 
 
 async def _answer(value):

@@ -563,9 +563,22 @@ class CurveApp:
             for chain in matching_chains(self._chain_order, query)
         ]
 
+    def _bar_name(self, chain: str) -> str:
+        """What the bar reads for a network: its name, or nothing at all on
+        a phone, where 78px is room for the mark and no more.
+        """
+        return "" if self._icons else chain_name(chain)
+
     def _show_chain_name(self) -> None:
-        """Name the network on the bar -- or say nothing, on a phone."""
-        self.chain_picker.value = "" if self._icons else chain_name(self.chain)
+        """Name the network on the bar, and say the same in the hint.
+
+        The hint is what an emptied box shows, so leaving it at the name
+        would put one back on a phone -- and on a laptop it named whatever
+        network the app started on, being set once at build.
+        """
+        name = self._bar_name(self.chain)
+        self.chain_picker.value = name
+        self.chain_picker.bar_hint_text = name
 
     def _chain_search_opened(self, _e: AnyEvent) -> None:
         """Open the view on an empty box, offering every network.
@@ -601,8 +614,13 @@ class CurveApp:
         on is a way of saying "never mind" -- and only a real change costs
         a reload. `close_view` waits on the client, so it is started as a
         task: this runs from a click handler, which cannot await.
+
+        It closes on the same text the bar would show, which on a phone is
+        none: the name it is given is written into the bar, and it lands
+        after `_show_chain_name` has cleared it, so a phone kept a clipped
+        letter of the network it had just moved to.
         """
-        self.page.run_task(self.chain_picker.close_view, chain_name(chain))
+        self.page.run_task(self.chain_picker.close_view, self._bar_name(chain))
         if chain == self.chain:
             self._show_chain_name()
             safe_update(self.chain_picker)

@@ -2110,8 +2110,12 @@ class TotalsApi:
     ):
         self.tvl, self.volume, self.fails = tvl, volume, fails
         self.clock = clock
+        self.figures: dict[str, dict[str, float]] = {}
         self.asked: list[int] = []
         self.asked_at: list[float] = []
+
+    async def pool_figures(self, _chain_id: int) -> dict:
+        return self.figures
 
     async def chain_totals(self, chain_id: int) -> dict:
         self.asked.append(chain_id)
@@ -2134,6 +2138,7 @@ def totals_app(api: TotalsApi, *, clock, monkeypatch):
     app.chains = {"ethereum": 1, "arbitrum": 42161}
     app._totals = []
     app._totals_read = clock[0]
+    app.list_view = PoolListView(StubPage(), on_open=lambda _p: None)
     return app
 
 
@@ -2147,6 +2152,114 @@ async def test_the_figures_are_read_again_and_redrawn(monkeypatch) -> None:
     assert api.asked == [1]
     assert "TVL $2.50b" in app.totals.value
     assert "24h volume $300.00m" in app.totals.value
+
+
+async def test_the_rows_take_the_figures_that_came_down_with_the_totals(
+    monkeypatch,
+) -> None:
+    """The chain payload carries every pool on the chain. Reading it for
+    two numbers and leaving the thousand rows stale was the waste.
+    """
+    clock = [1000.0]
+    api = TotalsApi()
+    app = totals_app(api, clock=clock, monkeypatch=monkeypatch)
+    listed = make_pool()
+    listed.tvl, listed.volume_24h = 100.0, 10.0
+    app.list_view.attach(FakeFeed([listed]))
+    await app.list_view.load_more()
+    api.figures = {
+        listed.address.lower(): {
+            "tvl_usd": 250.0,
+            "trading_volume_24h": 75.0,
+            "base_weekly_apr": 2.0,
+        }
+    }
+
+    await app.read_totals()
+
+    assert (listed.tvl, listed.volume_24h, listed.base_apr) == (250.0, 75.0, 2.0)
+    assert "$250.00" in _row_text(app.list_view)
+
+
+async def test_a_pool_the_payload_does_not_mention_is_left_as_it_was(
+    monkeypatch,
+) -> None:
+    clock = [1000.0]
+    api = TotalsApi()
+    app = totals_app(api, clock=clock, monkeypatch=monkeypatch)
+    listed = make_pool()
+    listed.tvl = 100.0
+    app.list_view.attach(FakeFeed([listed]))
+    await app.list_view.load_more()
+    api.figures = {"0x" + "cc" * 20: {"tvl_usd": 1.0}}
+
+    await app.read_totals()
+
+    assert listed.tvl == 100.0
+
+
+def test_fresher_figures_do_not_reorder_the_list() -> None:
+    """The order is the server's. A row jumping past its neighbour because
+    its volume ticked over is worse than figures a few minutes old.
+    """
+    view = PoolListView(StubPage(), on_open=lambda _p: None)
+    first, second = make_pool(), make_pool(3)
+    first.address, second.address = "0x" + "11" * 20, "0x" + "22" * 20
+    first.volume_24h, second.volume_24h = 900.0, 100.0
+    view.attach(FakeFeed([first, second]))
+    asyncio.run(view.load_more())
+
+    moved = view.refresh_figures(
+        {
+            first.address.lower(): {"trading_volume_24h": 1.0},
+            second.address.lower(): {"trading_volume_24h": 5_000.0},
+        }
+    )
+
+    assert moved == 2
+    assert [row.pool.address for row in view.rows.controls] == [
+        first.address,
+        second.address,
+    ]
+
+
+def test_figures_that_have_not_moved_do_not_redraw_the_rows() -> None:
+    view = PoolListView(StubPage(), on_open=lambda _p: None)
+    listed = make_pool()
+    listed.tvl, listed.volume_24h, listed.base_apr = 5.0, 2.0, 1.0
+    view.attach(FakeFeed([listed]))
+    asyncio.run(view.load_more())
+    rows = list(view.rows.controls)
+
+    moved = view.refresh_figures(
+        {
+            listed.address.lower(): {
+                "tvl_usd": 5.0,
+                "trading_volume_24h": 2.0,
+                "base_weekly_apr": 1.0,
+            }
+        }
+    )
+
+    assert moved == 0
+    assert view.rows.controls[0] is rows[0], "not rebuilt"
+
+
+def _row_text(view) -> str:
+    """Every string drawn in the list, run together."""
+    found: list[str] = []
+
+    def walk(control) -> None:
+        value = getattr(control, "value", None)
+        if isinstance(value, str):
+            found.append(value)
+        for child in (getattr(control, "controls", None) or []):
+            walk(child)
+        if (content := getattr(control, "content", None)) is not None:
+            walk(content)
+
+    walk(view.rows)
+    return " ".join(found)
 
 
 async def test_a_chain_that_will_not_answer_leaves_the_old_figures_up(

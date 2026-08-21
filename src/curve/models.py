@@ -337,6 +337,19 @@ class Pool:
             base_pool=raw.get("base_pool") or "",
         )
 
+    def take_figures(self, figures: dict[str, float]) -> bool:
+        """Take fresher TVL, volume and base APR, from wherever they came.
+
+        The three that move between one look at the list and the next.
+        Incentives are not among them: they are a v2 field and a chain
+        payload does not carry them. True when something actually moved.
+        """
+        before = (self.tvl, self.volume_24h, self.base_apr)
+        self.tvl = _float(figures.get("tvl_usd"))
+        self.volume_24h = _float(figures.get("trading_volume_24h"))
+        self.base_apr = _float(figures.get("base_weekly_apr"))
+        return before != (self.tvl, self.volume_24h, self.base_apr)
+
     def merge_detail(self, raw: dict[str, Any]) -> Pool:
         """Fold in the extra fields only `/pools/{chain_id}/{address}` has."""
         self.lp_token = raw.get("lp_token_address") or self.lp_token or self.address

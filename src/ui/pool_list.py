@@ -509,6 +509,26 @@ class PoolListView(ft.Column):
         self._rebuild_rows()
         safe_update(self)
 
+    def refresh_figures(self, figures: dict[str, dict[str, float]]) -> int:
+        """Take fresher TVL, volume and base APR onto the rows on screen.
+
+        In place, and without reordering: the order is the server's, and a
+        row jumping past its neighbour because its volume ticked over is
+        worse than a list that is briefly ordered by figures a few minutes
+        old. The next real load puts it right.
+        """
+        moved = 0
+        for row in self.rows.controls:
+            if not isinstance(row, PoolRow):
+                continue
+            figure = figures.get(row.pool.address.lower())
+            if figure is not None and row.pool.take_figures(figure):
+                moved += 1
+        if moved:
+            self._rebuild_rows()
+            safe_update(self)
+        return moved
+
     def _rebuild_rows(self) -> None:
         """Re-render the rows already loaded, in the current layout."""
         pools = [row.pool for row in self.rows.controls if isinstance(row, PoolRow)]

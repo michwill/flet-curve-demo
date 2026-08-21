@@ -1033,6 +1033,10 @@ class CurveApp:
         self._show_totals(totals)
         safe_update(self.totals)
         safe_update(self.menu)
+        # The rows came down with the two figures above them -- the payload
+        # carries every pool on the chain. Whether the list is the page on
+        # screen or the one behind a pool, it is right when you look at it.
+        self.list_view.refresh_figures(await self.api.pool_figures(chain_id))
 
     def _show_totals(self, totals: dict) -> None:
         """The chain's two figures, on the bar and in the menu."""

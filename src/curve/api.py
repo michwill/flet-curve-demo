@@ -59,6 +59,19 @@ DEFAULT_MIN_TVL = 10_000.0
 #: Prices data is cached at the edge for ~5 minutes; match it.
 CACHE_TTL = 300.0
 
+#: The figures on a pool that move, and the only ones worth keeping off a
+#: chain payload. Named as the v2 pool payload names them, because that is
+#: what `Pool.from_v2` reads.
+FIGURE_FIELDS = ("tvl_usd", "trading_volume_24h", "base_weekly_apr")
+
+#: The two payloads agree on TVL and volume to the cent, and disagree on
+#: base APR by exactly this: v1 reports the fraction where v2 reports the
+#: percentage. Measured across the eight biggest pools on Ethereum in the
+#: same minute -- 0.0073 against 0.7310, 0.0121 against 1.2105, and so on.
+#: `Pool.base_apr` is in v2's units, so this is what the chain payload's
+#: figure has to be multiplied by to mean the same thing.
+BASE_APR_SCALE = 100.0
+
 #: How long to wait on Merkl or on GitHub before doing without them.
 CAMPAIGN_TIMEOUT = 5.0
 
@@ -146,6 +159,29 @@ def pool_composition(raw: dict[str, Any]) -> float:
 def _rates_key(chain_id: int, address: str) -> str:
     """Where one pool's published rates live in the cache."""
     return f"rates:{chain_id}:{address.lower()}"
+
+
+def _figures_key(chain_id: int) -> str:
+    """Where the per-pool figures off the chain payload live."""
+    return f"figures:{chain_id}"
+
+
+def _pool_figures(payload: dict | None) -> dict[str, dict[str, float]]:
+    """Every pool's changing figures out of a chain payload, by address.
+
+    Three fields of a row that has forty, because `chain_totals` fetches
+    2.4 MB of them for two numbers and keeping the rest whole would hold
+    that in memory for the sake of a refresh. The names are the ones
+    `Pool.from_v2` already reads -- the two payloads agree here.
+    """
+    figures: dict[str, dict[str, float]] = {}
+    for row in (payload or {}).get("data") or []:
+        address = str(row.get("address") or "").lower()
+        if address:
+            figure = {field: _float(row.get(field)) for field in FIGURE_FIELDS}
+            figure["base_weekly_apr"] *= BASE_APR_SCALE
+            figures[address] = figure
+    return figures
 
 
 class CurveApi:
@@ -469,12 +505,17 @@ class CurveApi:
         return pool
 
     async def chain_totals(self, chain_id: int) -> dict[str, float | None]:
-        """Headline TVL and volume for the chain, for the list header."""
+        """Headline TVL and volume for the chain, for the list header.
+
+        Puts the per-pool figures off the same payload in the cache on the
+        way past -- see `pool_figures`.
+        """
         key = f"totals:{chain_id}"
         cached = self._cached(key)
         if cached is not None:
             return cached
         if await self.is_lite(chain_id):
+            self._store(_figures_key(chain_id), {})  # a Lite chain has no such list
             for chain in (await self.lite_chains()).values():
                 if chain.chain_id == chain_id:
                     return self._store(key, {"tvl": chain.tvl, "volume": None})
@@ -484,6 +525,7 @@ class CurveApi:
             name = chains.get(chain_id, "ethereum")
             payload = await get_json(build_url(PRICES_V1, f"/chains/{name}"))
             totals = (payload or {}).get("total") or {}
+            self._store(_figures_key(chain_id), _pool_figures(payload))
             return self._store(
                 key,
                 {
@@ -493,6 +535,19 @@ class CurveApi:
             )
         except (ApiError, KeyError, TypeError, ValueError):
             return {"tvl": 0.0, "volume": 0.0}
+
+    async def pool_figures(self, chain_id: int) -> dict[str, dict[str, float]]:
+        """What every pool on the chain is worth and trading, by address.
+
+        Free, and that is the point: `chain_totals` downloads all of it to
+        reach the two numbers on the bar, and used to throw the other
+        thousand rows away. The list can have them for nothing.
+        """
+        cached = self._cached(_figures_key(chain_id))
+        if cached is not None:
+            return cached
+        await self.chain_totals(chain_id)
+        return self._cached(_figures_key(chain_id)) or {}
 
     async def portfolio_targets(self, chain: str, chain_id: int) -> list[Target]:
         """Every pool worth asking about, with its LP token and gauge."""

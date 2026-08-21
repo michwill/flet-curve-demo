@@ -1169,6 +1169,24 @@ leaves the last good figures up rather than putting an error banner over a
 page that was fine. A chain switched while the read is in the air throws
 the answer away -- the new chain's own load draws its figures.
 
+**The rows come down with it.** Those 1,070 attached pools carry each
+one's `tvl_usd`, `trading_volume_24h` and `base_weekly_apr` -- the three
+figures the list draws that move -- so `pool_figures` keeps them from the
+same fetch and the list takes them on for nothing. Only those three: a
+chain payload has no incentives in it, that being a v2 field, so the CRV
+range beside them keeps whatever the last real load said. Nothing is
+reordered either. The order is the server's, and a row jumping past its
+neighbour because its volume ticked over is worse than a list briefly
+ordered by figures a few minutes old.
+
+The two payloads agree on TVL and volume to the cent and disagree on base
+APR by exactly 100x: **v1 reports the fraction where v2 reports the
+percentage** -- 0.007309821255934601 against 0.7309821255934601 for the
+same pool in the same minute, matching digit for digit once scaled.
+`BASE_APR_SCALE` is where that is corrected. Taken raw it was invisible in
+the tests and obvious on screen: every Base APY shrank by two decimal
+places on the first refresh, crvUSD/USDC going from 0.73% to "< 0.01%".
+
 ### Back, off a pool opened from the portfolio
 
 A pool is not a page. It does not claim a nav link, so `_page_name` still

@@ -115,6 +115,11 @@ ADDRESS_EXPAND_MIN_PAGE = 1100
 PAGE_POOLS = "pools"
 PAGE_PORTFOLIO = "portfolio"
 
+#: The glyph beside each page's name, in the nav and in the menu the nav
+#: becomes on a phone -- where the three theme rows already carry a mark,
+#: so without these the pages were the only rows without one.
+PAGE_MARKS = {PAGE_POOLS: ft.Icons.POOL, PAGE_PORTFOLIO: ft.Icons.SAVINGS}
+
 #: Room around a page, inside the scroller rather than around it: the
 #: scrollbar is drawn at the edge of the thing that scrolls, so padding the
 #: scroller itself would move the bar in off the window's edge.
@@ -130,8 +135,14 @@ NAV_GAP = 26
 #: now, so they need more air between them than a caption would.
 NAV_SPACING = 14
 
-#: How wide the nav slides open: the gap, plus both links.
-NAV_WIDTH = NAV_GAP + NAV_SPACING + 210
+#: How wide a page's glyph is drawn in the nav, and the air between it and
+#: the name it belongs to.
+NAV_MARK = 20
+NAV_MARK_GAP = 6
+
+#: How wide the nav slides open: the gap, plus both links, plus the glyph
+#: and its air on each of them.
+NAV_WIDTH = NAV_GAP + NAV_SPACING + 210 + 2 * (NAV_MARK + NAV_MARK_GAP)
 
 #: Below this the header has no room to slide anything open, so the mark
 #: becomes a menu button instead.
@@ -519,10 +530,12 @@ class CurveApp:
     def _menu_items(self) -> list[ft.PopupMenuItem]:
         """What the mark opens."""
         pages = [
-            ft.PopupMenuItem(content=ft.Text("Pools"),
+            ft.PopupMenuItem(icon=ft.Icon(PAGE_MARKS[PAGE_POOLS]),
+                             content=ft.Text("Pools"),
                              checked=self._page_name == PAGE_POOLS,
                              on_click=lambda _e: self.go_page(PAGE_POOLS)),
-            ft.PopupMenuItem(content=ft.Text("Portfolio"),
+            ft.PopupMenuItem(icon=ft.Icon(PAGE_MARKS[PAGE_PORTFOLIO]),
+                             content=ft.Text("Portfolio"),
                              checked=self._page_name == PAGE_PORTFOLIO,
                              on_click=lambda _e: self.go_page(PAGE_PORTFOLIO)),
         ]
@@ -1376,14 +1389,25 @@ class CurveApp:
         self.account_chip.tooltip = f"{wallet.name}  ·  {wallet.chain.name}"
 
     def _nav_link(self, label: str, page: str) -> ft.Control:
-        """One page link: as big as a pool name, and it says where you are."""
+        """One page link: its glyph, then a name as big as a pool's. It says
+        where you are by going solid rather than muted.
+        """
         here = self._page_name == page
+        color = ft.Colors.ON_SURFACE if here else ft.Colors.ON_SURFACE_VARIANT
         return ft.Container(
-            ft.Text(
-                label,
-                size=ROW_TITLE,
-                weight=ft.FontWeight.BOLD,
-                color=ft.Colors.ON_SURFACE if here else ft.Colors.ON_SURFACE_VARIANT,
+            ft.Row(
+                [
+                    ft.Icon(PAGE_MARKS[page], size=NAV_MARK, color=color),
+                    ft.Text(
+                        label,
+                        size=ROW_TITLE,
+                        weight=ft.FontWeight.BOLD,
+                        color=color,
+                    ),
+                ],
+                spacing=NAV_MARK_GAP,
+                tight=True,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
             ),
             on_click=lambda _e, target=page: self.go_page(target),
             ink=True,

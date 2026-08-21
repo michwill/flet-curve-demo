@@ -27,7 +27,7 @@ from wallet.base import WalletError
 from . import AnyEvent, activity, safe_update, theme
 from .actions import ClaimTab, DepositTab, StakeTab, SwapTab, WithdrawTab
 from .candles import CandleChart
-from .logos import coin_stack, pool_stack, token_mark
+from .logos import OVERLAP, coin_stack, pool_stack, token_mark
 from .pool_list import POINTS_ICON
 from .responsive import Layout, layout_for
 from .typography import BODY, LABEL, METRIC, SMALL, TITLE, TITLE_NARROW
@@ -53,6 +53,13 @@ LP_LABEL_NARROW = "LP token"
 #: rule that separates them from the price series above.
 TRADES_SERIES = "__trades__"
 LIQUIDITY_SERIES = "__liquidity__"
+
+#: What names each of the two in the menu, where every other row carries
+#: coin marks: swapped arrows for the trades, a drop for the liquidity.
+ACTIVITY_MARKS = {
+    TRADES_SERIES: ft.Icons.SWAP_HORIZ,
+    LIQUIDITY_SERIES: ft.Icons.WATER_DROP,
+}
 ACTIVITY_SERIES = (TRADES_SERIES, LIQUIDITY_SERIES)
 SERIES_RULE = "__rule__"
 
@@ -62,6 +69,13 @@ CHART_HEIGHT = 340
 
 #: How large a mark is in the series menu, beside what it names.
 SERIES_MARK = 18
+
+#: A pair's two overlapping marks are wider than one glyph, and Material
+#: starts a row's label after whatever its leading control is. So the two
+#: tables' glyphs are boxed to a pair's width, or their names would sit
+#: left of every price row's. `logos.OVERLAP` is how much of each mark the
+#: next one covers, which is what makes two of them 1.66 marks wide.
+SERIES_MARK_BOX = SERIES_MARK * (2 - OVERLAP)
 
 #: And on the closed field, where it is larger and boxed. Material drops a
 #: leading icon into a slot meant for one 24px glyph: a stack left raw
@@ -809,13 +823,16 @@ class PoolDetailView(ft.Column):
     # -- chart ------------------------------------------------------------
 
     def _series_mark(self, key: str, size: float = SERIES_MARK) -> ft.Control | None:
-        """The marks that name a series: the pool's own stack for the LP
-        token, and the two coins for a pair. Built fresh each time -- a
-        control belongs to one place in the tree, and this is drawn in the
-        menu and again on the closed field.
+        """What names a series: the pool's own stack for the LP token, the
+        two coins for a pair, and a glyph for each of the two tables.
+
+        Built fresh each time -- a control belongs to one place in the
+        tree, and this is drawn in the menu and again on the closed field.
         """
         if key == LP_SERIES:
             return pool_stack(self.pool, size=size, limit=3)
+        if glyph := ACTIVITY_MARKS.get(key):
+            return ft.Icon(glyph, size=size, color=ft.Colors.ON_SURFACE_VARIANT)
         coins = self.pool.pool_coins
         i, _, j = key.partition(":")
         if not j.isdigit() or not i.isdigit():
@@ -823,6 +840,17 @@ class PoolDetailView(ft.Column):
         if int(i) >= len(coins) or int(j) >= len(coins):
             return None
         return coin_stack([coins[int(i)], coins[int(j)]], self.pool.chain, size)
+
+    def _menu_mark(self, key: str) -> ft.Control | None:
+        """The same mark in the menu, where a glyph is boxed to a pair's
+        width so its name starts where the price rows' names do.
+        """
+        mark = self._series_mark(key)
+        if key not in ACTIVITY_MARKS or mark is None:
+            return mark
+        return ft.Container(
+            mark, width=SERIES_MARK_BOX, alignment=ft.Alignment.CENTER_LEFT
+        )
 
     def _field_mark(self, key: str) -> ft.Control | None:
         """The same marks on the closed field, boxed so they sit in it
@@ -860,8 +888,12 @@ class PoolDetailView(ft.Column):
         options.append(
             ft.DropdownOption(key=SERIES_RULE, content=ft.Divider(height=1), disabled=True)
         )
-        options.append(ft.DropdownOption(key=TRADES_SERIES, text="Trades"))
-        options.append(ft.DropdownOption(key=LIQUIDITY_SERIES, text="Liquidity"))
+        for key, text in ((TRADES_SERIES, "Trades"), (LIQUIDITY_SERIES, "Liquidity")):
+            options.append(
+                ft.DropdownOption(
+                    key=key, text=text, leading_icon=self._menu_mark(key)
+                )
+            )
         return options
 
     @property

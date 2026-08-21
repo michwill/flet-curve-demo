@@ -677,7 +677,15 @@ def test_each_series_is_named_by_its_marks() -> None:
 
     assert by_key[pool_detail.LP_SERIES].leading_icon is not None
     assert by_key["0:1"].leading_icon is not None
-    assert by_key["__trades__"].leading_icon is None, "a table has no coins"
+
+    # The tables have no coins, so they are named by a glyph instead --
+    # without one they were the only rows in the menu starting further left.
+    # Boxed to a pair's width, or they would start left of the price rows
+    # even with a glyph, a glyph being narrower than two overlapping marks.
+    for key in pool_detail.ACTIVITY_SERIES:
+        boxed = by_key[key].leading_icon
+        assert isinstance(boxed.content, ft.Icon)
+        assert boxed.width == pool_detail.SERIES_MARK_BOX > pool_detail.SERIES_MARK
 
 
 def test_the_marks_follow_the_selection_onto_the_field() -> None:
@@ -694,13 +702,17 @@ def test_the_marks_follow_the_selection_onto_the_field() -> None:
     assert view.series.leading_icon != view._field_mark(pool_detail.LP_SERIES)
 
 
-def test_picking_a_table_leaves_the_field_unmarked() -> None:
+def test_picking_a_table_marks_the_field_too() -> None:
+    """Otherwise the field's text jumps left when a table is picked, and
+    back again when a price series is.
+    """
     view = activity_view()
 
     view.series.value = pool_detail.TRADES_SERIES
     view._series_changed(None)
 
-    assert view.series.leading_icon is None
+    assert view.series.leading_icon == view._field_mark(pool_detail.TRADES_SERIES)
+    assert view.series.leading_icon != view._field_mark(pool_detail.LIQUIDITY_SERIES)
 
 
 def test_the_field_boxes_its_marks_and_the_menu_does_not() -> None:
@@ -1992,14 +2004,34 @@ def nav_app(page=None, on: str = "pools"):
     return app
 
 
+def nav_parts(link) -> tuple[ft.Icon, ft.Text]:
+    """A link's glyph and its name."""
+    glyph, name = link.content.controls
+    return glyph, name
+
+
 def test_the_current_page_is_marked_and_the_other_is_not() -> None:
     app = nav_app(on="portfolio")
     app._sync_nav()
-    links = {link.content.value: link for link in app.nav.content.controls}
+    links = {nav_parts(link)[1].value: link for link in app.nav.content.controls}
 
     assert links["Portfolio"].border is not None
     assert links["Pools"].border is None
-    assert links["Portfolio"].content.color != links["Pools"].content.color
+    assert nav_parts(links["Portfolio"])[1].color != nav_parts(links["Pools"])[1].color
+
+
+def test_a_link_says_where_it_goes_twice_over() -> None:
+    """The glyph takes the name's colour, so the pair reads as one thing
+    rather than as a lit icon beside a muted word.
+    """
+    from main import PAGE_MARKS, PAGE_POOLS
+
+    app = nav_app(on="pools")
+    app._sync_nav()
+    glyph, name = nav_parts(app.nav.content.controls[0])
+
+    assert glyph.icon == PAGE_MARKS[PAGE_POOLS]
+    assert glyph.color == name.color
 
 
 def test_the_links_are_as_big_as_a_pool_name_and_bold() -> None:
@@ -2008,8 +2040,9 @@ def test_the_links_are_as_big_as_a_pool_name_and_bold() -> None:
     app = nav_app()
     app._sync_nav()
     for link in app.nav.content.controls:
-        assert link.content.size == ROW_TITLE
-        assert link.content.weight == ft.FontWeight.BOLD
+        _glyph, name = nav_parts(link)
+        assert name.size == ROW_TITLE
+        assert name.weight == ft.FontWeight.BOLD
 
 
 def test_the_links_are_containers_not_text_buttons() -> None:
@@ -2258,7 +2291,12 @@ def test_every_theme_in_the_menu_carries_its_own_face() -> None:
     from ui import theme as themes
 
     app = header_app(PHONE)
-    themed = [item for item in app.menu.items if item.icon is not None]
+    themed = [
+        item
+        for item in app.menu.items
+        if item.icon is not None
+        and getattr(item.content, "value", "").endswith("theme")
+    ]
 
     assert len(themed) == len(themes.NAMES)
     kinds = {type(item.icon) for item in themed}

@@ -1554,7 +1554,15 @@ belongs to one place in the tree — and Flet skips a write whose control compar
 change between the LP token and the only pair, both being the same two marks.
 
 The picker ends in two entries under a rule: **Trades** and
-**Liquidity**. They are not a third way of drawing the price, they replace the
+**Liquidity**. Having no coins to be named by, they are named by a glyph
+instead -- swapped arrows and a drop -- boxed to the width of a pair's two
+overlapping marks, because Material starts a row's label after whatever its
+leading control is and one glyph is narrower than two marks. Without the
+box their names sat left of every price row's; without the glyph at all,
+they were the only rows in the menu with an empty leading slot, and the
+field's label jumped sideways whenever a table was picked.
+
+They are not a third way of drawing the price, they replace the
 chart with what actually went through the pool — a swap per row, or a deposit
 or withdrawal — each row a link to the transaction on the chain's explorer.
 The candle-size picker goes away with the chart, having nothing to size, and

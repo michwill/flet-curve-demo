@@ -293,7 +293,7 @@ async def test_answers_keep_their_order_however_they_arrive() -> None:
 
     from .test_parameters import aggregate3_response
 
-    order = []
+    order: list[int] = []
 
     class Uneven:
         async def call(self, _to: str, data: str) -> str:

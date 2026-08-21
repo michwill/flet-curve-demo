@@ -2978,6 +2978,7 @@ async def test_the_rates_are_asked_for_once_however_many_pools() -> None:
     await app.load_earnings(holdings, "0x" + "11" * 20, 1, object())
 
     assert len(calls) == 1 and len(calls[0]) == 300
+    assert app._earning_seeds is not None
     seeds, _meta, _price, _chain = app._earning_seeds
     assert len(seeds) == 300
     assert all(seed.crv_apr == 3.0 for seed in seeds)
@@ -3013,6 +3014,7 @@ async def test_rates_that_cannot_be_read_still_leave_the_claim_working() -> None
         "0x" + "11" * 20, 1, object(),
     )
 
+    assert app._earning_seeds is not None
     seeds, _meta, _price, _chain = app._earning_seeds
     assert len(seeds) == 1 and seeds[0].crv_apr == 0.0
     assert read == [True], "the chain read still ran"

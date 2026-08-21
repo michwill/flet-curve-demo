@@ -571,6 +571,7 @@ class CurveApi:
             *[self._list_page(chain_id, number) for number in numbers],
             return_exceptions=True,
         )
+        pages = [page for page in rest if isinstance(page, list)]
         retries = [n for n, page in zip(numbers, rest, strict=True)
                    if not isinstance(page, list)]
         if retries:
@@ -585,11 +586,10 @@ class CurveApi:
                     f"Curve's API did not serve page{'s' if len(missing) > 1 else ''} "
                     f"{', '.join(str(n) for n in missing)} of this chain's pools."
                 )
-            rest = [page for page in rest if isinstance(page, list)] + list(second)
+            pages += [page for page in second if isinstance(page, list)]
         pools = list(first)
-        for page in rest:
-            if isinstance(page, list):
-                pools += page
+        for page in pages:
+            pools += page
         return pools
 
     async def _list_page(self, chain_id: int, page: int) -> list[dict[str, Any]]:

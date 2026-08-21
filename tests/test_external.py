@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from curve.external import ExternalCampaign, by_pool, parse_campaign, parse_manifest
 
 #: Well after the `1770000000` (February 2026) that 119 entries carry.
 NOW = 1_790_000_000.0
 
-ETHENA = {
+ETHENA: dict[str, Any] = {
     "campaignName": "",
     "platform": "Ethena",
     "description": "Points for providing liquidity.",

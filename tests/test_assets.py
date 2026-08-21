@@ -117,12 +117,16 @@ def last_resort(mark):
 
 
 def attempts(mark) -> list[str]:
-    """The URLs a mark will ask for, in order. A `data:` src fetches
-    nothing, so it is not one of them.
+    """The URLs a mark will ask for, in order.
+
+    A `data:` src is not one of them, and neither is a src that is bytes
+    rather than a string -- both carry the image already and fetch
+    nothing. `src` can be either; only a string can be a URL.
     """
-    urls, node = [], mark.content
+    urls: list[str] = []
+    node = mark.content
     while isinstance(node, ft.Image):
-        if not (isinstance(node.src, str) and node.src.startswith("data:")):
+        if isinstance(node.src, str) and not node.src.startswith("data:"):
             urls.append(node.src)
         node = node.error_content
     return urls

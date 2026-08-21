@@ -789,22 +789,28 @@ def progress_bar(served: int, total: int, elapsed: float) -> str:
 PIPED_INTERVAL = 20.0
 
 
-def progress_reporter(stream=None, every: float = 0.0):
-    """Draw the bar in place on a terminal, and at intervals otherwise."""
-    stream = stream or sys.stdout
-    inline = hasattr(stream, "isatty") and stream.isatty()
-    last = [-every]
+class ProgressReporter:
+    """Draws the bar in place on a terminal, and at intervals otherwise.
 
-    def report(served: int, total: int, elapsed: float) -> None:
-        if not inline and served < total and elapsed - last[0] < every:
+    An object rather than a closure because callers read `inline` to
+    decide whether the bar they have been drawing needs a newline after
+    it, and a function is not a place to keep that.
+    """
+
+    def __init__(self, stream=None, every: float = 0.0) -> None:
+        self._stream = stream or sys.stdout
+        self._every = every
+        self._last = -every
+        #: Is anyone watching this redraw in place, or is it a log?
+        self.inline = hasattr(self._stream, "isatty") and self._stream.isatty()
+
+    def __call__(self, served: int, total: int, elapsed: float) -> None:
+        if not self.inline and served < total and elapsed - self._last < self._every:
             return
-        last[0] = elapsed
+        self._last = elapsed
         line = progress_bar(served, total, elapsed)
-        stream.write(f"\r{line}" if inline else f"{line}\n")
-        stream.flush()
-
-    report.inline = inline
-    return report
+        self._stream.write(f"\r{line}" if self.inline else f"{line}\n")
+        self._stream.flush()
 
 
 def flet_cli() -> str:
@@ -1124,7 +1130,7 @@ def wait_until_findable(cid: str, paths: list[str], options) -> int:
     print(f"  {gateway.format(cid=cid)}")
     print("  (token marks skipped -- lazily fetched, and there are 6,716)")
     started = time.monotonic()
-    report = progress_reporter(every=PIPED_INTERVAL)
+    report = ProgressReporter(every=PIPED_INTERVAL)
     try:
         bad = verify(
             cid,
@@ -1259,7 +1265,7 @@ def warm(host: str, paths: list[str], options) -> int:
     print(f"  {host}")
     print(f"  (whole files, {WARM_WORKERS} at a time -- this is deliberately slow)")
     started = time.monotonic()
-    report = progress_reporter()
+    report = ProgressReporter()
     try:
         bad = verify(
             "",

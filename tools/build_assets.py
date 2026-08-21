@@ -230,7 +230,7 @@ def hot_order(chain: str) -> list[str]:
         "main", "factory-stable-ng", "factory-crypto",
         "factory-twocrypto", "factory-tricrypto", "crypto", "factory",
     )
-    pools = []
+    pools: list[dict] = []
     for registry in registries:
         url = f"https://api.curve.finance/api/getPools/{chain}/{registry}"
         request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})

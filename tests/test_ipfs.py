@@ -889,7 +889,7 @@ def test_the_bar_redraws_in_place_only_on_a_terminal() -> None:
 
     piped, terminal = Pipe(), Terminal()
     for stream in (piped, terminal):
-        report = ipfs.progress_reporter(stream)
+        report = ipfs.ProgressReporter(stream)
         report(1, 2, 0.0)
         report(2, 2, 1.0)
 
@@ -909,7 +909,7 @@ def test_a_piped_bar_is_written_at_intervals_and_at_the_end() -> None:
             return False
 
     piped = Pipe()
-    report = ipfs.progress_reporter(piped, every=20.0)
+    report = ipfs.ProgressReporter(piped, every=20.0)
     for served in range(1, 8):  # one a second, all within one interval
         report(served, 58, float(served))
     report(58, 58, 8.0)
@@ -1203,7 +1203,12 @@ def test_only_a_wall_of_wrong_files_leaves_nothing_to_check_with(
 
 def test_a_named_gateway_is_not_second_guessed(monkeypatch) -> None:
     asked = []
-    monkeypatch.setattr(ipfs, "pick_gateway", lambda *a, **k: asked.append(a) or ("x", []))
+
+    def remember(*args, **_kw):
+        asked.append(args)
+        return "x", []
+
+    monkeypatch.setattr(ipfs, "pick_gateway", remember)
     options = SimpleNamespace(verify_gateway="https://{cid}.example.test", dist=".")
 
     assert ipfs.chosen_gateway("bafyfake", options) == "https://{cid}.example.test"

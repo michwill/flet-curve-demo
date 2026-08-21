@@ -2156,8 +2156,11 @@ def test_a_band_with_nothing_to_say_takes_no_colour() -> None:
 def test_chad_fills_where_material_tints() -> None:
     from ui import theme
 
-    assert "," not in theme.note_tint(ThemedPage("chad"), "fee")
-    assert "," in theme.note_tint(ThemedPage("light"), "fee")
+    chad = theme.note_tint(ThemedPage("chad"), "fee")
+    material = theme.note_tint(ThemedPage("light"), "fee")
+
+    assert chad is not None and "," not in chad
+    assert material is not None and "," in material
 
 
 async def test_a_theme_change_repaints_the_bands() -> None:

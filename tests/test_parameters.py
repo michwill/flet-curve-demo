@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from curve import abi, explorers
@@ -510,7 +512,7 @@ def test_a_coin_count_that_does_not_match_shows_nothing() -> None:
 
 async def test_the_rates_ride_in_the_same_batch_as_the_parameters() -> None:
     plan = _parameter_plan()
-    answers = [None] * len(plan)
+    answers: list[Any] = [None] * len(plan)
     answers[[key for key, _ in plan].index("A")] = 5_000
     answers[[key for key, _ in plan].index("stored_rates")] = OSETH_RETH_RATES
 

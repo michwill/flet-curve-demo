@@ -18,8 +18,15 @@ UNRECOGNIZED_CHAIN = 4902
 class WalletError(Exception):
     """Base for everything this package raises."""
 
-    #: Did the human say no, or did something break?
-    rejected_by_user = False
+    @property
+    def rejected_by_user(self) -> bool:
+        """Did the human say no, or did something break?
+
+        A property rather than a class attribute because `RpcError`
+        answers it by reading its own code, and a subclass cannot narrow
+        a writeable attribute into a read-only one.
+        """
+        return False
 
 
 def quantity(value: Any, what: str) -> int:

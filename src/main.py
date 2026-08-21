@@ -489,7 +489,15 @@ class CurveApp:
             page, on_open=self.open_holding, on_claim=self.claim_portfolio
         )
         self._earnings: list[earnings.Earning] = []
-        self._earning_seeds: tuple | None = None
+        #: What `reread_earnings` needs to ask the chain again, gathered
+        #: once: the positions, their token metadata, CRV's price and the
+        #: chain it was all read on.
+        self._earning_seeds: (
+            tuple[
+                list[earnings.Earning], dict[str, tuple[str, int, float]], float, int
+            ]
+            | None
+        ) = None
         self.progress = ft.ProgressBar(visible=False)
         self.error = ft.Text("", size=SMALL, color=ft.Colors.ERROR, visible=False)
         self._showing: ft.Control = self.list_view

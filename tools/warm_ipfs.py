@@ -13,9 +13,9 @@ from tools.ens import EnsError, contenthash, name_behind
 from tools.publish_ipfs import (
     DIST,
     WARM_WORKERS,
+    ProgressReporter,
     boot_files,
     elapsed_text,
-    progress_reporter,
     resolved_cid,
     verify,
 )
@@ -221,7 +221,7 @@ def warm_one(host: str, paths: list[str], options) -> dict:
         f"{options.workers} at a time"
     )
     started = time.monotonic()
-    report = progress_reporter()
+    report = ProgressReporter()
     bad: dict = {}
     done = done_bytes = 0
     for batch in batched(paths, options.chunk):

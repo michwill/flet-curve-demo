@@ -701,9 +701,10 @@ def test_the_wallet_is_offered_a_list_somebody_could_read() -> None:
 
     many = [f"https://rpc{i}.test" for i in range(8)]
 
-    offered = chain_params(FRAXTAL, many)["rpcUrls"]
+    params = chain_params(FRAXTAL, many)
 
-    assert offered == many[:MAX_OFFERED_ENDPOINTS]
+    assert params is not None
+    assert params["rpcUrls"] == many[:MAX_OFFERED_ENDPOINTS]
 
 
 def test_an_explorer_that_is_not_https_is_left_out() -> None:
@@ -711,7 +712,9 @@ def test_an_explorer_that_is_not_https_is_left_out() -> None:
 
     entry = dict(FRAXTAL, explorers=[{"url": "http://insecure.test"}])
 
-    assert chain_params(entry, ["https://rpc.frax.com"])["blockExplorerUrls"] == []
+    params = chain_params(entry, ["https://rpc.frax.com"])
+
+    assert params is not None and params["blockExplorerUrls"] == []
 
 
 async def test_the_directory_answers_for_the_chain_it_loaded(monkeypatch) -> None:
@@ -723,5 +726,7 @@ async def test_the_directory_answers_for_the_chain_it_loaded(monkeypatch) -> Non
     monkeypatch.setattr(rpc_module, "get_json", served)
     directory = rpc_module.ChainlistDirectory()
 
-    assert (await directory.chain_params(252))["chainName"] == "Fraxtal"
+    params = await directory.chain_params(252)
+
+    assert params is not None and params["chainName"] == "Fraxtal"
     assert await directory.chain_params(9999) is None

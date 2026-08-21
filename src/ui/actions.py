@@ -267,7 +267,7 @@ class ActionTab:
         self._pending_approval: tuple[str, str, int] | None = None
         self._fees: tuple[int, int, int, bool] | None = None
         self._fees_read_at = 0.0
-        self._alarm_panel: ft.Container | None = None
+        self._alarm_panel: _Band | None = None
         self._alarm_run = 0
         self._estimate_problem = False
         self._impact_high = False
@@ -444,7 +444,7 @@ class ActionTab:
 
     def _band(
         self, text: ft.Control, *, visible: bool = True, kind: str = ""
-    ) -> ft.Container:
+    ) -> _Band:
         return _Band(text, self._page_of(), kind=kind, visible=visible)
 
     def _page_of(self) -> ft.Page:
@@ -459,7 +459,7 @@ class ActionTab:
         else:
             self._alarm(None)
 
-    def _alarm(self, panel: ft.Container | None) -> None:
+    def _alarm(self, panel: _Band | None) -> None:
         """Start the pulse on `panel`, or stop whatever is pulsing."""
         if panel is self._alarm_panel:
             return

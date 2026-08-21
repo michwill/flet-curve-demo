@@ -100,6 +100,6 @@ def main():
 
 
 if __name__ == "__main__":
-    import urllib.parse  # noqa: E402  -- kept local so the imports read top-down
+    import urllib.parse  # kept local so the imports above read top-down
 
     main()

@@ -1148,6 +1148,27 @@ Two smaller things fell out of the same hunt, both of which helped it hide:
 **Firefox reproduces this and iOS-only bugs like it**, which is worth
 remembering the next time something works on a desktop and not on a phone.
 
+### Keeping the headline figures current
+
+TVL and 24h volume on the bar were read once, when the chain loaded, and
+never again -- a page left open all day showed the morning's numbers.
+`refresh_totals` reads them every ten minutes for as long as the app is
+open.
+
+It sleeps until they are actually due rather than ticking on a fixed
+schedule, because a chain switch reads them itself: a blind tick landing
+seconds later would pay for the read twice over. And each read is not
+cheap -- `chain_totals` costs 2.4 MB on Ethereum, because the per-chain
+endpoint answers with the chain's whole pool list attached (1,070 pools)
+and there is no leaner route to the two figures. The `/chains/` index that
+orders the picker is one small response but carries `pool_tvl` only, no
+volume.
+
+The read is quiet: nobody asked for it, so a chain that will not answer
+leaves the last good figures up rather than putting an error banner over a
+page that was fine. A chain switched while the read is in the air throws
+the answer away -- the new chain's own load draws its figures.
+
 ### Back, off a pool opened from the portfolio
 
 A pool is not a page. It does not claim a nav link, so `_page_name` still

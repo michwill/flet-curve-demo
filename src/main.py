@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import json
 import os
+import time
 from typing import Any
 
 import flet as ft
@@ -88,6 +89,17 @@ def startup_window() -> tuple[float, float] | None:
         return None
     return size if size[0] > 0 and size[1] > 0 else None
 
+
+#: How often the chain's headline figures are read again while the app
+#: stays open. They were read once, when the chain loaded, and never
+#: again -- a page left open all day showed the morning's numbers.
+#:
+#: Ten minutes because each read is what `chain_totals` costs, and on
+#: Ethereum that is 2.4 MB: the per-chain endpoint answers with the
+#: chain's whole pool list attached, and there is no leaner route to the
+#: two figures. `CurveApi` holds its own answer for five minutes, so a
+#: shorter interval would spend that on numbers it already had.
+TOTALS_REFRESH = 600.0
 
 #: Where the last portfolio scan is remembered, so the page has something to
 #: show while the next one runs.
@@ -264,6 +276,7 @@ class CurveApp:
         if not is_browser():
             page.run_task(self.dress_window)
         page.run_task(self.load_pools)
+        page.run_task(self.refresh_totals)
         if autoconnect():
             self.connect_button.visible = False
             page.run_task(self.connect, None)
@@ -299,6 +312,10 @@ class CurveApp:
         #: Empty until then, which is what `PREFERRED_CHAINS` is for.
         self._chain_tvls: dict[str, float] = {}
         self._totals: list[tuple[str, str]] = []
+        #: When the figures on the bar were last read, so the refresh can
+        #: wait until they are actually old. Now, rather than zero: the
+        #: first load is about to read them.
+        self._totals_read = time.monotonic()
 
         #: The network picker: a bar naming the network, and a view that
         #: opens on it with an empty search box.
@@ -978,8 +995,48 @@ class CurveApp:
         self.progress.visible = False
         self.page.update()
 
+    async def refresh_totals(self, sleep=None) -> None:
+        """Keep the chain's headline figures current for as long as the app
+        is open. Runs until the page is gone.
+
+        Sleeps until they are actually due rather than ticking blindly: a
+        chain switch reads them itself, and a tick landing a moment later
+        would spend another read to redraw the same two numbers.
+        """
+        sleep = sleep or asyncio.sleep
+        while True:
+            await sleep(max(TOTALS_REFRESH - self._totals_age(), 1.0))
+            if self._totals_age() < TOTALS_REFRESH:
+                continue  # something read them while this was waiting
+            await self.read_totals()
+
+    def _totals_age(self) -> float:
+        """How long the figures on the bar have been the answer."""
+        return time.monotonic() - self._totals_read
+
+    async def read_totals(self) -> None:
+        """Read them once. Quietly: this is nobody's request, so a chain
+        that will not answer leaves the last good figures up rather than
+        putting an error where the page was fine.
+        """
+        self._totals_read = time.monotonic()
+        chain = self.chain
+        chain_id = self.chains.get(chain)
+        if chain_id is None:
+            return
+        try:
+            totals = await self.api.chain_totals(chain_id)
+        except ApiError:
+            return
+        if chain != self.chain:
+            return  # switched while this was in the air; its own load draws them
+        self._show_totals(totals)
+        safe_update(self.totals)
+        safe_update(self.menu)
+
     def _show_totals(self, totals: dict) -> None:
         """The chain's two figures, on the bar and in the menu."""
+        self._totals_read = time.monotonic()
         volume = totals.get("volume")
         self._totals = [("TVL", compact_usd(totals["tvl"] or 0.0))]
         if volume is not None:

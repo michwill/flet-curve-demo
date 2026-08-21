@@ -2102,6 +2102,141 @@ def header_app(width: float):
     return app
 
 
+class TotalsApi:
+    """Answers the headline-figures call, and records being asked."""
+
+    def __init__(
+        self, tvl: float = 1e9, volume: float = 1e8, *, fails: bool = False, clock=None
+    ):
+        self.tvl, self.volume, self.fails = tvl, volume, fails
+        self.clock = clock
+        self.asked: list[int] = []
+        self.asked_at: list[float] = []
+
+    async def chain_totals(self, chain_id: int) -> dict:
+        self.asked.append(chain_id)
+        if self.clock is not None:
+            self.asked_at.append(self.clock[0])
+        if self.fails:
+            from curve.http import ApiError
+
+            raise ApiError("the API is having a moment")
+        return {"tvl": self.tvl, "volume": self.volume}
+
+
+def totals_app(api: TotalsApi, *, clock, monkeypatch):
+    """A built header, pointed at `api`, on a clock the test drives."""
+    import main as app_module
+
+    monkeypatch.setattr(app_module, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    app = header_app(LAPTOP)
+    app.api = api
+    app.chains = {"ethereum": 1, "arbitrum": 42161}
+    app._totals = []
+    app._totals_read = clock[0]
+    return app
+
+
+async def test_the_figures_are_read_again_and_redrawn(monkeypatch) -> None:
+    clock = [1000.0]
+    api = TotalsApi(tvl=2.5e9, volume=3e8)
+    app = totals_app(api, clock=clock, monkeypatch=monkeypatch)
+
+    await app.read_totals()
+
+    assert api.asked == [1]
+    assert "TVL $2.50b" in app.totals.value
+    assert "24h volume $300.00m" in app.totals.value
+
+
+async def test_a_chain_that_will_not_answer_leaves_the_old_figures_up(
+    monkeypatch,
+) -> None:
+    """Nobody asked for this read. An error banner over a page that was
+    fine is worse than two numbers a few minutes old.
+    """
+    clock = [1000.0]
+    app = totals_app(TotalsApi(), clock=clock, monkeypatch=monkeypatch)
+    app._show_totals({"tvl": 1.0e9, "volume": 5.0e8})
+    was = app.totals.value
+    app.api = TotalsApi(fails=True)
+
+    await app.read_totals()
+
+    assert app.totals.value == was
+    assert not app.error.visible
+
+
+async def test_a_chain_switched_mid_read_does_not_draw_the_old_chain(
+    monkeypatch,
+) -> None:
+    clock = [1000.0]
+
+    class Switching(TotalsApi):
+        async def chain_totals(self, chain_id: int) -> dict:
+            app.chain = "arbitrum"          # the user moved while this was in the air
+            return await super().chain_totals(chain_id)
+
+    app = totals_app(Switching(tvl=9e9), clock=clock, monkeypatch=monkeypatch)
+    app._show_totals({"tvl": 1.0e9, "volume": 5.0e8})
+    was = app.totals.value
+
+    await app.read_totals()
+
+    assert app.totals.value == was, "Arbitrum's bar must not show Ethereum's TVL"
+
+
+async def test_the_loop_waits_out_the_interval_then_reads(monkeypatch) -> None:
+    import main as app_module
+
+    clock = [1000.0]
+    api = TotalsApi()
+    app = totals_app(api, clock=clock, monkeypatch=monkeypatch)
+    slept: list[float] = []
+
+    async def sleep(seconds: float) -> None:
+        slept.append(seconds)
+        clock[0] += seconds
+        if len(slept) == 2:
+            raise StopAsyncIteration    # two rounds is enough to see the shape
+
+    with pytest.raises(StopAsyncIteration):
+        await app.refresh_totals(sleep=sleep)
+
+    assert slept == [app_module.TOTALS_REFRESH, app_module.TOTALS_REFRESH]
+    assert api.asked == [1], "read once, after one interval"
+
+
+async def test_a_read_by_someone_else_pushes_the_next_one_out(monkeypatch) -> None:
+    """A chain switch reads the figures itself. A tick landing seconds
+    later would spend another read -- 2.4 MB on Ethereum -- on numbers it
+    already has.
+    """
+    import main as app_module
+
+    clock = [1000.0]
+    api = TotalsApi(clock=clock)
+    app = totals_app(api, clock=clock, monkeypatch=monkeypatch)
+    slept: list[float] = []
+
+    async def sleep(seconds: float) -> None:
+        slept.append(seconds)
+        clock[0] += seconds
+        if len(slept) == 1:
+            app._show_totals({"tvl": 1.0, "volume": 2.0})   # the switch, just now
+        if len(slept) == 3:
+            raise StopAsyncIteration
+
+    with pytest.raises(StopAsyncIteration):
+        await app.refresh_totals(sleep=sleep)
+
+    switched_at = 1000.0 + app_module.TOTALS_REFRESH
+    assert api.asked_at == [switched_at + app_module.TOTALS_REFRESH], (
+        "the tick that found them fresh skipped, and the read came a whole "
+        "interval after the switch rather than seconds after it"
+    )
+
+
 def test_a_phone_header_drops_every_label() -> None:
     app = header_app(PHONE)
 

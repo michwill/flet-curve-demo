@@ -1653,6 +1653,28 @@ taking the table with it, and only *every* pair failing is an error -- because
 then there is nothing to show and there is a reason for it, which is a
 different thing from "no swaps yet".
 
+**The end of the table pulls the next page in.** Forty rows is what the first
+ask gets; scrolling within a couple of hundred pixels of the bottom reads
+forty more, under a "Loading…" line that sits at the end of the rows. Neither
+endpoint sends a total, so a page that does not fill is how the end of the
+history announces itself. The cursor lives on the view rather than on the
+fetch, one per table, so glancing at the chart -- or at the other table --
+and coming back keeps whatever was scrolled to instead of asking for it
+again.
+
+Merging the pairs a page at a time is the part that needed thinking about.
+Reading page two of every pair and showing what came back would put a quiet
+pair's month-old swap above a busy pair's newest, because the pairs trade at
+wildly different rates and each pages on its own clock. So a trade is handed
+over only once no unread page could hold a newer one: every pair remembers
+the oldest trade it has read, the newest of those is a line, and nothing
+below the line is safe to show yet. Reading the next page of the pair
+*sitting* on the line is the only thing that lowers it -- so that is the only
+pair a scroll asks, and a page of the table usually costs one request rather
+than one per pair. What has been read but is still below the line waits in
+that pair's buffer for the scroll after. A pair that fails deeper in ends
+there rather than emptying the table, the same tolerance the first page has.
+
 The rows carry pool indices rather than symbols (`sold_id`, `bought_id`), and
 which index is which comes from the `main_token`/`reference_token` the answer
 echoes back. An id that matches neither -- a metapool reporting an underlying

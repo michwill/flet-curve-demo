@@ -6,7 +6,14 @@ import flet as ft
 import pytest
 
 from curve import api as api_module
-from curve.api import ACTIVITY_ROWS, CurveApi, LiquidityEvent, Trade
+from curve.api import (
+    ACTIVITY_ROWS,
+    CurveApi,
+    LiquidityEvent,
+    LiquidityFeed,
+    Trade,
+    TradeFeed,
+)
 from curve.http import ApiError
 from curve.models import Pool
 from ui.activity import (
@@ -203,6 +210,155 @@ def test_an_index_in_neither_half_of_the_pair_falls_back() -> None:
         trade(7, 9, "2026-08-20T11:36:35"), token("DAI", DAI, 0), token("USDC", USDC, 1)
     )
     assert parsed.sold == "DAI" and parsed.bought == "DAI"
+
+
+# -- reading further back --------------------------------------------------
+#
+# The tables scroll, so what matters below is what comes back on the second
+# ask and whether it belongs under the first. -------------------------------
+
+#: A page small enough that a few of them fit in a test.
+PAGE = 3
+
+#: What each pair has been traded, newest first, and what the pool has had
+#: put in and taken out. The pairs are deliberately uneven: DAI/USDC is
+#: busy and recent, USDC/USDT went quiet months ago.
+PAIR_HISTORY = {
+    (DAI, USDC): [900, 890, 880, 870, 860, 850],
+    (DAI, USDT): [895, 885, 875],
+    (USDC, USDT): [500, 400],
+}
+LIQUIDITY_HISTORY = [700, 600, 500, 400, 300, 200, 100]
+
+
+def _iso(when: int) -> str:
+    from datetime import UTC, datetime
+
+    return datetime.fromtimestamp(when, UTC).replace(tzinfo=None).isoformat()
+
+
+class Paged:
+    """The v1 host with history behind it, served a page at a time."""
+
+    def __init__(self) -> None:
+        self.asked: list[tuple[str, int]] = []
+        #: A pair that stops answering, and the page it stops at.
+        self.dead: tuple[tuple[str, str], int] | None = None
+
+    async def get_json(self, url: str, timeout: float = 30.0):
+        page, size = int(_param(url, "page")), int(_param(url, "per_page"))
+        window = slice((page - 1) * size, page * size)
+        if "/liquidity/" in url:
+            self.asked.append(("liquidity", page))
+            return {
+                "data": [
+                    {
+                        "liquidity_event_type": "AddLiquidity",
+                        "token_amounts": [1.0, 0.0, 0.0],
+                        "time": _iso(when),
+                        "transaction_hash": f"0xadd{when}",
+                        "provider": "0x0c93D1A748bC6e6030fb628867d3b69Ce1d77f34",
+                    }
+                    for when in LIQUIDITY_HISTORY[window]
+                ]
+            }
+        main, reference = _param(url, "main_token"), _param(url, "reference_token")
+        names = {DAI: ("DAI", 0), USDC: ("USDC", 1), USDT: ("USDT", 2)}
+        head, tail = names[main], names[reference]
+        self.asked.append((f"{head[0]}/{tail[0]}", page))
+        if self.dead and self.dead[0] == (main, reference) and page >= self.dead[1]:
+            raise ApiError(f"no trades for {head[0]}/{tail[0]}")
+        return {
+            "main_token": token(head[0], main, head[1]),
+            "reference_token": token(tail[0], reference, tail[1]),
+            "data": [
+                trade(tail[1], head[1], _iso(when), tx=f"0x{head[0]}{tail[0]}{when}")
+                for when in PAIR_HISTORY[(main, reference)][window]
+            ],
+        }
+
+
+@pytest.fixture
+def paged(monkeypatch):
+    served = Paged()
+    monkeypatch.setattr(api_module, "get_json", served.get_json)
+    return served
+
+
+async def test_a_table_reads_the_page_behind_it(paged) -> None:
+    feed = LiquidityFeed(CurveApi(), "ethereum", POOL, count=PAGE)
+
+    first = await feed.load_more()
+    second = await feed.load_more()
+
+    assert [e.time for e in first] == [700, 600, 500]
+    assert [e.time for e in second] == [400, 300, 200]
+    assert feed.rows == first + second
+    assert paged.asked == [("liquidity", 1), ("liquidity", 2)]
+
+
+async def test_a_short_page_is_the_end_of_the_history(paged) -> None:
+    """The endpoint sends no total, so the only way to know the history has
+    run out is a page that did not fill.
+    """
+    feed = LiquidityFeed(CurveApi(), "ethereum", POOL, count=PAGE)
+    while not feed.exhausted:
+        await feed.load_more()
+
+    assert [e.time for e in feed.rows] == LIQUIDITY_HISTORY
+    asked = len(paged.asked)
+    assert await feed.load_more() == []
+    assert len(paged.asked) == asked, "nothing more is asked for"
+
+
+async def test_no_page_of_trades_holds_one_newer_than_the_page_before(paged) -> None:
+    """Each pair pages on its own, so a table that showed whatever came
+    back would put a quiet pair's month-old swap above a busy pair's newest.
+    """
+    feed = TradeFeed(CurveApi(), "ethereum", POOL, [DAI, USDC, USDT], count=PAGE)
+
+    seen: list = []
+    while not feed.exhausted:
+        seen.extend(await feed.load_more())
+
+    everything = sorted(
+        (when for history in PAIR_HISTORY.values() for when in history), reverse=True
+    )
+    assert [t.time for t in seen] == everything
+
+
+async def test_only_the_pair_holding_the_others_up_is_asked_again(paged) -> None:
+    """A page costs one request, not one per pair: the pairs whose oldest
+    read trade is already older than the line have nothing to add.
+    """
+    feed = TradeFeed(CurveApi(), "ethereum", POOL, [DAI, USDC, USDT], count=PAGE)
+
+    await feed.load_more()
+    assert sorted(paged.asked) == [("DAI/USDC", 1), ("DAI/USDT", 1), ("USDC/USDT", 1)]
+
+    paged.asked.clear()
+    await feed.load_more()
+
+    assert ("USDC/USDT", 2) not in paged.asked, "it ran out on its first page"
+    assert ("DAI/USDC", 2) in paged.asked
+
+
+async def test_a_pair_that_stops_answering_costs_only_its_own_history(paged) -> None:
+    """Deeper in there are rows on screen already, so a pair that fails
+    ends where it failed rather than emptying the table.
+    """
+    paged.dead = ((DAI, USDC), 2)
+    feed = TradeFeed(CurveApi(), "ethereum", POOL, [DAI, USDC, USDT], count=PAGE)
+
+    seen: list = []
+    while not feed.exhausted:
+        seen.extend(await feed.load_more())
+
+    times = [t.time for t in seen]
+    assert times == sorted(times, reverse=True)
+    assert 900 in times, "the page it did answer is still there"
+    assert 870 not in times, "the rest of that pair is gone"
+    assert times[-1] == 400, "and the other pairs are read to the end"
 
 
 # -- how a row reads it ----------------------------------------------------

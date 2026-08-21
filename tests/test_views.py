@@ -621,31 +621,53 @@ async def test_a_loaded_chart_has_no_line_of_numbers_above_it() -> None:
 
 
 class StubActivityApi(StubCandleApi):
-    """Answers the two tables, and can be told to fail."""
+    """Answers the two tables a page at a time, and can be told to fail.
 
-    def __init__(self, *, down: bool = False) -> None:
+    `pages` is how deep the history goes: every page but the last comes
+    back full, which is how a feed tells there is more behind it.
+    """
+
+    def __init__(self, *, down: bool = False, pages: int = 1) -> None:
         self.down = down
+        self.pages = pages
         self.asked: list[str] = []
+        self.pages_asked: list[int] = []
 
-    async def trades(self, chain, pool, tokens, **_kw):
+    def _rows(self, page: int, count: int) -> int:
+        return count if page < self.pages else 1
+
+    async def _pair_trades(self, chain, pool, main, reference, page, count):
         from curve.api import ApiError, Trade
 
         self.asked.append("trades")
+        self.pages_asked.append(page)
         if self.down:
             raise ApiError("prices is down")
+        if page > self.pages:
+            return []
         return [
             Trade(
-                time=1787225879, tx="0xfeed", trader="0x1",
+                time=1787225879 - page * 1000 - i, tx=f"0xfeed{page}-{i}", trader="0x1",
                 sold="DAI", sold_address="0x6b17", sold_amount=100.0,
                 bought="USDC", bought_address="0xa0b8", bought_amount=99.99,
             )
+            for i in range(self._rows(page, count))
         ]
 
-    async def liquidity(self, chain, pool, **_kw):
+    async def _liquidity_page(self, chain, pool, page, count):
         from curve.api import LiquidityEvent
 
         self.asked.append("liquidity")
-        return [LiquidityEvent(1787225795, "0xdeed", "0xprovider", True, (1.0, 0.0))]
+        self.pages_asked.append(page)
+        if page > self.pages:
+            return []
+        return [
+            LiquidityEvent(
+                1787225795 - page * 1000 - i, f"0xdeed{page}-{i}", "0xprovider",
+                True, (1.0, 0.0),
+            )
+            for i in range(self._rows(page, count))
+        ]
 
 
 def activity_view(coins: int = 2, **kwargs):
@@ -653,6 +675,12 @@ def activity_view(coins: int = 2, **kwargs):
         StubPage(), api=StubActivityApi(**kwargs), pool=make_pool(coins),
         get_contract=lambda: None, on_back=lambda: None,
     )
+
+
+def scrolled(*, to_the_end: bool = True):
+    """A scroll of the table, as far down it as the argument says."""
+    away = 0.0 if to_the_end else pool_detail.ACTIVITY_SCROLL_THRESHOLD + 100
+    return SimpleNamespace(pixels=2000.0 - away, max_scroll_extent=2000.0)
 
 
 def test_the_picker_offers_the_two_tables_under_a_rule() -> None:
@@ -828,10 +856,96 @@ async def test_a_table_that_lands_late_does_not_draw_over_the_chart() -> None:
         view.series.value = pool_detail.LP_SERIES
         return []
 
-    view.api.trades = moved_on
+    view.api._pair_trades = moved_on
     await view.load_activity()
 
     assert view.activity.controls == []
+
+
+async def test_scrolling_to_the_end_of_a_table_brings_the_older_rows_in() -> None:
+    view = activity_view(pages=2)
+    view.series.value = pool_detail.LIQUIDITY_SERIES
+    await view.load_selection()
+    first = list(view.activity.controls)
+
+    view._activity_scrolled(scrolled())
+    await asyncio.sleep(0)
+
+    assert len(view.activity.controls) > len(first)
+    assert view.api.pages_asked == [1, 2]
+    kept = zip(view.activity.controls, first[:-1], strict=False)
+    assert all(now is before for now, before in kept), (
+        "the rows already read are not rebuilt under the reader"
+    )
+    assert view.activity.controls[-1] is view.activity_footer
+
+
+async def test_a_scroll_nowhere_near_the_end_asks_for_nothing() -> None:
+    view = activity_view(pages=2)
+    view.series.value = pool_detail.LIQUIDITY_SERIES
+    await view.load_selection()
+
+    view._activity_scrolled(scrolled(to_the_end=False))
+    await asyncio.sleep(0)
+
+    assert view.api.pages_asked == [1]
+
+
+async def test_the_end_of_the_history_stops_the_table_asking() -> None:
+    view = activity_view(pages=2)
+    view.series.value = pool_detail.LIQUIDITY_SERIES
+    await view.load_selection()
+    view._activity_scrolled(scrolled())
+    await asyncio.sleep(0)
+
+    view._activity_scrolled(scrolled())
+    await asyncio.sleep(0)
+
+    assert view.api.pages_asked == [1, 2], "the short second page was the last"
+    assert not view.activity_footer.visible
+
+
+async def test_the_table_keeps_what_it_read_when_the_picker_comes_back() -> None:
+    """Reading three pages of history and losing them to a glance at the
+    chart is the thing a scrolling table must not do.
+    """
+    view = activity_view(pages=2)
+    view.series.value = pool_detail.LIQUIDITY_SERIES
+    await view.load_selection()
+    view._activity_scrolled(scrolled())
+    await asyncio.sleep(0)
+    read = len(view.activity.controls)
+
+    view.series.value = pool_detail.LP_SERIES
+    await view.load_selection()
+    view.series.value = pool_detail.LIQUIDITY_SERIES
+    await view.load_selection()
+
+    assert len(view.activity.controls) == read
+    assert view.api.pages_asked == [1, 2], "and asks for none of it again"
+
+
+async def test_a_page_that_cannot_be_read_leaves_the_rows_alone() -> None:
+    """It says why underneath them. Emptying the table because the page
+    behind it failed would cost the reader what they were looking at.
+    """
+    view = activity_view(pages=3)
+    view.series.value = pool_detail.LIQUIDITY_SERIES
+    await view.load_selection()
+    rows = len(view.activity.controls)
+
+    async def down(*_a, **_kw):
+        from curve.api import ApiError
+
+        raise ApiError("prices is down")
+
+    view.api._liquidity_page = down
+    view._activity_scrolled(scrolled())
+    await asyncio.sleep(0)
+
+    assert len(view.activity.controls) == rows
+    assert "prices is down" in view.chart_error.value
+    assert not view.activity_footer.visible
 
 
 def test_the_line_above_the_chart_is_kept_for_the_wait() -> None:

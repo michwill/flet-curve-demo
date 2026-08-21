@@ -5,11 +5,20 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from collections.abc import Callable
+from typing import Any
 
 import flet as ft
 
 from curve import explorers, parameters
-from curve.api import CANDLE_SIZES, DEFAULT_CANDLE_SIZE, CurveApi, get_candle_size
+from curve.api import (
+    CANDLE_SIZES,
+    DEFAULT_CANDLE_SIZE,
+    ActivityFeed,
+    CurveApi,
+    LiquidityFeed,
+    TradeFeed,
+    get_candle_size,
+)
 from curve.format import (
     apr_range,
     compact_usd,
@@ -66,6 +75,10 @@ SERIES_RULE = "__rule__"
 #: The chart's height, which the tables take over unchanged so the page
 #: does not jump when the picker moves between them.
 CHART_HEIGHT = 340
+
+#: How near the end of a table brings the page behind it in: two thirds of
+#: the box, so the rows are there by the time the scroll reaches them.
+ACTIVITY_SCROLL_THRESHOLD = 220
 
 #: How large a mark is in the series menu, beside what it names.
 SERIES_MARK = 18
@@ -140,11 +153,30 @@ class PoolDetailView(ft.Column):
         self.chart = CandleChart(
             height=CHART_HEIGHT, on_capacity_change=self._chart_resized
         )
-        self.activity = ft.Column(spacing=0, scroll=ft.ScrollMode.AUTO)
-        #: What the table last fetched, kept so a change of width can draw
-        #: it again without asking for it again.
+        self.activity = ft.Column(
+            spacing=0,
+            scroll=ft.ScrollMode.AUTO,
+            on_scroll=self._activity_scrolled,
+            scroll_interval=200,
+        )
+        #: What the table has read so far, kept so a change of width can
+        #: draw it again without asking for it again.
         self._activity_rows: list = []
         self._activity_kind = ""
+        #: One cursor per table, kept so that going to the chart and back
+        #: -- or between the two tables -- does not lose the history that
+        #: was scrolled up.
+        self._activity_feeds: dict[str, ActivityFeed] = {}
+        #: Last in the table, and what says the older rows are coming.
+        self.activity_footer = ft.Container(
+            ft.Row(
+                [ft.ProgressRing(width=16, height=16), ft.Text("Loading…", size=SMALL)],
+                alignment=ft.MainAxisAlignment.CENTER,
+                spacing=10,
+            ),
+            padding=12,
+            visible=False,
+        )
         self.activity_box = ft.Container(
             self.activity, height=CHART_HEIGHT, visible=False
         )
@@ -968,6 +1000,25 @@ class PoolDetailView(ft.Column):
         self._say_chart("")
         self._page.update()
 
+    def _activity_feed(self, kind: str) -> ActivityFeed:
+        """The cursor for one of the two tables, opened the first time it
+        is asked for and kept afterwards.
+        """
+        feed = self._activity_feeds.get(kind)
+        if feed is None:
+            feed = (
+                TradeFeed(
+                    self.api,
+                    self.pool.chain,
+                    self.pool.address,
+                    [coin.address for coin in self.pool.pool_coins],
+                )
+                if kind == TRADES_SERIES
+                else LiquidityFeed(self.api, self.pool.chain, self.pool.address)
+            )
+            self._activity_feeds[kind] = feed
+        return feed
+
     async def load_activity(self) -> None:
         """Fill the table where the chart was: swaps, or liquidity moved.
 
@@ -977,20 +1028,25 @@ class PoolDetailView(ft.Column):
         """
         wanted = self.selection
         self._show_activity(True)
-        self.activity.controls = []
         self.chart_error.value = ""
+        feed = self._activity_feed(wanted)
+
+        if feed.rows:  # read once already; put it back rather than ask again
+            self._activity_kind = wanted
+            self._activity_rows = list(feed.rows)
+            self._draw_activity()
+            self._say_chart("")
+            self._page.update()
+            return
+
+        self.activity.controls = []
         self._say_chart("Loading…")
         self._page.update()
+        if feed.loading:
+            return  # the read already in flight will draw it
 
         try:
-            if wanted == TRADES_SERIES:
-                fetched: list = await self.api.trades(
-                    self.pool.chain,
-                    self.pool.address,
-                    [coin.address for coin in self.pool.pool_coins],
-                )
-            else:
-                fetched = await self.api.liquidity(self.pool.chain, self.pool.address)
+            await feed.load_more()
         except ApiError as exc:
             if self.selection == wanted:
                 self._say_chart("")
@@ -1001,38 +1057,83 @@ class PoolDetailView(ft.Column):
         if self.selection != wanted:
             return
         self._activity_kind = wanted
-        self._activity_rows = list(fetched)
+        self._activity_rows = list(feed.rows)
         self._draw_activity()
         self._say_chart("")
         self._page.update()
 
+    def _activity_scrolled(self, e: ft.OnScrollEvent) -> None:
+        """Pull the older rows in as the end of the table comes into view."""
+        feed = self._activity_feeds.get(self._activity_kind)
+        if feed is None or feed.loading or feed.exhausted:
+            return
+        if e.max_scroll_extent - e.pixels > ACTIVITY_SCROLL_THRESHOLD:
+            return
+        self._page.run_task(self._load_more_activity)
+
+    async def _load_more_activity(self) -> None:
+        """Read the page behind the table and add it underneath.
+
+        Only what came back is drawn: rebuilding the whole table would
+        cost the scroll position the reader is holding.
+        """
+        kind = self._activity_kind
+        feed = self._activity_feeds.get(kind)
+        if feed is None or feed.loading or feed.exhausted:
+            return
+        had = len(self._activity_rows)
+        self.activity_footer.visible = True
+        safe_update(self.activity_footer)
+
+        try:
+            fresh = await feed.load_more()
+        except ApiError as exc:
+            if self._activity_kind == kind:
+                self.activity_footer.visible = False
+                self.chart_error.value = str(exc)
+                self._page.update()
+            return
+
+        if self._activity_kind != kind:
+            return  # the picker moved while we waited
+        self._activity_rows = list(feed.rows)
+        self.activity_footer.visible = False
+        if not had:
+            self._draw_activity()  # the table was showing its empty line
+        else:
+            # The footer keeps its place at the end of the table.
+            self.activity.controls[-1:] = [
+                *(self._activity_row(row) for row in fresh),
+                self.activity_footer,
+            ]
+        safe_update(self.activity)
+
+    def _activity_row(self, row: Any) -> ft.Control:
+        """One line of whichever table is up, at the width there is."""
+        narrow = self._layout.cards
+        if self._activity_kind == TRADES_SERIES:
+            return activity.trade_row(
+                row, self.pool.chain, self.pool.chain_id, self._explorer, narrow=narrow
+            )
+        return activity.liquidity_row(row, self.pool, self._explorer, narrow=narrow)
+
     def _draw_activity(self) -> None:
-        """Build the table out of what was fetched, for the width there is.
+        """Build the table out of what was read, for the width there is.
 
         Kept apart from the fetch so that turning a phone sideways redraws
         the rows -- one column narrower, and the coin names back -- without
         asking the API again.
         """
-        narrow = self._layout.cards
-        if self._activity_kind == TRADES_SERIES:
-            rows = [
-                activity.trade_row(
-                    trade,
-                    self.pool.chain,
-                    self.pool.chain_id,
-                    self._explorer,
-                    narrow=narrow,
-                )
-                for trade in self._activity_rows
-            ]
-            nothing = activity.NO_TRADES
-        else:
-            rows = [
-                activity.liquidity_row(event, self.pool, self._explorer, narrow=narrow)
-                for event in self._activity_rows
-            ]
-            nothing = activity.NO_LIQUIDITY
-        self.activity.controls = rows or [activity.empty(nothing)]
+        rows = [self._activity_row(row) for row in self._activity_rows]
+        nothing = (
+            activity.NO_TRADES
+            if self._activity_kind == TRADES_SERIES
+            else activity.NO_LIQUIDITY
+        )
+        self.activity.controls = [
+            *(rows or [activity.empty(nothing)]),
+            self.activity_footer,
+        ]
 
     def _say_chart(self, message: str) -> None:
         """The line above the chart, which carries the wait and nothing else.

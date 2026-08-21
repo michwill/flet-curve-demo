@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
@@ -81,9 +81,14 @@ MERKL_MAX_PAGES = 5
 #: How many candles to ask for, whatever their size.
 CANDLE_COUNT = 200
 
-#: How many trades or liquidity events a table shows. The v1 endpoints cap
-#: `per_page` at 100.
+#: How many trades or liquidity events one page of a table holds. The v1
+#: endpoints cap `per_page` at 100.
 ACTIVITY_ROWS = 40
+
+#: How many rounds of paging one scroll of a trades table will spend before
+#: handing over what it has. Each round asks only the pair that is holding
+#: the merge back, so a page usually costs one.
+MERGE_ROUNDS = 4
 
 
 @dataclass(slots=True, frozen=True)
@@ -785,64 +790,49 @@ class CurveApi:
     ) -> list[Trade]:
         """The newest swaps through a pool, across every pair it holds.
 
-        The endpoint answers for one pair at a time -- three calls for a
-        three-coin pool, six for four coins -- so they go out together and
-        the answers are merged newest first. A pair that fails is left out
-        rather than taking the table with it; all of them failing is an
-        error, because then there is nothing to show and a reason for it.
+        One page of them: `TradeFeed` is the same read with the rest of the
+        history behind it, which is what a scrolling table asks for.
         """
-        addresses = list(dict.fromkeys(a.lower() for a in tokens if a))
-        pairs = [
-            (main, reference)
-            for i, main in enumerate(addresses)
-            for reference in addresses[i + 1 :]
-        ]
-        if not pairs:
-            return []
-        key = f"trades:{chain}:{pool}:{count}"
+        return await TradeFeed(self, chain, pool, tokens, count=count).load_more()
+
+    async def _pair_trades(
+        self, chain: str, pool: str, main: str, reference: str, page: int, count: int
+    ) -> list[Trade]:
+        """One page of one pair's swaps, in both directions."""
+        key = f"trades:{chain}:{pool}:{main}:{reference}:{page}:{count}"
         cached = self._cached(key)
         if cached is not None:
             return cached
-        answers = await asyncio.gather(
-            *(self._pair_trades(chain, pool, main, ref, count) for main, ref in pairs),
-            return_exceptions=True,
-        )
-        failures = [a for a in answers if isinstance(a, BaseException)]
-        if len(failures) == len(answers):
-            raise failures[0] if isinstance(failures[0], ApiError) else ApiError(
-                f"Could not read trades for {pool}: {failures[0]}"
-            )
-        trades = [t for a in answers if isinstance(a, list) for t in a]
-        trades.sort(key=lambda trade: trade.time, reverse=True)
-        return self._store(key, trades[:count])
-
-    async def _pair_trades(
-        self, chain: str, pool: str, main: str, reference: str, count: int
-    ) -> list[Trade]:
-        """One pair's swaps, in both directions."""
         payload = await self._v1(
             f"/trades/{chain}/{pool}",
             {
                 "main_token": main,
                 "reference_token": reference,
-                "page": 1,
+                "page": page,
                 "per_page": count,
             },
         )
         head = payload.get("main_token") or {}
         tail = payload.get("reference_token") or {}
-        return [Trade.from_api(t, head, tail) for t in payload.get("data") or []]
+        swaps = [Trade.from_api(t, head, tail) for t in payload.get("data") or []]
+        return self._store(key, swaps)
 
     async def liquidity(
         self, chain: str, pool: str, *, count: int = ACTIVITY_ROWS
     ) -> list[LiquidityEvent]:
-        """The newest deposits and withdrawals, newest first."""
-        key = f"liquidity:{chain}:{pool}:{count}"
+        """The newest deposits and withdrawals, newest first. One page."""
+        return await LiquidityFeed(self, chain, pool, count=count).load_more()
+
+    async def _liquidity_page(
+        self, chain: str, pool: str, page: int, count: int
+    ) -> list[LiquidityEvent]:
+        """One page of them, newest page first."""
+        key = f"liquidity:{chain}:{pool}:{page}:{count}"
         cached = self._cached(key)
         if cached is not None:
             return cached
         payload = await self._v1(
-            f"/liquidity/{chain}/{pool}", {"page": 1, "per_page": count}
+            f"/liquidity/{chain}/{pool}", {"page": page, "per_page": count}
         )
         events = [LiquidityEvent.from_api(e) for e in payload.get("data") or []]
         return self._store(key, events)
@@ -919,6 +909,204 @@ class LiquidityEvent:
             added=kind.startswith("Add"),
             amounts=tuple(_float(a) for a in raw.get("token_amounts") or ()),
         )
+
+
+class ActivityFeed:
+    """A cursor over what went through one pool: a page at a time, newest
+    first, and `load_more` for the page behind it.
+
+    A row is a `Trade` or a `LiquidityEvent` depending on which subclass
+    was asked for; nothing here looks inside one.
+    """
+
+    def __init__(self, *, count: int = ACTIVITY_ROWS) -> None:
+        self.count = count
+        self.rows: list[Any] = []
+        self.loading = False
+
+    @property
+    def exhausted(self) -> bool:
+        """True once there is nothing older left to read."""
+        raise NotImplementedError
+
+    async def _next_rows(self) -> list[Any]:
+        """The next page, however this feed goes about getting one."""
+        raise NotImplementedError
+
+    async def load_more(self) -> list[Any]:
+        """Read the next page and append it. Returns the new rows only.
+
+        Raises `ApiError` when the read failed outright and there is
+        nothing to show for it; once rows have been handed over they stay,
+        so a failure deeper in the history costs only the rest of it.
+        """
+        if self.loading or self.exhausted:
+            return []
+        self.loading = True
+        try:
+            fresh = await self._next_rows()
+        finally:
+            self.loading = False
+        self.rows.extend(fresh)
+        return fresh
+
+
+class LiquidityFeed(ActivityFeed):
+    """One pool's deposits and withdrawals, a page at a time."""
+
+    def __init__(
+        self, api: CurveApi, chain: str, pool: str, *, count: int = ACTIVITY_ROWS
+    ) -> None:
+        super().__init__(count=count)
+        self.api = api
+        self.chain = chain
+        self.pool = pool
+        self._page = 0
+        self._end = False
+
+    @property
+    def exhausted(self) -> bool:
+        return self._end
+
+    async def _next_rows(self) -> list[LiquidityEvent]:
+        page = self._page + 1
+        events = await self.api._liquidity_page(self.chain, self.pool, page, self.count)
+        self._page = page
+        # The endpoint sends no total, so a short page is how the end of
+        # the history announces itself.
+        self._end = len(events) < self.count
+        return events
+
+
+@dataclass(slots=True)
+class _PairCursor:
+    """One pair's place in the merge behind a `TradeFeed`."""
+
+    main: str
+    reference: str
+    page: int = 0
+    #: Read, but not handed over yet. Newest first.
+    buffer: list[Trade] = field(default_factory=list)
+    exhausted: bool = False
+    #: The oldest trade read from this pair so far. Before it has been
+    #: asked once its next page could hold anything, so it starts at the
+    #: end of time -- which is what holds the whole merge until every pair
+    #: has answered.
+    frontier: float = float("inf")
+
+
+class TradeFeed(ActivityFeed):
+    """One pool's swaps, a page at a time, across every pair it holds.
+
+    The endpoint answers -- and pages -- one pair at a time, so the table
+    of a three-coin pool is three streams merged. A trade is only safe to
+    hand over once no unread page could hold a newer one: each pair knows
+    the oldest trade it has read, and the newest of those is the line
+    below which nothing can be shown yet. Reading the next page of the
+    pair sitting on that line is the only thing that lowers it, so that is
+    the only pair a round asks.
+    """
+
+    def __init__(
+        self,
+        api: CurveApi,
+        chain: str,
+        pool: str,
+        tokens: Sequence[str],
+        *,
+        count: int = ACTIVITY_ROWS,
+    ) -> None:
+        super().__init__(count=count)
+        self.api = api
+        self.chain = chain
+        self.pool = pool
+        addresses = list(dict.fromkeys(a.lower() for a in tokens if a))
+        self._pairs = [
+            _PairCursor(main, reference)
+            for i, main in enumerate(addresses)
+            for reference in addresses[i + 1 :]
+        ]
+
+    @property
+    def exhausted(self) -> bool:
+        return all(pair.exhausted and not pair.buffer for pair in self._pairs)
+
+    async def _next_rows(self) -> list[Trade]:
+        """Read pages until a full one can be handed over, or the pairs
+        run out. Bounded, because a pool whose pairs are wildly uneven
+        could otherwise walk the busy one a page at a time.
+        """
+        for _ in range(MERGE_ROUNDS):
+            if len(self._safe()) >= self.count or not self._blocking():
+                break
+            await self._read(self._blocking())
+        return self._take()
+
+    def _line(self) -> float:
+        """No trade older than this can be shown: an unread page could
+        still hold a newer one. Minus infinity once every pair is read out.
+        """
+        return max(
+            (pair.frontier for pair in self._pairs if not pair.exhausted),
+            default=float("-inf"),
+        )
+
+    def _safe(self) -> list[Trade]:
+        """Everything read that is newer than the line, newest first."""
+        line = self._line()
+        ready = [t for pair in self._pairs for t in pair.buffer if t.time > line]
+        ready.sort(key=lambda trade: trade.time, reverse=True)
+        return ready
+
+    def _blocking(self) -> list[_PairCursor]:
+        """The pairs holding the line where it is."""
+        line = self._line()
+        return [p for p in self._pairs if not p.exhausted and p.frontier >= line]
+
+    async def _read(self, pairs: list[_PairCursor]) -> None:
+        """Take one more page from each of these, together."""
+        answers = await asyncio.gather(
+            *(
+                self.api._pair_trades(
+                    self.chain,
+                    self.pool,
+                    pair.main,
+                    pair.reference,
+                    pair.page + 1,
+                    self.count,
+                )
+                for pair in pairs
+            ),
+            return_exceptions=True,
+        )
+        for pair, answer in zip(pairs, answers, strict=True):
+            if isinstance(answer, BaseException):
+                # A pair that fails is left out rather than taking the
+                # table with it: its stream simply ends here.
+                pair.exhausted = True
+                continue
+            pair.page += 1
+            pair.buffer.extend(answer)
+            pair.buffer.sort(key=lambda trade: trade.time, reverse=True)
+            if len(answer) < self.count:
+                pair.exhausted = True
+            else:
+                pair.frontier = min(trade.time for trade in answer)
+        failures = [a for a in answers if isinstance(a, BaseException)]
+        if len(failures) == len(answers) and not self.rows and not self._safe():
+            # Nothing to show and a reason for it, which is a different
+            # thing from a pool nobody has traded.
+            raise failures[0] if isinstance(failures[0], ApiError) else ApiError(
+                f"Could not read trades for {self.pool}: {failures[0]}"
+            )
+
+    def _take(self) -> list[Trade]:
+        """Hand over a page of what is safe, and keep the rest buffered."""
+        taken = self._safe()[: self.count]
+        chosen = {id(trade) for trade in taken}
+        for pair in self._pairs:
+            pair.buffer = [t for t in pair.buffer if id(t) not in chosen]
+        return taken
 
 
 class PoolFeed:

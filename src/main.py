@@ -1332,8 +1332,15 @@ class CurveApp:
             await self.load_pools()
 
         if route.is_portfolio:
-            if self._page_name != PAGE_PORTFOLIO:
-                self.show_portfolio()
+            # `_page_name` still says "portfolio" while a pool opened from
+            # it is on screen -- a pool is not a page and does not claim
+            # the nav -- so an open detail view is the other half of "am I
+            # already there?". Without it, Back off such a pool did
+            # nothing, and the Back after that found a detail view on a
+            # chain route and went to the list instead.
+            already = self._page_name == PAGE_PORTFOLIO
+            if self._detail is not None or not already:
+                self.show_portfolio(reload=not already)
             return
 
         if not route.is_pool:

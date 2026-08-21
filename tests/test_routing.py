@@ -130,6 +130,17 @@ class FakeApi:
 _DEFAULT = object()
 
 
+class _Paged(ft.Container):
+    """A page view, as far as anything routing does to one."""
+
+    def set_layout(self, _layout) -> None:
+        pass
+
+
+async def _noop() -> None:
+    pass
+
+
 def make_app(route: str = "/", *, pool=_DEFAULT, chain: str = "ethereum"):
     """`CurveApp` with its constructor skipped -- only the routing parts."""
     import main as app_module
@@ -154,6 +165,9 @@ def make_app(route: str = "/", *, pool=_DEFAULT, chain: str = "ethereum"):
     app.menu = ft.PopupMenuButton()
     app._icons = False
     app._totals = []
+    app._opened_from = "pools"
+    app.portfolio_view = _Paged()
+    app.load_portfolio = _noop
     app.opened: list[Pool] = []
 
     def open_pool(pool_to_open):
@@ -290,6 +304,69 @@ def test_the_portfolio_route_reads_back() -> None:
 def test_a_pool_route_is_not_a_portfolio() -> None:
     assert not routing.parse(f"/ethereum/{WL}").is_portfolio
     assert not routing.parse("/ethereum").is_portfolio
+
+
+def open_from_portfolio(app) -> None:
+    """Stand on the portfolio, then open one of its rows."""
+    app.show_portfolio()
+    app.open_pool(make_pool())
+
+
+async def test_back_out_of_a_pool_opened_from_the_portfolio() -> None:
+    """The browser's Back button, which is a route change and nothing else.
+
+    `_page_name` still says "portfolio" while a pool from it is open --
+    a pool is not a page and does not claim the nav -- so "am I already
+    there?" cannot be answered by the name alone. It was, and Back left
+    the pool on screen; the next Back then found a detail view open on a
+    chain route and went to the list, which is how the portfolio turned
+    into Pools.
+    """
+    app = make_app("/ethereum/portfolio")
+    open_from_portfolio(app)
+
+    await app.apply_route("/ethereum/portfolio")
+
+    assert app._detail is None, "the pool page is gone"
+    assert app._page_name == "portfolio"
+
+
+async def test_backing_out_does_not_refetch_the_portfolio() -> None:
+    """Its rows are still there. Reading a wallet's positions again costs
+    a round of chain calls for a page nobody has left.
+    """
+    app = make_app("/ethereum/portfolio")
+    open_from_portfolio(app)
+    app.page.tasks.clear()
+
+    await app.apply_route("/ethereum/portfolio")
+
+    assert app.load_portfolio not in [task for task, _a in app.page.tasks]
+
+
+async def test_reaching_the_portfolio_from_a_pool_does_fill_it_in() -> None:
+    """The same route arrived at from a pool opened off the *list*, where
+    the portfolio has never been drawn and has nothing to show.
+    """
+    app = make_app(f"/ethereum/{WL}")
+    app.open_pool(make_pool())          # opened from the list
+    app.page.tasks.clear()
+
+    await app.apply_route("/ethereum/portfolio")
+
+    assert app._detail is None and app._page_name == "portfolio"
+    assert app.load_portfolio in [task for task, _a in app.page.tasks]
+
+
+async def test_the_portfolio_route_while_already_there_is_a_no_op() -> None:
+    app = make_app("/ethereum/portfolio")
+    app.show_portfolio()
+    app.page.tasks.clear()
+    app.page.pushed.clear()
+
+    await app.apply_route("/ethereum/portfolio")
+
+    assert app.page.tasks == [] and app.page.pushed == []
 
 
 # -- opening somewhere else --------------------------------------------

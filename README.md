@@ -1148,6 +1148,23 @@ Two smaller things fell out of the same hunt, both of which helped it hide:
 **Firefox reproduces this and iOS-only bugs like it**, which is worth
 remembering the next time something works on a desktop and not on a phone.
 
+### Back, off a pool opened from the portfolio
+
+A pool is not a page. It does not claim a nav link, so `_page_name` still
+says "portfolio" while one opened from there is on screen, and `_opened_from`
+is what the in-app back arrow reads to know where to return to.
+
+The browser's own Back button goes nowhere near that arrow: it is a route
+change and nothing else. `apply_route` asked "am I already on the portfolio?"
+by the name alone, said yes, and did nothing -- leaving the pool on screen
+under a `/ethereum/portfolio` address. Press Back again and the chain route
+found a detail view open and went to the list, which is how backing out of
+the portfolio landed on Pools. The pools branch had the second half of the
+question all along (`self._detail is not None or ...`); the portfolio branch
+now has it too, and reloads only when it was not already the page you were on
+-- backing out of a pool has rows to come back to, arriving from elsewhere
+does not.
+
 ### Paging, and why sorting is the server's job
 
 The 50-row cap left two options: pull every page before painting anything (eight

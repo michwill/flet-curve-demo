@@ -16,7 +16,7 @@ from ui import pool_detail
 from ui.actions import ClaimTab, DepositTab, StakeTab, SwapTab, WithdrawTab
 from ui.candles import CandleChart
 from ui.pool_detail import PoolDetailView
-from ui.pool_list import PoolListView, PoolRow, reward_lines
+from ui.pool_list import SEARCH_DEBOUNCE, PoolListView, PoolRow, reward_lines
 from ui.responsive import layout_for
 
 PIKU = MerklToken("PIKU", "0x" + "3" * 40)
@@ -232,6 +232,60 @@ def test_sorting_by_the_active_column_is_a_no_op() -> None:
     view.attach(feed)
     view._sort_by("volume")  # already the default
     assert feed.resets == 0
+
+
+def test_the_cross_only_appears_once_there_is_something_to_clear() -> None:
+    view = PoolListView(StubPage(), on_open=lambda _p: None)
+    view.attach(FakeFeed([make_pool()]))
+    assert not view.clear_search.visible
+
+    view._search_changed(SimpleNamespace(control=SimpleNamespace(value="usd")))
+    assert view.clear_search.visible
+
+    view._search_changed(SimpleNamespace(control=SimpleNamespace(value="")))
+    assert not view.clear_search.visible
+
+
+async def test_the_cross_empties_the_box_and_asks_for_the_whole_list() -> None:
+    view = PoolListView(StubPage(), on_open=lambda _p: None)
+    feed = FakeFeed([make_pool() for _ in range(3)])
+    view.attach(feed)
+    view.search.value = "usd"
+    view.clear_search.visible = True
+    feed.search = "usd"
+
+    view._search_cleared(SimpleNamespace(control=view.clear_search))
+    await asyncio.sleep(0)
+
+    assert view.search.value == ""
+    assert not view.clear_search.visible
+    assert feed.search == ""
+    assert len(view.rows.controls) == 3
+
+
+async def test_the_cross_beats_a_keystroke_still_waiting_out_its_debounce() -> None:
+    """Type, then clear before the debounce fires: the search that was
+    queued must not land afterwards and put the query back.
+    """
+    view = PoolListView(StubPage(), on_open=lambda _p: None)
+    feed = FakeFeed([make_pool()])
+    view.attach(feed)
+
+    view._search_changed(SimpleNamespace(control=SimpleNamespace(value="usd")))
+    view._search_cleared(SimpleNamespace(control=view.clear_search))
+    await asyncio.sleep(SEARCH_DEBOUNCE * 2)
+
+    assert feed.search == ""
+
+
+def test_a_new_chain_takes_the_cross_away_with_the_query() -> None:
+    view = PoolListView(StubPage(), on_open=lambda _p: None)
+    view.attach(FakeFeed([make_pool()]))
+    view._search_changed(SimpleNamespace(control=SimpleNamespace(value="usd")))
+
+    view.attach(FakeFeed([make_pool()]))
+
+    assert view.search.value == "" and not view.clear_search.visible
 
 
 # -- responsive ------------------------------------------------------------

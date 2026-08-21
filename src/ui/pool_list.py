@@ -59,6 +59,12 @@ SEARCH_DEBOUNCE = 0.35
 #: The corner on the two controls above the list.
 FIELD_RADIUS = 8
 
+#: The cross that empties the search box. Sized to sit inside the field
+#: rather than to be tapped from across the room, but the 32px box keeps
+#: it above the 24px a thumb needs to land on reliably.
+CLEAR_MARK = 18
+CLEAR_BOX = 32
+
 #: And the height, for the same reason. Dense means different things to the
 #: two -- the text field came out 40px against the dropdown's 48, and side
 #: by side on a phone that reads as a mistake rather than as a pair.
@@ -354,10 +360,29 @@ class PoolListView(ft.Column):
         self._search_token = 0
         self._layout = layout_for(2000.0)
 
+        #: Shown only once there is something to clear: an empty box with
+        #: a cross in it invites a tap that would do nothing.
+        self.clear_search = ft.IconButton(
+            ft.Icons.CLOSE,
+            key="pool-search-clear",
+            tooltip="Clear the search",
+            icon_size=CLEAR_MARK,
+            icon_color=ft.Colors.ON_SURFACE_VARIANT,
+            padding=ft.Padding.all(0),
+            size_constraints=ft.BoxConstraints(
+                max_width=CLEAR_BOX, max_height=CLEAR_BOX
+            ),
+            visible=False,
+            on_click=self._search_cleared,
+        )
         self.search = ft.TextField(
             key="pool-search",
             hint_text="Search name, symbol or paste an address",
             prefix_icon=ft.Icons.SEARCH,
+            suffix_icon=self.clear_search,
+            suffix_icon_size_constraints=ft.BoxConstraints(
+                min_width=CLEAR_BOX, min_height=CLEAR_BOX
+            ),
             on_change=self._search_changed,
             dense=True,
             border_radius=FIELD_RADIUS,
@@ -511,6 +536,7 @@ class PoolListView(ft.Column):
             if not (self._lite and o.key in UNMEASURED_ON_LITE)
         ]
         self.search.value = ""
+        self.clear_search.visible = False
         self._sync_header()
         self.rows.controls = []
         self._sync_count()
@@ -536,12 +562,37 @@ class PoolListView(ft.Column):
         self._run(self.load_more)
 
     def _search_changed(self, e: AnyEvent) -> None:
-        self._run(self._debounced_search, e.control.value or "")
+        query = e.control.value or ""
+        self.clear_search.visible = bool(query)
+        safe_update(self.clear_search)
+        self._run(self._debounced_search, query, self._claim_search())
 
-    async def _debounced_search(self, query: str) -> None:
-        """Wait out the typing, then ask the server."""
+    def _search_cleared(self, _e: AnyEvent) -> None:
+        """The cross. Empties the box and asks for the whole list back at
+        once: the debounce is there to wait out typing, and this is a tap
+        that has already finished.
+        """
+        self.search.value = ""
+        self.clear_search.visible = False
+        safe_update(self.search)
+        self._claim_search()
+        if self.feed is not None:
+            self.feed.reset(search="")
+            self.rows.controls = []
+            safe_update(self)
+            self._run(self.load_more)
+
+    def _claim_search(self) -> int:
+        """Take the latest search over, so anything still waiting out its
+        debounce drops on the floor. Claimed as the event arrives, not
+        when its task starts: a task that has not been given a slice yet
+        would otherwise claim the search after a later tap already had.
+        """
         self._search_token += 1
-        token = self._search_token
+        return self._search_token
+
+    async def _debounced_search(self, query: str, token: int) -> None:
+        """Wait out the typing, then ask the server."""
         await asyncio.sleep(SEARCH_DEBOUNCE)
         if token != self._search_token or self.feed is None:
             return

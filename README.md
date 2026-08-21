@@ -1161,6 +1161,12 @@ in exchange the top of the list is always the true top rather than the top of
 whatever happened to be in memory. Search is debounced and sent as
 `search_string`, so it covers the whole chain rather than the rows on screen.
 
+The cross inside the box appears only once there is a query to clear, and its
+tap skips the debounce -- the wait is there to sit out typing, and a tap has
+already finished. Both the tap and every keystroke claim the search *as the
+event arrives* rather than when their task gets a slice: a clear that happened
+second must not be overtaken by the keystroke that happened first.
+
 `curve/sort.py` maps each column to a v2 `sort_by` field. "Incentives" maps to
 `aggregate_apr`, the API's combined base + CRV + tokens + merkle figure — there
 is no rewards-without-base field, and the difference is immaterial when base APR

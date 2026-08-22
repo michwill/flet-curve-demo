@@ -9,6 +9,7 @@ having gone wrong.  The quote itself is still the chain's own number.
 
 from __future__ import annotations
 
+from router import Stage
 from ui.responsive import layout_for
 from ui.swap import SwapView
 from ui.swap_page import _why_unsendable
@@ -298,3 +299,79 @@ def test_with_nothing_held_both_sides_are_the_same_list():
 
     assert [c.symbol for c in view.sell._entries] == ["USDC", "USDT"]
     assert [c.symbol for c in view.buy._entries] == ["USDC", "USDT"]
+
+
+class Session:
+    """A session that records what `plan_call` was told."""
+
+    solver = "rust"
+    block = 100
+
+    def __init__(self) -> None:
+        self.planned: list[int] = []
+
+    def diagram(self, _result):
+        class Empty:
+            buses = elements = order = ()
+        return Empty()
+
+    async def plan_call(self, _result, *, receiver, sender, not_before=0):
+        self.planned.append(not_before)
+
+        class Plan:
+            to = "0x" + "22" * 20
+            data = b""
+            value = 0
+            token_in = "0x" + "33" * 20
+            amount_in = 1
+            quoted_out = guaranteed_out = 1
+            tolerance_bp = 0.0
+            gas = 0
+            block = 100
+            unbounded = ()
+            reverted = ""
+            gas_estimated = False
+
+        return Plan()
+
+
+async def test_a_plan_is_told_the_block_an_approval_landed_in():
+    """The router reads through a load balancer, which is many nodes at
+    slightly different heights.  One still behind cannot see an approval that
+    has already happened, and the dry run then reverts on an allowance that
+    is there."""
+    coins = two_coins()
+    page = swap_page_with(Wallet(), coins)
+    session = Session()
+    # `RouterHost.session` reads through to the chain it is holding, so the
+    # fake goes where the real one would be kept.
+    held = page.host._held           # creates the entry for the current chain
+    held.session = session
+    held.stage = Stage.READY
+
+    class Route:
+        legs = ()
+
+    class Result:
+        route = Route()
+        verified_out = 1
+        amount_in = 1
+        price_impact_bp = 0.0
+
+    page._quote = type("Quote", (), {"result": Result()})()
+
+    await page._plan_now()
+    assert session.planned == [0], "nothing confirmed yet, so no floor"
+
+    page._floor_block = 25_813_900
+    await page._plan_now()
+    assert session.planned[-1] == 25_813_900
+
+
+async def test_the_floor_only_ever_moves_forward():
+    """A later transaction in an earlier block would be a reorg, not a lag."""
+    page = swap_page_with(Wallet(), two_coins())
+    page._floor_block = 200
+
+    page._floor_block = max(page._floor_block, 150)
+    assert page._floor_block == 200

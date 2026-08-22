@@ -2367,6 +2367,25 @@ want of that allowance, the loop still finds.  A route's first plan costs
 the route hit, and it gave up mid-route reporting a Maker slot as unreadable
 that the endpoint answers happily.
 
+### After an approval, before the swap
+
+The router reads through a load balancer, which is many nodes at slightly
+different heights.  A node still on block N-1 cannot see an approval that
+confirmed in block N -- so the plan is priced against a chain where it has not
+happened, and the dry run reverts on an allowance that is there.  The tab then
+says the route would not go through, which is simply wrong, and it depends on
+which node answered.
+
+So the tab remembers the block each of its own transactions confirmed in, and
+`plan_call` takes it as `not_before`: the newest block is asked for again until
+the endpoint is at least there.  Briefly -- this is a second or two of lag, not
+a reorg -- and an endpoint that never catches up is planned against anyway,
+because a plan on a stale block is one the dry run will speak up about and
+refusing would be deciding that a slow endpoint is a broken one.
+
+An approval also re-*plans* rather than only re-checking the allowance: the
+plan in hand was built before it, and its dry run says the route reverts.
+
 ### Before it is signed
 
 The route is re-priced against state read at the newest block, the whole call

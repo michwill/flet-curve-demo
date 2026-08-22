@@ -76,6 +76,10 @@ class SwapPage:
         self._on_loading = on_loading
         self._on_loaded = on_loaded
 
+        #: The newest block this tab has watched a transaction of its own
+        #: confirm in.  Every plan after that waits for the endpoint to reach
+        #: it -- see `_confirm`.
+        self._floor_block = 0
         #: The picker's coins, in the order it shows them.  Re-ordered once
         #: what the wallet holds is known.
         self._coins: list = []
@@ -472,7 +476,8 @@ class SwapPage:
             return
         try:
             plan = await session.plan_call(
-                quote.result, receiver=account or _NOBODY, sender=account or _NOBODY)
+                quote.result, receiver=account or _NOBODY, sender=account or _NOBODY,
+                not_before=self._floor_block)
         except Exception as exc:
             if self._quote is not quote:
                 return      # a later amount is already being planned
@@ -554,7 +559,11 @@ class SwapPage:
             self.view.say("Confirm the approval in your wallet…", pending=True)
             tx = await contract.approve(plan)
             await self._confirm(tx, "Approved.")
-            await self._sync_approval(plan)
+            # Re-planned, not just re-checked: the plan in hand was built
+            # before the approval and its dry run says the route reverts.
+            await self._plan_now()
+            if self._plan is not None:
+                await self._sync_approval(self._plan)
         except WalletError as exc:
             self._rejected(exc)
         finally:
@@ -594,13 +603,24 @@ class SwapPage:
             self._sending = False
             self.view.busy(False)
 
-    async def _confirm(self, tx: str, done: str) -> None:
+    async def _confirm(self, tx: str, done: str) -> int:
+        """Wait for it to land, and remember which block it landed in.
+
+        The block matters afterwards.  The router reads through a load
+        balancer, which is many nodes at slightly different heights, and one
+        still behind cannot see an approval that has already happened -- so
+        the next plan is priced against a chain where it has not, and the dry
+        run reverts on an allowance that is there.  `plan_call` takes the
+        number and waits for the endpoint to reach it.
+        """
         from curve.confirm import wait_for_confirmation
 
         provider = self._provider_for()
         self.view.say("Waiting for the transaction…", pending=True)
-        await wait_for_confirmation(provider, tx)
+        block = await wait_for_confirmation(provider, tx)
+        self._floor_block = max(self._floor_block, int(block or 0))
         self.view.say(done, DONE)
+        return block
 
     def _rejected(self, error: WalletError) -> None:
         """A rejection is not an error worth a red line -- it is a decision."""

@@ -225,7 +225,19 @@ class SwapPage:
         self._on_loading(min(1.0, max(0.0, fraction)))
 
     def _failed(self, exc: Exception) -> None:
-        self.view.say(str(exc) or exc.__class__.__name__, FAILED)
+        """Say what went wrong, and at which block.
+
+        The block is not decoration.  A router that will not price a pair it
+        priced a minute ago is a thing to reproduce, and reproducing it means
+        pinning the state it happened against -- `erouter route --block N`
+        takes exactly that number.  Without it a report is "it failed once",
+        which is not a report.
+        """
+        self.view.say(_with_block(exc, self._block_now()), FAILED)
+
+    def _block_now(self) -> int:
+        session = self.host.session
+        return int(getattr(session, "block", 0) or 0) if session else 0
 
     # -------------------------------------------------------------- the pair
 
@@ -464,6 +476,12 @@ class SwapPage:
             usd = await native_price(self._api, self._chain_name(), chain_id)
         self.view.show_gas(format_fee(amount, native.symbol, amount * usd),
                            estimated=getattr(plan, "gas_estimated", False))
+
+
+def _with_block(exc: Exception, block: int) -> str:
+    """One line, ending in the block it happened at."""
+    said = str(exc) or exc.__class__.__name__
+    return f"{said} (block {block:,})" if block else said
 
 
 def _why_unsendable(exc: Exception) -> str:

@@ -103,3 +103,23 @@ def test_a_wide_window_keeps_the_frame_beside_the_widget_throughout():
     assert view.diagram in view._body.controls and view.diagram.visible
     view.show_route(object())
     assert view.diagram in view._body.controls and view.diagram.visible
+
+
+def test_a_failure_says_which_block_it_happened_at():
+    """A router that will not price a pair it priced a minute ago is a thing
+    to reproduce, and reproducing it means pinning the state."""
+    from ui.swap_page import _with_block
+
+    exc = RuntimeError("src not connected to dst through the active set")
+    assert _with_block(exc, 25_812_795) == (
+        "src not connected to dst through the active set (block 25,812,795)"
+    )
+
+
+def test_a_failure_with_no_block_to_name_says_the_rest_anyway():
+    from ui.swap_page import _with_block
+
+    assert _with_block(RuntimeError("the endpoint went away"), 0) == (
+        "the endpoint went away"
+    )
+    assert _with_block(RuntimeError(""), 0) == "RuntimeError"

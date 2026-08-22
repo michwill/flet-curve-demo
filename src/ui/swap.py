@@ -655,7 +655,10 @@ def _compact(amount: str) -> str:
         if abs(value) >= cut:
             return f"{value / cut:,.2f}{suffix}".replace(".00", "")
     if value and abs(value) < 0.01:
-        return f"{value:.6f}".rstrip("0")
+        # Through the shared formatter, which keeps significant figures where
+        # fixed places would round a real holding away.  Six places of its own
+        # turned a billionth into "0." -- a trailing dot and nothing else.
+        return token_amount(value)
     return f"{value:,.4f}".rstrip("0").rstrip(".")
 
 

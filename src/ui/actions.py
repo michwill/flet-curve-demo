@@ -12,7 +12,7 @@ import flet as ft
 from curve.abi import FEE_DENOMINATOR, apply_slippage
 from curve.api import CurveApi
 from curve.confirm import POLL_INTERVAL, wait_for_confirmation
-from curve.format import token_amount, units_to_float
+from curve.format import is_dust, token_amount, units_to_float
 from curve.gas import (
     fee_in_native,
     format_fee,
@@ -1687,7 +1687,7 @@ class SwapTab(ActionTab):
 
 def claimable(amount: int, decimals: int) -> bool:
     """Is this enough to be worth a tab, a line and a transaction?"""
-    return token_amount(units_to_float(amount, decimals)) != "0"
+    return not is_dust(units_to_float(amount, decimals))
 
 
 class ClaimTab(ActionTab):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from datetime import datetime
 from decimal import Decimal
 
@@ -45,16 +46,52 @@ def apr_range(low: float, high: float) -> str:
     return f"{percent(low)} to {percent(high)}"
 
 
-def token_amount(value: float, *, places: int = 4) -> str:
-    """A human token quantity: grouped, trailing zeros trimmed."""
+#: How many significant figures a quantity too small for `places` gets shown
+#: to.  Enough to tell one small holding from another, and to tell either from
+#: nothing at all.
+FIGURES = 3
+
+
+def token_amount(value: float, *, places: int = 4, figures: int = FIGURES) -> str:
+    """A human token quantity: grouped, trailing zeros trimmed.
+
+    `places` decimals, or as many as it takes to show `figures` significant
+    ones -- whichever is more.  Eight-decimal coins make the second case
+    ordinary: a few dollars of tBTC is 0.0000342 of one, which at four places
+    is "0", and a zero says the wallet holds nothing rather than a little.
+    Trailing zeros still go, so a quantity that *is* exactly 0.0001 is not
+    padded out to pretend at a precision it does not have.
+    """
     if value is None:
         return "-"
     if value == 0:
         return "0"
     if abs(value) >= 1000:
         return f"{value:,.2f}"
-    text = f"{value:.{places}f}".rstrip("0").rstrip(".")
-    return text or "0"
+    # Plain decimals rather than an exponent: these are quantities someone
+    # reads and may retype, and "3.42e-05" is not something to paste into an
+    # amount box.
+    exponent = math.floor(math.log10(abs(value)))
+    decimals = max(places, figures - 1 - exponent)
+    return f"{value:,.{decimals}f}".rstrip("0").rstrip(".") or "0"
+
+
+#: Where a quantity stops being worth a line, a tab or a transaction.  Four
+#: decimal places, which is where that line has always been -- it used to be
+#: *implied* by asking whether `token_amount` printed "0", and stopped being a
+#: question about size the moment small holdings started showing their
+#: significant figures instead.
+DUST_PLACES = 4
+
+
+def is_dust(value: float | None) -> bool:
+    """Too small to be worth acting on.
+
+    A gauge accrues CRV every block, so an account that claimed a minute ago
+    is owed a few wei of it -- and offering a transaction that costs more than
+    it collects is worse than saying nothing.
+    """
+    return round(value or 0.0, DUST_PLACES) <= 0
 
 
 def units_to_float(value: int, decimals: int) -> float:

@@ -7,7 +7,7 @@ from collections.abc import Awaitable, Callable
 import flet as ft
 
 from curve.earnings import ClaimPlan, Earning, claim_plan
-from curve.format import compact_usd, percent, short_address, token_amount
+from curve.format import compact_usd, is_dust, percent, short_address, token_amount
 from curve.models import Coin
 from curve.portfolio import LP_UNIT, Holding
 from curve.rewards import REWARDS
@@ -430,8 +430,9 @@ class PortfolioView(ft.Column):
     @staticmethod
     def _crv_label(earnings: list[Earning], transactions: int = 1) -> str:
         """"Claim 1.23 CRV", and "(4 txs)" when it is not one transaction."""
-        owed = token_amount(sum(e.crv_owed for e in earnings))
-        label = "Claim CRV" if owed == "0" else f"Claim {owed} CRV"
+        total = sum(e.crv_owed for e in earnings)
+        label = ("Claim CRV" if is_dust(total)
+                 else f"Claim {token_amount(total)} CRV")
         return label + (f" ({transactions} txs)" if transactions > 1 else "")
 
     @staticmethod

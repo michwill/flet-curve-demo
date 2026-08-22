@@ -2387,6 +2387,21 @@ reads what the wallet has across the whole list and lifts anything worth more
 than a dollar to the top, ordered by what it is worth, with the amount and the
 dollars in the row.
 
+`token_amount` gives a quantity four decimal places *or* as many as it takes
+to show three significant figures, whichever is more.  Eight-decimal coins
+make the second case ordinary: $1.45 of tBTC is 0.0000188 of one, which at
+four places is "0" -- and a zero says the wallet holds nothing, which is a
+different thing from holding a little.  Trailing zeros still go, so a quantity
+that *is* 0.0001 is not padded out to pretend at precision it does not have.
+
+That change had a reader: `claimable` decided whether a reward was worth a
+transaction by asking whether the formatter printed "0", which was the same
+answer for as long as four places was all a quantity ever got.  It is
+`format.is_dust` now, in one place, asked as the question about size it always
+was -- a gauge accrues CRV every block, so an account that claimed a minute
+ago is owed a few wei of it and should not be offered a transaction that costs
+more than it collects.
+
 A dollar rather than a non-zero balance, because a token's own units say
 nothing: 1 wei and 1 USDC are both "1", and a dusty airdrop above the busiest
 market on the chain would be the list lying.  A coin with *no* price is not

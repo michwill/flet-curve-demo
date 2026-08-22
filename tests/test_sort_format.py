@@ -149,6 +149,37 @@ def test_token_amount_trims_and_groups() -> None:
     assert token_amount(25_628_962.988) == "25,628,962.99"
 
 
+def test_a_holding_too_small_for_four_places_keeps_its_figures() -> None:
+    """Eight-decimal coins make this ordinary: a few dollars of tBTC is
+    0.0000342 of one, and at four places that is a zero -- which says the
+    wallet holds nothing, a different thing from holding a little."""
+    assert token_amount(0.0000342) == "0.0000342"
+    assert token_amount(0.00000001) == "0.00000001"
+    assert token_amount(1.5e-12) == "0.0000000000015"
+
+
+def test_the_significant_figures_are_the_significant_ones() -> None:
+    assert token_amount(0.000123456) == "0.000123"
+    assert token_amount(0.000123456, figures=5) == "0.00012346"
+
+
+def test_places_still_win_where_they_show_more() -> None:
+    """Whichever is more, not whichever is fewer: three figures of 0.12345
+    would be 0.123, and four places has the better claim."""
+    assert token_amount(0.12345) == "0.1235"
+    assert token_amount(1.23456789) == "1.2346"
+
+
+def test_an_exact_quantity_is_not_padded_out_to_look_precise() -> None:
+    assert token_amount(0.0001) == "0.0001"
+    assert token_amount(0.1) == "0.1"
+    assert token_amount(2.0) == "2"
+
+
+def test_a_negative_smallness_is_still_shown() -> None:
+    assert token_amount(-0.0000342) == "-0.0000342"
+
+
 def test_short_address() -> None:
     assert short_address("0xbEbc44782C7dB0a1A60Cb6fe97d0b483032FF1C7") == "0xbEbc…F1C7"
     assert short_address("0x1234") == "0x1234"

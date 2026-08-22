@@ -6,12 +6,18 @@ An alternative Curve Finance UI, written once in Python and running both as a
 
 It lists every pool on a chain, sorts by volume, TVL, incentives or base APY,
 and opens each pool onto a candlestick chart plus a panel that can deposit,
-withdraw, swap and stake — all in-pool, no router.
+withdraw, swap and stake in that pool. A **Swap tab** routes any coin to any
+coin *across* pools, through
+[electric-router](https://github.com/michwill/electric-router) — solver and EVM
+compiled to WebAssembly and run in the browser. See
+[The Swap tab](#the-swap-tab).
 
 ```bash
-git submodule update --init          # curve-assets: logos and token images
+git submodule update --init          # curve-assets, and electric-router
 uv venv && uv pip install -r pyproject.toml --group dev
 .venv/bin/python tools/build_assets.py   # compile the subset the app needs
+.venv/bin/python tools/build_router.py   # the router: package, caches, wasm
+.venv/bin/python tools/build_router.py --native   # and its desktop extensions
 .venv/bin/python tools/build_icons.py    # only when the mark changes: app icon + favicon
 
 .venv/bin/flet run src/main.py        # desktop -> Frame / qeth on 127.0.0.1:1248
@@ -2241,11 +2247,110 @@ approve/submit gating are all verified, but nothing here has been broadcast from
 a funded account — deposit, withdraw, swap and stake have not been run end to
 end against a real balance.
 
+## The Swap tab
+
+Any coin to any coin, across pools, through
+[electric-router](https://github.com/michwill/electric-router) -- which is a
+different program from the rest of this app and is vendored as a submodule.
+It models the pool universe as a linear resistor network with diodes, solves
+for the flow, and settles the result through `ElectricRouter.execute` in one
+transaction.  Its own `docs/theory.md` is what it is; this is how it got here.
+
+### Three costs, paid at three rates
+
+    warm       once per chain, ~25 s     6,174 slots, 388 pools, 866 arcs
+    set_pair   when a coin changes, ~60 ms
+    quote      per keystroke, 100-400 ms
+
+Warming sweeps every storage slot the universe reads into an in-process EVM,
+after which a `get_dy` costs microseconds instead of a round trip -- which is
+what makes quoting as someone types possible at all, and what makes the
+wei-exact model gate affordable enough to run in a browser rather than trust
+from a file.
+
+`router/host.py` owns that timing, and its rules are what make three costs
+read as one thing: the newest amount wins with no queue and no debounce, an
+amount typed while the bar is still moving is answered when it stops, an
+answer for a pair the reader has left is dropped rather than drawn, and a warm
+that could not read everything refuses to quote at all rather than quoting
+against zeros.
+
+### What is compiled, and where it comes from
+
+The solver and the EVM are Rust.  A desktop build loads them as two CPython
+extensions; a browser cannot -- a PyO3 wheel would have to match Pyodide's own
+Emscripten build *and* a pyo3 that targets its CPython -- so the browser loads
+one `wasm-bindgen` module (1.43 MB, 467 kB gzipped) and `erouter.wasm`
+registers it under the same two names before anything imports them.
+
+    python tools/build_router.py            # package + data + wasm
+    python tools/build_router.py --native   # and the desktop extensions
+
+All three outputs are gitignored build products, like `src/assets/curve`.  The
+toolchain is user-local and needs no root; `vendor/electric-router/rust/README.md`
+has the four commands.
+
+### Slippage is per leg, and it is not a number you type
+
+Every leg carries its own minimum rate, derived from the *least* its own pool
+can charge rather than what this trade pays -- an attacker front-runs in small
+balanced trades near `mid_fee` while the leg they wrap around pays the dynamic
+fee at its own size, which on TricryptoUSDC is 3 bp against 13.  A single
+end-to-end bound would let a route be robbed in one pool and made whole in
+another, which is the shape of a sandwich.  The widget shows what the bounds
+add up to: `auto · 5.20 bp` is how far under the quote the call is allowed to
+settle, in total.
+
+### Before it is signed
+
+The route is re-priced against state read at the newest block, the whole call
+is executed locally, and the transaction is only offered if that execution
+succeeded.  This is not belt and braces: a leg's minimum rate is derived from
+what its pool would really pay, and `docs/router.md` measures 37.9 bp of drift
+per leg against a 13.9 bp tolerance -- a bound set against stale state is a
+promise about a number nothing checked.
+
+It also means the tab knows *why* a route will not go through.  With the mock
+wallet, which reports an allowance it does not have on mainnet, clicking Swap
+answers `This route would not go through: ERC20: transfer amount exceeds
+allowance` and sends nothing.
+
+### Where the pool list comes from
+
+`CurveApi.chain_totals` already downloads every pool on the chain -- 2.4 MB on
+Ethereum -- to read two numbers off the top, so the router routes over the rest
+of it and the coin picker is ordered by the summed 24h volume of the pools
+holding each coin.  What someone means by a coin is the one being traded; TVL
+says which is being *held*, which is a different question.
+
+### The diagram
+
+`ui/routegraph.py` is the geometry with no Flet in it, and it is tested without
+a window for the reason `viewport.py` is.  Its one subtlety: `share_pct` is a
+share of what leaves a leg's *own* node, so the last leg of a 60/40 split reads
+100 -- drawn as it comes it would look like the whole trade.  The flow is
+carried forward instead, in one pass, because the bus order is topological.
+
+An eighteen-leg route is one this router really produces, and eighteen token
+names across 420 pixels is one illegible word, so a column is labelled only
+where there is room to read it.  The source and the destination always are.
+
+### What is not there yet
+
+- **Custom slippage.** "Auto" is the router's own per-leg bound and is the only
+  setting; a manual one would replace a measured number with a typed one and
+  has to be designed rather than exposed.
+- **A gas figure before the token is approved.** The estimate comes from the
+  local execution of the real call, and that call reverts at `transferFrom`
+  until the allowance exists.  Curve shows "step 1/2" here; this shows a dash.
+- **Chains without a deployed quoter.** The tab needs `Chain.quoter` and a
+  committed slot cache, which is fifteen chains today.
+
 ## Deliberately not built
 
-- **No router.** Swaps are `exchange` — or `exchange_underlying` on a metapool,
-  which is still one pool doing both legs itself. Cross-pool routing is a
-  different problem and a much larger one.
+- **~~No router.~~** There is one now -- see "The Swap tab" above. The *pool
+  page's* swap is still `exchange` on that one pool, which is what someone
+  looking at a pool means; the Swap tab is the cross-pool one.
 - **No balanced-deposit helper.** Deposits go to `add_liquidity` with explicit
   per-coin amounts. (Metapool underlying deposits *are* built, through the
   zaps — see below.)

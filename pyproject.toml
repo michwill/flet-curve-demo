@@ -7,7 +7,14 @@ requires-python = ">=3.12"
 # Installed by micropip inside Pyodide on `flet publish`. Keep this list
 # pure-Python: the ABI encoding is hand-rolled in wallet/erc20.py and
 # curve/abi.py precisely so no wheel has to exist for wasm32.
-dependencies = ["flet==0.86.5", "flet-charts==0.86.5"]
+#
+# numpy is the exception, and it is not a wheel this project builds: Pyodide
+# ships one, and `erouter.core` needs it -- the solve is a dense linear
+# algebra problem and the router's own purity test allows numpy for exactly
+# that reason. A *range* rather than an exact pin, because the version that
+# gets installed is the one in Pyodide's lock (2.4.3 today) and pinning the
+# dev group's 2.5.2 here would make micropip fail to resolve it at boot.
+dependencies = ["flet==0.86.5", "flet-charts==0.86.5", "numpy>=2,<3"]
 
 # Everything needed to build the assets, run the tests and check the types.
 # None of it ships: `flet publish` reads `project.dependencies` above and

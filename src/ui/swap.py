@@ -31,12 +31,22 @@ from .typography import BODY, LABEL, SMALL, TITLE
 #: swap box that spans a desktop window reads as a form rather than a control.
 WIDGET_WIDTH = 480.0
 
-#: Below this the diagram is not drawn at all: a route needs width to be
-#: legible, and a phone has none to spare beside the widget.
+#: What the diagram is given when it is stacked under the widget rather than
+#: set beside it.  Beside the widget it takes whatever is left.
 DIAGRAM_MIN_WIDTH = 420.0
 
 #: How tall the drawn route is.
 DIAGRAM_HEIGHT = 320.0
+
+#: How close two column labels may be before the second is left out.  An
+#: eighteen-leg route -- which this router really does produce -- puts a
+#: column every twenty pixels, and eighteen token names in that space is one
+#: illegible word.  The bands still show the shape; the names that survive are
+#: the ones with room to be read.
+LABEL_GAP = 64.0
+
+#: How wide a column's label is allowed to be.
+LABEL_BOX = 96.0
 
 #: The size a coin's mark is drawn at in the picker and the boxes.
 MARK = 24
@@ -217,7 +227,8 @@ class RouteDiagram(ft.Container):
         safe_update(self)
 
     def say(self, message: str) -> None:
-        """No route to draw, and a reason."""
+        """No route to draw, and a reason.  The frame stays: something failed
+        where a picture was, and an empty page would not say so."""
         self._diagram = None
         self.visible = True
         self._canvas.shapes = []
@@ -269,7 +280,23 @@ class RouteDiagram(ft.Container):
                     style=ft.PaintingStyle.FILL),
             ))
         self._canvas.shapes = shapes
-        self._labels.controls = [self._label(bus, width) for bus in got.buses]
+        self._labels.controls = self._label_row(got.buses, width)
+
+    def _label_row(self, buses, width: float) -> list[ft.Control]:
+        """The column names there is room to read.
+
+        Source and destination always: they are what the trade is between, and
+        a diagram that leaves either out is answering a different question.
+        """
+        drawn: list[ft.Control] = []
+        last = -LABEL_GAP
+        for bus in sorted(buses, key=lambda b: b.x):
+            edge = bus.is_source or bus.is_dest
+            if not edge and bus.x - last < LABEL_GAP:
+                continue
+            drawn.append(self._label(bus, width))
+            last = bus.x
+        return drawn
 
     def _label(self, bus, width: float) -> ft.Control:
         """A column's token, under it, kept inside the frame at either edge."""
@@ -283,7 +310,7 @@ class RouteDiagram(ft.Container):
             spacing=0,
             horizontal_alignment=ft.CrossAxisAlignment.CENTER,
         )
-        box = 96.0
+        box = LABEL_BOX
         left = min(max(0.0, bus.x + bus.width / 2 - box / 2), max(0.0, width - box))
         return ft.Container(text, left=left, top=bus.y + bus.height + 6, width=box,
                             alignment=ft.Alignment.TOP_CENTER)
@@ -315,6 +342,7 @@ class SwapView(ft.Container):
         self.chain = chain
         self._layout: Layout | None = None
         self._stacked = False
+        self._has_route = False
         self._on_amount = on_amount
         self._on_pair = on_pair
         self._on_max = on_max
@@ -424,7 +452,17 @@ class SwapView(ft.Container):
         """Draw the route beside the widget where there is room for it."""
         self._layout = layout
         self._stacked = layout.stacked
-        if layout.stacked:
+        self._sync_body()
+
+    def _sync_body(self) -> None:
+        """Where the widget sits, and whether the route sits beside it.
+
+        The diagram only takes space once there is a route in it.  An
+        expanding child fills a `Row` whether or not it has anything to show,
+        which centres nothing and leaves the widget jammed against the left of
+        an empty page.
+        """
+        if self._stacked:
             # A phone has no room beside the widget, so the route goes under
             # it -- and the widget stops being 480 wide, because a fixed width
             # larger than the window is an overflow, and an overflowing
@@ -432,18 +470,22 @@ class SwapView(ft.Container):
             # page came back blank rather than clipped.
             self.widget.width = None
             self.diagram.width = None
+            rest: list[ft.Control] = [self.diagram] if self._has_route else []
             self._body.controls = [
-                ft.Column([self.widget, self.diagram], spacing=18,
+                ft.Column([self.widget, *rest], spacing=18,
                           horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
                           expand=True)
             ]
         else:
             self.widget.width = WIDGET_WIDTH
-            self.diagram.width = DIAGRAM_MIN_WIDTH
-            self._body.controls = [
-                self.widget,
-                ft.Container(self.diagram, padding=ft.Padding.only(top=44)),
-            ]
+            self.diagram.width = None
+            self._body.controls = [self.widget]
+            if self._has_route:
+                # A long route needs the width, and `expand` inside a Row is
+                # bounded -- unlike a fixed width larger than the window.
+                self._body.controls.append(
+                    ft.Container(self.diagram, expand=True,
+                                 padding=ft.Padding.only(top=44)))
         safe_update(self)
 
     # -------------------------------------------------------------- the pair
@@ -506,6 +548,7 @@ class SwapView(ft.Container):
             self.receive.value = "0.00"
             self.rows.clear()
             self.diagram.show(None)
+            self._set_has_route(False)
             self.submit_button.disabled = True
             self._sync()
             return
@@ -519,6 +562,12 @@ class SwapView(ft.Container):
 
     def show_route(self, diagram) -> None:
         self.diagram.show(diagram, self.chain)
+        self._set_has_route(diagram is not None)
+
+    def _set_has_route(self, has: bool) -> None:
+        if has != self._has_route:
+            self._has_route = has
+            self._sync_body()
 
     def say(self, message: str, colour: str | None = None, *,
             pending: bool = False) -> None:

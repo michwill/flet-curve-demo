@@ -198,8 +198,14 @@ class SwapPage:
             self.view.diagram.show(None)
             return
         session = self.host.session
-        with contextlib.suppress(Exception):
+        try:
             self.view.show_route(session.diagram(quote.result))
+        except Exception:
+            # Cleared rather than left: a diagram that failed to rebuild goes
+            # on showing the *previous* route beside the current numbers, and
+            # there is nothing on screen to say the two disagree.
+            self.view.show_route(None)
+            self.view.diagram.say("This route could not be drawn.")
         self._schedule_plan()
 
     def _schedule_plan(self) -> None:

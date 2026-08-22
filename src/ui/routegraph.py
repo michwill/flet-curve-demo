@@ -64,6 +64,36 @@ SWEEPS = 8
 #: nothing stops early, and in practice two are enough; this is headroom.
 TRANSPOSES = 4
 
+#: Prefixes the registry puts on a pool's name that say nothing about which
+#: pool it is.  Longest first, since some are prefixes of the others.
+BOILERPLATE = (
+    "Curve.fi Factory Plain Pool: ",
+    "Curve.fi Factory Pool: ",
+    "Curve.fi Factory USD Metapool: ",
+    "Factory Plain Pool: ",
+    "Curve.fi ",
+)
+
+#: What a leg *is*, for the ones whose name only restates the two columns it
+#: already runs between -- a vault deposit says "crvUSD -> scrvUSD", which the
+#: picture says twice already.
+LEG_KINDS = {
+    "ERC4626_DEPOSIT": "deposit",
+    "ERC4626_REDEEM": "redeem",
+    "WRAP_NATIVE": "wrap",
+    "UNWRAP_NATIVE": "unwrap",
+    "WSTETH_WRAP": "wrap",
+    "WSTETH_UNWRAP": "unwrap",
+    "STAKE_NATIVE": "stake",
+    "LEND_MINT": "lend",
+    "LEND_REDEEM": "redeem",
+    "DEPOSIT_FIXED": "add liquidity",
+    "DEPOSIT_DYN": "add liquidity",
+    "DEPOSIT_FIXED_NOFLAG": "add liquidity",
+    "WITHDRAW_STABLE": "withdraw",
+    "WITHDRAW_CRYPTO": "withdraw",
+}
+
 #: How much of the frame the ribbons are allowed to fill.  Not all of it: a
 #: one-leg route carries 100% of the flow and would be drawn as a rectangle of
 #: colour touching the frame on every side, which reads as a swatch rather
@@ -653,6 +683,24 @@ def _partner(element, slot: int, boxes: dict[int, BusBox],
     return box.middle if box is not None else 0.0
 
 
+def pool_name(band) -> str:
+    """What to call a leg on the picture.
+
+    The registry's own name with its boilerplate off, except where that name
+    is just the two tokens either side -- "crvUSD -> scrvUSD" is a vault
+    deposit, and the picture has already said both of those twice.  What it
+    has not said is that the leg is a deposit.
+    """
+    name = (band.label or "").strip()
+    for prefix in BOILERPLATE:
+        if name.startswith(prefix):
+            name = name[len(prefix):].strip()
+            break
+    if not name or "->" in name:
+        return LEG_KINDS.get(band.kind, "")
+    return name
+
+
 def summarise(diagram) -> tuple[int, int]:
     """`(pools, legs)` -- what the widget says under the amounts.
 
@@ -663,3 +711,106 @@ def summarise(diagram) -> tuple[int, int]:
     elements = list(getattr(diagram, "elements", ()) or ())
     pools = {e.target.lower() for e in elements if getattr(e, "target", "")}
     return len(pools), len(elements)
+
+
+#: What an exported diagram is drawn at.  Bigger than the frame on screen,
+#: because the file is for putting in something else and a 480-pixel picture
+#: of a fifteen-pool route is not worth saving.
+EXPORT_WIDTH = 1400.0
+EXPORT_HEIGHT = 620.0
+
+#: Air around the drawing in an exported file.  The source and destination
+#: names are centred on columns that sit on the frame's edges, so without it
+#: half of each is outside the picture.
+EXPORT_MARGIN = 60.0
+
+
+def to_svg(diagram, *, width: float = EXPORT_WIDTH, height: float = EXPORT_HEIGHT,
+           title: str = "", colours=(), paper: str = "#ffffff",
+           ink: str = "#1a1a1a", quiet: str = "#666666") -> str:
+    """The same layout, as a file someone can keep.
+
+    SVG rather than a screenshot of the canvas: it is text, it is the same on
+    both platforms, and it scales -- and the geometry is already computed, so
+    this is a second renderer over `layout` rather than a second drawing.
+
+    Marks are left out.  They are PNGs in a bundle fetched at runtime, and
+    embedding them would make this a binary that has to wait for the network;
+    the names are what the picture is read by anyway.
+    """
+    inset = EXPORT_MARGIN
+    got = layout(diagram, width - inset * 2, height - LABEL_HEIGHT - inset * 2)
+    palette = list(colours) or ["#4878a8", "#a87848", "#78a848", "#8848a8",
+                                "#48a8a8", "#a84878"]
+    out = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width:.0f}" '
+        f'height="{height:.0f}" viewBox="0 0 {width:.0f} {height:.0f}">',
+        f'<rect width="100%" height="100%" fill="{paper}"/>',
+    ]
+    if title:
+        out.append(f'<text x="14" y="24" font-family="sans-serif" '
+                   f'font-size="15" fill="{ink}">{_escaped(title)}</text>')
+    top = inset + (24.0 if title else 0.0)
+
+    out.append(f'<g transform="translate({inset:.0f} 0)">')
+    for band in got.bands:
+        colour = palette[band.colour % len(palette)]
+        out.append(f'<path d="{_svg_ribbon(band, top)}" fill="{colour}" '
+                   f'fill-opacity="0.55"/>')
+    for bus in got.buses:
+        shade = ink if (bus.is_source or bus.is_dest) else quiet
+        out.append(
+            f'<rect x="{bus.x:.1f}" y="{bus.y + top:.1f}" width="{bus.width:.1f}" '
+            f'height="{bus.height:.1f}" rx="3" fill="{shade}"/>')
+        # Every column, not just the two ends.  On screen the ones in
+        # between are identified by the marks on the pool chips either side
+        # of them; a file has no marks in it, so a name is all there is.
+        label = bus.symbol
+        if not label:
+            continue
+        middle = bus.x + bus.width / 2
+        out.append(
+            f'<text x="{middle:.1f}" y="{bus.y + bus.height + top + 14:.1f}" '
+            f'text-anchor="middle" font-family="sans-serif" font-size="12" '
+            f'font-weight="bold" fill="{ink}">{_escaped(label)}</text>')
+        if bus.amount:
+            out.append(
+                f'<text x="{middle:.1f}" y="{bus.y + bus.height + top + 27:.1f}" '
+                f'text-anchor="middle" font-family="sans-serif" font-size="11" '
+                f'fill="{quiet}">{_escaped(bus.amount)}</text>')
+    for band in got.bands:
+        name = pool_name(band)
+        if not name or band.height < 12:
+            continue
+        x, y, _room = band.waist()
+        out.append(
+            f'<text x="{x:.1f}" y="{y + top + 3:.1f}" text-anchor="middle" '
+            f'font-family="sans-serif" font-size="10" fill="{ink}">'
+            f'{_escaped(name)}</text>')
+    out.append("</g>")
+    out.append("</svg>")
+    return "\n".join(out)
+
+
+def _svg_ribbon(band: Band, top: float) -> str:
+    """One ribbon's outline: along the top edge, down, and back."""
+    points = [(x, y + top) for x, y in band.points]
+    parts = [f"M {points[0][0]:.1f} {points[0][1]:.1f}"]
+    for (x0, y0), (x1, y1) in pairwise(points):
+        middle = (x0 + x1) / 2
+        parts.append(f"C {middle:.1f} {y0:.1f} {middle:.1f} {y1:.1f} "
+                     f"{x1:.1f} {y1:.1f}")
+    parts.append(f"L {points[-1][0]:.1f} {points[-1][1] + band.height:.1f}")
+    for (x1, y1), (x0, y0) in pairwise(points[::-1]):
+        middle = (x0 + x1) / 2
+        parts.append(f"C {middle:.1f} {y1 + band.height:.1f} "
+                     f"{middle:.1f} {y0 + band.height:.1f} "
+                     f"{x0:.1f} {y0 + band.height:.1f}")
+    parts.append("Z")
+    return " ".join(parts)
+
+
+def _escaped(text: str) -> str:
+    """XML's five, so a token called `A&B` does not break the file."""
+    return (text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                .replace('"', "&quot;").replace("'", "&apos;"))

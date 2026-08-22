@@ -2321,6 +2321,41 @@ another, which is the shape of a sandwich.  The widget shows what the bounds
 add up to: `auto · 5.20 bp` is how far under the quote the call is allowed to
 settle, in total.
 
+### What it costs, before the approval
+
+The gas figure comes from executing the whole call locally, not from
+`eth_estimateGas` -- the chain will not estimate a transaction whose token has
+not been approved yet.  Neither will a local run, for the same reason: it
+reverts at `transferFrom`.  So the local run gets the approval it is missing.
+`gas_probe.Funder` finds the token's allowance slot by writing a marker and
+asking the token's own `allowance` whether it landed, which needs no advance
+knowledge of any token's layout, and the figure is marked `≈` because it was
+measured with an approval that is not there yet.
+
+**Only the approval, and only for a wallet that already holds the coin.**  A
+wallet that does not gets no figure rather than a figure for a trade it cannot
+make; impersonating a real holder is a fork trick with a great deal behind it
+that this does not need.  Both slots the search touches are re-read from the
+chain afterwards -- the search writes markers into the balance slot to identify
+it, and left behind either would make the next *honest* dry run agree to a
+transaction that cannot go through.
+
+The figure includes setting the router's own approvals to the pools
+(`set_approvals`, which the call carries), so it is the conservative number: a
+route through pools the router has already approved costs less.
+
+Getting there needed the discovery to be faster than it was.  A local EVM can
+only report the layer of calls it stopped at, so the miss loop bought exactly
+one layer per round trip and a sixteen-leg route is twenty-four of them.
+`eth_createAccessList` answers the same question in one -- it needs the
+endpoint's key to be scoped for the router, which the committed one now is --
+and what it does not cover, because the call it is asked about reverts for
+want of that allowance, the loop still finds.  A route's first plan costs
+6.3 s against 8.7 s, and every plan after it on the same route costs 1.1 s.
+`FILL_ROUNDS` also went from 12 to 64: twelve was not a backstop but a ceiling
+the route hit, and it gave up mid-route reporting a Maker slot as unreadable
+that the endpoint answers happily.
+
 ### Before it is signed
 
 The route is re-priced against state read at the newest block, the whole call
@@ -2353,7 +2388,20 @@ corner, the same height, the same weight of text, the same 20px mark -- and
 `theme.field_border()`, because a Material text field draws its outline with
 Flutter's `const BorderSide()` rather than with a scheme colour, and matching
 it needs the constant rather than a token that merely resembles it in one of
-the themes.
+the themes.  Written as hex, at that: `Colors.BLACK` resolves to *nothing* on
+a `SearchBar`'s `bar_border_side` and the frame is simply not drawn, where
+`#000000`, `with_opacity(1, BLACK)` and every scheme token all draw.  A probe
+of the five side by side is what found it.
+
+The rest of the widget follows the pool page too.  The balance is the amount
+box's own hint rather than a caption under it -- a hint shows only while the
+box is empty, which is exactly when the balance is worth reading, and it buys
+back two lines on a widget that has to fit a phone.  The price impact sits in
+the same flashing band the pool page uses, from the same `ui/alarm.py`: two
+tabs making the same judgement about the same figure should not have two
+timings the moment either is tuned.  Every figure under the amounts is a band
+and only that one is ever tinted, so the row does not grow the moment it has
+something to say.
 
 ### The diagram
 
@@ -2398,10 +2446,16 @@ keystroke and on every frame of a window drag.  Five real routes, eight to
 seventeen legs: 2.3 ms each, no crossings in any of them.  Before the swap
 pass the same five had four; before the lanes, most of a sixteen-leg picture.
 
-Each column is named under its bar, with the token's logo beside the name --
-looked up by the address the router says the rail holds, because a symbol is
-ambiguous across chains and is not what the asset bundle is keyed on.  Each
-ribbon carries the pool it goes through, written along its longest straight
+The two ends are named under their bars, with the token's logo beside the name
+-- looked up by the address the router says the rail holds, because a symbol is
+ambiguous across chains and is not what the asset bundle is keyed on.  Only the
+two ends: what the trade is *between* is the pair, the columns in between are
+accounted for by the pools on the ribbons reaching them, and naming every one
+of them put a name every twenty pixels on a long route.
+
+Each ribbon carries the pool it goes through, with that pool's coins stacked in
+front of the name the way the pool list draws them, so a pool reads as the same
+object in both places.  The name is written along its longest straight
 run rather than at its midpoint: a leg spanning several columns has its middle
 over one of them as often as not, and a name there sits on a bus instead of on
 the flow.  Biggest ribbon first, since where two names will not both fit the
@@ -2414,22 +2468,26 @@ side says what it *is* instead -- a vault deposit is listed as "crvUSD ->
 scrvUSD", which the picture has already said twice, where "deposit" it has not
 said at all.
 
-An eighteen-leg route is one this router really produces, and eighteen token
-names across 420 pixels is one illegible word, so a label is drawn only where
-nothing has claimed the space -- source and destination first, then left to
-right.  Claimed as a box rather than as a distance along the row: three buses
-stacked in one column put their labels at three different heights and all fit,
-while the destination's, nudged back inside the frame, does not.  Each sits on
-a chip, because a name that lands on a ribbon is otherwise unreadable.
+Both kinds of label claim a *box* rather than a distance along the row, and
+give way to whatever claimed the space first: the destination's is nudged back
+inside the frame, and against a fixed step that nudge landed it on its
+neighbour.  Each sits on a chip, because a name that lands on a ribbon is
+otherwise unreadable.
+
+The picture can also be saved.  `routegraph.to_svg` is a second renderer over
+the same `layout` -- text, identical on both platforms, and it scales, which a
+screenshot of the canvas would not.  `ui/download.py` hands it over: a blob and
+an unseen anchor click in a browser, a file in the downloads folder on a
+desktop build, which has to say *where* because nothing pops up to tell them.
 
 ### What is not there yet
 
 - **Custom slippage.** "Auto" is the router's own per-leg bound and is the only
   setting; a manual one would replace a measured number with a typed one and
   has to be designed rather than exposed.
-- **A gas figure before the token is approved.** The estimate comes from the
-  local execution of the real call, and that call reverts at `transferFrom`
-  until the allowance exists.  Curve shows "step 1/2" here; this shows a dash.
+- **A gas figure for a wallet that does not hold the coin.** The estimate
+  below grants the approval locally; it will not grant a *balance*, because
+  that would be quoting the cost of somebody else's swap.
 - **Chains without a deployed quoter.** The tab needs `Chain.quoter` and a
   committed slot cache, which is fifteen chains today.
 

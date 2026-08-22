@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import time
 from collections.abc import Awaitable, Callable
@@ -32,6 +31,7 @@ from wallet.base import WalletError
 from wallet.erc20 import format_units, parse_units
 
 from . import AnyEvent, buttons, theme
+from .alarm import Alarm, Band
 from .assets import chain_name
 from .logos import pool_stack, token_mark
 from .status import DONE, FAILED, StatusPanel
@@ -86,31 +86,6 @@ async def _native_usd(chain: str, chain_id: int) -> float:
         return 0.0
 
 
-class _Band(ft.Container):
-    """One line of annotation under the estimate, in the theme's colour."""
-
-    def __init__(
-        self, content: ft.Control, page: ft.Page, *, kind: str = "", visible: bool = True
-    ) -> None:
-        self._page = page
-        self.kind = kind
-        self.alarming = False
-        super().__init__(
-            content,
-            padding=ft.Padding.symmetric(horizontal=8, vertical=6),
-            border_radius=6,
-            visible=visible,
-            animate=ft.Animation(
-                int(ALARM_INTERVAL * 800), ft.AnimationCurve.EASE_IN_OUT
-            ),
-        )
-
-    def before_update(self) -> None:
-        super().before_update()
-        if not self.alarming:
-            self.bgcolor = theme.note_tint(self._page, self.kind)
-
-
 #: The mark beside an amount on the estimate line.
 ESTIMATE_MARK = 16
 
@@ -120,20 +95,6 @@ IMPACT_FLOOR = 0.01
 #: Where the number stops being a detail and becomes a reason to type a
 #: smaller one.
 IMPACT_HIGH = 1.0
-
-#: The two tints the alarm band alternates between, as opacities of the
-#: theme's error colour -- so it is red under Material and Chad's scarlet
-#: under Chad, rather than one hardcoded red that fights both.
-ALARM_LIT = 0.28
-ALARM_DIM = 0.07
-
-#: Half a pulse, in seconds. The container animates across it, so this is a
-#: fade rather than a strobe.
-ALARM_INTERVAL = 0.5
-
-#: How many times it pulses before settling on the dim tint.
-ALARM_PULSES = 5
-
 
 def impact_probe(amounts: list[int]) -> list[int] | None:
     """A twentieth of each amount, or None where that cannot be measured."""
@@ -267,8 +228,7 @@ class ActionTab:
         self._pending_approval: tuple[str, str, int] | None = None
         self._fees: tuple[int, int, int, bool] | None = None
         self._fees_read_at = 0.0
-        self._alarm_panel: _Band | None = None
-        self._alarm_run = 0
+        self._alarms = Alarm(self._page_of())
         self._estimate_problem = False
         self._impact_high = False
 
@@ -444,8 +404,8 @@ class ActionTab:
 
     def _band(
         self, text: ft.Control, *, visible: bool = True, kind: str = ""
-    ) -> _Band:
-        return _Band(text, self._page_of(), kind=kind, visible=visible)
+    ) -> Band:
+        return Band(text, self._page_of(), kind=kind, visible=visible)
 
     def _page_of(self) -> ft.Page:
         return self.page
@@ -459,38 +419,14 @@ class ActionTab:
         else:
             self._alarm(None)
 
-    def _alarm(self, panel: _Band | None) -> None:
+    @property
+    def flashing(self) -> Band | None:
+        """Which annotation band is pulsing, if any."""
+        return self._alarms.panel
+
+    def _alarm(self, panel: Band | None) -> None:
         """Start the pulse on `panel`, or stop whatever is pulsing."""
-        if panel is self._alarm_panel:
-            return
-        if self._alarm_panel is not None:
-            self._alarm_panel.alarming = False
-            self._alarm_panel.bgcolor = theme.note_tint(
-                self.page, self._alarm_panel.kind
-            )
-        self._alarm_panel = panel
-        self._alarm_run += 1
-        if panel is not None:
-            panel.alarming = True
-            self.page.run_task(self._pulse, self._alarm_run)
-
-    async def _pulse(self, run: int) -> None:
-        """Flash the band, then leave it tinted. See `ALARM_PULSES`."""
-        for step in range(ALARM_PULSES * 2):
-            if run != self._alarm_run:
-                return
-            self._tint(ALARM_LIT if step % 2 == 0 else ALARM_DIM)
-            await asyncio.sleep(ALARM_INTERVAL)
-        if run == self._alarm_run:
-            self._tint(ALARM_DIM)
-
-    def _tint(self, opacity: float) -> None:
-        panel = self._alarm_panel
-        if panel is None:
-            return
-        panel.bgcolor = ft.Colors.with_opacity(opacity, ft.Colors.ERROR)
-        with contextlib.suppress(Exception):
-            self.page.update()
+        self._alarms.point_at(panel)
 
     async def suggest_slippage(self, contract: PoolContract | None) -> None:
         """Set the tolerance from the pool's own fee, once, quietly."""

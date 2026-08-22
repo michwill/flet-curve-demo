@@ -154,7 +154,7 @@ class SwapPage:
         if not coins:
             return
         self._opened_chain = chain_id
-        self.view.offer(coins, self._chain_name())
+        self.view.offer(coins, self._chain_name(), pools=rows)
         await self._open_pair(chain_id, coins)
 
     async def _make_session(self, chain_id: int):
@@ -438,7 +438,9 @@ class SwapPage:
 
         Off the router's own simulation of the whole call rather than an
         `eth_estimateGas`: the chain will not estimate a transaction whose
-        token has not been approved yet, and this one has already run it.
+        token has not been approved yet, and this one has already run it --
+        granting the approval locally where the wallet holds the coin, which
+        is what makes a figure possible before the approval is signed.
         """
         provider = self._provider_for()
         chain_id = self.chain_id_now
@@ -460,7 +462,8 @@ class SwapPage:
         usd = 0.0
         with contextlib.suppress(ApiError):
             usd = await native_price(self._api, self._chain_name(), chain_id)
-        self.view.show_gas(format_fee(amount, native.symbol, amount * usd))
+        self.view.show_gas(format_fee(amount, native.symbol, amount * usd),
+                           estimated=getattr(plan, "gas_estimated", False))
 
 
 def _why_unsendable(exc: Exception) -> str:

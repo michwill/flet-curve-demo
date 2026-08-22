@@ -221,8 +221,13 @@ def field_border() -> ft.BorderSide:
     where `Colors.ON_SURFACE` comes out white and reads as a focus ring.
 
     If the app ever gives its inputs a decoration theme, this moves with it.
+
+    Written as hex, not as `Colors.BLACK`: the named colour resolves to
+    nothing on a `SearchBar`'s `bar_border_side` and the frame simply is not
+    drawn -- `#000000`, `with_opacity(1, BLACK)` and every scheme token all
+    draw, and only the name does not.
     """
-    return ft.BorderSide(1, ft.Colors.BLACK)
+    return ft.BorderSide(1, "#000000")
 
 
 def panel_border(page: ft.Page) -> ft.Border | None:

@@ -1813,8 +1813,8 @@ async def test_a_big_impact_arms_the_alarm() -> None:
 
     await tab.refresh()
 
-    assert tab._alarm_panel is tab.impact_panel
-    assert [handler for handler, _args in page.tasks] == [tab._pulse]
+    assert tab.flashing is tab.impact_panel
+    assert [handler for handler, _args in page.tasks] == [tab._alarms._pulse]
 
 
 async def test_a_small_impact_leaves_the_band_alone() -> None:
@@ -1823,7 +1823,7 @@ async def test_a_small_impact_leaves_the_band_alone() -> None:
 
     await tab.refresh()
 
-    assert tab._alarm_panel is None
+    assert tab.flashing is None
     assert calm(tab.impact_panel)
     assert page.tasks == []
 
@@ -1837,7 +1837,7 @@ async def test_the_alarm_is_armed_on_the_crossing_not_on_every_keystroke() -> No
 
     tab.amount.value = "1000"        # back under the line
     await tab.refresh()
-    assert tab._alarm_panel is None
+    assert tab.flashing is None
     assert calm(tab.impact_panel)
 
     tab.amount.value = "100000"      # and over it again
@@ -1846,35 +1846,36 @@ async def test_the_alarm_is_armed_on_the_crossing_not_on_every_keystroke() -> No
 
 
 async def test_the_pulse_flashes_and_then_settles(monkeypatch) -> None:
-    from ui import actions
+    """The mechanics live in `ui.alarm` now; this is that they are wired up."""
+    from ui import alarm
 
-    monkeypatch.setattr(actions, "ALARM_INTERVAL", 0)
-    monkeypatch.setattr(actions, "ALARM_PULSES", 3)
+    monkeypatch.setattr(alarm, "ALARM_INTERVAL", 0)
+    monkeypatch.setattr(alarm, "ALARM_PULSES", 3)
     tab, page = high_impact_tab()
     await tab.refresh()
 
-    await tab._pulse(tab._alarm_run)
+    await tab._alarms._pulse(tab._alarms._run)
 
-    lit = ft.Colors.with_opacity(actions.ALARM_LIT, ft.Colors.ERROR)
-    dim = ft.Colors.with_opacity(actions.ALARM_DIM, ft.Colors.ERROR)
+    lit = ft.Colors.with_opacity(alarm.ALARM_LIT, ft.Colors.ERROR)
+    dim = ft.Colors.with_opacity(alarm.ALARM_DIM, ft.Colors.ERROR)
     assert page.tints.count(lit) == 3
     assert page.tints.count(dim) == 4
     assert tab.impact_panel.bgcolor == dim
 
 
 async def test_a_retired_pulse_stops_painting(monkeypatch) -> None:
-    from ui import actions
+    from ui import alarm
 
-    monkeypatch.setattr(actions, "ALARM_INTERVAL", 0)
+    monkeypatch.setattr(alarm, "ALARM_INTERVAL", 0)
     tab, page = high_impact_tab()
     await tab.refresh()
-    stale = tab._alarm_run
+    stale = tab._alarms._run
 
     tab.amount.value = "1000"
     await tab.refresh()                 # disarms, and retires the run
     page.tints.clear()
 
-    await tab._pulse(stale)
+    await tab._alarms._pulse(stale)
 
     assert page.tints == []
     assert calm(tab.impact_panel)
@@ -1908,8 +1909,8 @@ async def test_a_reverted_quote_gets_the_band_too() -> None:
 
     assert "execution reverted" in tab.estimate.value
     assert tab.estimate.color == ft.Colors.ERROR
-    assert tab._alarm_panel is tab.estimate_panel
-    assert [handler for handler, _args in page.tasks] == [tab._pulse]
+    assert tab.flashing is tab.estimate_panel
+    assert [handler for handler, _args in page.tasks] == [tab._alarms._pulse]
     assert tab.impact_panel.visible is False
 
 
@@ -1919,12 +1920,12 @@ async def test_the_band_follows_the_message_that_is_actually_showing() -> None:
     tab, _page = high_impact_tab()
     tab.get_contract().provider = provider
     await tab.refresh()
-    assert tab._alarm_panel is tab.estimate_panel
+    assert tab.flashing is tab.estimate_panel
 
     provider.revert_quotes = False
     await tab.refresh()
 
-    assert tab._alarm_panel is tab.impact_panel
+    assert tab.flashing is tab.impact_panel
     assert calm(tab.estimate_panel)
     assert tab.estimate.color == ft.Colors.ON_SURFACE
 
@@ -1940,27 +1941,27 @@ async def test_withdrawing_more_than_you_have_is_a_problem_not_a_caption() -> No
 
     assert "available" in tab.estimate.value
     assert tab.estimate.color == ft.Colors.ERROR
-    assert tab._alarm_panel is tab.estimate_panel
+    assert tab.flashing is tab.estimate_panel
 
 
 async def test_an_empty_line_is_not_a_problem() -> None:
     tab, page = high_impact_tab()
     tab.show_estimate("", problem=True)
-    assert tab._alarm_panel is None
+    assert tab.flashing is None
     assert page.tasks == []
 
 
 async def test_leaving_the_network_takes_both_lines_with_it() -> None:
     tab, _page = high_impact_tab()
     await tab.refresh()
-    assert tab._alarm_panel is tab.impact_panel
+    assert tab.flashing is tab.impact_panel
 
     tab.pool.chain_id = 100          # the wallet is on Ethereum
     await tab.refresh()
 
     assert tab.estimate.value == ""
     assert tab.impact_panel.visible is False
-    assert tab._alarm_panel is None
+    assert tab.flashing is None
     assert calm(tab.impact_panel)
 
 

@@ -23,10 +23,11 @@ from curve.models import Coin
 from router.universe import CoinEntry, matching_coins
 from wallet.erc20 import format_units, parse_units
 
-from . import AnyEvent, buttons, routegraph, safe_update, theme
-from .logos import token_mark
+from . import AnyEvent, buttons, download, routegraph, safe_update, theme
+from .alarm import Alarm, Band
+from .logos import coin_stack, token_mark
 from .responsive import Layout
-from .status import StatusPanel
+from .status import DONE, FAILED, StatusPanel
 from .typography import BODY, LABEL, SMALL, TITLE
 
 #: How wide the widget is allowed to get.  Curve's own is about this, and a
@@ -85,35 +86,18 @@ LEG_MIN_BAND = 15.0
 LEG_AIR = 5.0
 LEG_ROOM = 0.86
 
-#: Prefixes the registry puts on a pool's name that say nothing about which
-#: pool it is.  Longest first, since some are prefixes of the others.
-BOILERPLATE = (
-    "Curve.fi Factory Plain Pool: ",
-    "Curve.fi Factory Pool: ",
-    "Curve.fi Factory USD Metapool: ",
-    "Factory Plain Pool: ",
-    "Curve.fi ",
-)
+#: How far the figures under the amounts sit in from the widget's edge.  The
+#: impact row is a tinted band and the rest are untinted ones, so they all
+#: carry the same padding or the tinted one reads as indented.
+ROW_INDENT = 6
 
-#: What a leg *is*, for the ones whose name only restates the two columns it
-#: already runs between -- a vault deposit says "crvUSD -> scrvUSD", which the
-#: picture says twice already.
-LEG_KINDS = {
-    "ERC4626_DEPOSIT": "deposit",
-    "ERC4626_REDEEM": "redeem",
-    "WRAP_NATIVE": "wrap",
-    "UNWRAP_NATIVE": "unwrap",
-    "WSTETH_WRAP": "wrap",
-    "WSTETH_UNWRAP": "unwrap",
-    "STAKE_NATIVE": "stake",
-    "LEND_MINT": "lend",
-    "LEND_REDEEM": "redeem",
-    "DEPOSIT_FIXED": "add liquidity",
-    "DEPOSIT_DYN": "add liquidity",
-    "DEPOSIT_FIXED_NOFLAG": "add liquidity",
-    "WITHDRAW_STABLE": "withdraw",
-    "WITHDRAW_CRYPTO": "withdraw",
-}
+#: The save button in the widget's top corner, and the icon inside it.  The
+#: title is centred against this width, so the two move together.
+SAVE_BUTTON = 34
+SAVE_ICON = 18
+
+#: What an amount box says before there is a balance to put there.
+HINT = "0.0"
 
 #: The size a coin's mark is drawn at in the picker and the boxes -- the same
 #: 20 the pool page's coin dropdown uses for its own.
@@ -126,6 +110,17 @@ ROUTE_MARK = 14
 
 #: Between that mark and the name it belongs to.
 MARK_GAP = 4.0
+
+#: The size a pool's coins are stacked at on its ribbon.  Smaller than a
+#: column's mark, because a column is what the trade is *between* and a pool
+#: is how it got there.
+POOL_MARK = 13
+
+#: How many of a pool's coins are stacked before the rest become "+n", and
+#: how much each overlaps the one before -- `logos.coin_stack`'s own, since
+#: what is being computed here is the width of what it will draw.
+POOL_MARK_LIMIT = 4
+STACK_OVERLAP = 0.34
 
 #: Above this a price impact is worth a warning rather than a number.  The
 #: same threshold the in-pool swap uses, so the two tabs agree about what
@@ -286,6 +281,7 @@ class RouteDiagram(ft.Container):
     def __init__(self, page: ft.Page, chain: str):
         self._page = page
         self._chain = chain
+        self._pool_coins: dict[str, list[Coin]] = {}
         self._diagram = None
         self._canvas = cv.Canvas(shapes=[], expand=True,
                                  on_resize=self._resized)
@@ -312,6 +308,35 @@ class RouteDiagram(ft.Container):
         self.shadow = theme.paper_shadow(self._page)
         self.border = theme.panel_border(self._page)
         self.bgcolor = theme.paper_bg(self._page)
+
+    @property
+    def route(self):
+        """The diagram being drawn, or None -- for whoever wants to save it."""
+        return self._diagram
+
+    def set_chain(self, chain: str) -> None:
+        self._chain = chain
+
+    def offer_pools(self, rows) -> None:
+        """Which coins each pool holds, for the marks on its ribbon.
+
+        Off the same rows the pickers are built from, so this costs nothing
+        that has not already been paid: the router's `detail` is the pool's
+        address and that is what the table is keyed on.
+        """
+        table: dict[str, list[Coin]] = {}
+        for row in rows or ():
+            address = str(row.get("address") or "").lower()
+            if not address:
+                continue
+            table[address] = [
+                Coin(address=str(coin.get("address") or ""),
+                     symbol=coin.get("symbol") or "?",
+                     decimals=int(coin.get("decimals") or 18))
+                for coin in row.get("coins") or []
+                if coin.get("address")
+            ]
+        self._pool_coins = table
 
     def show(self, diagram, chain: str | None = None) -> None:
         """Draw a route, or go back to waiting for one.
@@ -371,20 +396,20 @@ class RouteDiagram(ft.Container):
         """The column names there is room to read, and no two on top of
         each other.
 
-        Source and destination first, because they are what the trade is
-        between and a diagram that leaves either out is answering a different
-        question; the rest go left to right and give way to whatever has
-        already claimed the space.  Claimed by the label's own box rather than
-        by how far apart the columns are: the destination's label is nudged
-        inside the frame, and against a fixed step that nudge silently landed
-        it on its neighbour -- while three buses stacked in one column, whose
-        labels sit at three different heights, all lost theirs to each other.
+        The source and the destination carry their name and their amount;
+        the columns in between carry neither, and the pools on the ribbons
+        say what happens there.  Claimed as a box rather than as a distance
+        along the row, because the destination's label is nudged inside the
+        frame and against a fixed step that nudge landed it on its neighbour.
         """
         claimed: list[tuple[float, float, float, float]] = []
         drawn: list[ft.Control] = []
-        order = sorted(got.buses,
-                       key=lambda b: (not (b.is_source or b.is_dest), b.x))
-        for bus in order:
+        # Only the two ends.  Every column named was a name every twenty
+        # pixels on a long route, and the columns in between are already
+        # accounted for by the pool on the ribbon that reaches them -- what
+        # the trade is *between* is the pair, and that is these two.
+        ends = [bus for bus in got.buses if bus.is_source or bus.is_dest]
+        for bus in sorted(ends, key=lambda b: b.x):
             box = _label_width(bus)
             left = min(max(0.0, bus.x + bus.width / 2 - box / 2),
                        max(0.0, width - box))
@@ -411,31 +436,53 @@ class RouteDiagram(ft.Container):
         for band in sorted(bands, key=lambda b: -b.height):
             if band.height < LEG_MIN_BAND:
                 continue
-            name = _pool_name(band)
+            name = routegraph.pool_name(band)
             if not name:
                 continue
-            # A little wider than the estimate, and the text centred in it:
+            coins = self._pool_coins.get((band.detail or "").lower()) or []
+            # A little wider than the estimate, and the content centred in it:
             # the estimate decides whether the name is drawn at all, and being
             # wrong about that is better than being wrong about the clipping.
-            box = _text_width(name, LEG_LABEL, bold=False) + LEG_AIR
+            box = (_text_width(name, LEG_LABEL, bold=False)
+                   + _stack_width(len(coins)) + LEG_AIR * 2)
             middle, centre, room = band.waist()
             if box > room * LEG_ROOM:
                 continue
+            tall = max(LEG_LABEL, POOL_MARK if coins else 0) + LEG_AIR
             left = min(max(0.0, middle - box / 2), max(0.0, width - box))
-            top = centre - LEG_LABEL * 0.7
-            span = (left - LEG_AIR, top, left + box + LEG_AIR,
-                    top + LEG_LABEL + LEG_AIR)
+            top = centre - tall / 2
+            span = (left - LEG_AIR, top, left + box + LEG_AIR, top + tall)
             if any(_overlap(span, taken) for taken in claimed):
                 continue
             claimed.append(span)
             drawn.append(ft.Container(
-                ft.Text(name, size=LEG_LABEL, no_wrap=True,
-                        color=ft.Colors.ON_SURFACE,
-                        text_align=ft.TextAlign.CENTER),
+                self._leg_chip(name, coins),
                 left=left, top=top, width=box,
                 alignment=ft.Alignment.TOP_CENTER,
             ))
         return drawn
+
+    def _leg_chip(self, name: str, coins: list[Coin]) -> ft.Control:
+        """A pool's name on the same kind of chip a column's name sits on,
+        with its coins stacked in front of it the way the pool list draws
+        them -- so a pool reads as the same object in both places."""
+        text = ft.Text(name, size=LEG_LABEL, no_wrap=True,
+                       color=ft.Colors.ON_SURFACE)
+        content: ft.Control = text
+        if coins:
+            content = ft.Row(
+                [coin_stack(coins, self._chain, POOL_MARK, POOL_MARK_LIMIT), text],
+                spacing=MARK_GAP, tight=True,
+                alignment=ft.MainAxisAlignment.CENTER,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            )
+        return ft.Container(
+            content,
+            bgcolor=ft.Colors.with_opacity(0.78, theme.paper_bg(self._page)),
+            border_radius=4,
+            padding=ft.Padding.symmetric(vertical=1, horizontal=3),
+            alignment=ft.Alignment.CENTER,
+        )
 
     def _label(self, bus, left: float, top: float, box: float) -> ft.Control:
         """A column's token, under it, on a chip so it reads over a ribbon."""
@@ -480,6 +527,18 @@ class RouteDiagram(ft.Container):
         )
 
 
+def _stack_width(coins: int) -> float:
+    """How wide `coin_stack` comes out for this many coins, plus its gap.
+
+    It reports its own width, but this decides whether to build one at all.
+    """
+    shown = min(coins, POOL_MARK_LIMIT)
+    if not shown:
+        return 0.0
+    step = POOL_MARK * (1 - STACK_OVERLAP)
+    return step * (shown - 1) + POOL_MARK + MARK_GAP
+
+
 def _text_width(text: str, size: float, *, bold: bool) -> float:
     """Roughly how wide this reads at this size.
 
@@ -496,24 +555,6 @@ def _overlap(one, two) -> bool:
     """Whether two label boxes share any ground."""
     return (one[0] < two[2] and two[0] < one[2]
             and one[1] < two[3] and two[1] < one[3])
-
-
-def _pool_name(band) -> str:
-    """What to call a leg on the picture.
-
-    The registry's own name with its boilerplate off, except where that name
-    is just the two tokens either side -- "crvUSD -> scrvUSD" is a vault
-    deposit, and the picture has already said both of those twice.  What it
-    has not said is that the leg is a deposit.
-    """
-    name = (band.label or "").strip()
-    for prefix in BOILERPLATE:
-        if name.startswith(prefix):
-            name = name[len(prefix):].strip()
-            break
-    if not name or "->" in name:
-        return LEG_KINDS.get(band.kind, "")
-    return name
 
 
 def _label_width(bus) -> float:
@@ -625,7 +666,7 @@ class SwapView(ft.Container):
         # it the two halves of the trade were different widths, which reads as
         # a mistake rather than as a button.
         self.amount = ft.TextField(
-            hint_text="0.0",
+            hint_text=HINT,
             dense=True,
             on_change=self._typed,
             expand=True,
@@ -633,19 +674,19 @@ class SwapView(ft.Container):
             suffix_icon_size_constraints=ft.BoxConstraints(
                 min_width=58, min_height=28),
         )
-        self.sell_balance = ft.Text("", size=LABEL,
-                                    color=ft.Colors.ON_SURFACE_VARIANT)
         # A field rather than a `Text`, so the two halves of the trade are the
         # same shape; read-only because the router decides this number.
         self.receive = ft.TextField(
-            hint_text="0.0", dense=True, read_only=True, value="", expand=True)
-        self.buy_balance = ft.Text("", size=LABEL,
-                                   color=ft.Colors.ON_SURFACE_VARIANT)
+            hint_text=HINT, dense=True, read_only=True, value="", expand=True)
         self.reverse = ft.IconButton(
             ft.Icons.SWAP_VERT, tooltip="Swap direction",
             on_click=self._flip_clicked, icon_size=20)
+        self.save_button = ft.IconButton(
+            ft.Icons.DOWNLOAD_OUTLINED, tooltip="Save the route as a picture",
+            on_click=self._save_clicked, icon_size=SAVE_ICON, disabled=True,
+            width=SAVE_BUTTON, height=SAVE_BUTTON)
 
-        self.rows = _InfoRows()
+        self.rows = _InfoRows(page)
         # Why a quoted route cannot be *sent*, which is a different thing
         # from a transaction going wrong and belongs next to the button
         # rather than in the status panel.
@@ -663,10 +704,10 @@ class SwapView(ft.Container):
         self.widget = ft.Container(
             ft.Column(
                 [
-                    ft.Text("Swap", size=TITLE, weight=ft.FontWeight.BOLD),
-                    self._row(self.amount, self.sell, self.sell_balance),
+                    self._heading(),
+                    self._row(self.amount, self.sell),
                     ft.Row([self.reverse], alignment=ft.MainAxisAlignment.CENTER),
-                    self._row(self.receive, self.buy, self.buy_balance),
+                    self._row(self.receive, self.buy),
                     self.rows.control,
                     self.approve_button,
                     self.submit_button,
@@ -696,27 +737,38 @@ class SwapView(ft.Container):
 
     # ------------------------------------------------------------- assembly
 
-    def _row(self, field: ft.Control, picker: CoinPicker,
-             balance: ft.Text) -> ft.Control:
-        """One half of the trade: the field, the coin, the balance under it.
+    def _heading(self) -> ft.Control:
+        """The name in the middle, and the save button on the right.
+
+        Centred by giving the left the same width the button takes on the
+        right, so the title is centred on the *widget* rather than on what is
+        left over beside the button.
+        """
+        return ft.Row(
+            [
+                ft.Container(width=SAVE_BUTTON),
+                ft.Text("Swap", size=TITLE, weight=ft.FontWeight.BOLD,
+                        expand=True, text_align=ft.TextAlign.CENTER),
+                self.save_button,
+            ],
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            spacing=0,
+        )
+
+    def _row(self, field: ft.Control, picker: CoinPicker) -> ft.Control:
+        """One half of the trade: the field, and the coin beside it.
 
         An ordinary bordered field beside the picker, the way the pool page's
         panels put theirs -- the tall tinted blocks this had were a third
         style in an app that already has one, and they made the widget twice
-        the height it needs to be.  No "Sell"/"Buy" captions either: the
-        arrow between them says which way round it is.
+        the height it needs to be.  No "Sell"/"Buy" captions either: the arrow
+        between them says which way round it is, and the balance is the box's
+        own hint rather than a line under it.
         """
-        return ft.Column(
-            [
-                ft.Row(
-                    [ft.Container(field, expand=True), picker],
-                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                    spacing=8,
-                ),
-                ft.Row([balance], alignment=ft.MainAxisAlignment.END),
-            ],
-            spacing=2,
-            horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+        return ft.Row(
+            [ft.Container(field, expand=True), picker],
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            spacing=8,
         )
 
     def set_layout(self, layout: Layout) -> None:
@@ -765,12 +817,13 @@ class SwapView(ft.Container):
 
     # -------------------------------------------------------------- the pair
 
-    def offer(self, entries, chain: str) -> None:
-        """The coins this chain has."""
+    def offer(self, entries, chain: str, *, pools=()) -> None:
+        """The coins this chain has, and the pools they came from."""
         self.chain = chain
         self.sell.offer(entries, chain)
         self.buy.offer(entries, chain)
-        self.diagram._chain = chain
+        self.diagram.set_chain(chain)
+        self.diagram.offer_pools(pools)
 
     def set_pair(self, sell: CoinEntry | None, buy: CoinEntry | None) -> None:
         self.sell.pick(sell, tell=False)
@@ -793,11 +846,17 @@ class SwapView(ft.Container):
             return 0
 
     def show_balances(self, sell: int | None, buy: int | None) -> None:
-        self.sell_balance.value = _balance_line(self.sell.picked, sell)
-        self.buy_balance.value = _balance_line(self.buy.picked, buy)
+        """The balance as the box's own hint, not a line under it.
+
+        A hint shows only while the box is empty, which is exactly when the
+        balance is worth reading -- and it buys back the two lines the pair
+        of captions was costing, on a widget that has to fit a phone.
+        """
+        self.amount.hint_text = _balance_line(self.sell.picked, sell) or HINT
+        self.receive.hint_text = _balance_line(self.buy.picked, buy) or HINT
         self.max_button.visible = bool(sell)
-        safe_update(self.sell_balance)
-        safe_update(self.buy_balance)
+        safe_update(self.amount)
+        safe_update(self.receive)
         safe_update(self.max_button)
 
     def fill_max(self, balance: int) -> None:
@@ -839,6 +898,8 @@ class SwapView(ft.Container):
 
     def show_route(self, diagram) -> None:
         self.diagram.show(diagram, self.chain)
+        self.save_button.disabled = diagram is None
+        safe_update(self.save_button)
         self._set_has_route(diagram is not None)
 
     def _set_has_route(self, has: bool) -> None:
@@ -875,9 +936,15 @@ class SwapView(ft.Container):
         safe_update(self.blocked)
         safe_update(self.submit_button)
 
-    def show_gas(self, text: str) -> None:
-        """What the route costs to send, once there is a figure for it."""
-        self.rows.set_gas(text)
+    def show_gas(self, text: str, *, estimated: bool = False) -> None:
+        """What the route costs to send, once there is a figure for it.
+
+        Marked when it came from a run with the approval granted locally
+        rather than from the call as it stands -- that is the only way to have
+        a figure before the token is approved, and it is worth saying which of
+        the two is on screen.
+        """
+        self.rows.set_gas(f"≈ {text}" if text and estimated else text)
         safe_update(self.rows.control)
 
     def show_approval(self, needed: bool) -> None:
@@ -924,6 +991,35 @@ class SwapView(ft.Container):
         self._sync_hints()
         self._on_pair(buy, sell)
 
+    def _save_clicked(self, _e: AnyEvent) -> None:
+        self._page.run_task(self._save_route)
+
+    async def _save_route(self) -> None:
+        """The route as an SVG, wherever this platform puts files.
+
+        A picture of the geometry rather than of the canvas: it is the same
+        on both platforms, it scales, and the layout is already computed --
+        so this is a second renderer over `layout`, not a screenshot.
+        """
+        diagram = self.diagram.route
+        if diagram is None:
+            return
+        sell, buy = self.sell.picked, self.buy.picked
+        pair = (f"{sell.symbol}-{buy.symbol}" if sell and buy else "route")
+        title = f"{self.amount.value or ''} {sell.symbol if sell else ''} to " \
+                f"{buy.symbol if buy else ''}".strip()
+        try:
+            where = download.save_text(
+                f"curve-route-{pair}.svg",
+                routegraph.to_svg(diagram, title=title),
+                media="image/svg+xml",
+            )
+        except Exception as exc:
+            self.say(f"Could not save the route: {exc}", FAILED)
+            return
+        self.say("Saved the route" if download.is_browser()
+                 else f"Saved the route to {where}", DONE)
+
     def _picked(self, _entry: CoinEntry | None) -> None:
         self._sync_hints()
         self._on_pair(self.sell.picked, self.buy.picked)
@@ -949,8 +1045,11 @@ class SwapView(ft.Container):
 class _InfoRows:
     """The figures under the amounts: what this trade costs and promises."""
 
-    def __init__(self) -> None:
+    def __init__(self, page: ft.Page) -> None:
+        self._page = page
         self._rows: dict[str, ft.Text] = {}
+        self._alarms = Alarm(page)
+        self._high = False
         lines: list[ft.Control] = []
         for key, label in (
             ("slippage", "Slippage"),
@@ -962,17 +1061,39 @@ class _InfoRows:
             value = ft.Text("-", size=SMALL, no_wrap=True,
                             color=ft.Colors.ON_SURFACE_VARIANT)
             self._rows[key] = value
-            lines.append(ft.Row(
-                [ft.Text(label, size=SMALL, color=ft.Colors.ON_SURFACE_VARIANT),
-                 value],
-                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-            ))
-        self.control = ft.Column(lines, spacing=3)
+            # Every row is a band and only one of them is ever tinted: they
+            # have to sit at the same height and the same indent, and a row
+            # that grew padding the moment it had something to say would be
+            # the list shifting under someone reading it.
+            line = Band(
+                ft.Row(
+                    [ft.Text(label, size=SMALL,
+                             color=ft.Colors.ON_SURFACE_VARIANT), value],
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                ),
+                page,
+                # The one figure here worth interrupting someone for, and it
+                # flashes the way the pool page's does -- same band, same
+                # timing, same colour -- because someone comparing a route
+                # against a pool is comparing the two tabs.
+                kind="impact" if key == "impact" else "",
+                padding=ft.Padding.symmetric(horizontal=ROW_INDENT, vertical=1),
+            )
+            if key == "impact":
+                self.impact_panel = line
+            lines.append(line)
+        self.control = ft.Column(lines, spacing=1)
+
+    @property
+    def flashing(self):
+        """Which band is pulsing, if any."""
+        return self._alarms.panel
 
     def clear(self) -> None:
         for value in self._rows.values():
             value.value = "-"
             value.color = ft.Colors.ON_SURFACE_VARIANT
+        self._set_high(False)
 
     def set_gas(self, text: str) -> None:
         self._set("gas", text)
@@ -982,8 +1103,10 @@ class _InfoRows:
         self._set("route", f"{pools} pool{'s' if pools != 1 else ''} · "
                            f"{legs} leg{'s' if legs != 1 else ''}")
         impact = float(getattr(result, "price_impact_bp", 0.0) or 0.0)
+        high = impact >= IMPACT_HIGH_BP
         self._set("impact", f"{impact:.2f} bp",
-                  ft.Colors.ERROR if impact >= IMPACT_HIGH_BP else None)
+                  ft.Colors.ERROR if high else None)
+        self._set_high(high)
         self._set("rate", _rate_line(result, sell, buy))
         # Just "auto".  The bound is *per leg*, derived from the least each
         # pool can charge, so a single figure for a fifteen-pool route is a
@@ -994,6 +1117,13 @@ class _InfoRows:
             # No figure: the route did not execute locally, which for an
             # unapproved token is the expected answer and not a fault.
             self._set("gas", "-")
+
+    def _set_high(self, high: bool) -> None:
+        """Arm or disarm the flash, and only when it actually changed."""
+        if high == self._high:
+            return
+        self._high = high
+        self._alarms.point_at(self.impact_panel if high else None)
 
     def _set(self, key: str, text: str, colour: str | None = None) -> None:
         row = self._rows[key]

@@ -14,7 +14,15 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from itertools import pairwise
 
-from ui.routegraph import MIN_BAND, NODE_GAP, WAY_GAP, layers, layout, summarise
+from ui.routegraph import (
+    MIN_BAND,
+    NODE_GAP,
+    WAY_GAP,
+    layers,
+    layout,
+    pool_name,
+    summarise,
+)
 
 
 @dataclass
@@ -412,3 +420,29 @@ def test_two_columns_that_have_to_move_together_still_untangle():
 def test_a_plain_split_has_nothing_to_untangle():
     assert crossing_pairs(layout(split(), 400, 300)) == []
     assert crossing_pairs(layout(overtake(), 400, 300)) == []
+
+
+def test_a_registry_name_loses_only_its_boilerplate():
+    """"Curve.fi Factory Plain Pool:" is on a great many of them and says
+    nothing about which one."""
+    class Leg:
+        def __init__(self, label, kind="SWAP_STABLE"):
+            self.label, self.kind = label, kind
+
+    assert pool_name(Leg("Curve.fi Factory Plain Pool: crvUSD/USDC")) == "crvUSD/USDC"
+    assert pool_name(Leg("Curve.fi DAI/USDC/USDT")) == "DAI/USDC/USDT"
+    assert pool_name(Leg("crvUSD/frxUSD")) == "crvUSD/frxUSD"
+    assert pool_name(Leg("SaveDola")) == "SaveDola"
+
+
+def test_a_leg_named_after_its_two_ends_says_what_it_does_instead():
+    """The columns either side already carry both names, twice over.  What
+    the picture does not otherwise say is that this one is a deposit."""
+    class Leg:
+        def __init__(self, label, kind):
+            self.label, self.kind = label, kind
+
+    assert pool_name(Leg("crvUSD -> scrvUSD", "ERC4626_DEPOSIT")) == "deposit"
+    assert pool_name(Leg("ETH -> WETH", "WRAP_NATIVE")) == "wrap"
+    assert pool_name(Leg("", "SWAP_STABLE")) == "", "nothing to say, so nothing"
+    assert pool_name(Leg("A -> B", "SWAP_STABLE")) == "", "and no guessing"

@@ -208,6 +208,23 @@ def border_side(page: ft.Page) -> ft.BorderSide | None:
     return ft.BorderSide(1, ft.Colors.OUTLINE_VARIANT) if is_chad(page) else None
 
 
+def field_border() -> ft.BorderSide:
+    """What a Material text field draws its outline with.
+
+    Not a scheme colour, which is why this is a function and not a token:
+    Flutter's `OutlineInputBorder` defaults to `const BorderSide()`, which is
+    opaque black, and nothing here overrides it.  So a control that wants to
+    sit beside an input -- the Swap tab's coin picker is a `SearchBar`, which
+    styles itself as a search bar otherwise -- has to use the same constant
+    rather than a token that merely resembles it in one of the themes.
+    Measured at the pool page's amount box: (0, 0, 0) in light and in dark,
+    where `Colors.ON_SURFACE` comes out white and reads as a focus ring.
+
+    If the app ever gives its inputs a decoration theme, this moves with it.
+    """
+    return ft.BorderSide(1, ft.Colors.BLACK)
+
+
 def panel_border(page: ft.Page) -> ft.Border | None:
     """The same outline, on all four sides. None outside Chad."""
     side = border_side(page)

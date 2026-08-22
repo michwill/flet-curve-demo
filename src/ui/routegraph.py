@@ -115,6 +115,18 @@ class Band:
     colour: int = 0
     detail: str = ""
 
+    def waist(self) -> tuple[float, float, float]:
+        """Where a name goes on this ribbon, and how much room it has.
+
+        The middle of its longest straight run, rather than the middle of the
+        ribbon: a leg spanning several columns has its midpoint over one of
+        them as often as not, and a name there sits on a bus rather than on
+        the flow.  Returns the centre of that run and its width.
+        """
+        widest = max(pairwise(self.points), key=lambda pair: pair[1][0] - pair[0][0])
+        (x0, y0), (x1, y1) = widest
+        return (x0 + x1) / 2, (y0 + y1) / 2 + self.height / 2, x1 - x0
+
     @property
     def x0(self) -> float:
         return self.points[0][0]

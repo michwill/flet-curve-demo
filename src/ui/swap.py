@@ -70,8 +70,54 @@ LABEL_MIN = 34.0
 #: How far under its column a label sits.
 LABEL_DROP = 5.0
 
-#: The size a coin's mark is drawn at in the picker and the boxes.
-MARK = 24
+#: The size a pool's name is drawn at on its ribbon -- a step under a column
+#: name, because a column is what the trade is *between* and a pool is how it
+#: got there.
+LEG_LABEL = 10.0
+
+#: How tall a ribbon must be before its name is written on it.  Below this the
+#: text is taller than the flow it names and reads as a caption for whatever
+#: is behind it.
+LEG_MIN_BAND = 15.0
+
+#: Air around a pool name, and how much of its run it may take.  A name
+#: filling its ribbon end to end reads as a label for the columns either side.
+LEG_AIR = 5.0
+LEG_ROOM = 0.86
+
+#: Prefixes the registry puts on a pool's name that say nothing about which
+#: pool it is.  Longest first, since some are prefixes of the others.
+BOILERPLATE = (
+    "Curve.fi Factory Plain Pool: ",
+    "Curve.fi Factory Pool: ",
+    "Curve.fi Factory USD Metapool: ",
+    "Factory Plain Pool: ",
+    "Curve.fi ",
+)
+
+#: What a leg *is*, for the ones whose name only restates the two columns it
+#: already runs between -- a vault deposit says "crvUSD -> scrvUSD", which the
+#: picture says twice already.
+LEG_KINDS = {
+    "ERC4626_DEPOSIT": "deposit",
+    "ERC4626_REDEEM": "redeem",
+    "WRAP_NATIVE": "wrap",
+    "UNWRAP_NATIVE": "unwrap",
+    "WSTETH_WRAP": "wrap",
+    "WSTETH_UNWRAP": "unwrap",
+    "STAKE_NATIVE": "stake",
+    "LEND_MINT": "lend",
+    "LEND_REDEEM": "redeem",
+    "DEPOSIT_FIXED": "add liquidity",
+    "DEPOSIT_DYN": "add liquidity",
+    "DEPOSIT_FIXED_NOFLAG": "add liquidity",
+    "WITHDRAW_STABLE": "withdraw",
+    "WITHDRAW_CRYPTO": "withdraw",
+}
+
+#: The size a coin's mark is drawn at in the picker and the boxes -- the same
+#: 20 the pool page's coin dropdown uses for its own.
+MARK = 20
 
 #: And on the route, where it sits beside a name at `LABEL`.  Small enough
 #: that a picture with a dozen columns is still a picture of the flow rather
@@ -94,6 +140,12 @@ PICKER_HEIGHT = 420
 #: its own, so beside an expanding amount field it took the whole row and the
 #: amount disappeared -- which is not a layout to leave to whoever wins.
 PICKER_BAR_WIDTH = 148
+
+#: The corner and the height of the bar, both taken from the dense outlined
+#: field the pool page's coin dropdown is: Material's own 4, and the height a
+#: `TextField(dense=True)` comes out at beside it.
+PICKER_RADIUS = 2
+PICKER_BAR_HEIGHT = 48
 
 
 def as_coin(entry: CoinEntry) -> Coin:
@@ -120,16 +172,24 @@ class CoinPicker(ft.SearchBar):
         super().__init__(
             value="",
             bar_hint_text=label,
-            bar_text_style=ft.TextStyle(size=BODY, weight=ft.FontWeight.BOLD),
+            bar_text_style=ft.TextStyle(size=BODY),
             view_hint_text="Search name or paste an address",
-            bar_shape=ft.RoundedRectangleBorder(radius=18),
+            # Dressed as the pool page's coin dropdown, which is a dense
+            # outlined field: same corner, same outline, same weight of text,
+            # same height as the amount box beside it.  A `SearchBar` styles
+            # itself as a search bar otherwise -- a tall shadowed pill, which
+            # beside a Material text field reads as a different kind of
+            # control rather than the same one with more coins in it.
+            bar_shape=ft.RoundedRectangleBorder(radius=PICKER_RADIUS),
             bar_elevation=0,
             bar_bgcolor=ft.Colors.TRANSPARENT,
-            bar_border_side=ft.BorderSide(1, ft.Colors.OUTLINE_VARIANT),
-            bar_trailing=[ft.Icon(ft.Icons.ARROW_DROP_DOWN, size=20,
+            bar_overlay_color=ft.Colors.TRANSPARENT,
+            bar_border_side=theme.field_border(),
+            bar_trailing=[ft.Icon(ft.Icons.ARROW_DROP_DOWN, size=18,
                                   color=ft.Colors.ON_SURFACE_VARIANT)],
-            bar_size_constraints=ft.BoxConstraints(min_height=40, max_height=40),
-            bar_padding=ft.Padding.only(left=10, right=4),
+            bar_size_constraints=ft.BoxConstraints(min_height=PICKER_BAR_HEIGHT,
+                                                   max_height=PICKER_BAR_HEIGHT),
+            bar_padding=ft.Padding.only(left=8, right=0),
             width=PICKER_BAR_WIDTH,
             view_size_constraints=ft.BoxConstraints(
                 min_width=PICKER_WIDTH, max_width=PICKER_WIDTH,
@@ -163,7 +223,7 @@ class CoinPicker(ft.SearchBar):
         self.value = entry.symbol if entry else ""
         self.bar_leading = (
             ft.Container(token_mark(as_coin(entry), self._chain, MARK),
-                         padding=ft.Padding.only(left=4))
+                         padding=ft.Padding.only(left=4, right=MARK_GAP * 2))
             if entry else None
         )
         safe_update(self)
@@ -305,9 +365,9 @@ class RouteDiagram(ft.Container):
                     style=ft.PaintingStyle.FILL),
             ))
         self._canvas.shapes = shapes
-        self._labels.controls = self._label_row(got.buses, width)
+        self._labels.controls = self._label_row(got, width)
 
-    def _label_row(self, buses, width: float) -> list[ft.Control]:
+    def _label_row(self, got, width: float) -> list[ft.Control]:
         """The column names there is room to read, and no two on top of
         each other.
 
@@ -322,7 +382,8 @@ class RouteDiagram(ft.Container):
         """
         claimed: list[tuple[float, float, float, float]] = []
         drawn: list[ft.Control] = []
-        order = sorted(buses, key=lambda b: (not (b.is_source or b.is_dest), b.x))
+        order = sorted(got.buses,
+                       key=lambda b: (not (b.is_source or b.is_dest), b.x))
         for bus in order:
             box = _label_width(bus)
             left = min(max(0.0, bus.x + bus.width / 2 - box / 2),
@@ -334,6 +395,46 @@ class RouteDiagram(ft.Container):
                 continue
             claimed.append(span)
             drawn.append(self._label(bus, left, top, box))
+        return drawn + self._leg_row(got.bands, width, claimed)
+
+    def _leg_row(self, bands, width: float, claimed: list) -> list[ft.Control]:
+        """Which pool each ribbon goes through, written on the ribbon.
+
+        After the columns, and biggest ribbon first: the columns are what the
+        trade is between and have to be there, and where two names will not
+        both fit the one carrying more of the flow is the one worth reading.
+        A ribbon too thin to hold the text keeps quiet -- there are
+        eighteen-leg routes, and eighteen pool names is not a picture of
+        anything.
+        """
+        drawn: list[ft.Control] = []
+        for band in sorted(bands, key=lambda b: -b.height):
+            if band.height < LEG_MIN_BAND:
+                continue
+            name = _pool_name(band)
+            if not name:
+                continue
+            # A little wider than the estimate, and the text centred in it:
+            # the estimate decides whether the name is drawn at all, and being
+            # wrong about that is better than being wrong about the clipping.
+            box = _text_width(name, LEG_LABEL, bold=False) + LEG_AIR
+            middle, centre, room = band.waist()
+            if box > room * LEG_ROOM:
+                continue
+            left = min(max(0.0, middle - box / 2), max(0.0, width - box))
+            top = centre - LEG_LABEL * 0.7
+            span = (left - LEG_AIR, top, left + box + LEG_AIR,
+                    top + LEG_LABEL + LEG_AIR)
+            if any(_overlap(span, taken) for taken in claimed):
+                continue
+            claimed.append(span)
+            drawn.append(ft.Container(
+                ft.Text(name, size=LEG_LABEL, no_wrap=True,
+                        color=ft.Colors.ON_SURFACE,
+                        text_align=ft.TextAlign.CENTER),
+                left=left, top=top, width=box,
+                alignment=ft.Alignment.TOP_CENTER,
+            ))
         return drawn
 
     def _label(self, bus, left: float, top: float, box: float) -> ft.Control:
@@ -379,24 +480,47 @@ class RouteDiagram(ft.Container):
         )
 
 
+def _text_width(text: str, size: float, *, bold: bool) -> float:
+    """Roughly how wide this reads at this size.
+
+    Estimated rather than measured: Flet reports a control's size only after
+    it is laid out, and this decides whether to lay it out at all.  The factor
+    is the widest a character of the theme's body font runs -- generous on
+    purpose, because an underestimate does not leave a label out, it clips one
+    and sits it on its neighbour.
+    """
+    return len(text) * size * (0.78 if bold else 0.58)
+
+
 def _overlap(one, two) -> bool:
     """Whether two label boxes share any ground."""
     return (one[0] < two[2] and two[0] < one[2]
             and one[1] < two[3] and two[1] < one[3])
 
 
-def _label_width(bus) -> float:
-    """Roughly how much room a column's label needs.
+def _pool_name(band) -> str:
+    """What to call a leg on the picture.
 
-    Estimated from the text rather than measured: Flet reports a control's
-    size only after it is laid out, and this decides whether to lay it out at
-    all.  The factors are the widest a character of the theme's body font runs
-    at `LABEL` -- generous on purpose, because an underestimate does not leave
-    a label out, it clips one and sits it on its neighbour.
+    The registry's own name with its boilerplate off, except where that name
+    is just the two tokens either side -- "crvUSD -> scrvUSD" is a vault
+    deposit, and the picture has already said both of those twice.  What it
+    has not said is that the leg is a deposit.
     """
+    name = (band.label or "").strip()
+    for prefix in BOILERPLATE:
+        if name.startswith(prefix):
+            name = name[len(prefix):].strip()
+            break
+    if not name or "->" in name:
+        return LEG_KINDS.get(band.kind, "")
+    return name
+
+
+def _label_width(bus) -> float:
+    """Roughly how much room a column's label needs: its widest line."""
     mark = ROUTE_MARK + MARK_GAP if bus.token else 0.0
-    wide = max(len(bus.symbol) * LABEL * 0.78 + mark,
-               len(_compact(bus.amount)) * (LABEL - 1) * 0.58)
+    wide = max(_text_width(bus.symbol, LABEL, bold=True) + mark,
+               _text_width(_compact(bus.amount), LABEL - 1, bold=False))
     # The cap is on the *text*, and the mark gets its own room on top of it:
     # a logo is not a longer name, and taking it out of the name's allowance
     # would clip the name of any token whose symbol already filled it.

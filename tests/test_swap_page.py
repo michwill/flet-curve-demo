@@ -103,3 +103,33 @@ def test_a_wide_window_keeps_the_frame_beside_the_widget_throughout():
     assert view.diagram in view._body.controls and view.diagram.visible
     view.show_route(object())
     assert view.diagram in view._body.controls and view.diagram.visible
+
+
+def test_a_registry_name_loses_only_its_boilerplate():
+    """"Curve.fi Factory Plain Pool:" is on a great many of them and says
+    nothing about which one."""
+    from ui.swap import _pool_name
+
+    class Leg:
+        def __init__(self, label, kind="SWAP_STABLE"):
+            self.label, self.kind = label, kind
+
+    assert _pool_name(Leg("Curve.fi Factory Plain Pool: crvUSD/USDC")) == "crvUSD/USDC"
+    assert _pool_name(Leg("Curve.fi DAI/USDC/USDT")) == "DAI/USDC/USDT"
+    assert _pool_name(Leg("crvUSD/frxUSD")) == "crvUSD/frxUSD"
+    assert _pool_name(Leg("SaveDola")) == "SaveDola"
+
+
+def test_a_leg_named_after_its_two_ends_says_what_it_does_instead():
+    """The columns either side already carry both names, twice over.  What
+    the picture does not otherwise say is that this one is a deposit."""
+    from ui.swap import _pool_name
+
+    class Leg:
+        def __init__(self, label, kind):
+            self.label, self.kind = label, kind
+
+    assert _pool_name(Leg("crvUSD -> scrvUSD", "ERC4626_DEPOSIT")) == "deposit"
+    assert _pool_name(Leg("ETH -> WETH", "WRAP_NATIVE")) == "wrap"
+    assert _pool_name(Leg("", "SWAP_STABLE")) == "", "nothing to say, so nothing"
+    assert _pool_name(Leg("A -> B", "SWAP_STABLE")) == "", "and no guessing"

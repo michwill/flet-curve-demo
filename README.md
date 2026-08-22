@@ -2341,7 +2341,19 @@ allowance` and sends nothing.
 Ethereum -- to read two numbers off the top, so the router routes over the rest
 of it and the coin picker is ordered by the summed 24h volume of the pools
 holding each coin.  What someone means by a coin is the one being traded; TVL
-says which is being *held*, which is a different question.
+says which is being *held*, which is a different question.  One pass over rows
+that are already in hand -- a dict of address to summed volume, then one sort
+-- so the pickers are filled before the backend has loaded, let alone warmed.
+
+The picker itself is a `SearchBar` rather than the `Dropdown` the pool page
+uses, because a chain has hundreds of coins and a pool has three; but it is
+*dressed* as that dropdown, since a control that does the same job in the same
+app should not look like a different kind of control.  That means the same
+corner, the same height, the same weight of text, the same 20px mark -- and
+`theme.field_border()`, because a Material text field draws its outline with
+Flutter's `const BorderSide()` rather than with a scheme colour, and matching
+it needs the constant rather than a token that merely resembles it in one of
+the themes.
 
 ### The diagram
 
@@ -2388,7 +2400,19 @@ pass the same five had four; before the lanes, most of a sixteen-leg picture.
 
 Each column is named under its bar, with the token's logo beside the name --
 looked up by the address the router says the rail holds, because a symbol is
-ambiguous across chains and is not what the asset bundle is keyed on.
+ambiguous across chains and is not what the asset bundle is keyed on.  Each
+ribbon carries the pool it goes through, written along its longest straight
+run rather than at its midpoint: a leg spanning several columns has its middle
+over one of them as often as not, and a name there sits on a bus instead of on
+the flow.  Biggest ribbon first, since where two names will not both fit the
+one carrying more of the trade is the one worth reading, and a ribbon too thin
+to hold the text keeps quiet.
+
+The registry's name loses its boilerplate ("Curve.fi Factory Plain Pool: " is
+on a great many of them), and a leg whose name is just the two tokens either
+side says what it *is* instead -- a vault deposit is listed as "crvUSD ->
+scrvUSD", which the picture has already said twice, where "deposit" it has not
+said at all.
 
 An eighteen-leg route is one this router really produces, and eighteen token
 names across 420 pixels is one illegible word, so a label is drawn only where

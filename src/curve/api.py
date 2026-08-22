@@ -171,6 +171,48 @@ def _figures_key(chain_id: int) -> str:
     return f"figures:{chain_id}"
 
 
+#: What the router needs of a pool row, out of the forty fields one has.
+#:
+#: `erouter.core.pools.PoolSpec.from_api` reads the first eight and the coin
+#: list; `trading_volume_24h` is what orders the coin picker. Kept rather than
+#: the whole row for the same reason `FIGURE_FIELDS` is: this payload is
+#: 2.4 MB on Ethereum and holding all of it would cost that for the sake of a
+#: refresh.
+ROUTER_FIELDS = (
+    "address", "name", "pool_type", "registry_type", "is_metapool",
+    "base_pool", "lp_token_address", "tvl_usd", "trading_volume_24h",
+)
+
+#: Of a coin. `pool_index` matters: it is the index calldata is built against,
+#: and a metapool's list carries its underlying coins after its own two.
+ROUTER_COIN_FIELDS = ("address", "symbol", "name", "decimals", "pool_index")
+
+
+def _router_key(chain_id: int) -> str:
+    return f"router:{chain_id}"
+
+
+def _router_rows(payload: dict | None) -> list[dict]:
+    """Every pool on the chain, in the shape the router parses.
+
+    The same payload `chain_totals` already fetches, kept a second way. The
+    router takes a pool *list* -- which pools exist, what coins they hold --
+    and reads every number that enters a quote off the chain itself, so this
+    does not have to be fresh, only complete.
+    """
+    rows: list[dict] = []
+    for row in (payload or {}).get("data") or []:
+        if not row.get("address"):
+            continue
+        kept = {field: row.get(field) for field in ROUTER_FIELDS}
+        kept["coins"] = [
+            {field: coin.get(field) for field in ROUTER_COIN_FIELDS}
+            for coin in row.get("coins") or []
+        ]
+        rows.append(kept)
+    return rows
+
+
 def _pool_figures(payload: dict | None) -> dict[str, dict[str, float]]:
     """Every pool's changing figures out of a chain payload, by address.
 
@@ -521,6 +563,7 @@ class CurveApi:
             return cached
         if await self.is_lite(chain_id):
             self._store(_figures_key(chain_id), {})  # a Lite chain has no such list
+            self._store(_router_key(chain_id), [])
             for chain in (await self.lite_chains()).values():
                 if chain.chain_id == chain_id:
                     return self._store(key, {"tvl": chain.tvl, "volume": None})
@@ -531,6 +574,7 @@ class CurveApi:
             payload = await get_json(build_url(PRICES_V1, f"/chains/{name}"))
             totals = (payload or {}).get("total") or {}
             self._store(_figures_key(chain_id), _pool_figures(payload))
+            self._store(_router_key(chain_id), _router_rows(payload))
             return self._store(
                 key,
                 {
@@ -553,6 +597,18 @@ class CurveApi:
             return cached
         await self.chain_totals(chain_id)
         return self._cached(_figures_key(chain_id)) or {}
+
+    async def router_pools(self, chain_id: int) -> list[dict]:
+        """Every pool on the chain, for the router to route over.
+
+        Off the same payload the headline figures come from, so a chain that
+        has drawn its bar has already paid for this.
+        """
+        cached = self._cached(_router_key(chain_id))
+        if cached is not None:
+            return cached
+        await self.chain_totals(chain_id)
+        return self._cached(_router_key(chain_id)) or []
 
     async def portfolio_targets(self, chain: str, chain_id: int) -> list[Target]:
         """Every pool worth asking about, with its LP token and gauge."""

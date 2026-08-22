@@ -119,7 +119,9 @@ pwa_background_color = "#FFFFFF"
 [tool.ruff]
 line-length = 90
 target-version = "py312"
-extend-exclude = ["vendor", "dist", "build"]
+# `src/erouter` is a copy of another repo, put there by
+# `tools/build_router.py`; it is linted where it lives.
+extend-exclude = ["vendor", "dist", "build", "src/erouter"]
 
 [tool.ruff.lint]
 select = [
@@ -163,7 +165,7 @@ ignore = [
 "tests/*" = ["PLC0415", "PLW2901"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["curve", "ui", "wallet", "tests"]
+known-first-party = ["curve", "router", "ui", "wallet", "tests"]
 
 [tool.mypy]
 python_version = "3.12"
@@ -171,6 +173,12 @@ files = ["src", "tools", "tests"]
 mypy_path = "src"
 explicit_package_bases = true
 namespace_packages = true
+
+# `src/erouter` is a *copy* of the electric-router package, put there by
+# `tools/build_router.py` so `flet publish` can tar it. It is checked in its
+# own repo, against its own settings, and re-checking it here would report
+# somebody else's code on every run of this one's checks.
+exclude = "^src/erouter/"
 
 # The point of this repo's type hints is catching wiring mistakes, so the
 # checks that matter are the ones about *disagreements*: a `None` where a
@@ -190,8 +198,23 @@ disallow_untyped_defs = false
 [[tool.mypy.overrides]]
 # `fontTools` and `flet_web` are build-time only -- neither ships a
 # py.typed marker, and neither is imported by anything the app runs.
-module = ["flet_charts.*", "pyodide.*", "js", "fontTools.*", "flet_web"]
+#
+# `erouter` is excluded above and so has no stubs to check against here;
+# `erouter_evm` and `erouter_solve` are compiled extensions built from
+# `vendor/electric-router/rust`, present only after
+# `tools/build_router.py --native`.
+module = [
+    "flet_charts.*", "pyodide.*", "js", "fontTools.*", "flet_web",
+    "erouter.*", "erouter_evm", "erouter_solve",
+]
 ignore_missing_imports = true
+
+# The copy is followed through `src/router`'s imports whatever `exclude`
+# says, so its errors are silenced by name rather than by path. It is
+# checked in the repo it comes from.
+[[tool.mypy.overrides]]
+module = ["erouter.*"]
+ignore_errors = true
 
 # Tests are checked, but not for the things a test double *is*. A fake API
 # passed where `CurveApi` is declared, a stub that grows an attribute mid

@@ -2354,10 +2354,25 @@ The rest is a Sankey, and the parts of one worth naming:
   whatever lived in between -- which is what a sixteen-leg route mostly looked
   like.  It now has a point on each side of every column it passes, and those
   points are ordered along with the buses, so it threads between them.
-- **Ordering within a column is barycentre sweeps in both directions**, and a
-  bus's ribbons leave and arrive in the order of the bus at the other end.
-  Optimal ordering is NP-hard; this is the cheap part of it, and between the
-  two the ribbons cross about as often as the route itself requires.
+- **Ordering within a column is Sugiyama's**, and it needs all three of its
+  parts.  Barycentre sweeps in both directions place things at the average
+  height of what they join; an adjacent-swap pass then fixes what a
+  barycentre cannot see, because a barycentre is a *position* and what is
+  being minimised is crossings; and the best order seen is kept, counted
+  rather than assumed, since neither heuristic improves monotonically.  The
+  swap pass also steps sideways -- takes a swap that changes nothing -- once
+  per pair, because some improvements need two columns to move together and
+  neither move pays on its own.  On the route this was reported against that
+  was the difference between two crossings and none.
+- **A bus's ribbons leave and arrive in the order of the bus at the other
+  end**, so two legs sharing a node do not swap places crossing it.
+
+Optimal ordering is NP-hard; all of the above is the cheap part of it, on a
+graph of a few dozen items.  It stops as soon as nothing crosses, which most
+routes reach on the first pass -- worth doing, because this runs on every
+keystroke and on every frame of a window drag.  Five real routes, eight to
+seventeen legs: 2.3 ms each, no crossings in any of them.  Before the swap
+pass the same five had four; before the lanes, most of a sixteen-leg picture.
 
 An eighteen-leg route is one this router really produces, and eighteen token
 names across 420 pixels is one illegible word, so a label is drawn only where

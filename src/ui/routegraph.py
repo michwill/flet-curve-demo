@@ -45,6 +45,11 @@ MIN_BAND = 2.5
 #: Room under the lowest bus for its label.
 LABEL_HEIGHT = 26.0
 
+#: One thing stacked in a column: a bus, or a ribbon passing through.  The
+#: column is part of the key, so a leg with a lane in several of them is
+#: several things and can sit at a different height in each.
+Item = tuple[str, int, int]
+
 #: Between a ribbon passing through a column and whatever it sits beside.  A
 #: hair, because it carries no label -- it is there to be told apart from its
 #: neighbour and nothing more.
@@ -54,6 +59,10 @@ WAY_GAP = 3.0
 #: -- a route is a few dozen buses -- and the picture stops changing after a
 #: handful, so this is well past where it settles.
 SWEEPS = 8
+
+#: How many rounds of adjacent swaps follow each sweep.  A round that changes
+#: nothing stops early, and in practice two are enough; this is headroom.
+TRANSPOSES = 4
 
 #: How much of the frame the ribbons are allowed to fill.  Not all of it: a
 #: one-leg route carries 100% of the flow and would be drawn as a rectangle of
@@ -172,17 +181,22 @@ def layout(diagram, width: float, height: float, *, bus_width: float = BUS_WIDTH
     spans = {element.index: (depth[element.src_slot], depth[element.dst_slot])
              for element in elements
              if element.src_slot in depth and element.dst_slot in depth}
-    items: dict[int, list[tuple[str, int]]] = {
-        level: [("bus", slot) for slot in slots] for level, slots in by_layer.items()
+    # Keyed by the column as well as by what it is: a leg spanning three
+    # columns has a lane in two of them, and keyed only by the leg those two
+    # were one thing -- with one position between them, in whichever column
+    # happened to be looked at first.
+    items: dict[int, list[Item]] = {
+        level: [("bus", slot, level) for slot in slots]
+        for level, slots in by_layer.items()
     }
     for index, (start, end) in spans.items():
         for level in range(start + 1, end):
-            items.setdefault(level, []).append(("way", index))
+            items.setdefault(level, []).append(("way", index, level))
 
-    tall_of: dict[tuple[str, int], float] = {}
+    tall_of: dict[Item, float] = {}
     for group in items.values():
         for item in group:
-            kind, key = item
+            kind, key, _ = item
             share = through.get(key, 0.0) if kind == "bus" else weight.get(key, 0.0)
             tall_of[item] = max(min_band, share * scale)
 
@@ -197,7 +211,7 @@ def layout(diagram, width: float, height: float, *, bus_width: float = BUS_WIDTH
         tall = sum(tall_of[item] for item in group) + gaps
         top = max(0.0, (drawable - tall) / 2)
         for k, item in enumerate(group):
-            kind, key = item
+            kind, key, _ = item
             high = tall_of[item]
             if kind == "bus":
                 bus = buses.get(key)
@@ -224,7 +238,7 @@ def layout(diagram, width: float, height: float, *, bus_width: float = BUS_WIDTH
     return Layout(list(boxes.values()), bands, width, height)
 
 
-def _gap_between(one: tuple[str, int], two: tuple[str, int], gap: float) -> float:
+def _gap_between(one: Item, two: Item, gap: float) -> float:
     """Air between two things stacked in one column.
 
     A full gap between buses, which carry a name and an amount underneath; a
@@ -336,62 +350,206 @@ def _passing(elements, depth: dict[int, int]) -> int:
     return max(counts.values(), default=0)
 
 
-def _untangle(items: dict[int, list[tuple[str, int]]], elements,
-              spans: dict[int, tuple[int, int]]) -> dict[int, list[tuple[str, int]]]:
+def _untangle(items: dict[int, list[Item]], elements,
+              spans: dict[int, tuple[int, int]]) -> dict[int, list[Item]]:
     """Order each column so as few ribbons cross as possible.
 
-    Barycentre sweeps, the standard method: a thing wants to sit at the
-    average height of the things it is joined to, so each pass sorts a column
-    by where its neighbours sit in the column before (going forward) or after
-    (going back), and the two directions alternate until it settles.
+    Sugiyama's, which is three things and needs all three:
 
-    A single forward pass -- which is what this did -- only ever considers
-    what has already been placed, so the first column is ordered by nothing at
-    all and the last has no say in anything.  Optimal ordering is NP-hard;
-    this is the part of it that is cheap.
+    * **barycentre sweeps** -- a thing wants to sit at the average height of
+      what it is joined to, so each pass sorts a column by where its
+      neighbours sit in the column before (going forward) or after (going
+      back), and the directions alternate.  Done once forward, which is what
+      this was, the first column is ordered by nothing at all and the last has
+      no say in anything;
+    * **an adjacent swap pass**, because a barycentre is a position and what
+      is being minimised is *crossings*.  Two columns can sit at a barycentre
+      the sweeps will not leave and still cross, and swapping one neighbouring
+      pair fixes it -- USDC above frxUSD, both fed from the source, with their
+      destinations the other way round;
+    * **keeping the best order seen**, counted rather than assumed.  Neither
+      heuristic improves monotonically, so the last pass is not the best one;
+      both are tried from the same start and the winner is whichever actually
+      crossed least.
+
+    Optimal ordering is NP-hard.  This is the part of it that is cheap, on a
+    graph of a few dozen items.
 
     Ribbons passing through a column are ordered with everything else in it,
     which is what gives them a lane rather than a line drawn over the top.
     """
-    before: dict[tuple[str, int], list[tuple[str, int]]] = {}
-    after: dict[tuple[str, int], list[tuple[str, int]]] = {}
+    before: dict[Item, list[Item]] = {}
+    after: dict[Item, list[Item]] = {}
+    edges: list[tuple[Item, Item]] = []
 
-    def join(one: tuple[str, int], two: tuple[str, int]) -> None:
+    def join(one: Item, two: Item) -> None:
         after.setdefault(one, []).append(two)
         before.setdefault(two, []).append(one)
+        edges.append((one, two))
 
     for element in elements:
         if element.index not in spans:
             continue
         start, end = spans[element.index]
-        chain: list[tuple[str, int]] = [("bus", element.src_slot)]
-        chain += [("way", element.index) for _ in range(start + 1, end)]
-        chain.append(("bus", element.dst_slot))
+        chain: list[Item] = [("bus", element.src_slot, start)]
+        chain += [("way", element.index, level) for level in range(start + 1, end)]
+        chain.append(("bus", element.dst_slot, end))
         for one, two in pairwise(chain):
             join(one, two)
 
-    order = {level: list(group) for level, group in items.items()}
-    levels = sorted(order)
+    levels = sorted(items)
+    # Edges grouped by the column they leave, because every one of them spans
+    # exactly one column and a swap inside a column can only change the
+    # crossings on its two sides.  Counting the whole picture for every
+    # candidate swap instead cost 109 ms a redraw, and a redraw happens on
+    # every keystroke and every drag of the window edge.
+    at_level: dict[int, list] = {}
+    for edge in edges:
+        at_level.setdefault(edge[0][2], []).append(edge)
+    first = {level: list(group) for level, group in items.items()}
+    best = {level: list(group) for level, group in first.items()}
+    fewest = _crossings(best, edges)
 
-    def sweep(towards, over: list[int]) -> None:
-        place = {item: k for level in levels for k, item in enumerate(order[level])}
-        for level in over:
-            order[level].sort(key=lambda item: _mean(
-                [place[n] for n in towards.get(item, ()) if n in place],
-                place[item]))
-            # The column just settled is what the next one sorts against, so
-            # a pass carries its improvement along instead of every column
-            # answering to where things were before the pass began.
-            place.update({item: k for k, item in enumerate(order[level])})
+    if not fewest:
+        return best
+    for pick in (_mean, _median):
+        order = {level: list(group) for level, group in first.items()}
+        for _ in range(SWEEPS):
+            settled = True
+            for towards, over in ((before, levels[1:]), (after, levels[:-1][::-1])):
+                _sweep(order, towards, over, pick)
+                _transpose(order, at_level, levels)
+                crossed = _crossings(order, edges)
+                if crossed < fewest:
+                    fewest = crossed
+                    best = {level: list(group) for level, group in order.items()}
+                    settled = False
+                # Nothing beats none, and most routes reach it on the first
+                # pass -- worth the check, because this runs on every redraw
+                # and a redraw runs on every frame of a window drag.
+                if not fewest:
+                    return best
+            if settled:
+                break           # a whole round changed nothing; more will not
+    return best
 
-    for _ in range(SWEEPS):
-        sweep(before, levels[1:])
-        sweep(after, levels[:-1][::-1])
-    return order
+
+def _sweep(order: dict[int, list], towards: dict, over: list[int], pick) -> None:
+    """One pass, sorting each column by where its neighbours sit."""
+    place = {item: k for group in order.values() for k, item in enumerate(group)}
+    for level in over:
+        order[level].sort(key=lambda item: pick(
+            [place[n] for n in towards.get(item, ()) if n in place], place[item]))
+        # The column just settled is what the next one sorts against, so a
+        # pass carries its improvement along instead of every column answering
+        # to where things were before the pass began.
+        place.update({item: k for k, item in enumerate(order[level])})
+
+
+def _transpose(order: dict[int, list], at_level: dict[int, list],
+               levels: list[int]) -> None:
+    """Swap neighbours while that leaves fewer crossings behind.
+
+    What gets out of the local minimum a barycentre settles into: two columns
+    fed from the same source whose destinations are the other way round sit at
+    a barycentre the sweeps will not leave, and one swap undoes it.
+
+    When nothing is strictly better it steps *sideways* once per pair -- takes
+    a swap that changes nothing -- and carries on.  Some improvements need two
+    columns to move together and neither move pays on its own: the route in
+    the picture that prompted this needed USDC and frxUSD swapped in one
+    column *and* a lane lifted past DAI in the next, and stopping at the first
+    plateau left both crossings in place.  Nothing is ever kept because of a
+    sideways step; the caller only keeps an order that counted better.
+
+    Only the links either side of the column being changed are counted -- the
+    rest of the picture cannot have moved.
+    """
+    place = {item: k for group in order.values() for k, item in enumerate(group)}
+    drifted: set[tuple[int, int]] = set()
+    loose = False
+    for _ in range(TRANSPOSES):
+        moved = stepped = False
+        for level in levels:
+            group = order[level]
+            # The two sides are counted apart: an index in one column means
+            # nothing beside an index in another, and comparing across the two
+            # made the pass "improve" the picture into more crossings than it
+            # started with.
+            into = at_level.get(level - 1, [])
+            out = at_level.get(level, [])
+            for k in range(len(group) - 1):
+                one, two = group[k], group[k + 1]
+                was = _inversions(into, place) + _inversions(out, place)
+                place[one], place[two] = k + 1, k
+                now = _inversions(into, place) + _inversions(out, place)
+                sideways = loose and now == was and (level, k) not in drifted
+                if now < was or sideways:
+                    group[k], group[k + 1] = two, one
+                    moved = moved or now < was
+                    if sideways:
+                        drifted.add((level, k))
+                        stepped = True
+                else:
+                    place[one], place[two] = k, k + 1
+        if moved or stepped:
+            continue
+        if loose:
+            return
+        loose = True
+
+
+def _inversions(edges: list, place: dict) -> int:
+    """How many of these links cross each other."""
+    total = 0
+    for k, (one, two) in enumerate(edges):
+        for other, further in edges[k + 1:]:
+            if (place[one] - place[other]) * (place[two] - place[further]) < 0:
+                total += 1
+    return total
+
+
+def _crossings(order: dict[int, list], edges: list) -> int:
+    """How many pairs of links cross, over the whole picture.
+
+    Two links between the same pair of columns cross when they arrive in the
+    opposite order to the one they left in -- which is the whole of it, since
+    every link here spans exactly one column.
+    """
+    place = {item: k for group in order.values() for k, item in enumerate(group)}
+    total = 0
+    for k, (one, two) in enumerate(edges):
+        if one not in place or two not in place:
+            continue
+        for other, further in edges[k + 1:]:
+            if other not in place or further not in place:
+                continue
+            if one[2] != other[2]:
+                continue
+            if (place[one] - place[other]) * (place[two] - place[further]) < 0:
+                total += 1
+    return total
 
 
 def _mean(values: list[float], fallback: float) -> float:
     return sum(values) / len(values) if values else fallback
+
+
+def _median(values: list[float], fallback: float) -> float:
+    """The other classic heuristic.
+
+    It ignores how far away an outlying neighbour is, where the mean is
+    dragged by it -- so the two settle in different places and one of them is
+    usually better than the other.  Which one is not worth predicting, so both
+    are run.
+    """
+    if not values:
+        return fallback
+    values = sorted(values)
+    middle = len(values) // 2
+    if len(values) % 2:
+        return values[middle]
+    return (values[middle - 1] + values[middle]) / 2
 
 
 def _ribbons(elements, boxes: dict[int, BusBox],

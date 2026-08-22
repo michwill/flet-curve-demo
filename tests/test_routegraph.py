@@ -12,6 +12,7 @@ ran backwards and drew one ribbon straight over another.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from itertools import pairwise
 
 from ui.routegraph import MIN_BAND, NODE_GAP, WAY_GAP, layers, layout, summarise
 
@@ -317,3 +318,85 @@ def test_summarise_counts_pools_not_legs():
         FakeElement(2, 2, 3, 100.0, target="0xbbb"),
     ])
     assert summarise(diagram) == (2, 3)
+
+
+def two_columns_must_move_together() -> FakeDiagram:
+    """A real crvUSD -> sDOLA route, as the router solved it.
+
+    Kept verbatim -- slots, shares and the order the router listed them --
+    because what it is here for is a property of this particular shape:
+    swapping USDC past frxUSD in one column leaves the crossing count exactly
+    where it was, and so does lifting a lane past DAI in the next; only both
+    together remove anything.  A search that stops at the first plateau leaves
+    two crossings in the picture, and this is the picture they were reported
+    in.
+    """
+    return FakeDiagram(
+        buses=[FakeBus(0, "crvUSD", "2m", is_source=True), FakeBus(1, "scrvUSD"),
+               FakeBus(2, "USDC"), FakeBus(3, "frxUSD"),
+               FakeBus(4, "sDOLA", "1.42m", is_dest=True), FakeBus(5, "sUSDe"),
+               FakeBus(6, "DAI"), FakeBus(7, "sUSDS"), FakeBus(8, "sDAI"),
+               FakeBus(9, "DOLA")],
+        elements=[
+            FakeElement(1, 0, 2, 47.8019, target="0x4DEcE6"),
+            FakeElement(2, 0, 3, 25.5872, target="0x13e12B"),
+            FakeElement(3, 0, 1, 100.0, target="0x065597"),
+            FakeElement(4, 0, 1, 100.0, target="0x065597"),
+            FakeElement(5, 1, 4, 20.0338, target="0x76A962"),
+            FakeElement(6, 1, 5, 6.5770, target="0xd29f89"),
+            FakeElement(7, 2, 6, 100.0, target="0xbEbc44"),
+            FakeElement(8, 3, 7, 61.7348, target="0x81A261"),
+            FakeElement(9, 3, 4, 38.2652, target="0x9D8AFD"),
+            FakeElement(10, 6, 8, 100.0, target="0x83f20f"),
+            FakeElement(11, 8, 5, 100.0, target="0x167478"),
+            FakeElement(12, 7, 9, 100.0, target="0x8b83c4"),
+            FakeElement(13, 5, 9, 100.0, target="0x744793"),
+            FakeElement(14, 9, 4, 100.0, target="0xb45ad1"),
+        ],
+        order=[0, 1, 2, 3, 6, 7, 8, 5, 9, 4],
+    )
+
+
+def crossing_pairs(got) -> list[tuple[int, int]]:
+    """Which pairs of ribbons swap order somewhere along the picture.
+
+    Sampled along the polyline rather than solved: what is being checked is
+    what someone sees, and two ribbons that end up the other way round from
+    how they started have crossed however they got there.
+    """
+    def height_at(band, x):
+        points = band.points
+        if x < points[0][0] or x > points[-1][0]:
+            return None
+        for (x0, y0), (x1, y1) in pairwise(points):
+            if x0 <= x <= x1:
+                if x1 == x0:
+                    return y1 + band.height / 2
+                part = (x - x0) / (x1 - x0)
+                return y0 + (y1 - y0) * part + band.height / 2
+        return None
+
+    found = []
+    for i, one in enumerate(got.bands):
+        for two in got.bands[i + 1:]:
+            above = None
+            for step in range(201):
+                x = step * got.width / 200
+                first, second = height_at(one, x), height_at(two, x)
+                if first is None or second is None:
+                    continue
+                now = first < second
+                if above is not None and now != above:
+                    found.append((one.index, two.index))
+                    break
+                above = now
+    return found
+
+
+def test_two_columns_that_have_to_move_together_still_untangle():
+    assert crossing_pairs(layout(two_columns_must_move_together(), 1000, 400)) == []
+
+
+def test_a_plain_split_has_nothing_to_untangle():
+    assert crossing_pairs(layout(split(), 400, 300)) == []
+    assert crossing_pairs(layout(overtake(), 400, 300)) == []

@@ -41,18 +41,19 @@ from .swap import SwapView
 #: worth it once someone has stopped typing, and wasteful per character.
 PLAN_DELAY = 0.45
 
-#: What the pair opens on when nothing else says: the two coins nearly every
-#: chain's deepest markets are between.
-DEFAULT_SELL = ("USDC", "USDT", "DAI", "WETH")
-DEFAULT_BUY = ("WETH", "ETH", "USDC", "crvUSD")
+#: Where the last pair someone chose on a chain is kept, so the tab opens on
+#: what they were doing rather than on a guess.  Per chain, because the coins
+#: are: a pair remembered on Ethereum means nothing on Base.
+PAIR_KEY = "swap.pair.{chain_id}"
 
 
 class SwapPage:
     """Everything the Swap tab does."""
 
     def __init__(self, page: ft.Page, *, api, chain_name, chain_id, provider_for,
-                 account, on_loading, on_loaded):
+                 account, on_loading, on_loaded, storage=None):
         self._page = page
+        self._storage = storage if storage is not None else ft.SharedPreferences()
         self._api = api
         self._chain_name = chain_name
         self._chain_id = chain_id
@@ -127,29 +128,65 @@ class SwapPage:
         if chain_id != self._opened_chain:
             self._opened_chain = chain_id
             self.view.offer(self.host.coins, self._chain_name())
-            self._pick_default_pair()
+            await self._open_pair(chain_id)
         await self._read_balances()
 
     async def _make_session(self, chain_id: int):
         assert self._backend is not None, "open() loads it before warming"
         return await build_session(chain_id, self._backend, api=self._api)
 
-    def _pick_default_pair(self) -> None:
-        """Open on a pair that exists here, by symbol, busiest first."""
+    async def _open_pair(self, chain_id: int) -> None:
+        """The pair someone last chose here, or the two busiest coins.
+
+        Busiest rather than a list of symbols: the coins are already ordered
+        by the volume of the pools holding them, so the top two are the pair
+        this chain is actually used for -- which a hardcoded USDC/WETH is on
+        Ethereum and is not anywhere else.
+        """
         coins = self.host.coins
-        sell = _first_of(coins, DEFAULT_SELL) or (coins[0] if coins else None)
-        buy = _first_of(coins, DEFAULT_BUY, avoid=sell)
-        if buy is None and len(coins) > 1:
-            buy = next((c for c in coins if c is not sell), None)
+        if not coins:
+            return
+        sell = buy = None
+        remembered = await self._remembered_pair(chain_id)
+        if remembered:
+            by_address = {coin.address: coin for coin in coins}
+            sell = by_address.get(remembered[0])
+            buy = by_address.get(remembered[1])
+        if sell is None or buy is None or sell is buy:
+            sell = coins[0]
+            buy = next((coin for coin in coins[1:] if coin is not sell), None)
         self.view.set_pair(sell, buy)
         if sell is not None and buy is not None:
             self._page.run_task(self._prepare, sell.address, buy.address)
+
+    async def _remembered_pair(self, chain_id: int) -> tuple[str, str] | None:
+        try:
+            saved = await self._storage.get(PAIR_KEY.format(chain_id=chain_id))
+        except Exception:
+            return None
+        if not isinstance(saved, str) or "," not in saved:
+            return None
+        sell, _, buy = saved.partition(",")
+        return (sell, buy) if sell and buy else None
+
+    async def _remember_pair(self) -> None:
+        sell, buy = self.view.pair
+        if sell is None or buy is None or not self.chain_id_now:
+            return
+        with contextlib.suppress(Exception):
+            await self._storage.set(
+                PAIR_KEY.format(chain_id=self.chain_id_now),
+                f"{sell.address},{buy.address}",
+            )
 
     # ------------------------------------------------------------ the stages
 
     def _stage_changed(self, stage: Stage, error: str) -> None:
         if stage is Stage.WARMING:
-            self.view.say("Reading the pools on this network…", pending=True)
+            # No caption: the bar under the header is what says this is
+            # happening, and it says it for the whole app rather than for one
+            # panel.  A long fill is the state sweep, a short one is a pair.
+            self.view.clear_status()
             self._on_loading(0.0)
         elif stage is Stage.READY:
             self.view.clear_status()
@@ -173,11 +210,12 @@ class SwapPage:
         if sell is None or buy is None or sell.address == buy.address:
             return
         self._page.run_task(self._prepare, sell.address, buy.address)
+        self._page.run_task(self._remember_pair)
 
     async def _prepare(self, sell: str, buy: str) -> None:
         if self.host.stage is not Stage.READY:
             return
-        self._on_loading(None)
+        self._on_loading(0.0)
         try:
             await self.host.set_pair(sell, buy)
         finally:
@@ -394,10 +432,3 @@ class SwapPage:
 _NOBODY = "0x" + "11" * 20
 
 
-def _first_of(coins, symbols, avoid=None):
-    """The first of these symbols this chain actually has."""
-    for symbol in symbols:
-        for coin in coins:
-            if coin.symbol.upper() == symbol.upper() and coin is not avoid:
-                return coin
-    return None

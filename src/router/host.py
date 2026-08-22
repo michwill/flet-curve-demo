@@ -339,3 +339,12 @@ class RouterHost:
 
     def _progress(self, phase: str, fraction: float) -> None:
         self._on_progress(phase, fraction)
+
+    def _pair_progress(self, phase: str, fraction: float) -> None:
+        """A pair's own 0..1, not the warm's phase weighting.
+
+        The session reports both through one callback, and the warm's weights
+        map an unknown phase to 1.0 -- so a pair jumped the bar straight to
+        full and back.
+        """
+        self._on_progress("pair", fraction)

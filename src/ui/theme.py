@@ -47,6 +47,17 @@ INSET_SHADOW = ft.BoxShadow(
     color=ft.Colors.with_opacity(0.16, TITLE),
 )
 
+#: A sheet of paper lying on the page, for the one thing here that is a
+#: *picture* rather than a panel of controls: the route diagram.  Soft and
+#: blurred where Chad's is hard and offset, because outside Chad the app is
+#: Material and a hard shadow would be the only one in it.
+PAPER_SHADOW = ft.BoxShadow(
+    spread_radius=0,
+    blur_radius=14,
+    offset=ft.Offset(0, 3),
+    color=ft.Colors.with_opacity(0.16, "#000000"),
+)
+
 #: For the top bar, which spans the window: straight down, with no sideways
 #: offset.
 BAR_SHADOW = ft.BoxShadow(
@@ -168,6 +179,23 @@ def panel_shadow(page: ft.Page, *, inset: bool = False) -> ft.BoxShadow | None:
     if not is_chad(page):
         return None
     return INSET_SHADOW if inset else PANEL_SHADOW
+
+
+def paper_shadow(page: ft.Page) -> ft.BoxShadow:
+    """What lifts a sheet off the page, in whichever theme is drawn.
+
+    Unlike `panel_shadow` this is never `None`: a diagram reads as a picture
+    *on* something, and without a shadow it is a rectangle of background with
+    a line round it -- which is what the route frame looked like in the two
+    Material themes, where `panel_shadow` correctly returns nothing.
+    """
+    return PANEL_SHADOW if is_chad(page) else PAPER_SHADOW
+
+
+def paper_bg(page: ft.Page) -> str:
+    """The sheet's own colour: the lightest surface in a light theme and the
+    deepest in a dark one, so it separates from the page either way."""
+    return PANEL if is_chad(page) else ft.Colors.SURFACE_CONTAINER_LOWEST
 
 
 def bar_shadow(page: ft.Page) -> ft.BoxShadow | None:

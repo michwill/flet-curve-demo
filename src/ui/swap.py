@@ -35,8 +35,22 @@ WIDGET_WIDTH = 480.0
 #: set beside it.  Beside the widget it takes whatever is left.
 DIAGRAM_MIN_WIDTH = 420.0
 
-#: How tall the drawn route is.
-DIAGRAM_HEIGHT = 320.0
+#: How tall the paper is.  A number rather than the widget's own height:
+#: Flet has no `IntrinsicHeight`, and a `Row` that stretches its children needs
+#: a bounded height, which inside the page's scroller there is none of --
+#: asking for it drew nothing at all.  Set to about what the widget stands at
+#: with both buttons showing, and left there: the widget grows and shrinks as
+#: an approval step or a status line comes and goes, and a picture that
+#: followed it would be the most restless thing on the page.
+DIAGRAM_HEIGHT = 440.0
+
+#: How tall the route is when it is stacked under the widget instead of set
+#: beside it, where there is less width for the same picture.
+DIAGRAM_STACKED_HEIGHT = 300.0
+
+#: What the frame says before there is a route in it -- so that the frame can
+#: be there from the start rather than appearing under someone's hands.
+EMPTY_ROUTE = "The route appears here"
 
 #: How close two column labels may be before the second is left out.  An
 #: eighteen-leg route -- which this router really does produce -- puts a
@@ -207,30 +221,38 @@ class RouteDiagram(ft.Container):
             ft.Stack([self._canvas, self._labels,
                       ft.Container(self._empty, alignment=ft.Alignment.CENTER)],
                      expand=True),
-            height=DIAGRAM_HEIGHT,
-            padding=ft.Padding.all(12),
-            border_radius=12,
-            visible=False,
+            padding=ft.Padding.all(14),
+            border_radius=14,
+            expand=True,
         )
+        self.waiting = EMPTY_ROUTE
 
     def before_update(self) -> None:
-        self.shadow = theme.panel_shadow(self._page)
+        # A sheet of paper with the route drawn on it, rather than another
+        # panel of controls: it is the one thing here that is a picture, and
+        # `panel_shadow` is Chad-only -- in the Material themes the frame was
+        # a rectangle of background with a hairline round it.
+        self.shadow = theme.paper_shadow(self._page)
         self.border = theme.panel_border(self._page)
+        self.bgcolor = theme.paper_bg(self._page)
 
     def show(self, diagram, chain: str | None = None) -> None:
+        """Draw a route, or go back to waiting for one.
+
+        The frame stays either way.  It used to appear with the first quote,
+        which shifted the widget sideways the moment someone finished typing
+        -- the one moment they are looking at it.
+        """
         if chain is not None:
             self._chain = chain
         self._diagram = diagram
-        self.visible = diagram is not None
-        self._empty.value = ""
+        self._empty.value = "" if diagram is not None else self.waiting
         self._draw()
         safe_update(self)
 
     def say(self, message: str) -> None:
-        """No route to draw, and a reason.  The frame stays: something failed
-        where a picture was, and an empty page would not say so."""
+        """No route to draw, and a reason for it."""
         self._diagram = None
-        self.visible = True
         self._canvas.shapes = []
         self._labels.controls = []
         self._empty.value = message
@@ -330,7 +352,13 @@ _BAND_COLOURS = (
 
 
 def _band_colour(index: int) -> str:
-    return ft.Colors.with_opacity(0.85, _BAND_COLOURS[index % len(_BAND_COLOURS)])
+    """Enough colour to tell one leg from the next, and no more.
+
+    These are ribbons over a sheet of paper, not areas of a chart: at full
+    strength a route with two legs is two slabs, and the token names sitting
+    under them stop being readable.
+    """
+    return ft.Colors.with_opacity(0.55, _BAND_COLOURS[index % len(_BAND_COLOURS)])
 
 
 class SwapView(ft.Container):
@@ -353,23 +381,30 @@ class SwapView(ft.Container):
         self.sell = CoinPicker(page, chain, on_pick=self._picked, label="Sell")
         self.buy = CoinPicker(page, chain, on_pick=self._picked, label="Buy")
 
-        self.amount = ft.TextField(
-            hint_text="0.00",
-            border=ft.InputBorder.NONE,
-            text_size=28,
-            content_padding=ft.Padding.symmetric(vertical=4),
-            on_change=self._typed,
-            expand=True,
-        )
         self.max_button = ft.TextButton(
             "MAX", on_click=self._max_clicked,
             style=ft.ButtonStyle(
                 padding=ft.Padding.symmetric(horizontal=8),
                 text_style=ft.TextStyle(size=LABEL, weight=ft.FontWeight.BOLD)),
         )
+        # MAX rides *inside* the field, as it does on the pool page -- beside
+        # it the two halves of the trade were different widths, which reads as
+        # a mistake rather than as a button.
+        self.amount = ft.TextField(
+            hint_text="0.0",
+            dense=True,
+            on_change=self._typed,
+            expand=True,
+            suffix_icon=self.max_button,
+            suffix_icon_size_constraints=ft.BoxConstraints(
+                min_width=58, min_height=28),
+        )
         self.sell_balance = ft.Text("", size=LABEL,
                                     color=ft.Colors.ON_SURFACE_VARIANT)
-        self.receive = ft.Text("0.00", size=28, no_wrap=True)
+        # A field rather than a `Text`, so the two halves of the trade are the
+        # same shape; read-only because the router decides this number.
+        self.receive = ft.TextField(
+            hint_text="0.0", dense=True, read_only=True, value="", expand=True)
         self.buy_balance = ft.Text("", size=LABEL,
                                    color=ft.Colors.ON_SURFACE_VARIANT)
         self.reverse = ft.IconButton(
@@ -390,10 +425,9 @@ class SwapView(ft.Container):
             ft.Column(
                 [
                     ft.Text("Swap", size=TITLE, weight=ft.FontWeight.BOLD),
-                    self._box("Sell", self.amount, self.sell,
-                              self.sell_balance, self.max_button),
+                    self._row(self.amount, self.sell, self.sell_balance),
                     ft.Row([self.reverse], alignment=ft.MainAxisAlignment.CENTER),
-                    self._box("Buy", self.receive, self.buy, self.buy_balance),
+                    self._row(self.receive, self.buy, self.buy_balance),
                     self.rows.control,
                     self.approve_button,
                     self.submit_button,
@@ -422,30 +456,27 @@ class SwapView(ft.Container):
 
     # ------------------------------------------------------------- assembly
 
-    def _box(self, label: str, value: ft.Control, picker: CoinPicker,
-             balance: ft.Text, trailing: ft.Control | None = None) -> ft.Control:
-        """One half of the trade: a label, a big number, and the coin."""
-        line: list[ft.Control] = [ft.Container(value, expand=True)]
-        if trailing is not None:
-            line.append(trailing)
-        return ft.Container(
-            ft.Column(
-                [
-                    ft.Text(label, size=LABEL, color=ft.Colors.ON_SURFACE_VARIANT),
-                    ft.Row(
-                        [ft.Row(line, expand=True, spacing=4,
-                                vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                         picker],
-                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                        spacing=8,
-                    ),
-                    ft.Row([balance], alignment=ft.MainAxisAlignment.END),
-                ],
-                spacing=2,
-            ),
-            padding=ft.Padding.symmetric(horizontal=14, vertical=10),
-            border_radius=12,
-            bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
+    def _row(self, field: ft.Control, picker: CoinPicker,
+             balance: ft.Text) -> ft.Control:
+        """One half of the trade: the field, the coin, the balance under it.
+
+        An ordinary bordered field beside the picker, the way the pool page's
+        panels put theirs -- the tall tinted blocks this had were a third
+        style in an app that already has one, and they made the widget twice
+        the height it needs to be.  No "Sell"/"Buy" captions either: the
+        arrow between them says which way round it is.
+        """
+        return ft.Column(
+            [
+                ft.Row(
+                    [ft.Container(field, expand=True), picker],
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    spacing=8,
+                ),
+                ft.Row([balance], alignment=ft.MainAxisAlignment.END),
+            ],
+            spacing=2,
+            horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
         )
 
     def set_layout(self, layout: Layout) -> None:
@@ -457,10 +488,9 @@ class SwapView(ft.Container):
     def _sync_body(self) -> None:
         """Where the widget sits, and whether the route sits beside it.
 
-        The diagram only takes space once there is a route in it.  An
-        expanding child fills a `Row` whether or not it has anything to show,
-        which centres nothing and leaves the widget jammed against the left of
-        an empty page.
+        Beside it whenever the screen is wide enough, route or no route: the
+        frame appearing with the first quote moved the widget sideways at the
+        exact moment someone had finished typing into it.
         """
         if self._stacked:
             # A phone has no room beside the widget, so the route goes under
@@ -470,6 +500,8 @@ class SwapView(ft.Container):
             # page came back blank rather than clipped.
             self.widget.width = None
             self.diagram.width = None
+            self.diagram.expand = False
+            self.diagram.height = DIAGRAM_STACKED_HEIGHT
             rest: list[ft.Control] = [self.diagram] if self._has_route else []
             self._body.controls = [
                 ft.Column([self.widget, *rest], spacing=18,
@@ -479,13 +511,9 @@ class SwapView(ft.Container):
         else:
             self.widget.width = WIDGET_WIDTH
             self.diagram.width = None
-            self._body.controls = [self.widget]
-            if self._has_route:
-                # A long route needs the width, and `expand` inside a Row is
-                # bounded -- unlike a fixed width larger than the window.
-                self._body.controls.append(
-                    ft.Container(self.diagram, expand=True,
-                                 padding=ft.Padding.only(top=44)))
+            self.diagram.expand = True
+            self.diagram.height = DIAGRAM_HEIGHT
+            self._body.controls = [self.widget, self.diagram]
         safe_update(self)
 
     # -------------------------------------------------------------- the pair
@@ -545,7 +573,7 @@ class SwapView(ft.Container):
         """The output, the figures under it, and the route."""
         sell, buy = self.sell.picked, self.buy.picked
         if quote is None or quote.result is None or quote.result.route is None:
-            self.receive.value = "0.00"
+            self.receive.value = ""
             self.rows.clear()
             self.diagram.show(None)
             self._set_has_route(False)
@@ -555,8 +583,8 @@ class SwapView(ft.Container):
         result = quote.result
         out = result.verified_out or 0
         self.receive.value = (
-            token_amount(out / 10 ** buy.decimals, places=6) if buy else "0.00")
-        self.rows.show(result, quote, plan, sell, buy)
+            token_amount(out / 10 ** buy.decimals, places=6) if buy else "")
+        self.rows.show(result, plan, sell, buy)
         self.submit_button.disabled = self._busy or out <= 0
         self._sync()
 
@@ -605,7 +633,7 @@ class SwapView(ft.Container):
 
     def clear_amount(self) -> None:
         self.amount.value = ""
-        self.receive.value = "0.00"
+        self.receive.value = ""
         self.rows.clear()
         self.diagram.show(None)
         self._sync()
@@ -659,7 +687,6 @@ class _InfoRows:
             ("rate", "Exchange rate"),
             ("route", "Trade route"),
             ("gas", "Estimated tx cost"),
-            ("note", ""),
         ):
             value = ft.Text("-", size=SMALL, no_wrap=True,
                             color=ft.Colors.ON_SURFACE_VARIANT)
@@ -679,7 +706,7 @@ class _InfoRows:
     def set_gas(self, text: str) -> None:
         self._set("gas", text)
 
-    def show(self, result, quote, plan, sell=None, buy=None) -> None:
+    def show(self, result, plan, sell=None, buy=None) -> None:
         pools, legs = routegraph.summarise(_diagram_of(result))
         self._set("route", f"{pools} pool{'s' if pools != 1 else ''} · "
                            f"{legs} leg{'s' if legs != 1 else ''}")
@@ -687,19 +714,15 @@ class _InfoRows:
         self._set("impact", f"{impact:.2f} bp",
                   ft.Colors.ERROR if impact >= IMPACT_HIGH_BP else None)
         self._set("rate", _rate_line(result, sell, buy))
-        if plan is not None:
-            # "auto" is the router's own per-leg bound, not a number someone
-            # typed: each leg carries a minimum rate derived from the least
-            # its own pool can charge, and this is what they add up to.
-            self._set("slippage", f"auto · {plan.tolerance_bp:.2f} bp")
-            if not plan.gas:
-                # No figure: the route did not execute locally, which for an
-                # unapproved token is the expected answer and not a fault.
-                self._set("gas", "-")
-        else:
-            self._set("slippage", "auto")
+        # Just "auto".  The bound is *per leg*, derived from the least each
+        # pool can charge, so a single figure for a fifteen-pool route is a
+        # number that describes none of them -- and the compounded total it
+        # used to show read like a slippage setting, which it is not.
+        self._set("slippage", "auto")
+        if plan is None or not plan.gas:
+            # No figure: the route did not execute locally, which for an
+            # unapproved token is the expected answer and not a fault.
             self._set("gas", "-")
-        self._set("note", _certificate_note(result, quote))
 
     def _set(self, key: str, text: str, colour: str | None = None) -> None:
         row = self._rows[key]
@@ -715,24 +738,6 @@ def _rate_line(result, sell, buy) -> str:
         return ""
     rate = (out / 10 ** buy.decimals) / (amount_in / 10 ** sell.decimals)
     return f"1 {sell.symbol} = {token_amount(rate, places=6)} {buy.symbol}"
-
-
-def _certificate_note(result, quote) -> str:
-    """What the solver would not promise, when it would not promise it.
-
-    A false certificate is not a wrong answer: it is the solver saying it
-    could not *prove* this route optimal, which happens when the search hits
-    its pivot limit or cycles.  The quote itself is still the chain's own
-    number, verified on chain like every other.
-
-    Shown rather than hidden, because the whole diagnostic layer in the router
-    exists for one reason -- a certificate that is false and swallowed is the
-    failure mode it was built to prevent.
-    """
-    reason = getattr(result, "certificate_reason", None)
-    if getattr(result, "certificate", False) or not reason:
-        return ""
-    return f"not proven optimal · {reason.lower().replace('_', ' ')}"
 
 
 def _diagram_of(result):

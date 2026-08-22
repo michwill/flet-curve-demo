@@ -1,15 +1,19 @@
 """The route diagram's geometry, which is where its mistakes are.
 
-A band that overlaps its neighbour, a column off the edge, shares that do not
-add up -- none of that needs a window to find, which is why the arithmetic is
-a module of its own.
+A ribbon that overlaps its neighbour, a column off the edge, shares that do
+not add up -- none of that needs a window to find, which is why the arithmetic
+is a module of its own.
+
+The one that got out: buses were put in the column of their position in the
+router's list, which says nothing about how far along a bus is.  A leg then
+ran backwards and drew one ribbon straight over another.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from ui.routegraph import BAND_GAP, MIN_BAND, layout, summarise
+from ui.routegraph import MIN_BAND, NODE_GAP, layers, layout, summarise
 
 
 @dataclass
@@ -80,8 +84,24 @@ def test_the_columns_span_the_width_and_stay_inside_it():
     got = layout(split(), 400, 200)
     assert got.columns == 3
     assert min(bus.x for bus in got.buses) == 0
-    right = max(bus.x + bus.width for bus in got.buses)
-    assert right == 400, "the last column ends at the edge, not past it"
+    assert max(bus.x + bus.width for bus in got.buses) == 400
+
+
+def test_every_leg_runs_left_to_right():
+    """The regression. A bus put in the column of its list position let a leg
+    run backwards, which draws one ribbon over another."""
+    got = layout(split(), 400, 300)
+    for band in got.bands:
+        assert band.x1 > band.x0, f"leg {band.index} runs backwards"
+
+
+def test_a_bus_sits_past_everything_that_reaches_it():
+    """Longest path, not shortest: the destination here is reached directly
+    *and* through crvUSD, so it has to sit past both."""
+    depth = layers(split())
+    assert depth[0] == 0
+    assert depth[1] == 1
+    assert depth[2] == 2, "reached directly at layer 1 and via crvUSD at 2"
 
 
 def test_a_single_leg_fills_the_height():
@@ -89,17 +109,29 @@ def test_a_single_leg_fills_the_height():
     assert len(got.bands) == 1
     band = got.bands[0]
     assert band.height > 100, "one leg carries everything"
-    assert band.x0 < band.x1, "and runs left to right"
+    assert band.x0 < band.x1
 
 
-def test_bands_out_of_one_bus_do_not_overlap():
+def test_ribbons_leaving_one_bus_are_contiguous_and_fill_it():
+    """A Sankey's links meet at a node with no gap between them; the gaps in
+    this picture are between *buses*."""
     got = layout(split(), 400, 300)
-    out_of_source = sorted((b for b in got.bands if b.x0 == got.buses[0].width),
-                           key=lambda b: b.y0)
-    assert len(out_of_source) == 2
-    first, second = out_of_source
-    assert second.y0 >= first.y0 + first.height, "the second starts below the first"
-    assert second.y0 - (first.y0 + first.height) == BAND_GAP
+    source = next(bus for bus in got.buses if bus.is_source)
+    out = sorted((b for b in got.bands if b.x0 == source.x + source.width),
+                 key=lambda b: b.y0)
+    assert len(out) == 2
+    first, second = out
+    assert second.y0 == first.y0 + first.height, "no gap, and no overlap"
+    assert abs((second.y0 + second.height) - (source.y + source.height)) < 0.01
+
+
+def test_ribbons_arriving_at_one_bus_do_not_overlap_either():
+    got = layout(split(), 400, 300)
+    dest = next(bus for bus in got.buses if bus.is_dest)
+    into = sorted((b for b in got.bands if b.x1 == dest.x), key=lambda b: b.y1)
+    assert len(into) == 2
+    first, second = into
+    assert second.y1 >= first.y1 + first.height - 0.01
 
 
 def test_a_split_is_drawn_in_proportion():
@@ -110,7 +142,6 @@ def test_a_split_is_drawn_in_proportion():
         key=lambda b: -b.share,
     )
     assert sixty.share == 60.0 and forty.share == 40.0
-    assert sixty.height > forty.height
     assert abs(sixty.height / forty.height - 1.5) < 0.05, "60/40, near enough"
 
 
@@ -122,13 +153,10 @@ def test_a_leg_is_drawn_by_its_share_of_the_route_not_of_its_node():
     big = next(b for b in got.bands
                if b.x0 == source.x + source.width and b.share == 60.0)
     onward = next(b for b in got.bands if b.share == 100.0)
-    assert abs(onward.height - big.height) < 1.0, (
-        "the leg carrying that 60% onward is the same width as the 60%"
-    )
+    assert abs(onward.height - big.height) < 0.01
 
 
 def test_a_leg_carrying_almost_nothing_is_still_visible():
-    """Below a couple of pixels a band cannot be told from the gap above it."""
     diagram = FakeDiagram(
         buses=[FakeBus(0, "A", is_source=True), FakeBus(1, "B", is_dest=True)],
         elements=[FakeElement(0, 0, 1, 99.6, "big", "0xaaa"),
@@ -139,13 +167,34 @@ def test_a_leg_carrying_almost_nothing_is_still_visible():
     assert min(band.height for band in got.bands) >= MIN_BAND
 
 
-def test_the_shares_out_of_a_node_fill_its_bus():
-    """A node's outgoing bands together are as tall as the node."""
+def test_two_buses_in_one_column_are_stacked_with_room_for_their_names():
+    diagram = FakeDiagram(
+        buses=[FakeBus(0, "A", is_source=True), FakeBus(1, "B"),
+               FakeBus(2, "C"), FakeBus(3, "D", is_dest=True)],
+        elements=[
+            FakeElement(0, 0, 1, 50.0, target="0xa"),
+            FakeElement(1, 0, 2, 50.0, target="0xb"),
+            FakeElement(2, 1, 3, 100.0, target="0xc"),
+            FakeElement(3, 2, 3, 100.0, target="0xd"),
+        ],
+        order=[0, 1, 2, 3],
+    )
+    got = layout(diagram, 400, 400)
+    middle = sorted((bus for bus in got.buses if bus.layer == 1),
+                    key=lambda b: b.y)
+    assert len(middle) == 2
+    upper, lower = middle
+    assert lower.y - (upper.y + upper.height) == NODE_GAP
+
+
+def test_the_whole_thing_stays_inside_the_frame():
     got = layout(split(), 400, 300)
-    source = next(bus for bus in got.buses if bus.is_source)
-    bands = [b for b in got.bands if b.x0 == source.x + source.width]
-    total = sum(b.height for b in bands) + BAND_GAP * (len(bands) - 1)
-    assert abs(total - source.height) < 1.0
+    for bus in got.buses:
+        assert bus.y >= 0
+        assert bus.y + bus.height <= 300
+    for band in got.bands:
+        assert min(band.y0, band.y1) >= 0
+        assert max(band.y0, band.y1) + band.height <= 300
 
 
 def test_summarise_counts_pools_not_legs():

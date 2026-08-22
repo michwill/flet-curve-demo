@@ -1197,15 +1197,32 @@ def test_a_page_that_cannot_answer_is_not_chad() -> None:
     assert theme.panel_shadow(StubPage()) is None
 
 
-def test_an_action_panel_takes_the_shadow_under_chad() -> None:
-    from ui import theme
+def test_a_status_line_is_flat_in_every_theme() -> None:
+    """Chad's inset shadow is the idiom for a *well* -- something pressed
+    into the panel, the way a button is -- and a line of text is not one.
+    Beside the price impact, which is the same kind of thing said the same
+    way, it read as a different control that happened to be tinted."""
     from ui.actions import DepositTab
 
-    chad = DepositTab(ThemedPage("chad"), make_pool(), lambda: None, None)
-    plain = DepositTab(ThemedPage("light"), make_pool(), lambda: None, None)
+    for name in ("chad", "light", "dark"):
+        tab = DepositTab(ThemedPage(name), make_pool(), lambda: None, None)
+        tab.status_panel.say("Deposited.")
+        tab.status_panel.before_update()
+        assert tab.status_panel.shadow is None, name
 
-    assert chad.status_panel.shadow is theme.INSET_SHADOW
-    assert plain.status_panel.shadow is None
+
+def test_a_button_still_takes_the_shadow_under_chad() -> None:
+    """It is a well, and that is where the idiom belongs."""
+    from ui import buttons, theme
+
+    page = ThemedPage("chad")
+    shadowed = buttons.shadowed(ft.Button("Deposit"), page)
+    shadowed.before_update()
+    assert shadowed.shadow is theme.INSET_SHADOW
+
+    plain = buttons.shadowed(ft.Button("Deposit"), ThemedPage("light"))
+    plain.before_update()
+    assert plain.shadow is None
 
 
 def test_a_button_is_square_ish_and_outlined_under_chad() -> None:

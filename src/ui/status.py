@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import flet as ft
 
-from . import theme
 from .typography import SMALL
 
 #: Green is not in Material's scheme -- there is no `ft.Colors.SUCCESS` --
@@ -26,7 +25,14 @@ def tint(colour: str | None, pending: bool) -> str:
 
 
 class StatusPanel(ft.Container):
-    """A tinted line that says what is happening, or nothing at all."""
+    """A tinted line that says what is happening, or nothing at all.
+
+    Flat, like the annotation bands it sits beside.  It carried Chad's inset
+    shadow, which is the idiom for a *well* -- something pressed into the
+    panel, the way a button is -- and a line of text is not one.  Beside the
+    price impact, which is the same kind of thing said the same way, it read
+    as a different kind of control that happened to be tinted.
+    """
 
     def __init__(self, page: ft.Page) -> None:
         self._page = page
@@ -37,7 +43,6 @@ class StatusPanel(ft.Container):
             padding=ft.Padding.symmetric(horizontal=10, vertical=8),
             border_radius=8,
             visible=False,
-            shadow=theme.panel_shadow(page, inset=True),
         )
 
     def say(
@@ -57,7 +62,3 @@ class StatusPanel(ft.Container):
     def busy(self) -> bool:
         """Is something in flight? What greys the buttons that start it."""
         return bool(self.visible and self.spinner.visible)
-
-    def before_update(self) -> None:
-        super().before_update()
-        self.shadow = theme.panel_shadow(self._page, inset=True)

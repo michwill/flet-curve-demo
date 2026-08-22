@@ -2466,7 +2466,17 @@ warm ends.
 
 The amount box, the coin beside it and the two buttons under it are all one
 height, because they are what the widget is for; the five lines of detail
-between them are not.  The price impact sits in
+between them are not.
+
+The green confirmation under them is flat, like the bands above it.  It
+carried Chad's inset shadow, which is the idiom for a *well* -- something
+pressed into the panel, the way a button is -- and a line of text is not one;
+beside the price impact, which is the same kind of thing said the same way, it
+read as a different control that happened to be tinted.  `StatusPanel` is
+shared, so the pool page's and the portfolio's confirmations lost it too, and
+each of those already sat beside flat bands of its own.
+
+The price impact sits in
 the same flashing band the pool page uses, from the same `ui/alarm.py`: two
 tabs making the same judgement about the same figure should not have two
 timings the moment either is tuned.  Every figure under the amounts is a band

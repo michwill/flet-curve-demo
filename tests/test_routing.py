@@ -151,6 +151,7 @@ def make_app(route: str = "/", *, pool=_DEFAULT, chain: str = "ethereum"):
     app.chains = {"ethereum": 1, "xdai": 100}
     app.chain = chain
     app._detail = None
+    app.swap_page = None
     app._page_name = "pools"
     app._route_applied = True
     app.body = ft.Container()

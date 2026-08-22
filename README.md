@@ -2402,6 +2402,15 @@ paler than a typed one: the box has the coin named beside it, so "Balance" and
 that the number is not an amount being swapped -- which is a job for the
 colour, not for a caption.
 
+Connecting *after* the tab is open works too, which it did not: everything
+wallet-shaped here is read through a callable, so nothing was ever stale -- it
+was simply never asked again.  `CurveApp._wallet_changed` told the pool page
+and the portfolio and not this one, so someone who opened Swap first and
+connected second got no balance, no MAX, and an approval step decided when
+there was no account to decide it for.  All four wallet events reach it now,
+disconnection included: a figure left on screen after the wallet has gone is a
+figure for nobody.
+
 It is there before the warm is, and so is MAX.  What a wallet holds is a
 question for the wallet and needs none of the twenty seconds of pool state, so
 `_read_balances` runs before `host.open` rather than after it: the figure and

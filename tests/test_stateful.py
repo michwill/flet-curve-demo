@@ -123,6 +123,7 @@ def build_app(session: Session):
     app.chains = {}
     app.feed = None
     app._detail = None
+    app.swap_page = None
     app._page_name = "pools"
     app._address_expanded = False
     app.storage = session.shared_preferences

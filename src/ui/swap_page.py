@@ -174,6 +174,22 @@ class SwapPage:
         self.view.offer(coins, self._chain_name(), pools=rows)
         await self._open_pair(chain_id, coins)
 
+    async def wallet_changed(self) -> None:
+        """A wallet arrived, left, or became a different account.
+
+        Everything here that depends on one is read through a callable, so
+        nothing is *stale* -- it is simply never asked again.  Someone who
+        opened the tab first and connected second saw no balance, no MAX and
+        an approval step decided when there was no account to decide it for.
+
+        The router is untouched: it quotes over the public endpoint and has no
+        idea a wallet exists, so a connection costs no warm and no re-read.
+        """
+        await self._read_balances()
+        if self._plan is not None:
+            await self._sync_approval(self._plan)
+            await self._show_gas(self._plan)
+
     async def _make_session(self, chain_id: int):
         assert self._backend is not None, "open() loads it before warming"
         return await build_session(chain_id, self._backend, api=self._api)

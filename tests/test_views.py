@@ -2207,6 +2207,7 @@ def header_app(width: float):
     app.wallet = None
     app._page_name = "pools"
     app._detail = None
+    app.swap_page = None
     app._address_expanded = False
     app._route_applied = True
     app.storage = None
@@ -3420,6 +3421,7 @@ async def test_losing_the_wallet_reloads_the_portfolio() -> None:
     app.wallet = object()
     app._page_name = "portfolio"
     app.connect_button = ft.Button("Connect")
+    app.swap_page = None
     app._show_account = lambda **_kw: None      # type: ignore[method-assign]
     reloaded = []
 
@@ -3466,6 +3468,7 @@ def test_a_theme_change_reaches_both_tables() -> None:
     app.account_chip = ft.Container()
     app.connect_button = ft.Button("Connect")
     app._detail = None
+    app.swap_page = None
     app.list_view = PoolListView(app.page, on_open=lambda _p: None)
     app.portfolio_view = portfolio_view(app.page)
 
@@ -3537,6 +3540,7 @@ def switching_app(api):
     app.wallet = None
     app._route_applied = True
     app._detail = None
+    app.swap_page = None
     app.progress = ft.ProgressBar()
     app.error = ft.Text()
     app.totals = ft.Text()

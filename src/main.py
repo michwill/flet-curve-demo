@@ -1630,6 +1630,8 @@ class CurveApp:
         self.wallet.on_disconnect(lambda: self.page.run_task(self._wallet_gone))
         if self._detail is not None:
             await self._detail.refresh_actions()
+        if self.swap_page is not None:
+            await self.swap_page.wallet_changed()
         if self._page_name == PAGE_PORTFOLIO:
             await self.load_portfolio()
 
@@ -1650,11 +1652,19 @@ class CurveApp:
         self.wallet.on_disconnect(lambda: self.page.run_task(self._wallet_gone))
         if self._detail is not None:
             await self._detail.refresh_actions()
+        if self.swap_page is not None:
+            await self.swap_page.wallet_changed()
         if self._page_name == PAGE_PORTFOLIO:
             await self.load_portfolio()
 
     async def _wallet_changed(self) -> None:
-        """The wallet switched account or network behind our back."""
+        """The wallet switched account or network behind our back.
+
+        Every page that holds wallet-shaped state is told, including ones not
+        on screen: they keep their state between visits, and coming back to a
+        balance read for whoever was connected last is worse than coming back
+        to none.
+        """
         if self.wallet is None:
             return
         self._show_account(expanded=self._address_expanded)
@@ -1663,6 +1673,8 @@ class CurveApp:
             return
         if self._detail is not None:
             await self._detail.refresh_actions()
+        if self.swap_page is not None:
+            await self.swap_page.wallet_changed()
         if self._page_name == PAGE_PORTFOLIO:
             await self.load_portfolio()
 
@@ -1696,6 +1708,10 @@ class CurveApp:
         self.connect_button.visible = True
         self.connect_button.disabled = False
         self.page.update()
+        if self.swap_page is not None:
+            # Going the other way matters as much: a balance left on screen
+            # after the wallet has gone is a figure for nobody.
+            await self.swap_page.wallet_changed()
         if self._page_name == PAGE_PORTFOLIO:
             await self.load_portfolio()
 

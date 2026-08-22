@@ -123,3 +123,110 @@ def test_a_failure_with_no_block_to_name_says_the_rest_anyway():
         "the endpoint went away"
     )
     assert _with_block(RuntimeError(""), 0) == "RuntimeError"
+
+
+class Wallet:
+    """A wallet that arrives after the tab is already open."""
+
+    def __init__(self) -> None:
+        self.address = ""
+        self.balances: dict[str, int] = {}
+
+    def connect(self, address: str, **balances: int) -> None:
+        self.address = address
+        self.balances = {token.lower(): held for token, held in balances.items()}
+
+
+class Reader:
+    """Answers `balanceOf` from the wallet, and nothing else."""
+
+    def __init__(self, wallet: Wallet) -> None:
+        self.wallet = wallet
+
+    async def call(self, to: str, data: str) -> str:
+        held = self.wallet.balances.get(to.lower(), 0)
+        return "0x" + f"{held:064x}"
+
+    async def get_balance(self, _address: str) -> int:
+        return 0
+
+
+def swap_page_with(wallet: Wallet, coins):
+    """A `SwapPage` wired to that wallet and nothing else that needs a network."""
+    from ui.swap_page import SwapPage
+
+    class NoPage:
+        def run_task(self, *_a, **_kw) -> None:
+            pass
+
+    page = SwapPage(
+        NoPage(),
+        api=None,
+        chain_name=lambda: "ethereum",
+        chain_id=lambda: 1,
+        provider_for=lambda: Reader(wallet),
+        account=lambda: wallet.address,
+        on_loading=lambda *_a: None,
+        on_loaded=lambda *_a: None,
+    )
+    page.chain_id_now = 1
+    page.view.offer(coins, "ethereum")
+    page.view.set_pair(coins[0], coins[1])
+    return page
+
+
+def two_coins():
+    from router.universe import CoinEntry
+
+    return [
+        CoinEntry("0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", "USDC",
+                  "USD Coin", 6, 0.0, 0),
+        CoinEntry("0xdac17f958d2ee523a2206206994597c13d831ec7", "USDT",
+                  "Tether", 6, 0.0, 0),
+    ]
+
+
+async def test_a_wallet_that_connects_after_the_tab_is_open_still_shows_a_balance():
+    """Everything wallet-shaped here is read through a callable, so nothing
+    was stale -- it was simply never asked again."""
+    coins = two_coins()
+    wallet = Wallet()
+    page = swap_page_with(wallet, coins)
+
+    await page._read_balances()
+    assert page.view.amount.hint_text == "0.0", "nobody connected, nothing to show"
+
+    wallet.connect("0x" + "11" * 20, **{coins[0].address: 8_598_432_131})
+    await page.wallet_changed()
+
+    assert page.view.amount.hint_text == "8,598.43"
+
+
+async def test_max_works_once_the_wallet_is_there():
+    coins = two_coins()
+    wallet = Wallet()
+    page = swap_page_with(wallet, coins)
+    page._max_clicked()
+    assert page.view.amount.value in ("", None), "no balance, nothing to fill"
+
+    wallet.connect("0x" + "11" * 20, **{coins[0].address: 2_500_000})
+    await page.wallet_changed()
+    page._max_clicked()
+
+    assert page.view.amount.value == "2.5"
+
+
+async def test_a_wallet_going_away_takes_the_balance_with_it():
+    """A figure left on screen after the wallet has gone is a figure for
+    nobody."""
+    coins = two_coins()
+    wallet = Wallet()
+    page = swap_page_with(wallet, coins)
+    wallet.connect("0x" + "11" * 20, **{coins[0].address: 8_598_432_131})
+    await page.wallet_changed()
+    assert page.view.amount.hint_text == "8,598.43"
+
+    wallet.address = ""
+    await page.wallet_changed()
+
+    assert page.view.amount.hint_text == "0.0"

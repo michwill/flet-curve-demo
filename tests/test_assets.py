@@ -1027,3 +1027,83 @@ def test_a_tier_that_covers_it_is_preferred_to_a_larger_one() -> None:
 
     assert decoded(bundled_chain("ethereum", 30)) == PNG_A
     assert decoded(bundled_chain("ethereum", 70)) == PNG_B
+
+
+async def test_a_complete_bundle_stops_marks_being_asked_for_one_by_one(
+        monkeypatch) -> None:
+    """`build_assets` bundles a chain by globbing its whole directory, so a
+    mark the bundle does not know is a mark with no file anywhere.  Asking for
+    it is a 404 the browser cannot foresee -- and the Swap tab's picker offers
+    hundreds of coins at once, which made it a screenful of them."""
+    from ui import assets
+
+    monkeypatch.setattr(assets, "is_browser", lambda: True)
+    blob, index = make_bundle({"0xaa": PNG_A})
+
+    async def fetch(url):
+        return json.dumps(index).encode() if url.endswith(".json") else blob
+
+    await assets.load_bundle(assets.token_bundle("xdai"), 80, fetch)
+    assert assets.token_logo("xdai", "0xbb", 80), "not settled yet, so still asked"
+
+    await assets.load_bundle(assets.token_bundle("xdai"), 80, fetch, rest=True)
+
+    assert assets.have_every_mark(assets.token_bundle("xdai"), 80)
+    assert assets.token_logo("xdai", "0xbb", 80) is None, "no file, so no request"
+    assert assets.bundled_mark("xdai", "0xaa", 80), "and the ones there still draw"
+
+
+async def test_no_second_half_means_the_first_half_was_everything(monkeypatch) -> None:
+    """Only a chain too big for one bundle gets a `-rest`.  Its absence is an
+    answer, not a failure -- so a 404 there settles the chain rather than
+    leaving every mark to be asked for individually."""
+    from curve.http import ApiError
+    from ui import assets
+
+    monkeypatch.setattr(assets, "is_browser", lambda: True)
+    blob, index = make_bundle({"0xaa": PNG_A})
+
+    async def fetch(url):
+        if assets.REST_INFIX in url:
+            raise ApiError(f"HTTP 404 from {url}", status=404)
+        return json.dumps(index).encode() if url.endswith(".json") else blob
+
+    await assets.load_bundle(assets.token_bundle("xdai"), 80, fetch)
+    await assets.load_bundle(assets.token_bundle("xdai"), 80, fetch, rest=True)
+
+    assert assets.have_every_mark(assets.token_bundle("xdai"), 80)
+    assert assets.token_logo("xdai", "0xbb", 80) is None
+
+
+async def test_a_second_half_that_never_arrived_leaves_marks_askable(
+        monkeypatch) -> None:
+    """A dropped connection says nothing about whether the file exists, so
+    the individual ask has to stay -- otherwise half a chain's marks would go
+    missing until the tab was reloaded."""
+    from curve.http import ApiError
+    from ui import assets
+
+    monkeypatch.setattr(assets, "is_browser", lambda: True)
+    blob, index = make_bundle({"0xaa": PNG_A})
+
+    async def fetch(url):
+        if assets.REST_INFIX in url:
+            raise ApiError("the connection went away", status=None)
+        return json.dumps(index).encode() if url.endswith(".json") else blob
+
+    await assets.load_bundle(assets.token_bundle("xdai"), 80, fetch)
+    await assets.load_bundle(assets.token_bundle("xdai"), 80, fetch, rest=True)
+
+    assert not assets.have_every_mark(assets.token_bundle("xdai"), 80)
+    assert assets.token_logo("xdai", "0xbb", 80), "still worth asking"
+
+
+def test_a_desktop_build_answers_from_the_filesystem_as_it_did(monkeypatch) -> None:
+    """None of this applies where a file can simply be looked for."""
+    from ui import assets
+
+    monkeypatch.setattr(assets, "is_browser", lambda: False)
+    monkeypatch.setattr(assets, "_exists", lambda _relative: False)
+    assert assets.token_logo("xdai", "0xbb", 80) is None
+    monkeypatch.setattr(assets, "_exists", lambda _relative: True)
+    assert assets.token_logo("xdai", "0xbb", 80)

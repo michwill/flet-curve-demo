@@ -88,6 +88,13 @@ _FETCHED: set[tuple[str, int, bool]] = set()
 #: and a success never is.
 _TRIES: dict[tuple[str, int, bool], int] = {}
 
+#: Which `(directory, tier)` hold *every* mark there is.  `build_assets`
+#: bundles a chain by globbing its whole directory, so once the second half
+#: has landed -- or come back 404, meaning there was never a second half --
+#: an address the bundle does not know is an address with no image anywhere.
+#: Which is worth knowing, because otherwise it is asked for one by one.
+_COMPLETE: set[tuple[str, int]] = set()
+
 #: How many times a bundle is asked for before the page settles for
 #: individual marks.
 BUNDLE_ATTEMPTS = 2
@@ -151,6 +158,7 @@ def forget_bundles() -> None:
     _BUNDLES.clear()
     _FETCHED.clear()
     _TRIES.clear()
+    _COMPLETE.clear()
 
 
 async def load_bundle(
@@ -171,11 +179,24 @@ async def load_bundle(
         _FETCHED.discard(key)
         _TRIES[key] = tries - 1
         raise
-    except Exception:
+    except Exception as exc:
+        # A 404 on the second half is an answer: `build_assets` only writes
+        # one when the first was too big to hold everything, so its absence
+        # says the first half *is* everything.
+        if rest and getattr(exc, "status", None) == 404:
+            _COMPLETE.add((directory, tier))
+            return len(_BUNDLES.get((directory, tier), {}))
         if tries < BUNDLE_ATTEMPTS:
             _FETCHED.discard(key)
         return 0
+    if rest:
+        _COMPLETE.add((directory, tier))
     return remember_bundle(directory, tier, bytes(blob), index)
+
+
+def have_every_mark(directory: str, device_pixels: float) -> bool:
+    """Whether what is held for this directory is all there is to hold."""
+    return (directory, bundle_tier(device_pixels)) in _COMPLETE
 
 
 def bundled_mark(chain: str, address: str, device_pixels: float) -> str | None:
@@ -221,8 +242,18 @@ def chain_logo(chain: str, device_pixels: float = MARK_PIXELS) -> str | None:
 def token_logo(
     chain: str, address: str, device_pixels: float = MARK_PIXELS
 ) -> str | None:
-    """A token's mark. Upstream names them by lowercased address."""
+    """A token's mark, as a file of its own.  Named by lowercased address.
+
+    Only reached when the bundle did not have it, so once the bundle holds
+    everything this is asking for a file that is not there.  On a desktop
+    build `_exists` catches that; in a browser nothing can, and the Swap
+    tab's picker -- which offers every routable coin, hundreds of them, where
+    the pool list only ever showed a page -- turned that into a screenful of
+    404s and a retry for each.
+    """
     if not chain or not address:
+        return None
+    if is_browser() and have_every_mark(token_bundle(chain), device_pixels):
         return None
     filename = tiered(f"{address.strip().lower()}.png", mark_tier(device_pixels))
     relative = f"tokens/{chain}/{filename}"

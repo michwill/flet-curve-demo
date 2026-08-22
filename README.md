@@ -2549,6 +2549,26 @@ answered while the router is still reading state -- which is also why the
 detection lives in the page rather than in the host, since it needs nothing
 the host has.
 
+### Marks that are not there
+
+`build_assets` bundles a chain by globbing its whole mark directory, so once
+the second half has landed the bundle's keys are every mark that exists.  A
+desktop build could always tell -- `_exists` looks for the file -- but a
+browser cannot, so an address the bundle did not know was asked for one by
+one, and each one 404'd and was retried.  The pool list never noticed: it
+shows a page of pools at a time, and their coins are the ones in the hot half.
+The Swap tab's picker offers *every routable coin on the chain*, hundreds of
+them, and turned that into a screenful of 404s every time it opened.
+
+So `assets.have_every_mark` records which bundles are complete, and
+`token_logo` stops asking once one is.  A 404 on the second half counts as
+complete too: only a chain too big for one bundle gets a `-rest`, so its
+absence says the first half was everything.  A *dropped* second half does not
+-- a connection that went away says nothing about whether the file exists --
+which is why `ApiError` now carries its status.  Measured on Ethereum, 627
+marks against a picker of many more: 48 requests to open the picker, then
+none.
+
 ### When it will not route
 
 "It failed once" is not a report, so a failure writes itself down.  The line

@@ -17,7 +17,17 @@ DEFAULT_TIMEOUT = 30.0
 
 
 class ApiError(Exception):
-    """A request failed, or the API answered with something unusable."""
+    """A request failed, or the API answered with something unusable.
+
+    `status` is the HTTP code where there was one, and None where the request
+    never got an answer at all.  The two are different questions: a 404 says
+    the thing is not there and asking again will not help, where a dropped
+    connection says nothing about whether it exists.
+    """
+
+    def __init__(self, message: str, *, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 def is_browser() -> bool:
@@ -67,7 +77,8 @@ async def _post_json_browser(url: str, body: str, timeout: float) -> Any:
         raise ApiError(f"Network error: {exc}") from exc
 
     if response.status >= 400:
-        raise ApiError(f"HTTP {response.status} from {url}")
+        raise ApiError(f"HTTP {response.status} from {url}",
+                       status=response.status)
     try:
         return await response.json()
     except Exception as exc:
@@ -121,7 +132,8 @@ async def _browser_bytes(url: str) -> bytes:
 
     response = await js_fetch(url)
     if not response.ok:
-        raise ApiError(f"HTTP {response.status} from {url}")
+        raise ApiError(f"HTTP {response.status} from {url}",
+                       status=response.status)
     buffer = await response.arrayBuffer()
     return bytes(buffer.to_py())
 
@@ -149,7 +161,8 @@ async def _get_json_browser(url: str, timeout: float) -> Any:
         raise ApiError(f"Network error: {exc}") from exc
 
     if response.status >= 400:
-        raise ApiError(f"HTTP {response.status} from {url}")
+        raise ApiError(f"HTTP {response.status} from {url}",
+                       status=response.status)
     try:
         return await response.json()
     except Exception as exc:

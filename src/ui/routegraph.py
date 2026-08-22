@@ -19,14 +19,16 @@ its buses arrive in an order that says nothing about how far along each one
 is, so putting bus `k` in column `k` let a leg run backwards and drew one
 ribbon straight over another.  Each bus goes in the column of its *longest*
 path from the source, which is what makes every leg run strictly left to
-right.  Within a column the buses are ordered by where their own sources sit,
-and each bus's ribbons leave and arrive in the order of the bus at the other
-end -- which is what stops them crossing over each other at a node.
+right.  Within a column the buses are ordered by barycentre sweeps in both
+directions, and each bus's ribbons leave and arrive in the order of the bus at
+the other end -- between them that is what keeps the ribbons from crossing
+more than the route itself requires.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from itertools import pairwise
 
 #: How wide a bus column is drawn.
 BUS_WIDTH = 10.0
@@ -42,6 +44,16 @@ MIN_BAND = 2.5
 
 #: Room under the lowest bus for its label.
 LABEL_HEIGHT = 26.0
+
+#: Between a ribbon passing through a column and whatever it sits beside.  A
+#: hair, because it carries no label -- it is there to be told apart from its
+#: neighbour and nothing more.
+WAY_GAP = 3.0
+
+#: How many times the ordering is swept back and forth.  Each pass is cheap
+#: -- a route is a few dozen buses -- and the picture stops changing after a
+#: handful, so this is well past where it settles.
+SWEEPS = 8
 
 #: How much of the frame the ribbons are allowed to fill.  Not all of it: a
 #: one-leg route carries 100% of the flow and would be drawn as a rectangle of
@@ -72,19 +84,39 @@ class BusBox:
 
 @dataclass(frozen=True, slots=True)
 class Band:
-    """One leg, as a ribbon from one column to the next."""
+    """One leg, as a ribbon.
+
+    `points` are its top edge, left to right: where it leaves its bus, both
+    sides of every column it passes on the way, and where it arrives.  A leg
+    between neighbouring columns has two; one that spans further has a pair
+    for each column in between, and those are what keep it out of everything
+    that lives there.
+    """
 
     index: int
     label: str
     kind: str
     share: float
-    x0: float
-    y0: float
-    x1: float
-    y1: float
+    points: tuple[tuple[float, float], ...]
     height: float
     colour: int = 0
     detail: str = ""
+
+    @property
+    def x0(self) -> float:
+        return self.points[0][0]
+
+    @property
+    def y0(self) -> float:
+        return self.points[0][1]
+
+    @property
+    def x1(self) -> float:
+        return self.points[-1][0]
+
+    @property
+    def y1(self) -> float:
+        return self.points[-1][1]
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,38 +153,85 @@ def layout(diagram, width: float, height: float, *, bus_width: float = BUS_WIDTH
     for slot, level in depth.items():
         by_layer.setdefault(level, []).append(slot)
 
-    # Height first: a column's buses and the gaps between them together fill
-    # the frame, so the busiest column is what everything is scaled against.
+    # Height first: a column's contents and the air between them together
+    # fill the frame, so the most crowded column is what everything else is
+    # scaled against.  Flow is conserved, so every column carries about the
+    # same amount -- what differs is how many gaps it has to find room for.
     crowd = max(len(slots) for slots in by_layer.values())
-    usable = max(min_band, drawable * FILL - gap * max(0, crowd - 1))
+    passing = _passing(elements, depth)
+    usable = max(min_band, drawable * FILL
+                 - gap * max(0, crowd - 1) - WAY_GAP * passing)
     busiest = max((sum(through.get(s, 0.0) for s in slots)
                    for slots in by_layer.values()), default=1.0) or 1.0
     scale = usable / busiest
 
-    boxes: dict[int, BusBox] = {}
-    for level in sorted(by_layer):
-        slots = _ordered(by_layer[level], elements, boxes)
-        heights = [max(min_band, through.get(slot, 0.0) * scale) for slot in slots]
-        tall = sum(heights) + gap * (len(heights) - 1)
-        top = max(0.0, (drawable - tall) / 2)
-        for slot, high in zip(slots, heights, strict=True):
-            bus = buses.get(slot)
-            boxes[slot] = BusBox(
-                slot=slot,
-                symbol=getattr(bus, "symbol", "") or "",
-                amount=getattr(bus, "amount", "") or "",
-                x=level * step,
-                y=top,
-                width=bus_width,
-                height=high,
-                layer=level,
-                is_source=bool(getattr(bus, "is_source", False)),
-                is_dest=bool(getattr(bus, "is_dest", False)),
-            )
-            top += high + gap
+    # Every column holds its buses *and* the ribbons merely passing through
+    # it.  Without that a leg spanning several columns has no lane of its own
+    # and is drawn straight over whatever lives in them, which is the whole of
+    # what still looked tangled.
+    spans = {element.index: (depth[element.src_slot], depth[element.dst_slot])
+             for element in elements
+             if element.src_slot in depth and element.dst_slot in depth}
+    items: dict[int, list[tuple[str, int]]] = {
+        level: [("bus", slot) for slot in slots] for level, slots in by_layer.items()
+    }
+    for index, (start, end) in spans.items():
+        for level in range(start + 1, end):
+            items.setdefault(level, []).append(("way", index))
 
-    bands = _ribbons(elements, boxes, weight, scale, min_band)
+    tall_of: dict[tuple[str, int], float] = {}
+    for group in items.values():
+        for item in group:
+            kind, key = item
+            share = through.get(key, 0.0) if kind == "bus" else weight.get(key, 0.0)
+            tall_of[item] = max(min_band, share * scale)
+
+    ordering = _untangle(items, elements, spans)
+
+    boxes: dict[int, BusBox] = {}
+    waypoints: dict[tuple[int, int], float] = {}
+    for level in sorted(items):
+        group = ordering[level]
+        gaps = sum(_gap_between(group[k], group[k + 1], gap)
+                   for k in range(len(group) - 1))
+        tall = sum(tall_of[item] for item in group) + gaps
+        top = max(0.0, (drawable - tall) / 2)
+        for k, item in enumerate(group):
+            kind, key = item
+            high = tall_of[item]
+            if kind == "bus":
+                bus = buses.get(key)
+                boxes[key] = BusBox(
+                    slot=key,
+                    symbol=getattr(bus, "symbol", "") or "",
+                    amount=getattr(bus, "amount", "") or "",
+                    x=level * step,
+                    y=top,
+                    width=bus_width,
+                    height=high,
+                    layer=level,
+                    is_source=bool(getattr(bus, "is_source", False)),
+                    is_dest=bool(getattr(bus, "is_dest", False)),
+                )
+            else:
+                waypoints[(key, level)] = top
+            top += high
+            if k + 1 < len(group):
+                top += _gap_between(item, group[k + 1], gap)
+
+    bands = _ribbons(elements, boxes, waypoints, spans, weight, scale, min_band,
+                     step, bus_width)
     return Layout(list(boxes.values()), bands, width, height)
+
+
+def _gap_between(one: tuple[str, int], two: tuple[str, int], gap: float) -> float:
+    """Air between two things stacked in one column.
+
+    A full gap between buses, which carry a name and an amount underneath; a
+    hair between anything else, because a ribbon passing through needs to be
+    told apart from its neighbour and nothing more.
+    """
+    return gap if one[0] == "bus" and two[0] == "bus" else WAY_GAP
 
 
 def layers(diagram) -> dict[int, int]:
@@ -246,27 +325,83 @@ def _through(elements, weight: dict[int, float]) -> dict[int, float]:
             for slot in slots}
 
 
-def _ordered(slots: list[int], elements, placed: dict[int, BusBox]) -> list[int]:
-    """A column's buses, top to bottom, near whatever feeds them.
+def _passing(elements, depth: dict[int, int]) -> int:
+    """The most ribbons that pass through any one column without stopping."""
+    counts: dict[int, int] = {}
+    for element in elements:
+        if element.src_slot not in depth or element.dst_slot not in depth:
+            continue
+        for level in range(depth[element.src_slot] + 1, depth[element.dst_slot]):
+            counts[level] = counts.get(level, 0) + 1
+    return max(counts.values(), default=0)
 
-    One barycentre pass: a bus sits at the average height of the buses already
-    placed that feed it.  It is not optimal ordering -- that is NP-hard -- and
-    it is most of the difference between ribbons that cross and ribbons that
-    do not.
+
+def _untangle(items: dict[int, list[tuple[str, int]]], elements,
+              spans: dict[int, tuple[int, int]]) -> dict[int, list[tuple[str, int]]]:
+    """Order each column so as few ribbons cross as possible.
+
+    Barycentre sweeps, the standard method: a thing wants to sit at the
+    average height of the things it is joined to, so each pass sorts a column
+    by where its neighbours sit in the column before (going forward) or after
+    (going back), and the two directions alternate until it settles.
+
+    A single forward pass -- which is what this did -- only ever considers
+    what has already been placed, so the first column is ordered by nothing at
+    all and the last has no say in anything.  Optimal ordering is NP-hard;
+    this is the part of it that is cheap.
+
+    Ribbons passing through a column are ordered with everything else in it,
+    which is what gives them a lane rather than a line drawn over the top.
     """
-    def key(slot: int) -> tuple[float, int]:
-        feeders = [placed[e.src_slot].middle for e in elements
-                   if e.dst_slot == slot and e.src_slot in placed]
-        return (sum(feeders) / len(feeders) if feeders else 0.0, slot)
+    before: dict[tuple[str, int], list[tuple[str, int]]] = {}
+    after: dict[tuple[str, int], list[tuple[str, int]]] = {}
 
-    return sorted(slots, key=key)
+    def join(one: tuple[str, int], two: tuple[str, int]) -> None:
+        after.setdefault(one, []).append(two)
+        before.setdefault(two, []).append(one)
+
+    for element in elements:
+        if element.index not in spans:
+            continue
+        start, end = spans[element.index]
+        chain: list[tuple[str, int]] = [("bus", element.src_slot)]
+        chain += [("way", element.index) for _ in range(start + 1, end)]
+        chain.append(("bus", element.dst_slot))
+        for one, two in pairwise(chain):
+            join(one, two)
+
+    order = {level: list(group) for level, group in items.items()}
+    levels = sorted(order)
+
+    def sweep(towards, over: list[int]) -> None:
+        place = {item: k for level in levels for k, item in enumerate(order[level])}
+        for level in over:
+            order[level].sort(key=lambda item: _mean(
+                [place[n] for n in towards.get(item, ()) if n in place],
+                place[item]))
+            # The column just settled is what the next one sorts against, so
+            # a pass carries its improvement along instead of every column
+            # answering to where things were before the pass began.
+            place.update({item: k for k, item in enumerate(order[level])})
+
+    for _ in range(SWEEPS):
+        sweep(before, levels[1:])
+        sweep(after, levels[:-1][::-1])
+    return order
 
 
-def _ribbons(elements, boxes: dict[int, BusBox], weight: dict[int, float],
-             scale: float, min_band: float) -> list[Band]:
-    """Where each leg leaves and where it arrives.
+def _mean(values: list[float], fallback: float) -> float:
+    return sum(values) / len(values) if values else fallback
 
-    A bus's ribbons are ordered by the bus at the *other* end, on both sides,
+
+def _ribbons(elements, boxes: dict[int, BusBox],
+             waypoints: dict[tuple[int, int], float],
+             spans: dict[int, tuple[int, int]], weight: dict[int, float],
+             scale: float, min_band: float, step: float,
+             bus_width: float) -> list[Band]:
+    """Where each leg leaves, what it passes on the way, and where it arrives.
+
+    A bus's ribbons leave and arrive in the order of the bus at the other end,
     so two legs sharing a node do not swap places crossing it.
     """
     leaving: dict[int, float] = {slot: box.y for slot, box in boxes.items()}
@@ -278,42 +413,69 @@ def _ribbons(elements, boxes: dict[int, BusBox], weight: dict[int, float],
         out_order.setdefault(element.src_slot, []).append(element)
         in_order.setdefault(element.dst_slot, []).append(element)
     for group in out_order.values():
-        group.sort(key=lambda e: boxes[e.dst_slot].middle if e.dst_slot in boxes else 0.0)
+        group.sort(key=lambda e: _partner(e, e.dst_slot, boxes, waypoints, spans, +1))
     for group in in_order.values():
-        group.sort(key=lambda e: boxes[e.src_slot].middle if e.src_slot in boxes else 0.0)
+        group.sort(key=lambda e: _partner(e, e.src_slot, boxes, waypoints, spans, -1))
 
     starts: dict[int, float] = {}
     for slot, group in out_order.items():
         for element in group:
             tall = max(min_band, weight.get(element.index, 0.0) * scale)
-            starts[element.index] = leaving[slot]
-            leaving[slot] += tall
+            starts[element.index] = leaving.get(slot, 0.0)
+            leaving[slot] = leaving.get(slot, 0.0) + tall
     ends: dict[int, float] = {}
     for slot, group in in_order.items():
         for element in group:
             tall = max(min_band, weight.get(element.index, 0.0) * scale)
-            ends[element.index] = arriving[slot]
-            arriving[slot] += tall
+            ends[element.index] = arriving.get(slot, 0.0)
+            arriving[slot] = arriving.get(slot, 0.0) + tall
 
     bands: list[Band] = []
     for element in elements:
         source, target = boxes.get(element.src_slot), boxes.get(element.dst_slot)
         if source is None or target is None:
             continue
+        start, end = spans.get(element.index, (source.layer, target.layer))
+        points: list[tuple[float, float]] = [
+            (source.x + source.width, starts[element.index])]
+        for level in range(start + 1, end):
+            y = waypoints.get((element.index, level))
+            if y is None:
+                continue
+            points.append((level * step, y))
+            points.append((level * step + bus_width, y))
+        points.append((target.x, ends[element.index]))
         bands.append(Band(
             index=element.index,
             label=getattr(element, "label", "") or "",
             kind=getattr(element.kind, "name", str(element.kind)),
             share=float(element.share_pct),
-            x0=source.x + source.width,
-            y0=starts[element.index],
-            x1=target.x,
-            y1=ends[element.index],
+            points=tuple(points),
             height=max(min_band, weight.get(element.index, 0.0) * scale),
             colour=element.index,
             detail=getattr(element, "detail", "") or "",
         ))
     return bands
+
+
+def _partner(element, slot: int, boxes: dict[int, BusBox],
+             waypoints: dict[tuple[int, int], float],
+             spans: dict[int, tuple[int, int]], forward: int) -> float:
+    """How high a leg's next stop sits, for ordering ribbons at a node.
+
+    Its own waypoint in the adjoining column where it has one, because that
+    is where the ribbon actually goes next; the far bus may be several
+    columns away and says nothing useful about which way to leave.  Leaving
+    looks at the first, arriving at the last.
+    """
+    start, end = spans.get(element.index, (0, 0))
+    levels = range(start + 1, end)
+    for level in (levels if forward > 0 else reversed(levels)):
+        y = waypoints.get((element.index, level))
+        if y is not None:
+            return y
+    box = boxes.get(slot)
+    return box.middle if box is not None else 0.0
 
 
 def summarise(diagram) -> tuple[int, int]:

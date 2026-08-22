@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from ui.routegraph import MIN_BAND, NODE_GAP, layers, layout, summarise
+from ui.routegraph import MIN_BAND, NODE_GAP, WAY_GAP, layers, layout, summarise
 
 
 @dataclass
@@ -69,6 +69,22 @@ def split() -> FakeDiagram:
             FakeElement(0, 0, 1, 60.0, "a", "0xaaa"),
             FakeElement(1, 0, 2, 40.0, "b", "0xbbb"),
             FakeElement(2, 1, 2, 100.0, "c", "0xccc"),
+        ],
+        order=[0, 1, 2],
+    )
+
+
+def overtake() -> FakeDiagram:
+    """A leg that skips a column: half goes straight from source to
+    destination while the other half stops at a token in between."""
+    return FakeDiagram(
+        buses=[FakeBus(0, "USDC", "1,000", is_source=True),
+               FakeBus(1, "crvUSD", "500"),
+               FakeBus(2, "WETH", "0.41", is_dest=True)],
+        elements=[
+            FakeElement(0, 0, 1, 50.0, "a", "0xaaa"),
+            FakeElement(1, 1, 2, 100.0, "b", "0xbbb"),
+            FakeElement(2, 0, 2, 50.0, "c", "0xccc"),
         ],
         order=[0, 1, 2],
     )
@@ -240,6 +256,37 @@ def test_two_buses_in_one_column_are_stacked_with_room_for_their_names():
     assert lower.y - (upper.y + upper.height) == NODE_GAP
 
 
+def test_a_leg_that_skips_a_column_is_given_a_lane_through_it():
+    """The one this picture kept getting wrong.
+
+    A ribbon spanning several columns used to be a single curve between its
+    two ends, drawn over whatever happened to live in between.  It now has a
+    point on each side of every column it passes, and that point is placed by
+    the same ordering as the buses -- so it goes round them, not through.
+    """
+    got = layout(overtake(), 400, 300)
+    middle = next(bus for bus in got.buses if bus.layer == 1)
+    span = next(band for band in got.bands
+                if band.x0 < middle.x and band.x1 > middle.x + middle.width)
+    inside = [(x, y) for x, y in band_points(span)
+              if middle.x - 0.01 <= x <= middle.x + middle.width + 0.01]
+    assert len(inside) == 2, "a point on each side of the column it passes"
+    for _, y in inside:
+        assert (y + span.height <= middle.y + 0.01
+                or y >= middle.y + middle.height - 0.01), "clear of the bus"
+
+
+def test_a_lane_keeps_its_distance_from_the_bus_it_passes():
+    got = layout(overtake(), 400, 300)
+    middle = next(bus for bus in got.buses if bus.layer == 1)
+    span = next(band for band in got.bands
+                if band.x0 < middle.x and band.x1 > middle.x + middle.width)
+    y = next(y for x, y in band_points(span) if abs(x - middle.x) < 0.01)
+    gap = (middle.y - (y + span.height) if y < middle.y
+           else y - (middle.y + middle.height))
+    assert gap >= WAY_GAP - 0.01
+
+
 def test_the_whole_thing_stays_inside_the_frame():
     got = layout(split(), 400, 300)
     for bus in got.buses:
@@ -248,6 +295,18 @@ def test_the_whole_thing_stays_inside_the_frame():
     for band in got.bands:
         assert min(band.y0, band.y1) >= 0
         assert max(band.y0, band.y1) + band.height <= 300
+
+
+def test_a_spanning_ribbon_stays_inside_the_frame_all_the_way_along():
+    got = layout(overtake(), 400, 300)
+    for band in got.bands:
+        for _, y in band_points(band):
+            assert y >= 0
+            assert y + band.height <= 300
+
+
+def band_points(band) -> list[tuple[float, float]]:
+    return list(band.points)
 
 
 def test_summarise_counts_pools_not_legs():

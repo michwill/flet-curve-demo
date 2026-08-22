@@ -13,6 +13,8 @@ What this file owns is the widget.  Deciding when a quote happens belongs to
 
 from __future__ import annotations
 
+from itertools import pairwise
+
 import flet as ft
 import flet.canvas as cv
 
@@ -52,15 +54,21 @@ DIAGRAM_STACKED_HEIGHT = 300.0
 #: be there from the start rather than appearing under someone's hands.
 EMPTY_ROUTE = "The route appears here"
 
-#: How close two column labels may be before the second is left out.  An
-#: eighteen-leg route -- which this router really does produce -- puts a
-#: column every twenty pixels, and eighteen token names in that space is one
-#: illegible word.  The bands still show the shape; the names that survive are
-#: the ones with room to be read.
-LABEL_GAP = 64.0
+#: Air either side of a column's label.  Two labels closer than this are two
+#: words read as one, so the later of them is left out -- an eighteen-leg
+#: route, which this router really does produce, puts a column every twenty
+#: pixels.  The bands still show the shape; the names that survive are the
+#: ones with room to be read.
+LABEL_AIR = 4.0
 
-#: How wide a column's label is allowed to be.
+#: How wide a column's label is allowed to be, and never less than.  A label
+#: claims only the room its own text needs: measuring them all at the widest
+#: made a five-letter name push its neighbour out for nothing.
 LABEL_BOX = 96.0
+LABEL_MIN = 34.0
+
+#: How far under its column a label sits.
+LABEL_DROP = 5.0
 
 #: The size a coin's mark is drawn at in the picker and the boxes.
 MARK = 24
@@ -276,21 +284,7 @@ class RouteDiagram(ft.Container):
         shapes: list[cv.Shape] = []
         for band in got.bands:
             shapes.append(cv.Path(
-                [
-                    cv.Path.MoveTo(band.x0, band.y0),
-                    # A cubic through the midpoint, so a band that climbs or
-                    # falls between columns reads as one ribbon rather than a
-                    # staircase -- the shape Odos uses, and the reason to use
-                    # a path here rather than a rectangle.
-                    cv.Path.CubicTo((band.x0 + band.x1) / 2, band.y0,
-                                    (band.x0 + band.x1) / 2, band.y1,
-                                    band.x1, band.y1),
-                    cv.Path.LineTo(band.x1, band.y1 + band.height),
-                    cv.Path.CubicTo((band.x0 + band.x1) / 2, band.y1 + band.height,
-                                    (band.x0 + band.x1) / 2, band.y0 + band.height,
-                                    band.x0, band.y0 + band.height),
-                    cv.Path.Close(),
-                ],
+                _ribbon(band.points, band.height),
                 paint=ft.Paint(color=_band_colour(band.colour),
                                style=ft.PaintingStyle.FILL),
             ))
@@ -306,37 +300,118 @@ class RouteDiagram(ft.Container):
         self._labels.controls = self._label_row(got.buses, width)
 
     def _label_row(self, buses, width: float) -> list[ft.Control]:
-        """The column names there is room to read.
+        """The column names there is room to read, and no two on top of
+        each other.
 
-        Source and destination always: they are what the trade is between, and
-        a diagram that leaves either out is answering a different question.
+        Source and destination first, because they are what the trade is
+        between and a diagram that leaves either out is answering a different
+        question; the rest go left to right and give way to whatever has
+        already claimed the space.  Claimed by the label's own box rather than
+        by how far apart the columns are: the destination's label is nudged
+        inside the frame, and against a fixed step that nudge silently landed
+        it on its neighbour -- while three buses stacked in one column, whose
+        labels sit at three different heights, all lost theirs to each other.
         """
+        claimed: list[tuple[float, float, float, float]] = []
         drawn: list[ft.Control] = []
-        last = -LABEL_GAP
-        for bus in sorted(buses, key=lambda b: b.x):
-            edge = bus.is_source or bus.is_dest
-            if not edge and bus.x - last < LABEL_GAP:
+        order = sorted(buses, key=lambda b: (not (b.is_source or b.is_dest), b.x))
+        for bus in order:
+            box = _label_width(bus)
+            left = min(max(0.0, bus.x + bus.width / 2 - box / 2),
+                       max(0.0, width - box))
+            top = bus.y + bus.height + LABEL_DROP
+            span = (left - LABEL_AIR, top, left + box + LABEL_AIR,
+                    top + routegraph.LABEL_HEIGHT)
+            if any(_overlap(span, taken) for taken in claimed):
                 continue
-            drawn.append(self._label(bus, width))
-            last = bus.x
+            claimed.append(span)
+            drawn.append(self._label(bus, left, top, box))
         return drawn
 
-    def _label(self, bus, width: float) -> ft.Control:
-        """A column's token, under it, kept inside the frame at either edge."""
+    def _label(self, bus, left: float, top: float, box: float) -> ft.Control:
+        """A column's token, under it, on a chip so it reads over a ribbon."""
         text = ft.Column(
             [
                 ft.Text(bus.symbol, size=LABEL, no_wrap=True,
                         weight=ft.FontWeight.BOLD),
-                ft.Text(bus.amount, size=LABEL - 1, no_wrap=True,
+                ft.Text(_compact(bus.amount), size=LABEL - 1, no_wrap=True,
                         color=ft.Colors.ON_SURFACE_VARIANT),
             ],
             spacing=0,
             horizontal_alignment=ft.CrossAxisAlignment.CENTER,
         )
-        box = LABEL_BOX
-        left = min(max(0.0, bus.x + bus.width / 2 - box / 2), max(0.0, width - box))
-        return ft.Container(text, left=left, top=bus.y + bus.height + 6, width=box,
+        chip = ft.Container(
+            text,
+            bgcolor=ft.Colors.with_opacity(0.78, theme.paper_bg(self._page)),
+            border_radius=4,
+            padding=ft.Padding.symmetric(vertical=1, horizontal=3),
+            alignment=ft.Alignment.TOP_CENTER,
+        )
+        return ft.Container(chip, left=left, top=top, width=box,
                             alignment=ft.Alignment.TOP_CENTER)
+
+
+def _overlap(one, two) -> bool:
+    """Whether two label boxes share any ground."""
+    return (one[0] < two[2] and two[0] < one[2]
+            and one[1] < two[3] and two[1] < one[3])
+
+
+def _label_width(bus) -> float:
+    """Roughly how much room a column's label needs.
+
+    Estimated from the text rather than measured: Flet reports a control's
+    size only after it is laid out, and this decides whether to lay it out at
+    all.  The factors are the widest a character of the theme's body font runs
+    at `LABEL` -- generous on purpose, because an underestimate does not leave
+    a label out, it clips one and sits it on its neighbour.
+    """
+    wide = max(len(bus.symbol) * LABEL * 0.78,
+               len(_compact(bus.amount)) * (LABEL - 1) * 0.58)
+    return min(LABEL_BOX, max(LABEL_MIN, wide + 6))
+
+
+def _ribbon(points, height: float) -> list[cv.Path.PathElement]:
+    """A leg as a closed shape: along the top edge, down, and back.
+
+    Cubics between the points rather than lines, so a band that climbs or
+    falls between columns reads as one ribbon rather than a staircase -- the
+    shape Odos uses, and the reason to draw a path here rather than a
+    rectangle.  A leg that spans several columns has a point on each side of
+    every column it passes, and the horizontal pairs come out flat, which is
+    what makes it look like it is threading between them rather than over.
+    """
+    top: list[cv.Path.PathElement] = [cv.Path.MoveTo(points[0][0], points[0][1])]
+    for (x0, y0), (x1, y1) in pairwise(points):
+        middle = (x0 + x1) / 2
+        top.append(cv.Path.CubicTo(middle, y0, middle, y1, x1, y1))
+    back: list[cv.Path.PathElement] = [
+        cv.Path.LineTo(points[-1][0], points[-1][1] + height)]
+    for (x1, y1), (x0, y0) in pairwise(points[::-1]):
+        middle = (x0 + x1) / 2
+        back.append(cv.Path.CubicTo(middle, y1 + height, middle, y0 + height,
+                                    x0, y0 + height))
+    return [*top, *back, cv.Path.Close()]
+
+
+def _compact(amount: str) -> str:
+    """A bus's amount, short enough to sit under a column.
+
+    The router formats these to the wei -- "694,145.425897" -- which is right
+    in a terminal where the number is the answer, and is a column and a half
+    of clutter here where the *picture* is.  Two significant places and a
+    suffix says the same thing at a glance.
+    """
+    try:
+        value = float(amount.replace(",", ""))
+    except (TypeError, ValueError):
+        return amount
+    for cut, suffix in ((1e9, "b"), (1e6, "m"), (1e3, "k")):
+        if abs(value) >= cut:
+            return f"{value / cut:,.2f}{suffix}".replace(".00", "")
+    if value and abs(value) < 0.01:
+        return f"{value:.6f}".rstrip("0")
+    return f"{value:,.4f}".rstrip("0").rstrip(".")
 
 
 #: A band's colour, by its position in the route.  Theme roles rather than
@@ -511,9 +586,15 @@ class SwapView(ft.Container):
             self.diagram.width = None
             self.diagram.expand = False
             self.diagram.height = DIAGRAM_STACKED_HEIGHT
-            rest: list[ft.Control] = [self.diagram] if self._has_route else []
+            # Hidden rather than absent until there is a route: taking it out
+            # of the tree and putting it back is a change to the subtree the
+            # amount field lives in, and updating that subtree sends the
+            # server's copy of the field back to the browser -- over whatever
+            # the reader has typed since.  The first quote of a session lands
+            # mid-word, so that is exactly when it happened.
+            self.diagram.visible = self._has_route
             self._body.controls = [
-                ft.Column([self.widget, *rest], spacing=18,
+                ft.Column([self.widget, self.diagram], spacing=18,
                           horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
                           expand=True)
             ]
@@ -522,6 +603,7 @@ class SwapView(ft.Container):
             self.diagram.width = None
             self.diagram.expand = True
             self.diagram.height = DIAGRAM_HEIGHT
+            self.diagram.visible = True
             self._body.controls = [self.widget, self.diagram]
         safe_update(self)
 
@@ -604,9 +686,17 @@ class SwapView(ft.Container):
         self._set_has_route(diagram is not None)
 
     def _set_has_route(self, has: bool) -> None:
-        if has != self._has_route:
-            self._has_route = has
-            self._sync_body()
+        """Show or hide the stacked route, and touch nothing else.
+
+        Only the frame is updated, never the widget above it: see
+        `_sync_body`.
+        """
+        if has == self._has_route:
+            return
+        self._has_route = has
+        if self._stacked:
+            self.diagram.visible = has
+            safe_update(self.diagram)
 
     def say(self, message: str, colour: str | None = None, *,
             pending: bool = False) -> None:

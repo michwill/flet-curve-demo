@@ -1,4 +1,5 @@
-"""What the Swap tab says when a quoted route cannot be sent.
+"""What the Swap tab says when a quoted route cannot be sent, and where it
+puts the route once it has one.
 
 A route that quotes is not always a route that can be *shipped*: the router
 refuses to encode one whose legs are too small to carry a minimum rate, which
@@ -8,6 +9,8 @@ having gone wrong.  The quote itself is still the chain's own number.
 
 from __future__ import annotations
 
+from ui.responsive import layout_for
+from ui.swap import SwapView
 from ui.swap_page import _why_unsendable
 
 
@@ -45,3 +48,58 @@ def test_anything_else_is_reported_rather_than_hidden():
     said = _why_unsendable(RuntimeError("the endpoint went away\nand the rest"))
     assert said.startswith("This route cannot be sent: the endpoint went away")
     assert "\n" not in said, "one line, whatever the exception did"
+
+
+def build_view():
+    """A `SwapView` with nothing behind it.
+
+    It only ever reads `page` for theme colours at draw time, so a bare object
+    is enough to exercise its layout arithmetic without a window.
+    """
+    class NoPage:
+        pass
+
+    return SwapView(NoPage(), "ethereum", on_amount=lambda *_: None,
+                    on_pair=lambda *_: None, on_max=lambda *_: None,
+                    on_approve=lambda *_: None, on_swap=lambda *_: None)
+
+
+def test_the_first_route_does_not_disturb_what_is_being_typed():
+    """The stacked route appears without rebuilding the widget above it.
+
+    It used to be added to the column when the first quote arrived, and that
+    is an update of the subtree the amount field lives in -- which sends the
+    server's copy of the field back to the browser, over whatever has been
+    typed since.  Someone typing "2000000" watched it become "2" at the
+    moment their first answer appeared.
+    """
+    view = build_view()
+    view.set_layout(layout_for(400))
+    assert view._stacked
+    view.amount.value = "2000000"
+    before = view._body.controls[0]
+
+    view.show_route(object())
+
+    assert view._body.controls[0] is before, "the same column, untouched"
+    assert view.amount.value == "2000000"
+    assert view.diagram.visible
+
+
+def test_a_route_that_goes_away_hides_the_frame_again():
+    view = build_view()
+    view.set_layout(layout_for(400))
+    view.show_route(object())
+    view.show_route(None)
+    assert not view.diagram.visible
+
+
+def test_a_wide_window_keeps_the_frame_beside_the_widget_throughout():
+    """Route or no route: the frame appearing on the first quote used to
+    shift the widget sideways just as someone finished typing into it."""
+    view = build_view()
+    view.set_layout(layout_for(1400))
+    assert not view._stacked
+    assert view.diagram in view._body.controls and view.diagram.visible
+    view.show_route(object())
+    assert view.diagram in view._body.controls and view.diagram.visible

@@ -2275,6 +2275,14 @@ answer for a pair the reader has left is dropped rather than drawn, and a warm
 that could not read everything refuses to quote at all rather than quoting
 against zeros.
 
+One rule belongs to the view rather than the host: **nothing that arrives
+while someone is typing may update the subtree the amount field is in.**  A
+Flet update sends the *server's* copy of a control back to the client, and the
+server's copy of a field lags the keystrokes still in flight -- so the stacked
+route, which used to be added to the column when the first quote arrived,
+turned "2000000" into "2" at the exact moment its first answer appeared.  The
+frame is in the tree from the start now and only its own `visible` changes.
+
 ### What is compiled, and where it comes from
 
 The solver and the EVM are Rust.  A desktop build loads them as two CPython
@@ -2331,9 +2339,33 @@ share of what leaves a leg's *own* node, so the last leg of a 60/40 split reads
 100 -- drawn as it comes it would look like the whole trade.  The flow is
 carried forward instead, in one pass, because the bus order is topological.
 
+The rest is a Sankey, and the parts of one worth naming:
+
+- **Columns are layers.**  A route is a DAG, not a chain, so bus `k` in column
+  `k` let a leg run backwards.  Each bus sits in the column of its *longest*
+  path from the source, over a topological order rather than over the list of
+  legs -- that list is ordered for execution, and reading it directly put a
+  token in the column before the token it is made from.  A leg that closes a
+  cycle (the router does say "4 pool(s) used more than once") is left out of
+  the layering; relaxing over one pushed every bus rightwards until the whole
+  picture was crushed into the last fifth of the frame.
+- **A leg that spans several columns gets a lane through each of them.**
+  Without one it was a single curve between its two ends, drawn straight over
+  whatever lived in between -- which is what a sixteen-leg route mostly looked
+  like.  It now has a point on each side of every column it passes, and those
+  points are ordered along with the buses, so it threads between them.
+- **Ordering within a column is barycentre sweeps in both directions**, and a
+  bus's ribbons leave and arrive in the order of the bus at the other end.
+  Optimal ordering is NP-hard; this is the cheap part of it, and between the
+  two the ribbons cross about as often as the route itself requires.
+
 An eighteen-leg route is one this router really produces, and eighteen token
-names across 420 pixels is one illegible word, so a column is labelled only
-where there is room to read it.  The source and the destination always are.
+names across 420 pixels is one illegible word, so a label is drawn only where
+nothing has claimed the space -- source and destination first, then left to
+right.  Claimed as a box rather than as a distance along the row: three buses
+stacked in one column put their labels at three different heights and all fit,
+while the destination's, nudged back inside the frame, does not.  Each sits on
+a chip, because a name that lands on a ribbon is otherwise unreadable.
 
 ### What is not there yet
 

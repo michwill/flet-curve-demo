@@ -136,11 +136,20 @@ PICKER_HEIGHT = 420
 #: amount disappeared -- which is not a layout to leave to whoever wins.
 PICKER_BAR_WIDTH = 148
 
-#: The corner and the height of the bar, both taken from the dense outlined
-#: field the pool page's coin dropdown is: Material's own 4, and the height a
-#: `TextField(dense=True)` comes out at beside it.
+#: The corner of the picker's bar, taken from the dense outlined field the
+#: pool page's coin dropdown is: Material's own.
 PICKER_RADIUS = 2
-PICKER_BAR_HEIGHT = 48
+
+#: How tall both halves of a row are.  One number for the amount box and the
+#: coin beside it, because they sit side by side and a dense `TextField` comes
+#: out at 40 next to a `SearchBar` at 48 -- which reads as one of them having
+#: gone wrong rather than as two sizes.
+FIELD_HEIGHT = 48
+
+#: And how big the figure in them is.  Larger than `BODY`: the amount and the
+#: coin are what the whole widget is for, and at the body size they were the
+#: same weight as the five lines of detail underneath.
+FIELD_TEXT = 18
 
 
 def as_coin(entry: CoinEntry) -> Coin:
@@ -167,7 +176,7 @@ class CoinPicker(ft.SearchBar):
         super().__init__(
             value="",
             bar_hint_text=label,
-            bar_text_style=ft.TextStyle(size=BODY),
+            bar_text_style=ft.TextStyle(size=FIELD_TEXT),
             view_hint_text="Search name or paste an address",
             # Dressed as the pool page's coin dropdown, which is a dense
             # outlined field: same corner, same outline, same weight of text,
@@ -182,8 +191,8 @@ class CoinPicker(ft.SearchBar):
             bar_border_side=theme.field_border(),
             bar_trailing=[ft.Icon(ft.Icons.ARROW_DROP_DOWN, size=18,
                                   color=ft.Colors.ON_SURFACE_VARIANT)],
-            bar_size_constraints=ft.BoxConstraints(min_height=PICKER_BAR_HEIGHT,
-                                                   max_height=PICKER_BAR_HEIGHT),
+            bar_size_constraints=ft.BoxConstraints(min_height=FIELD_HEIGHT,
+                                                   max_height=FIELD_HEIGHT),
             bar_padding=ft.Padding.only(left=8, right=0),
             width=PICKER_BAR_WIDTH,
             view_size_constraints=ft.BoxConstraints(
@@ -667,7 +676,14 @@ class SwapView(ft.Container):
         # a mistake rather than as a button.
         self.amount = ft.TextField(
             hint_text=HINT,
-            dense=True,
+            # Not `dense`: it shrinks the box back to 40 whatever height is
+            # asked for, and 40 beside the picker's 48 reads as a mistake.
+            height=FIELD_HEIGHT,
+            content_padding=ft.Padding.symmetric(horizontal=12, vertical=0),
+            text_style=ft.TextStyle(size=FIELD_TEXT),
+            # The hint is a balance, which is a detail; the value is the
+            # subject.  Same box, two sizes.
+            hint_style=ft.TextStyle(size=SMALL),
             on_change=self._typed,
             expand=True,
             suffix_icon=self.max_button,
@@ -677,7 +693,10 @@ class SwapView(ft.Container):
         # A field rather than a `Text`, so the two halves of the trade are the
         # same shape; read-only because the router decides this number.
         self.receive = ft.TextField(
-            hint_text=HINT, dense=True, read_only=True, value="", expand=True)
+            hint_text=HINT, read_only=True, value="", expand=True,
+            height=FIELD_HEIGHT, text_style=ft.TextStyle(size=FIELD_TEXT),
+            content_padding=ft.Padding.symmetric(horizontal=12, vertical=0),
+            hint_style=ft.TextStyle(size=SMALL))
         self.reverse = ft.IconButton(
             ft.Icons.SWAP_VERT, tooltip="Swap direction",
             on_click=self._flip_clicked, icon_size=20)
@@ -1076,7 +1095,9 @@ class _InfoRows:
                 # flashes the way the pool page's does -- same band, same
                 # timing, same colour -- because someone comparing a route
                 # against a pool is comparing the two tabs.
-                kind="impact" if key == "impact" else "",
+                # Untinted to start with: `_tint_impact` colours the impact
+                # row when there is an impact to colour.
+                kind="",
                 padding=ft.Padding.symmetric(horizontal=ROW_INDENT, vertical=1),
             )
             if key == "impact":
@@ -1094,6 +1115,7 @@ class _InfoRows:
             value.value = "-"
             value.color = ft.Colors.ON_SURFACE_VARIANT
         self._set_high(False)
+        self._tint_impact(False)
 
     def set_gas(self, text: str) -> None:
         self._set("gas", text)
@@ -1107,6 +1129,7 @@ class _InfoRows:
         self._set("impact", f"{impact:.2f} bp",
                   ft.Colors.ERROR if high else None)
         self._set_high(high)
+        self._tint_impact(True)
         self._set("rate", _rate_line(result, sell, buy))
         # Just "auto".  The bound is *per leg*, derived from the least each
         # pool can charge, so a single figure for a fifteen-pool route is a
@@ -1117,6 +1140,20 @@ class _InfoRows:
             # No figure: the route did not execute locally, which for an
             # unapproved token is the expected answer and not a fault.
             self._set("gas", "-")
+
+    def _tint_impact(self, showing: bool) -> None:
+        """Colour the impact row only once there is an impact in it.
+
+        The tint is what says "this is the line to look at", and a line
+        reading "-" is not: an empty widget was arriving already coloured, so
+        the colour meant nothing by the time it did.  The band stays either
+        way -- it is what keeps the five rows the same height.
+        """
+        kind = "impact" if showing else ""
+        if self.impact_panel.kind == kind:
+            return
+        self.impact_panel.kind = kind
+        safe_update(self.impact_panel)
 
     def _set_high(self, high: bool) -> None:
         """Arm or disarm the flash, and only when it actually changed."""

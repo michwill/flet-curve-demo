@@ -259,6 +259,52 @@ async def test_a_quote_that_raises_takes_the_old_figures_with_it():
     host.close()
 
 
+async def test_a_pair_that_would_not_prepare_is_not_quoted_anyway():
+    """The one that got out.
+
+    `held.pair` was cleared only on success, so a preparation that failed or
+    was overtaken left the *previous* pair in place and every later keystroke
+    was answered against it: the widget said crvUSD to sDOLA, the route said
+    crvUSD to USDT, and the rate read "1 crvUSD = 0 sDOLA" because the old
+    pair's numbers were being formatted with the new coin's decimals.
+    """
+    session = FakeSession()
+    host, _session, seen = build(session)
+    await host.open(1)
+    assert await host.set_pair("0xa", "0xb")
+
+    async def refuse(src, dst, progress=None):
+        session.pairs.append((src, dst))
+        raise RuntimeError("this pair cannot be priced")
+
+    session.set_pair = refuse
+    assert not await host.set_pair("0xa", "0xc")
+    assert seen["errors"], "the refusal is reported"
+
+    seen["quotes"].clear()
+    host.request(5)
+    for _ in range(8):
+        await asyncio.sleep(0)
+    assert seen["quotes"] == [], "and nothing is answered for the old pair"
+    assert 5 not in session.quoted
+    host.close()
+
+
+async def test_a_pair_is_prepared_before_anything_is_quoted_against_it():
+    session = FakeSession()
+    host, _session, _seen = build(session)
+    await host.open(1)
+    host.request(7)
+    for _ in range(4):
+        await asyncio.sleep(0)
+    assert session.quoted == [], "no pair yet, so nothing to quote"
+    await host.set_pair("0xa", "0xb")
+    for _ in range(6):
+        await asyncio.sleep(0)
+    assert session.quoted == [7]
+    host.close()
+
+
 async def test_a_failed_warm_is_reported_not_swallowed():
     async def make(chain_id):
         raise RuntimeError("the endpoint declined")

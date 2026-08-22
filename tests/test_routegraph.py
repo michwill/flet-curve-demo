@@ -104,6 +104,59 @@ def test_a_bus_sits_past_everything_that_reaches_it():
     assert depth[2] == 2, "reached directly at layer 1 and via crvUSD at 2"
 
 
+def test_the_columns_do_not_depend_on_the_order_the_legs_arrive_in():
+    """A leg listed before the leg that feeds it must not pull its bus left.
+
+    The router orders legs so a node's inflows precede its outflows -- it has
+    to, to execute them -- but relying on that put a token in the column
+    *before* the token it is made from the moment the order differed.
+    """
+    forward = FakeDiagram(
+        buses=[FakeBus(0, "A", is_source=True), FakeBus(1, "B"),
+               FakeBus(2, "C", is_dest=True)],
+        elements=[FakeElement(0, 0, 1, 100.0, target="0xa"),
+                  FakeElement(1, 1, 2, 100.0, target="0xb")],
+        order=[0, 1, 2],
+    )
+    backward = FakeDiagram(
+        buses=list(forward.buses),
+        # The same route, the second leg listed first.
+        elements=[FakeElement(0, 1, 2, 100.0, target="0xb"),
+                  FakeElement(1, 0, 1, 100.0, target="0xa")],
+        order=[0, 1, 2],
+    )
+    assert layers(forward) == layers(backward) == {0: 0, 1: 1, 2: 2}
+    for diagram in (forward, backward):
+        for band in layout(diagram, 400, 300).bands:
+            assert band.x1 > band.x0
+
+
+def test_a_route_that_revisits_a_token_still_fits_its_frame():
+    """The bus graph is not always acyclic -- a route can sell a token it
+    bought back, which the router reports as a pool used more than once.
+
+    Relaxing over such a loop pushed every bus rightwards until it hit the
+    iteration bound, and the whole diagram ended up crushed into the last
+    fifth of the paper.
+    """
+    diagram = FakeDiagram(
+        buses=[FakeBus(0, "A", is_source=True), FakeBus(1, "B"),
+               FakeBus(2, "C"), FakeBus(3, "D", is_dest=True)],
+        elements=[
+            FakeElement(0, 0, 1, 100.0, target="0xa"),
+            FakeElement(1, 1, 2, 100.0, target="0xb"),
+            FakeElement(2, 2, 1, 50.0, target="0xc"),   # back to B
+            FakeElement(3, 2, 3, 50.0, target="0xd"),
+        ],
+        order=[0, 1, 2, 3],
+    )
+    depth = layers(diagram)
+    assert max(depth.values()) <= 3, f"a loop must not inflate the columns: {depth}"
+    got = layout(diagram, 400, 300)
+    assert min(bus.x for bus in got.buses) == 0, "the picture starts at the edge"
+    assert max(bus.x + bus.width for bus in got.buses) == 400
+
+
 def test_a_single_leg_fills_the_height():
     got = layout(straight(), 400, 200)
     assert len(got.bands) == 1

@@ -214,7 +214,8 @@ class RouteDiagram(ft.Container):
         self._canvas = cv.Canvas(shapes=[], expand=True,
                                  on_resize=self._resized)
         self._labels = ft.Stack([], expand=True)
-        self._empty = ft.Text("", size=SMALL, color=ft.Colors.ON_SURFACE_VARIANT,
+        self._empty = ft.Text(EMPTY_ROUTE, size=SMALL,
+                              color=ft.Colors.ON_SURFACE_VARIANT,
                               text_align=ft.TextAlign.CENTER)
         self._size = (0.0, 0.0)
         super().__init__(
@@ -377,6 +378,8 @@ class SwapView(ft.Container):
         self._on_approve = on_approve
         self._on_swap = on_swap
         self._busy = False
+        self._blocked = False
+        self._empty = True
 
         self.sell = CoinPicker(page, chain, on_pick=self._picked, label="Sell")
         self.buy = CoinPicker(page, chain, on_pick=self._picked, label="Buy")
@@ -412,6 +415,11 @@ class SwapView(ft.Container):
             on_click=self._flip_clicked, icon_size=20)
 
         self.rows = _InfoRows()
+        # Why a quoted route cannot be *sent*, which is a different thing
+        # from a transaction going wrong and belongs next to the button
+        # rather than in the status panel.
+        self.blocked = ft.Text("", size=SMALL, color=ft.Colors.ERROR,
+                               visible=False)
         self.status = StatusPanel(page)
         self.approve_button = buttons.Themed(
             "1. Approve spending", page=page, on_click=self._approve_clicked,
@@ -431,6 +439,7 @@ class SwapView(ft.Container):
                     self.rows.control,
                     self.approve_button,
                     self.submit_button,
+                    self.blocked,
                     self.status,
                 ],
                 spacing=14,
@@ -577,6 +586,7 @@ class SwapView(ft.Container):
             self.rows.clear()
             self.diagram.show(None)
             self._set_has_route(False)
+            self._empty = True
             self.submit_button.disabled = True
             self._sync()
             return
@@ -585,7 +595,8 @@ class SwapView(ft.Container):
         self.receive.value = (
             token_amount(out / 10 ** buy.decimals, places=6) if buy else "")
         self.rows.show(result, plan, sell, buy)
-        self.submit_button.disabled = self._busy or out <= 0
+        self._empty = out <= 0
+        self.submit_button.disabled = self._busy or self._blocked or self._empty
         self._sync()
 
     def show_route(self, diagram) -> None:
@@ -603,6 +614,20 @@ class SwapView(ft.Container):
 
     def clear_status(self) -> None:
         self.status.clear()
+
+    def cannot_send(self, reason: str) -> None:
+        """Say a quoted route cannot be sent, or take that back.
+
+        The quote itself stays: it was verified on chain like any other, and
+        the number is the answer to what was asked.  What is not on offer is
+        the button.
+        """
+        self._blocked = bool(reason)
+        self.blocked.value = reason
+        self.blocked.visible = bool(reason)
+        self.submit_button.disabled = self._busy or self._blocked or self._empty
+        safe_update(self.blocked)
+        safe_update(self.submit_button)
 
     def show_gas(self, text: str) -> None:
         """What the route costs to send, once there is a figure for it."""
@@ -625,7 +650,7 @@ class SwapView(ft.Container):
         """
         self._busy = busy
         self.approve_button.disabled = busy
-        self.submit_button.disabled = busy
+        self.submit_button.disabled = busy or self._blocked or self._empty
         self.amount.disabled = busy
         safe_update(self.approve_button)
         safe_update(self.submit_button)

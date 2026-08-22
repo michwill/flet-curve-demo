@@ -185,8 +185,15 @@ class RouterHost:
             return True
         self._generation += 1
         generation = self._generation
+        # Forgotten *before* the new one is prepared, not after.  Kept until
+        # then, a preparation that failed or was overtaken left the old pair
+        # in place and every later keystroke was answered against it -- the
+        # widget said crvUSD to sDOLA, the route said crvUSD to USDT, and the
+        # rate read "1 crvUSD = 0 sDOLA" because the old pair's numbers were
+        # being formatted with the new coin's decimals.
+        held.pair = None
         try:
-            await held.session.set_pair(*pair, progress=self._progress)
+            await held.session.set_pair(*pair, progress=self._pair_progress)
         except Exception as exc:
             if generation == self._generation:
                 self._on_error(exc)

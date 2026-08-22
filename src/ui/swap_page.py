@@ -29,6 +29,7 @@ from curve.router_contract import RouterContract, RouterError
 from router import Backend, RouterHost, Stage, load_backend
 from router.backend import BackendError
 from router.session import build_session
+from router.universe import coins_by_volume
 from wallet.base import WalletError
 
 from .responsive import Layout
@@ -106,13 +107,23 @@ class SwapPage:
     async def open(self) -> None:
         """Show the tab for whatever chain is being browsed.
 
-        Warming starts here rather than at app start: it is twenty seconds of
-        reading, and someone who never opens this tab should never pay for it.
+        The coins first and the warm second, because they need different
+        things: the list is a property of the *pool list*, which the headline
+        figures have already downloaded, while quoting needs twenty seconds of
+        reading state.  Waiting for the second to show the first left the two
+        pickers empty for the whole warm with nothing to say why.
+
+        Warming starts here rather than at app start for its own reason:
+        someone who never opens this tab should never pay for it.
         """
         chain_id = await self._chain_id()
         if not chain_id:
             self.view.say("This network has no chain id yet.", FAILED)
             return
+        self.view.chain = self._chain_name()
+        self.chain_id_now = chain_id
+        await self._offer_coins(chain_id)
+
         if self._backend is None:
             try:
                 self._backend = await load_backend()
@@ -120,30 +131,47 @@ class SwapPage:
                 self._backend_error = str(exc)
                 self.view.say(str(exc), FAILED)
                 return
-        self.view.chain = self._chain_name()
         await self.host.open(chain_id)
         if self.host.stage is not Stage.READY:
             return
-        self.chain_id_now = chain_id
-        if chain_id != self._opened_chain:
-            self._opened_chain = chain_id
-            self.view.offer(self.host.coins, self._chain_name())
-            await self._open_pair(chain_id)
+        # The pair was chosen before there was anything to price it with, so
+        # this is where it actually gets prepared.
+        sell, buy = self.view.pair
+        if sell is not None and buy is not None:
+            await self._prepare(sell.address, buy.address)
         await self._read_balances()
+
+    async def _offer_coins(self, chain_id: int) -> None:
+        """Fill the pickers off the pool list, before anything is warmed."""
+        if chain_id == self._opened_chain:
+            return
+        try:
+            rows = await self._api.router_pools(chain_id)
+        except ApiError as exc:
+            self.view.say(f"Could not read this network's pools: {exc}", FAILED)
+            return
+        coins = coins_by_volume(rows)
+        if not coins:
+            return
+        self._opened_chain = chain_id
+        self.view.offer(coins, self._chain_name())
+        await self._open_pair(chain_id, coins)
 
     async def _make_session(self, chain_id: int):
         assert self._backend is not None, "open() loads it before warming"
         return await build_session(chain_id, self._backend, api=self._api)
 
-    async def _open_pair(self, chain_id: int) -> None:
+    async def _open_pair(self, chain_id: int, coins) -> None:
         """The pair someone last chose here, or the two busiest coins.
 
         Busiest rather than a list of symbols: the coins are already ordered
         by the volume of the pools holding them, so the top two are the pair
         this chain is actually used for -- which a hardcoded USDC/WETH is on
         Ethereum and is not anywhere else.
+
+        Nothing is prepared here.  This runs before the warm, so there is
+        nothing to prepare *with*; `open` does it once there is.
         """
-        coins = self.host.coins
         if not coins:
             return
         sell = buy = None
@@ -156,8 +184,6 @@ class SwapPage:
             sell = coins[0]
             buy = next((coin for coin in coins[1:] if coin is not sell), None)
         self.view.set_pair(sell, buy)
-        if sell is not None and buy is not None:
-            self._page.run_task(self._prepare, sell.address, buy.address)
 
     async def _remembered_pair(self, chain_id: int) -> tuple[str, str] | None:
         try:
@@ -206,6 +232,8 @@ class SwapPage:
     def _pair_changed(self, *_coins) -> None:
         sell, buy = self.view.pair
         self._quote = self._plan = None
+        self.view.cannot_send("")
+        self.view.clear_status()
         self.view.show_quote(None)
         if sell is None or buy is None or sell.address == buy.address:
             return
@@ -274,11 +302,20 @@ class SwapPage:
             plan = await session.plan_call(
                 quote.result, receiver=account or _NOBODY, sender=account or _NOBODY)
         except Exception as exc:
-            self.view.say(f"Could not price the route: {exc}", FAILED)
+            if self._quote is not quote:
+                return      # a later amount is already being planned
+            # The quote itself stands -- it was verified on chain like any
+            # other -- so it stays on screen.  What cannot be done is *send*
+            # it, and the commonest reason by far is a leg too small to carry
+            # a minimum rate, which is the router refusing to ship something
+            # it cannot protect rather than anything having gone wrong.
+            self._plan = None
+            self.view.cannot_send(_why_unsendable(exc))
             return
         if self._quote is not quote:
             return          # the amount moved on while this was in flight
         self._plan = plan
+        self.view.cannot_send("")
         self.view.show_quote(quote, plan)
         await self._show_gas(plan)
         await self._sync_approval(plan)
@@ -424,6 +461,23 @@ class SwapPage:
         with contextlib.suppress(ApiError):
             usd = await native_price(self._api, self._chain_name(), chain_id)
         self.view.show_gas(format_fee(amount, native.symbol, amount * usd))
+
+
+def _why_unsendable(exc: Exception) -> str:
+    """One line for why a quoted route cannot be sent.
+
+    The router's own message is written for a terminal -- it names the pools,
+    the wei in and out, and the flag that would ship it unprotected -- which
+    is the right amount of detail for someone debugging a route and far too
+    much under a swap button.
+    """
+    name = type(exc).__name__
+    text = str(exc)
+    if "minimum rate to bound" in text or "unbounded" in text:
+        return "This route has a leg too small to protect, so it cannot be sent"
+    if name == "EncodingError":
+        return "This route cannot be packed into one call"
+    return f"This route cannot be sent: {text.splitlines()[0][:120]}"
 
 
 #: Who a route is priced for when no wallet is connected.  The quote does not

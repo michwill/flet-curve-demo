@@ -163,17 +163,47 @@ def layers(diagram) -> dict[int, int]:
     others has to sit past both of them, or the direct leg draws backwards
     over the top of them.
 
-    One pass is enough: the router orders legs so that a node's inflows all
-    precede its outflows, which is the same property `fractions` relies on to
-    execute the route.
+    Over a topological order of the buses rather than over the list of legs.
+    The list is ordered for *execution* -- a node's inflows precede its
+    outflows -- and reading it directly puts a token in the column before the
+    token it is made from the moment that order differs.
+
+    The order is found here rather than assumed, and it has to be, because the
+    bus graph is not always acyclic: a route may sell a token it bought back,
+    and the router says so ("4 pool(s) used more than once").  A leg that
+    closes a cycle is left out of the layering -- it still gets drawn, as a
+    ribbon running the length of the picture -- because relaxing over one
+    pushes every bus rightwards until it hits whatever bound is put on the
+    loop, which crushed the whole diagram into the last fifth of its frame.
     """
     elements = list(getattr(diagram, "elements", ()) or ())
-    depth: dict[int, int] = {}
+    after: dict[int, list[int]] = {}
+    into: dict[int, int] = {}
     for element in elements:
-        depth.setdefault(element.src_slot, 0)
-    for element in elements:
-        here = depth.get(element.src_slot, 0)
-        depth[element.dst_slot] = max(depth.get(element.dst_slot, 0), here + 1)
+        after.setdefault(element.src_slot, []).append(element.dst_slot)
+        after.setdefault(element.dst_slot, [])
+        into.setdefault(element.src_slot, 0)
+        into[element.dst_slot] = into.get(element.dst_slot, 0) + 1
+
+    ready = [slot for slot, count in into.items() if count == 0]
+    order: list[int] = []
+    while ready:
+        slot = ready.pop(0)
+        order.append(slot)
+        for onward in after.get(slot, ()):
+            into[onward] -= 1
+            if into[onward] == 0:
+                ready.append(onward)
+    # Whatever a cycle held back goes last, in the order the router listed it.
+    seen = set(order)
+    order += [slot for slot in after if slot not in seen]
+
+    depth = dict.fromkeys(after, 0)
+    place = {slot: k for k, slot in enumerate(order)}
+    for slot in order:
+        for onward in after.get(slot, ()):
+            if place[onward] > place[slot]:
+                depth[onward] = max(depth[onward], depth[slot] + 1)
     return depth
 
 

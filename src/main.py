@@ -969,6 +969,7 @@ class CurveApp:
             if not self.chains:
                 self.chains = await self.api.chains()
                 self._sync_chain_options()
+                self._offer_chains_to_wallet()
                 chain = self.chain  # `_sync_chain_options` may have moved it
                 # The order the picker ends up in, fetched behind the page.
                 self.page.run_task(self.load_chain_tvls)
@@ -1067,6 +1068,25 @@ class CurveApp:
             f"{label} {value}" for label, value in self._totals
         )
         self.menu.items = self._menu_items()
+
+    def _offer_chains_to_wallet(self) -> None:
+        """Tell the bridge which chains a WalletConnect session should cover.
+
+        A session is proposed once, at connect time, with every chain it may
+        ever use, and a chain left out of that proposal cannot be switched to
+        afterwards: the wallet answers "the chain is not approved", and a Safe
+        says the dApp does not support its network.  TAC was left out, being
+        on neither of the two lists kept by hand -- `wallet.chains`, which is
+        five chains with explorers and tokens, nor the bridge's own fallback.
+
+        So the proposal is what the picker offers, which is the one list that
+        cannot drift from what someone can actually pick.  A configured
+        `[walletconnect] chains` still wins.
+        """
+        from wallet import settings as wallet_settings
+
+        wallet_settings.offer_default(
+            "walletConnectChains", sorted(set(self.chains.values())))
 
     def _sync_chain_options(self) -> None:
         """Offer every chain the API reports, the biggest first.
@@ -1223,6 +1243,7 @@ class CurveApp:
             with contextlib.suppress(ApiError):
                 self.chains = await self.api.chains()
                 self._sync_chain_options()
+                self._offer_chains_to_wallet()
         return self.chains.get(self.chain) or 0
 
     def public_node(self, chain_id: int) -> PublicNode:

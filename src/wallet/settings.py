@@ -26,6 +26,24 @@ _BRIDGE_KEYS = {
 }
 
 
+#: What the app has offered for keys nobody configured.  A WalletConnect
+#: session is proposed once, at connect time, with every chain it may ever
+#: use, and a chain left out of that proposal cannot be switched to
+#: afterwards -- the wallet answers "the chain is not approved", and a Safe
+#: says the dApp does not support its network.  Which chains those are is a
+#: question about the *app*, not about this installation, so the app answers
+#: it and a configured value still wins.
+_offered: dict[str, Any] = {}
+
+
+def offer_default(bridge_key: str, value: Any) -> None:
+    """Supply a bridge setting for anyone who has not configured one."""
+    if value in (None, "", []):
+        _offered.pop(bridge_key, None)
+        return
+    _offered[bridge_key] = value
+
+
 @lru_cache(maxsize=1)
 def _file_values() -> dict[str, Any]:
     """Parse the config file. Missing or malformed is not fatal."""
@@ -49,7 +67,7 @@ def get(section: str, key: str, default: Any = None) -> Any:
 
 def bridge_config() -> dict[str, Any]:
     """Settings to hand to the browser bridge, in its own key names."""
-    resolved: dict[str, Any] = {}
+    resolved: dict[str, Any] = dict(_offered)
     for (section, key), bridge_key in _BRIDGE_KEYS.items():
         value = get(section, key)
         if value not in (None, "", []):

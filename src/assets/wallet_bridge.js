@@ -169,7 +169,15 @@
   const wcModuleUrl = () =>
     config.walletConnectModuleUrl || "https://esm.sh/@walletconnect/ethereum-provider@2";
 
-  // Chains the Python side knows about (src/wallet/chains.py).
+  // Which chains a WalletConnect session is proposed for.  The session is
+  // proposed once, at connect time, and a chain left out of it cannot be
+  // switched to afterwards -- the wallet answers "the chain is not approved"
+  // and a Safe says the dApp does not support its network.
+  //
+  // So the app sends the list its own picker offers (see
+  // `_offer_chains_to_wallet`), and this is only what to propose when it has
+  // not had the chance: the majors, which is better than nothing and worse
+  // than the real thing.
   const wcChains = () => config.walletConnectChains || [1, 10, 137, 8453, 42161];
 
   let wcProvider = null;

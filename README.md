@@ -43,6 +43,17 @@ there is no post-build step to forget. Without it the WalletConnect connector
 simply does not appear; injected wallets (MetaMask, Rabby, Frame, qeth) work
 either way.
 
+**A session is proposed once, at connect time, with every chain it may ever
+use.** A chain left out cannot be switched to afterwards: the wallet answers
+"the chain is not approved or the wallet does not support
+`wallet_switchEthereumChain`", and a Safe says the dApp does not support its
+network.  TAC arrived at exactly that, being on neither of the two lists kept
+by hand -- `wallet/chains.py`, which is five chains with explorers and tokens
+for the pay flow, nor `wallet_bridge.js`'s own fallback.  So the proposal is
+now what the *picker* offers, pushed to the bridge as a default when the chain
+list lands: 26 chains rather than 5, and it cannot drift from what someone can
+actually pick.  A `[walletconnect] chains` in `local_config.toml` still wins.
+
 ### Testing WalletConnect without a phone
 
 WalletConnect looks untestable — it wants a projectId, a relay and a phone to

@@ -2499,7 +2499,16 @@ only once there is a picture: it acts on the route, so it belongs on it, and
 an empty frame has nothing to save.  Positioned in the frame's stack rather
 than given a row, which would take height off the drawing.
 
-`ui/download.py` hands it over, and on the web that took a third attempt.  Flet
+`ui/download.py` hands it over, and neither platform was quite the obvious
+thing.  A desktop build opens the save dialog every other program does, and
+the bytes go to `FilePicker.save_file` itself so there is no window in which a
+path exists with nothing in it; a dismissed dialog answers `None`, which is a
+decision and not a failure, and the tab says nothing rather than reporting a
+file that is not there.  Flet's picker shells out to **Zenity** on Linux,
+though, and without it the dialog silently never opens -- so that is checked
+for up front and a build without it writes the file and names the path.
+
+On the web it took a third attempt.  Flet
 runs this app's Python in a module Web Worker and a worker has no `document`,
 so the obvious `<a download>` cannot be built there.  A blob URL made in the
 worker is valid on this origin, but Flet's `launch_url` will not open one --
@@ -2508,6 +2517,28 @@ schemes and drops the rest without a word.  So the file goes over a
 `BroadcastChannel` to `download_bridge.js`, which is how the wallet already
 crosses the same gap; `tests/test_download_bridge.py` drives that half under
 node.  A desktop build just writes the file, and says where it put it.
+
+### Native and wrapped, which is not a route
+
+WETH is not a pool.  `deposit()` mints one wrapped token per wei and
+`withdraw(n)` burns them back, exactly, for ever -- there is no curve, no fee,
+no slippage and nothing to solve.  The router *can* carry it as a leg, but
+doing so costs an approval on the wrapped side and sends a 1:1 identity
+through a contract that has to be told about it.
+
+So `router/wrapping.py` short-circuits: the same widget, the same picture, and
+a call straight to the wrapper.  **No approval either way** -- a deposit rides
+on `msg.value` and a withdraw burns the caller's own balance -- which is the
+difference between one transaction and two.  `RouterContract.needs_approval`
+is told so explicitly, because a withdraw does spend an ERC20 and asked the
+usual way it would report a missing allowance with the wrapped token as its
+own spender.
+
+The figures say what is true rather than dashes: no pool, no slippage, no
+impact, and a rate of one.  And it needs no warm at all, so ETH to WETH is
+answered while the router is still reading state -- which is also why the
+detection lives in the page rather than in the host, since it needs nothing
+the host has.
 
 ### When it will not route
 

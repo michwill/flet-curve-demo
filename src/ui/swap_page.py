@@ -13,9 +13,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from typing import Any
 
 import flet as ft
 
+from curve.format import token_amount
 from curve.gas import (
     fee_in_native,
     format_fee,
@@ -26,9 +28,9 @@ from curve.gas import (
 )
 from curve.http import ApiError
 from curve.router_contract import RouterContract, RouterError
-from router import Backend, RouterHost, Stage, incidents, load_backend
+from router import Backend, RouterHost, Stage, incidents, load_backend, wrapping
 from router.backend import BackendError
-from router.session import build_session
+from router.session import build_session, chain_for
 from router.universe import coins_by_volume
 from wallet.base import WalletError
 
@@ -66,7 +68,10 @@ class SwapPage:
         self._backend: Backend | None = None
         self._backend_error = ""
         self._quote = None
-        self._plan = None
+        # An `ExecutionPlan` from the router, or a `WrapPlan` from
+        # `router.wrapping` -- the same shape, and nothing downstream needs to
+        # know which it is holding.
+        self._plan: Any = None
         self._planner: asyncio.Task | None = None
         self._balances: dict[str, int] = {}
         self._opened_chain = 0
@@ -145,6 +150,12 @@ class SwapPage:
         sell, buy = self.view.pair
         if sell is not None and buy is not None:
             await self._prepare(sell.address, buy.address)
+        # A wrapping was answered while the warm was still going, and the warm
+        # must not take that back: `_prepare` ends by redrawing from the
+        # router's last quote, which for a pair the router never saw is
+        # nothing at all.
+        if self._wrapping():
+            await self._wrap_quote(self.view.amount_in())
         await self._read_balances()
 
     async def _offer_coins(self, chain_id: int) -> None:
@@ -278,11 +289,16 @@ class SwapPage:
         self.view.show_quote(None)
         if sell is None or buy is None or sell.address == buy.address:
             return
-        self._page.run_task(self._prepare, sell.address, buy.address)
         self._page.run_task(self._remember_pair)
+        if self._wrapping():
+            # Nothing to prepare: there is no pair to probe and no arcs to
+            # calibrate, so the answer is available before the warm is.
+            self._page.run_task(self._wrap_quote, self.view.amount_in())
+            return
+        self._page.run_task(self._prepare, sell.address, buy.address)
 
     async def _prepare(self, sell: str, buy: str) -> None:
-        if self.host.stage is not Stage.READY:
+        if self.host.stage is not Stage.READY or self._wrapping():
             return
         self._on_loading(0.0)
         try:
@@ -296,7 +312,49 @@ class SwapPage:
 
     def _amount_changed(self, amount: int) -> None:
         self._plan = None
+        if self._wrapping():
+            self._page.run_task(self._wrap_quote, amount)
+            return
         self.host.request(amount)
+
+    # ------------------------------------------------------------ wrapping
+
+    def _wrapping(self) -> str | None:
+        """Which way this pair wraps, if it wraps at all.
+
+        A native/wrapped pair never reaches the router: `wrapping` explains
+        why.  It is asked here rather than inside the host because the answer
+        needs nothing the host has -- not the warm, not the pool list, not a
+        block -- which is exactly the point.
+        """
+        sell, buy = self.view.pair
+        if sell is None or buy is None:
+            return None
+        chain = chain_for(self.chain_id_now) if self.chain_id_now else None
+        if chain is None:
+            return None
+        return wrapping.direction(sell.address, buy.address, chain.wrapped)
+
+    async def _wrap_quote(self, amount: int) -> None:
+        """The whole of a wrapping: one for one, and a call to the wrapper."""
+        which = self._wrapping()
+        chain = chain_for(self.chain_id_now) if self.chain_id_now else None
+        sell, buy = self.view.pair
+        if which is None or chain is None or sell is None or buy is None:
+            return
+        self.view.cannot_send("")
+        self.view.show_wrap(amount)
+        if not amount:
+            self._plan = None
+            self.view.show_route(None)
+            self.view.show_gas("")
+            return
+        self._plan = wrapping.plan(which, chain.wrapped, amount)
+        shown = token_amount(amount / 10 ** sell.decimals, places=6)
+        self.view.show_route(
+            wrapping.diagram(which, sell, buy, chain.wrapped, shown))
+        self.view.show_approval(False)
+        await self._show_gas(self._plan)
 
     def _quoted(self, quote) -> None:
         self._quote = quote

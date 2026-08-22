@@ -929,6 +929,22 @@ class SwapView(ft.Container):
         self.submit_button.disabled = self._busy or self._blocked or self._empty
         self._sync()
 
+    def show_wrap(self, amount: int, plan=None) -> None:
+        """A native/wrapped swap, which has no route and no rate to give.
+
+        One for one, both ways, for ever -- so the figures that describe a
+        route describe nothing here, and saying "0.00 bp" of a thing that
+        cannot slip would be answering a question nobody asked.
+        """
+        sell, buy = self.sell.picked, self.buy.picked
+        self.receive.value = (
+            token_amount(amount / 10 ** buy.decimals, places=6)
+            if buy and amount else "")
+        self.rows.show_wrap(sell, buy)
+        self._empty = amount <= 0
+        self.submit_button.disabled = self._busy or self._blocked or self._empty
+        self._sync()
+
     def show_route(self, diagram) -> None:
         self.diagram.show(diagram, self.chain)
         # Shown rather than dimmed: an empty frame has nothing to save, and a
@@ -1045,14 +1061,18 @@ class SwapView(ft.Container):
         title = f"{self.amount.value or ''} {sell.symbol if sell else ''} to " \
                 f"{buy.symbol if buy else ''}".strip()
         try:
-            where = download.save_text(
+            where = await download.save_text(
                 f"curve-route-{pair}.svg",
                 routegraph.to_svg(diagram, title=title),
                 media="image/svg+xml",
+                page=self._page,
+                title="Save the route",
             )
         except Exception as exc:
             self.say(f"Could not save the route: {exc}", FAILED)
             return
+        if where is None:
+            return          # the dialog was closed, which is an answer
         self.say(f"Saved the route to {where}" if where
                  else "Saved the route", DONE)
 
@@ -1136,6 +1156,21 @@ class _InfoRows:
 
     def set_gas(self, text: str) -> None:
         self._set("gas", text)
+
+    def show_wrap(self, sell=None, buy=None) -> None:
+        """What there is to say about a wrapping, which is not much.
+
+        No pool, no slippage, no impact and a rate of one -- said rather than
+        left as dashes, because a dash reads as "not worked out yet" where
+        this is "there is nothing here to work out".
+        """
+        symbols = (getattr(sell, "symbol", "?"), getattr(buy, "symbol", "?"))
+        self._set("route", "the wrapper, no pool")
+        self._set("slippage", "none")
+        self._set("impact", "none")
+        self._set("rate", "1 {} = 1 {}".format(*symbols))
+        self._set_high(False)
+        self._tint_impact(False)
 
     def show(self, result, plan, sell=None, buy=None) -> None:
         pools, legs = routegraph.summarise(_diagram_of(result))

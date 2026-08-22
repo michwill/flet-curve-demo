@@ -62,7 +62,16 @@ class RouterContract:
         return abi.decode_uint(answer)
 
     async def needs_approval(self, plan) -> bool:
-        """Whether the token has to be approved before this route can run."""
+        """Whether the token has to be approved before this route can run.
+
+        A wrapping never needs one, either way round: a deposit rides on
+        `msg.value` and a withdraw burns the caller's own balance.  Asked as
+        an allowance it would look like one that is missing -- the spender
+        would be the wrapped token itself -- and the tab would offer an
+        approval that does nothing.
+        """
+        if getattr(plan, "wrap", False):
+            return False
         if plan.token_in.lower() == NATIVE or not self.can_send:
             return False
         return await self.allowance(plan.token_in, plan.to) < plan.amount_in

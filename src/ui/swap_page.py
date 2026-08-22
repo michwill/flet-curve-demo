@@ -123,6 +123,12 @@ class SwapPage:
         self.view.chain = self._chain_name()
         self.chain_id_now = chain_id
         await self._offer_coins(chain_id)
+        # Before the warm, not after it.  What the wallet holds is a question
+        # for the wallet, and nothing about it needs twenty seconds of pool
+        # state -- reading it here means the balance and MAX are there while
+        # the bar is still moving, which is when someone is deciding what to
+        # type.
+        await self._read_balances()
 
         if self._backend is None:
             try:

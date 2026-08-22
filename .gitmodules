@@ -4,4 +4,4 @@
 [submodule "vendor/electric-router"]
 	path = vendor/electric-router
 	url = git@github.com:michwill/electric-router.git
-	branch = browser
+	branch = master

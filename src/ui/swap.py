@@ -44,8 +44,9 @@ DIAGRAM_MIN_WIDTH = 420.0
 #: asking for it drew nothing at all.  Set to about what the widget stands at
 #: with both buttons showing, and left there: the widget grows and shrinks as
 #: an approval step or a status line comes and goes, and a picture that
-#: followed it would be the most restless thing on the page.
-DIAGRAM_HEIGHT = 440.0
+#: followed it would be the most restless thing on the page.  Measured at 500
+#: once the buttons grew to the height of a field, less the frame's own three.
+DIAGRAM_HEIGHT = 497.0
 
 #: How tall the route is when it is stacked under the widget instead of set
 #: beside it, where there is less width for the same picture.
@@ -98,6 +99,11 @@ SAVE_ICON = 18
 
 #: What an amount box says before there is a balance to put there.
 HINT = "0.0"
+
+#: And what colour it says it in.  Paler than the theme's quiet ink, because
+#: what the hint has to say is "this is not the number you are typing" and
+#: nothing here but the colour says it.
+HINT_COLOUR = ft.Colors.with_opacity(0.55, ft.Colors.ON_SURFACE_VARIANT)
 
 #: The size a coin's mark is drawn at in the picker and the boxes -- the same
 #: 20 the pool page's coin dropdown uses for its own.
@@ -287,7 +293,7 @@ class RouteDiagram(ft.Container):
     geometry is `ui.routegraph`, which is tested without a window.
     """
 
-    def __init__(self, page: ft.Page, chain: str):
+    def __init__(self, page: ft.Page, chain: str, corner: ft.Control | None = None):
         self._page = page
         self._chain = chain
         self._pool_coins: dict[str, list[Coin]] = {}
@@ -299,10 +305,18 @@ class RouteDiagram(ft.Container):
                               color=ft.Colors.ON_SURFACE_VARIANT,
                               text_align=ft.TextAlign.CENTER)
         self._size = (0.0, 0.0)
+        # Whatever the caller wants in the corner -- the save button, which
+        # acts on this picture and so belongs on it.  Last in the stack so it
+        # is above the ribbons, and positioned rather than laid out, because a
+        # row for it would take height off the drawing.
+        layers: list[ft.Control] = [
+            self._canvas, self._labels,
+            ft.Container(self._empty, alignment=ft.Alignment.CENTER),
+        ]
+        if corner is not None:
+            layers.append(ft.Container(corner, right=0, top=0))
         super().__init__(
-            ft.Stack([self._canvas, self._labels,
-                      ft.Container(self._empty, alignment=ft.Alignment.CENTER)],
-                     expand=True),
+            ft.Stack(layers, expand=True),
             padding=ft.Padding.all(14),
             border_radius=14,
             expand=True,
@@ -682,8 +696,9 @@ class SwapView(ft.Container):
             content_padding=ft.Padding.symmetric(horizontal=12, vertical=0),
             text_style=ft.TextStyle(size=FIELD_TEXT),
             # The hint is a balance, which is a detail; the value is the
-            # subject.  Same box, two sizes.
-            hint_style=ft.TextStyle(size=SMALL),
+            # subject.  Same box, two sizes and two weights of colour -- a
+            # number in the same ink as a typed one reads as a typed one.
+            hint_style=ft.TextStyle(size=SMALL, color=HINT_COLOUR),
             on_change=self._typed,
             expand=True,
             suffix_icon=self.max_button,
@@ -696,13 +711,13 @@ class SwapView(ft.Container):
             hint_text=HINT, read_only=True, value="", expand=True,
             height=FIELD_HEIGHT, text_style=ft.TextStyle(size=FIELD_TEXT),
             content_padding=ft.Padding.symmetric(horizontal=12, vertical=0),
-            hint_style=ft.TextStyle(size=SMALL))
+            hint_style=ft.TextStyle(size=SMALL, color=HINT_COLOUR))
         self.reverse = ft.IconButton(
             ft.Icons.SWAP_VERT, tooltip="Swap direction",
             on_click=self._flip_clicked, icon_size=20)
         self.save_button = ft.IconButton(
             ft.Icons.DOWNLOAD_OUTLINED, tooltip="Save the route as a picture",
-            on_click=self._save_clicked, icon_size=SAVE_ICON, disabled=True,
+            on_click=self._save_clicked, icon_size=SAVE_ICON, visible=False,
             width=SAVE_BUTTON, height=SAVE_BUTTON)
 
         self.rows = _InfoRows(page)
@@ -712,14 +727,17 @@ class SwapView(ft.Container):
         self.blocked = ft.Text("", size=SMALL, color=ft.Colors.ERROR,
                                visible=False)
         self.status = StatusPanel(page)
+        # As tall as the amount box and the coin beside it.  These are what
+        # the widget is *for*, and at the default height they were the
+        # smallest things in it.
         self.approve_button = buttons.Themed(
             "1. Approve spending", page=page, on_click=self._approve_clicked,
-            visible=False, expand=True)
+            visible=False, expand=True, height=FIELD_HEIGHT)
         self.submit_button = buttons.Themed(
             "Swap", page=page, on_click=self._swap_clicked, disabled=True,
-            expand=True)
+            expand=True, height=FIELD_HEIGHT)
 
-        self.diagram = RouteDiagram(page, chain)
+        self.diagram = RouteDiagram(page, chain, corner=self.save_button)
         self.widget = ft.Container(
             ft.Column(
                 [
@@ -757,19 +775,15 @@ class SwapView(ft.Container):
     # ------------------------------------------------------------- assembly
 
     def _heading(self) -> ft.Control:
-        """The name in the middle, and the save button on the right.
+        """The name, in the middle of the widget.
 
-        Centred by giving the left the same width the button takes on the
-        right, so the title is centred on the *widget* rather than on what is
-        left over beside the button.
+        The save button used to sit at the end of this row, which put it on
+        the widget -- and what it saves is the picture next to it.  It is in
+        the picture's own corner now, so it is beside the thing it acts on.
         """
         return ft.Row(
-            [
-                ft.Container(width=SAVE_BUTTON),
-                ft.Text("Swap", size=TITLE, weight=ft.FontWeight.BOLD,
-                        expand=True, text_align=ft.TextAlign.CENTER),
-                self.save_button,
-            ],
+            [ft.Text("Swap", size=TITLE, weight=ft.FontWeight.BOLD,
+                     expand=True, text_align=ft.TextAlign.CENTER)],
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
             spacing=0,
         )
@@ -917,7 +931,10 @@ class SwapView(ft.Container):
 
     def show_route(self, diagram) -> None:
         self.diagram.show(diagram, self.chain)
-        self.save_button.disabled = diagram is None
+        # Shown rather than dimmed: an empty frame has nothing to save, and a
+        # disabled button in the corner of it is an offer being withdrawn
+        # where there was never an offer.
+        self.save_button.visible = diagram is not None
         safe_update(self.save_button)
         self._set_has_route(diagram is not None)
 
@@ -1195,13 +1212,17 @@ class _Elements:
 
 
 def _balance_line(coin: CoinEntry | None, balance: int | None) -> str:
-    """What the wallet holds, short enough to sit inside the amount box.
+    """What the wallet holds, as a number and nothing else.
 
-    Grouped and trimmed rather than to the wei: this is a hint someone reads
-    at a glance to decide what to type, and to six decimals it did not fit the
-    box and was cut off mid-symbol.  MAX still fills in the exact figure.
+    Not "Balance 8,598.43 USDC": it is sitting in a box with the coin named
+    beside it, so two of those three words are already on screen.  What is
+    *not* obvious is that the number is not an amount being swapped, and that
+    is a job for the colour rather than for a caption.
+
+    Grouped and trimmed rather than to the wei -- this is read at a glance to
+    decide what to type, and MAX still fills in the exact figure.
     """
     if coin is None or balance is None:
         return ""
     held = format_units(balance, coin.decimals, precision=coin.decimals)
-    return f"Balance {token_amount(float(held))} {coin.symbol}"
+    return token_amount(float(held))

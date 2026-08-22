@@ -2396,7 +2396,22 @@ of the five side by side is what found it.
 The rest of the widget follows the pool page too.  The balance is the amount
 box's own hint rather than a caption under it -- a hint shows only while the
 box is empty, which is exactly when the balance is worth reading, and it buys
-back two lines on a widget that has to fit a phone.  The price impact sits in
+back two lines on a widget that has to fit a phone.  Just the figure, in ink
+paler than a typed one: the box has the coin named beside it, so "Balance" and
+"USDC" were two of three words already on screen, and what is *not* obvious is
+that the number is not an amount being swapped -- which is a job for the
+colour, not for a caption.
+
+It is there before the warm is, and so is MAX.  What a wallet holds is a
+question for the wallet and needs none of the twenty seconds of pool state, so
+`_read_balances` runs before `host.open` rather than after it: the figure and
+the button are ready while the bar is still moving, which is when someone is
+deciding what to type -- and an amount typed then is answered the moment the
+warm ends.
+
+The amount box, the coin beside it and the two buttons under it are all one
+height, because they are what the widget is for; the five lines of detail
+between them are not.  The price impact sits in
 the same flashing band the pool page uses, from the same `ui/alarm.py`: two
 tabs making the same judgement about the same figure should not have two
 timings the moment either is tuned.  Every figure under the amounts is a band
@@ -2478,6 +2493,11 @@ The picture can also be saved.  `routegraph.to_svg` is a second renderer over
 the same `layout` -- text, identical on both platforms, and it scales, which a
 screenshot of the canvas would not.  It names every column, unlike the screen:
 there are no marks in a file, so a name is all a token in the middle has.
+
+The button sits in the picture's own top corner rather than the widget's, and
+only once there is a picture: it acts on the route, so it belongs on it, and
+an empty frame has nothing to save.  Positioned in the frame's stack rather
+than given a row, which would take height off the drawing.
 
 `ui/download.py` hands it over, and on the web that took a third attempt.  Flet
 runs this app's Python in a module Web Worker and a worker has no `document`,

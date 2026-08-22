@@ -98,10 +98,40 @@ def copy_data() -> tuple[int, int]:
     return files, total
 
 
+#: What the wasm module is built from.  Anything here newer than the module
+#: means the module is stale.
+CRATE_SOURCES = ("rust/**/*.rs", "rust/**/Cargo.toml", "rust/Cargo.lock",
+                 "rust/rust-toolchain.toml")
+
+
+def wasm_is_stale(pkg: Path) -> bool:
+    """Whether the built module is older than the crates it came from.
+
+    Presence is not currency, and treating it as such is not a hypothetical:
+    bumping the submodule to a commit that changed a wasm signature left the
+    previous build sitting in `pkg/`, so the new Python called the old module
+    with an argument it did not have.  Every quote through the split optimiser
+    answered `curve_rate0/curve_tail must have one entry per curve` -- an
+    error about arguments, from a module that was simply out of date.
+    """
+    built = min((pkg / name).stat().st_mtime for name in WASM_FILES)
+    for pattern in CRATE_SOURCES:
+        for path in SOURCE.glob(pattern):
+            if path.is_file() and path.stat().st_mtime > built:
+                return True
+    return False
+
+
 def build_wasm(rebuild: bool) -> int:
-    """The wasm module, built if it is not there.  Returns its size in bytes."""
+    """The wasm module, built if it is missing or out of date.
+
+    Returns its size in bytes.
+    """
     pkg = SOURCE / "rust" / "wasm" / "pkg"
     missing = [name for name in WASM_FILES if not (pkg / name).exists()]
+    if not missing and not rebuild and wasm_is_stale(pkg):
+        print("  wasm:    out of date against the crates -- rebuilding")
+        rebuild = True
     if missing or rebuild:
         script = SOURCE / "scripts" / "build_wasm.sh"
         # The toolchain lives under the user's home rather than on the system

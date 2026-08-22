@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-#: The one second segment that is a page rather than a pool.
+#: The second segments that are a page rather than a pool.
 PORTFOLIO = "portfolio"
+SWAP = "swap"
+PAGES = (PORTFOLIO, SWAP)
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,6 +26,10 @@ class Route:
     def is_portfolio(self) -> bool:
         return self.page == PORTFOLIO
 
+    @property
+    def is_swap(self) -> bool:
+        return self.page == SWAP
+
 
 def parse(route: str | None) -> Route:
     """Read a route. Anything unrecognisable comes back empty."""
@@ -34,8 +40,8 @@ def parse(route: str | None) -> Route:
     if len(parts) == 1:
         return Route(chain)
     second = parts[1]
-    if second.lower() == PORTFOLIO:
-        return Route(chain, page=PORTFOLIO)
+    if second.lower() in PAGES:
+        return Route(chain, page=second.lower())
     if not _looks_like_address(second):
         return Route(chain)
     return Route(chain, second)

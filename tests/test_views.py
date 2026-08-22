@@ -2138,13 +2138,14 @@ def test_a_link_says_where_it_goes_twice_over() -> None:
     """The glyph takes the name's colour, so the pair reads as one thing
     rather than as a lit icon beside a muted word.
     """
-    from main import PAGE_MARKS, PAGE_POOLS
+    from main import PAGE_MARKS, PAGES
 
     app = nav_app(on="pools")
     app._sync_nav()
+    first = PAGES[0][0]
     glyph, name = nav_parts(app.nav.content.controls[0])
 
-    assert glyph.icon == PAGE_MARKS[PAGE_POOLS]
+    assert glyph.icon == PAGE_MARKS[first]
     assert glyph.color == name.color
 
 
@@ -2735,7 +2736,7 @@ def test_a_chain_with_no_totals_yet_lists_none() -> None:
     labels = [
         item.content.value for item in app.menu.items if item.content is not None
     ]
-    assert labels[0] == "Pools"
+    assert labels[0] == "Swap"
 
 
 def test_the_menu_says_which_page_you_are_on() -> None:
@@ -2761,11 +2762,13 @@ def test_the_menu_says_which_page_you_are_on() -> None:
 
 
 def test_a_laptop_menu_is_pages_only() -> None:
+    from main import PAGES
+
     app = header_app(LAPTOP)
     labels = [
         item.content.value for item in app.menu.items if item.content is not None
     ]
-    assert labels == ["Pools", "Portfolio"]
+    assert labels == [label for _name, label in PAGES]
 
 
 def test_crossing_the_breakpoint_repaints_the_header(monkeypatch) -> None:

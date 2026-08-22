@@ -40,6 +40,7 @@ from ui.pool_detail import PoolDetailView
 from ui.pool_list import PoolListView
 from ui.portfolio import PortfolioView
 from ui.responsive import content_width, layout_for
+from ui.swap_page import SwapPage
 from ui.typography import BODY, LABEL, ROW_TITLE, SMALL, TITLE
 from wallet import (
     Wallet,
@@ -123,14 +124,22 @@ HEADER_HEIGHT = 48 + 2 * 10
 #: chip that grew here would push the chain picker off the row.
 ADDRESS_EXPAND_MIN_PAGE = 1100
 
-#: The two pages the app has, as they appear in the URL and the nav.
+#: The pages the app has, as they appear in the URL and the nav.
 PAGE_POOLS = "pools"
 PAGE_PORTFOLIO = "portfolio"
+PAGE_SWAP = "swap"
 
 #: The glyph beside each page's name, in the nav and in the menu the nav
 #: becomes on a phone -- where the three theme rows already carry a mark,
 #: so without these the pages were the only rows without one.
-PAGE_MARKS = {PAGE_POOLS: ft.Icons.POOL, PAGE_PORTFOLIO: ft.Icons.SAVINGS}
+PAGE_MARKS = {
+    PAGE_POOLS: ft.Icons.POOL,
+    PAGE_PORTFOLIO: ft.Icons.SAVINGS,
+    PAGE_SWAP: ft.Icons.SWAP_HORIZ,
+}
+
+#: The pages, in nav order, with the label each is drawn under.
+PAGES = ((PAGE_SWAP, "Swap"), (PAGE_POOLS, "Pools"), (PAGE_PORTFOLIO, "Portfolio"))
 
 #: Room around a page, inside the scroller rather than around it: the
 #: scrollbar is drawn at the edge of the thing that scrolls, so padding the
@@ -152,9 +161,15 @@ NAV_SPACING = 14
 NAV_MARK = 20
 NAV_MARK_GAP = 6
 
-#: How wide the nav slides open: the gap, plus both links, plus the glyph
-#: and its air on each of them.
-NAV_WIDTH = NAV_GAP + NAV_SPACING + 210 + 2 * (NAV_MARK + NAV_MARK_GAP)
+#: How wide the nav slides open: the gap, the space between the links, and
+#: each link's own name plus its glyph and the air beside it.  Measured from
+#: the labels rather than a single number, so adding a page widens it.
+NAV_LABEL_WIDTH = {PAGE_SWAP: 58, PAGE_POOLS: 62, PAGE_PORTFOLIO: 96}
+NAV_WIDTH = (
+    NAV_GAP
+    + NAV_SPACING * (len(PAGES) - 1)
+    + sum(NAV_LABEL_WIDTH[name] + NAV_MARK + NAV_MARK_GAP for name, _ in PAGES)
+)
 
 #: Below this the header has no room to slide anything open, so the mark
 #: becomes a menu button instead.
@@ -505,6 +520,10 @@ class CurveApp:
         self.portfolio_view = PortfolioView(
             page, on_open=self.open_holding, on_claim=self.claim_portfolio
         )
+        #: Built when the tab is first opened, not at start-up: warming the
+        #: router is twenty seconds of reading, and someone who never opens
+        #: it should never pay for it.
+        self.swap_page: SwapPage | None = None
         self._earnings: list[earnings.Earning] = []
         #: What `reread_earnings` needs to ask the chain again, gathered
         #: once: the positions, their token metadata, CRV's price and the
@@ -555,14 +574,11 @@ class CurveApp:
     def _menu_items(self) -> list[ft.PopupMenuItem]:
         """What the mark opens."""
         pages = [
-            ft.PopupMenuItem(icon=ft.Icon(PAGE_MARKS[PAGE_POOLS]),
-                             content=ft.Text("Pools"),
-                             checked=self._page_name == PAGE_POOLS,
-                             on_click=lambda _e: self.go_page(PAGE_POOLS)),
-            ft.PopupMenuItem(icon=ft.Icon(PAGE_MARKS[PAGE_PORTFOLIO]),
-                             content=ft.Text("Portfolio"),
-                             checked=self._page_name == PAGE_PORTFOLIO,
-                             on_click=lambda _e: self.go_page(PAGE_PORTFOLIO)),
+            ft.PopupMenuItem(icon=ft.Icon(PAGE_MARKS[name]),
+                             content=ft.Text(label),
+                             checked=self._page_name == name,
+                             on_click=lambda _e, target=name: self.go_page(target))
+            for name, label in PAGES
         ]
         if not self._icons:
             return pages
@@ -701,6 +717,8 @@ class CurveApp:
         safe_update(self.body)
         self.list_view.set_layout(layout)
         self.portfolio_view.set_layout(layout)
+        if self.swap_page is not None:
+            self.swap_page.set_layout(layout)
         if self._detail is not None:
             self._detail.set_layout(layout)
 
@@ -1136,6 +1154,42 @@ class CurveApp:
 
     # -- portfolio --------------------------------------------------------
 
+    def show_swap(self) -> None:
+        """Open the Swap page, and warm the router if this is the first time."""
+        self._detail = None
+        self._page_name = PAGE_SWAP
+        self._sync_nav()
+        if self.swap_page is None:
+            self.swap_page = SwapPage(
+                self.page,
+                api=self.api,
+                chain_name=lambda: self.chain,
+                chain_id=self.current_chain_id,
+                provider_for=self.swap_provider,
+                account=lambda: self.wallet.address if self.wallet else "",
+                on_loading=self.loading,
+                on_loaded=self.loaded,
+            )
+        self._show(self.swap_page.control)
+        if self.page.width:
+            self.swap_page.set_layout(layout_for(self.page.width))
+        self._go(routing.build(self.chain, page=PAGE_SWAP))
+        self.page.update()
+        self.page.run_task(self.swap_page.open)
+
+    def swap_provider(self):
+        """What the Swap tab reads and sends through.
+
+        The wallet where there is one, with the public endpoints beside it for
+        reads -- the same arrangement every other page uses, so a wallet on
+        the wrong network can still be quoted at.
+        """
+        chain_id = self.chains.get(self.chain) or 0
+        wallet = self.wallet
+        if wallet is None:
+            return self.public_node(chain_id) if chain_id else None
+        return self.reader(chain_id, wallet.provider)
+
     def show_portfolio(self, *, reload: bool = True) -> None:
         """Open the portfolio page and start filling it in."""
         self._detail = None
@@ -1392,6 +1446,11 @@ class CurveApp:
             self.show_list()
             await self.load_pools()
 
+        if route.is_swap:
+            if self._detail is not None or self._page_name != PAGE_SWAP:
+                self.show_swap()
+            return
+
         if route.is_portfolio:
             # `_page_name` still says "portfolio" while a pool opened from
             # it is on screen -- a pool is not a page and does not claim
@@ -1498,10 +1557,7 @@ class CurveApp:
         """Redraw the links -- and the menu, which is the links on a phone."""
         self.menu.items = self._menu_items()
         self.nav.content = ft.Row(
-            [
-                self._nav_link("Pools", PAGE_POOLS),
-                self._nav_link("Portfolio", PAGE_PORTFOLIO),
-            ],
+            [self._nav_link(label, name) for name, label in PAGES],
             spacing=NAV_SPACING,
             tight=True,
         )
@@ -1518,6 +1574,8 @@ class CurveApp:
         """Switch pages, through the URL so that Back works."""
         if page == PAGE_PORTFOLIO:
             self.show_portfolio()
+        elif page == PAGE_SWAP:
+            self.show_swap()
         else:
             self.show_list()
 

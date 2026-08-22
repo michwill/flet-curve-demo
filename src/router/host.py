@@ -244,6 +244,14 @@ class RouterHost:
                     result = held.session.quote(amount)
                 except Exception as exc:
                     if generation == self._generation and amount == self._wanted:
+                        # The figures on screen are for an amount that is no
+                        # longer in the box, so they go before the reason for
+                        # their going does.  Left up, they would sit under a
+                        # red line describing a *different* trade, with
+                        # nothing anywhere saying the two disagree -- the
+                        # solver's own tripwires fire on some sizes and not
+                        # their neighbours, so this is not a rare shape.
+                        self._on_quote(None)
                         self._on_error(exc)
                         self._wanted = None
                     return

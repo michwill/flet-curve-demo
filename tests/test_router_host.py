@@ -234,6 +234,31 @@ async def test_the_refresher_sleeps_until_the_state_is_due():
     host.close()
 
 
+async def test_a_quote_that_raises_takes_the_old_figures_with_it():
+    """The solver's tripwires fire on some sizes and not their neighbours, so
+    a failed quote leaving the last good one on screen would put figures for a
+    different trade under a red line about this one."""
+    session = FakeSession()
+    host, _session, seen = build(session)
+    await host.open(1)
+    await host.set_pair("0xa", "0xb")
+    host.request(100)
+    for _ in range(6):
+        await asyncio.sleep(0)
+    assert [q.amount_in for q in seen["quotes"] if q] == [100]
+
+    def boom(amount):
+        raise RuntimeError("flow conservation is violated by 3.343e-03")
+
+    session.quote = boom
+    host.request(200)
+    for _ in range(6):
+        await asyncio.sleep(0)
+    assert seen["quotes"][-1] is None, "the stale figures were cleared"
+    assert seen["errors"], "and the reason was reported"
+    host.close()
+
+
 async def test_a_failed_warm_is_reported_not_swallowed():
     async def make(chain_id):
         raise RuntimeError("the endpoint declined")

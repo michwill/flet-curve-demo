@@ -194,7 +194,8 @@ class SwapPage:
         self._page.run_task(self._rank_by_holdings)
 
     async def _rank_by_holdings(self) -> None:
-        """Put the coins the wallet actually holds at the top of the picker.
+        """Put the coins the wallet actually holds at the top of the *sell*
+        picker.
 
         A handful of requests for the whole list: every `balanceOf` through
         Multicall3, the way `curve.portfolio` already reads a wallet's
@@ -223,8 +224,9 @@ class SwapPage:
         ranked = holdings.rank(coins, held, prices)
         if self._coins is not coins:
             return          # the chain moved on while this was in flight
-        self._coins = ranked
-        self.view.offer(ranked, self._chain_name())
+        # `coins` stays the volume order and stays what this is re-ranked
+        # from; the ranking is handed over beside it, for the selling side.
+        self.view.offer(coins, self._chain_name(), owned=ranked)
 
     async def wallet_changed(self) -> None:
         """A wallet arrived, left, or became a different account.

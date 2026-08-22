@@ -2380,12 +2380,17 @@ says which is being *held*, which is a different question.  One pass over rows
 that are already in hand -- a dict of address to summed volume, then one sort
 -- so the pickers are filled before the backend has loaded, let alone warmed.
 
-**The coins someone already holds come first.**  Volume is the right order for
-somebody looking for a market and the wrong one for somebody looking for their
-own coins, which are the ones they came to swap -- so `router/holdings.py`
-reads what the wallet has across the whole list and lifts anything worth more
-than a dollar to the top, ordered by what it is worth, with the amount and the
-dollars in the row.
+**The coins someone already holds come first, on the side being sold.**
+Volume is the right order for somebody looking for a market and the wrong one
+for somebody looking for their own coins, which are the ones they came to
+spend -- so `router/holdings.py` reads what the wallet has across the whole
+list and lifts anything worth more than a dollar to the top of the *sell*
+picker, ordered by what it is worth, with the amount and the dollars in the
+row.
+
+The buying side keeps the plain order.  What somebody already holds says
+nothing about what they want to buy, and a balance shown against a coin they
+are buying is answering a question they did not ask.
 
 `token_amount` gives a quantity four decimal places *or* as many as it takes
 to show three significant figures, whichever is more.  Eight-decimal coins

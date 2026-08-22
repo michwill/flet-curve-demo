@@ -878,10 +878,20 @@ class SwapView(ft.Container):
 
     # -------------------------------------------------------------- the pair
 
-    def offer(self, entries, chain: str, *, pools=()) -> None:
-        """The coins this chain has, and the pools they came from."""
+    def offer(self, entries, chain: str, *, pools=(), owned=None) -> None:
+        """The coins this chain has, and the order each side shows them in.
+
+        `owned` is the same coins with the wallet's holdings lifted to the
+        top, and it goes to the side being *sold* -- those are the ones
+        someone can actually spend, and they are what they came to spend.
+
+        The buying side keeps the plain order, by how busy the markets are.
+        What somebody already holds says nothing about what they want to buy,
+        and a balance shown against a coin they are buying is answering a
+        question they did not ask.
+        """
         self.chain = chain
-        self.sell.offer(entries, chain)
+        self.sell.offer(owned or entries, chain)
         self.buy.offer(entries, chain)
         self.diagram.set_chain(chain)
         self.diagram.offer_pools(pools)

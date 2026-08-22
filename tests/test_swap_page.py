@@ -230,3 +230,71 @@ async def test_a_wallet_going_away_takes_the_balance_with_it():
     await page.wallet_changed()
 
     assert page.view.amount.hint_text == "0.0"
+
+
+def view_with(coins):
+    """Just the `SwapView`, with no network behind it."""
+    from ui.swap import SwapView
+
+    class NoPage:
+        def run_task(self, *_a, **_kw) -> None:
+            pass
+
+    view = SwapView(NoPage(), "ethereum", on_amount=lambda *_: None,
+                    on_pair=lambda *_: None, on_max=lambda *_: None,
+                    on_approve=lambda *_: None, on_swap=lambda *_: None)
+    view.offer(coins, "ethereum")
+    return view
+
+
+def held_and_not():
+    """Two coins in volume order, the second of which the wallet holds."""
+    from router.universe import CoinEntry
+
+    return [
+        CoinEntry("0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", "USDC",
+                  "USD Coin", 6, volume=9.0),
+        CoinEntry("0xdac17f958d2ee523a2206206994597c13d831ec7", "USDT",
+                  "Tether", 6, volume=1.0),
+    ]
+
+
+def test_only_the_selling_side_is_reordered_by_what_is_held():
+    """What somebody already holds says nothing about what they want to buy."""
+    from router import holdings
+
+    coins = held_and_not()
+    ranked = holdings.rank(
+        coins, {coins[1].address: 5_000_000}, {coins[1].address: 1.0})
+    view = view_with(coins)
+
+    view.offer(coins, "ethereum", owned=ranked)
+
+    assert [c.symbol for c in view.sell._entries] == ["USDT", "USDC"]
+    assert [c.symbol for c in view.buy._entries] == ["USDC", "USDT"]
+
+
+def test_the_buying_side_shows_no_balance_against_a_coin():
+    """A balance beside a coin someone is buying answers a question they did
+    not ask."""
+    from router import holdings
+
+    coins = held_and_not()
+    ranked = holdings.rank(
+        coins, {coins[1].address: 5_000_000}, {coins[1].address: 1.0})
+    view = view_with(coins)
+
+    view.offer(coins, "ethereum", owned=ranked)
+
+    assert view.sell._entries[0].balance == 5_000_000
+    assert all(entry.balance == 0 for entry in view.buy._entries)
+
+
+def test_with_nothing_held_both_sides_are_the_same_list():
+    coins = held_and_not()
+    view = view_with(coins)
+
+    view.offer(coins, "ethereum", owned=None)
+
+    assert [c.symbol for c in view.sell._entries] == ["USDC", "USDT"]
+    assert [c.symbol for c in view.buy._entries] == ["USDC", "USDT"]

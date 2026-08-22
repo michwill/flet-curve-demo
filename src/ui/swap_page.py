@@ -26,7 +26,7 @@ from curve.gas import (
 )
 from curve.http import ApiError
 from curve.router_contract import RouterContract, RouterError
-from router import Backend, RouterHost, Stage, load_backend
+from router import Backend, RouterHost, Stage, incidents, load_backend
 from router.backend import BackendError
 from router.session import build_session
 from router.universe import coins_by_volume
@@ -225,19 +225,42 @@ class SwapPage:
         self._on_loading(min(1.0, max(0.0, fraction)))
 
     def _failed(self, exc: Exception) -> None:
-        """Say what went wrong, and at which block.
+        """Say what went wrong, at which block, and write the rest down.
 
         The block is not decoration.  A router that will not price a pair it
         priced a minute ago is a thing to reproduce, and reproducing it means
         pinning the state it happened against -- `erouter route --block N`
         takes exactly that number.  Without it a report is "it failed once",
         which is not a report.
+
+        The line on screen has room for the block and nothing else, so the
+        rest goes to `router.incidents`: the pair, the amount, the solver, and
+        the chain, taken now while they are still true.
         """
-        self.view.say(_with_block(exc, self._block_now()), FAILED)
+        block = self._block_now()
+        self._write_down("quote", exc, block)
+        self.view.say(_with_block(exc, block), FAILED)
 
     def _block_now(self) -> int:
         session = self.host.session
         return int(getattr(session, "block", 0) or 0) if session else 0
+
+    def _write_down(self, kind: str, exc: Exception, block: int) -> None:
+        """Everything `erouter route` would need to see this again."""
+        sell, buy = self.view.pair
+        session = self.host.session
+        incidents.record(
+            kind,
+            error=type(exc).__name__,
+            message=str(exc),
+            chain=self.chain_id_now,
+            block=block,
+            sell=getattr(sell, "address", ""),
+            buy=getattr(buy, "address", ""),
+            pair=(f"{getattr(sell, 'symbol', '?')}->{getattr(buy, 'symbol', '?')}"),
+            amount=self.view.amount.value or "",
+            solver=getattr(session, "solver", ""),
+        )
 
     # -------------------------------------------------------------- the pair
 
@@ -322,6 +345,10 @@ class SwapPage:
             # a minimum rate, which is the router refusing to ship something
             # it cannot protect rather than anything having gone wrong.
             self._plan = None
+            # Worth writing down too: this is the router declining to *ship* a
+            # route it was happy to price, which is a different fault from a
+            # quote that would not price at all and has its own causes.
+            self._write_down("plan", exc, self._block_now())
             self.view.cannot_send(_why_unsendable(exc))
             return
         if self._quote is not quote:

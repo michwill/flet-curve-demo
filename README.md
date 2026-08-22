@@ -2489,6 +2489,32 @@ schemes and drops the rest without a word.  So the file goes over a
 crosses the same gap; `tests/test_download_bridge.py` drives that half under
 node.  A desktop build just writes the file, and says where it put it.
 
+### When it will not route
+
+"It failed once" is not a report, so a failure writes itself down.  The line
+on screen ends with the block it happened at -- `erouter route --block N`
+takes exactly that number -- and `router/incidents.py` keeps the rest in
+`$XDG_STATE_HOME/curve-flet/swap-failures.jsonl`: chain, block, both token
+addresses, the amount as typed, and which solver answered.  One JSON object
+per line, appended, said to stderr as well, and it never raises: this runs on
+the failure path, and failing to write down a failure must not become the
+failure anyone sees.  A browser gets the console line only, since Pyodide's
+filesystem does not outlive the tab.
+
+Written after a morning of not reproducing one.  A browser saw USDC to USDT
+come back "src not connected to dst through the active set" for sizes that had
+routed a minute earlier; 1,368 quotes across sixty blocks, both solvers, every
+ordering of sizes, and six refresh cycles would not do it again.  What the
+message *does* mean is now on the record: it is what the solver says when no
+path through the active set can carry the size asked for, which for a hundred
+trillion USDC is the right answer and for a million is not.
+
+The same run turned up something else, which is ours rather than the solver's:
+62 of those plans were refused for a leg carrying two wei through a tricrypto
+pool, and **no quote ever produced such a leg** -- 591 quotes with planning off
+found none.  The dust appears when `plan_call` re-prices the chosen route at a
+newer block, not when the route is chosen.
+
 ### What is not there yet
 
 - **Custom slippage.** "Auto" is the router's own per-leg bound and is the only

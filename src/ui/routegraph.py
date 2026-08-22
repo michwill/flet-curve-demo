@@ -78,6 +78,10 @@ class BusBox:
     slot: int
     symbol: str
     amount: str
+    #: The token's own address, for its logo.  The router names the rail and
+    #: also says which token it holds; only the name is on the picture, but
+    #: the mark beside the name comes from the address.
+    token: str
     x: float
     y: float
     width: float
@@ -219,6 +223,7 @@ def layout(diagram, width: float, height: float, *, bus_width: float = BUS_WIDTH
                     slot=key,
                     symbol=getattr(bus, "symbol", "") or "",
                     amount=getattr(bus, "amount", "") or "",
+                    token=getattr(bus, "token", "") or "",
                     x=level * step,
                     y=top,
                     width=bus_width,

@@ -73,6 +73,14 @@ LABEL_DROP = 5.0
 #: The size a coin's mark is drawn at in the picker and the boxes.
 MARK = 24
 
+#: And on the route, where it sits beside a name at `LABEL`.  Small enough
+#: that a picture with a dozen columns is still a picture of the flow rather
+#: than a row of badges.
+ROUTE_MARK = 14
+
+#: Between that mark and the name it belongs to.
+MARK_GAP = 4.0
+
 #: Above this a price impact is worth a warning rather than a number.  The
 #: same threshold the in-pool swap uses, so the two tabs agree about what
 #: "high" means.
@@ -332,8 +340,7 @@ class RouteDiagram(ft.Container):
         """A column's token, under it, on a chip so it reads over a ribbon."""
         text = ft.Column(
             [
-                ft.Text(bus.symbol, size=LABEL, no_wrap=True,
-                        weight=ft.FontWeight.BOLD),
+                self._name(bus),
                 ft.Text(_compact(bus.amount), size=LABEL - 1, no_wrap=True,
                         color=ft.Colors.ON_SURFACE_VARIANT),
             ],
@@ -351,6 +358,27 @@ class RouteDiagram(ft.Container):
                             alignment=ft.Alignment.TOP_CENTER)
 
 
+    def _name(self, bus) -> ft.Control:
+        """A column's symbol, with its logo where the router named the token.
+
+        `BusView` carries the address the rail holds, which is what the mark
+        is looked up by -- the symbol alone is ambiguous across chains and is
+        not what the asset bundle is keyed on.
+        """
+        name = ft.Text(bus.symbol, size=LABEL, no_wrap=True,
+                       weight=ft.FontWeight.BOLD)
+        if not bus.token:
+            return name
+        coin = Coin(address=bus.token, symbol=bus.symbol, decimals=18)
+        return ft.Row(
+            [token_mark(coin, self._chain, ROUTE_MARK), name],
+            spacing=MARK_GAP,
+            tight=True,
+            alignment=ft.MainAxisAlignment.CENTER,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        )
+
+
 def _overlap(one, two) -> bool:
     """Whether two label boxes share any ground."""
     return (one[0] < two[2] and two[0] < one[2]
@@ -366,9 +394,13 @@ def _label_width(bus) -> float:
     at `LABEL` -- generous on purpose, because an underestimate does not leave
     a label out, it clips one and sits it on its neighbour.
     """
-    wide = max(len(bus.symbol) * LABEL * 0.78,
+    mark = ROUTE_MARK + MARK_GAP if bus.token else 0.0
+    wide = max(len(bus.symbol) * LABEL * 0.78 + mark,
                len(_compact(bus.amount)) * (LABEL - 1) * 0.58)
-    return min(LABEL_BOX, max(LABEL_MIN, wide + 6))
+    # The cap is on the *text*, and the mark gets its own room on top of it:
+    # a logo is not a longer name, and taking it out of the name's allowance
+    # would clip the name of any token whose symbol already filled it.
+    return min(LABEL_BOX + mark, max(LABEL_MIN, wide + 6))
 
 
 def _ribbon(points, height: float) -> list[cv.Path.PathElement]:

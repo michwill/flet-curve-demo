@@ -2268,6 +2268,18 @@ what makes quoting as someone types possible at all, and what makes the
 wei-exact model gate affordable enough to run in a browser rather than trust
 from a file.
 
+**The sweep should cost what the CLI's costs**, and checking that it did found
+two reasons it did not.  `RouterSession._batched` chunked by the transport's
+batch size and awaited each chunk before building the next, so a transport
+that chunks and streams internally never had more than one request in flight;
+and `router/rpc.py` assumed Erigon's ceiling of 100 requests a batch, where
+the endpoint that actually ships serves 2,000.  Between them, 6,174 slots took
+16.9 s against `erouter route`'s 1.3 s over the same endpoint at the same
+block.  The ceiling is now asked for once -- one request, with the method
+about to be sent, because a node may cap by payload size or by method -- and
+the sweep goes over in groups of `batch_size * max_streams`.  1,369 ms, which
+is the CLI's number.
+
 `router/host.py` owns that timing, and its rules are what make three costs
 read as one thing: the newest amount wins with no queue and no debounce, an
 amount typed while the bar is still moving is answered when it stops, an
@@ -2373,6 +2385,10 @@ routes reach on the first pass -- worth doing, because this runs on every
 keystroke and on every frame of a window drag.  Five real routes, eight to
 seventeen legs: 2.3 ms each, no crossings in any of them.  Before the swap
 pass the same five had four; before the lanes, most of a sixteen-leg picture.
+
+Each column is named under its bar, with the token's logo beside the name --
+looked up by the address the router says the rail holds, because a symbol is
+ambiguous across chains and is not what the asset bundle is keyed on.
 
 An eighteen-leg route is one this router really produces, and eighteen token
 names across 420 pixels is one illegible word, so a label is drawn only where

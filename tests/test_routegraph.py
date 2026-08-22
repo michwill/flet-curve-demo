@@ -22,6 +22,7 @@ class FakeBus:
     slot: int
     symbol: str = ""
     amount: str = ""
+    token: str = ""
     is_source: bool = False
     is_dest: bool = False
 
@@ -95,6 +96,17 @@ def test_an_empty_diagram_lays_out_to_nothing():
     got = layout(FakeDiagram(), 400, 200)
     assert got.buses == [] and got.bands == []
     assert (got.width, got.height) == (400, 200)
+
+
+def test_a_column_keeps_the_address_of_the_token_it_holds():
+    """What the logo beside its name is looked up by.  A symbol is ambiguous
+    across chains and is not what the asset bundle is keyed on."""
+    diagram = straight()
+    diagram.buses[0].token = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+    got = layout(diagram, 400, 200)
+    source = next(bus for bus in got.buses if bus.is_source)
+    assert source.token == "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+    assert next(b for b in got.buses if b.is_dest).token == "", "absent is fine"
 
 
 def test_the_columns_span_the_width_and_stay_inside_it():

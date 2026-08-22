@@ -115,9 +115,14 @@ async def build_session(chain_id: int, backend: Backend, *, api,
     if not rows:
         raise RouterUnavailable(f"no pool list for {chain.name}")
     floor = MIN_TVL if min_tvl is None else min_tvl
+    rpc = RouterRpc(url, chain_id)
+    # Before the session reads `batch_size` to size its sweep.  One request,
+    # against twenty times the round trips if this endpoint turns out to serve
+    # more than the floor -- which the one that ships does.
+    await rpc.probe()
     session = RouterSession(
         chain,
-        RouterRpc(url, chain_id),
+        rpc,
         backend.evm(getattr(chain, "spec", "Osaka"), chain_id),
         data_source(assets_root),
         router_rows(rows, min_tvl=floor),

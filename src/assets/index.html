@@ -99,6 +99,9 @@
     always finds it listening. See src/wallet/browser.py for the other end.
   -->
   <script src="wallet_bridge.js"></script>
+  <!-- The main-thread half of "save this picture": a worker has no DOM
+       to hang an `<a download>` on.  See download_bridge.js. -->
+  <script src="download_bridge.js"></script>
 
   <!--
     Development only: ?mock=1 on localhost loads a fake EIP-6963 wallet, so

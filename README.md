@@ -2476,9 +2476,18 @@ otherwise unreadable.
 
 The picture can also be saved.  `routegraph.to_svg` is a second renderer over
 the same `layout` -- text, identical on both platforms, and it scales, which a
-screenshot of the canvas would not.  `ui/download.py` hands it over: a blob and
-an unseen anchor click in a browser, a file in the downloads folder on a
-desktop build, which has to say *where* because nothing pops up to tell them.
+screenshot of the canvas would not.  It names every column, unlike the screen:
+there are no marks in a file, so a name is all a token in the middle has.
+
+`ui/download.py` hands it over, and on the web that took a third attempt.  Flet
+runs this app's Python in a module Web Worker and a worker has no `document`,
+so the obvious `<a download>` cannot be built there.  A blob URL made in the
+worker is valid on this origin, but Flet's `launch_url` will not open one --
+and will not open a `data:` URL either, since Flutter's launcher takes http-ish
+schemes and drops the rest without a word.  So the file goes over a
+`BroadcastChannel` to `download_bridge.js`, which is how the wallet already
+crosses the same gap; `tests/test_download_bridge.py` drives that half under
+node.  A desktop build just writes the file, and says where it put it.
 
 ### What is not there yet
 

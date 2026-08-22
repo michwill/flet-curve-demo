@@ -1017,8 +1017,8 @@ class SwapView(ft.Container):
         except Exception as exc:
             self.say(f"Could not save the route: {exc}", FAILED)
             return
-        self.say("Saved the route" if download.is_browser()
-                 else f"Saved the route to {where}", DONE)
+        self.say(f"Saved the route to {where}" if where
+                 else "Saved the route", DONE)
 
     def _picked(self, _entry: CoinEntry | None) -> None:
         self._sync_hints()
@@ -1158,6 +1158,13 @@ class _Elements:
 
 
 def _balance_line(coin: CoinEntry | None, balance: int | None) -> str:
+    """What the wallet holds, short enough to sit inside the amount box.
+
+    Grouped and trimmed rather than to the wei: this is a hint someone reads
+    at a glance to decide what to type, and to six decimals it did not fit the
+    box and was cut off mid-symbol.  MAX still fills in the exact figure.
+    """
     if coin is None or balance is None:
         return ""
-    return f"Balance: {format_units(balance, coin.decimals, precision=6)} {coin.symbol}"
+    held = format_units(balance, coin.decimals, precision=coin.decimals)
+    return f"Balance {token_amount(float(held))} {coin.symbol}"

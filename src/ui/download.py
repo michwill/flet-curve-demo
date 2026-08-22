@@ -34,16 +34,23 @@ def safe_name(name: str) -> str:
     return cleaned or "download"
 
 
-def save_text(name: str, text: str, *, media: str = "text/plain") -> str:
+#: The channel `download_bridge.js` listens on, and the version of what is
+#: sent over it.  Both halves have to agree; the JS is the other side.
+CHANNEL = "flet-download"
+VERSION = 1
+
+
+def save_text(name: str, text: str, *, media: str = "text/plain",
+              page=None) -> str:
     """Write `text` out as `name`, and say where it went.
 
-    In a browser that is the download the viewer chose, so there is nowhere
-    to name and the message says so.
+    A browser downloads it wherever downloads go, so there is nowhere to
+    name and the empty string says so.
     """
     name = safe_name(name)
     if is_browser():
         _browser_download(name, text, media)
-        return name
+        return ""
     path = _folder() / name
     path.write_text(text, encoding="utf-8")
     return str(path)
@@ -59,24 +66,31 @@ def _folder() -> Path:
 
 
 def _browser_download(name: str, text: str, media: str) -> None:
-    """A blob, an anchor, and a click nobody sees.
+    """Hand the file to the main thread, which has a DOM to save it with.
 
-    Revoked straight after: the object URL pins the blob in memory for the
-    life of the document otherwise, and a route diagram is not small.
+    Not `<a download>` here, the obvious way, because it cannot be done here:
+    Flet runs this in a module Web Worker and a worker has no `document`,
+    which is exactly what it said when it was tried.  Two things that looked
+    like ways round it are not: a blob URL made in the worker is valid on
+    this origin but Flet's `launch_url` will not open one, and it will not
+    open a `data:` URL either -- Flutter's launcher takes http-ish schemes
+    and drops the rest without a word.
+
+    So it goes over a `BroadcastChannel` to `download_bridge.js`, which is
+    how the wallet already crosses the same gap.
     """
     import js
     from pyodide.ffi import to_js
 
-    options = to_js({"type": media}, dict_converter=js.Object.fromEntries)
-    blob = js.Blob.new([text], options)
-    url = js.URL.createObjectURL(blob)
-    anchor = js.document.createElement("a")
-    anchor.href = url
-    anchor.download = name
-    js.document.body.appendChild(anchor)
-    anchor.click()
-    anchor.remove()
-    js.URL.revokeObjectURL(url)
+    message = to_js(
+        {"v": VERSION, "dir": "save", "name": name, "text": text, "media": media},
+        dict_converter=js.Object.fromEntries,
+    )
+    channel = js.BroadcastChannel.new(CHANNEL)
+    try:
+        channel.postMessage(message)
+    finally:
+        channel.close()
 
 
-__all__ = ["is_browser", "safe_name", "save_text"]
+__all__ = ["CHANNEL", "VERSION", "is_browser", "safe_name", "save_text"]

@@ -2656,11 +2656,20 @@ message *does* mean is now on the record: it is what the solver says when no
 path through the active set can carry the size asked for, which for a hundred
 trillion USDC is the right answer and for a million is not.
 
-The same run turned up something else, which is ours rather than the solver's:
-62 of those plans were refused for a leg carrying two wei through a tricrypto
-pool, and **no quote ever produced such a leg** -- 591 quotes with planning off
-found none.  The dust appears when `plan_call` re-prices the chosen route at a
-newer block, not when the route is chosen.
+The same run turned up something else: 62 of those plans were refused for a leg
+carrying two wei through a tricrypto pool, and **no quote ever produced such a
+leg** -- 591 quotes with planning off found none.  The dust appears when
+`plan_call` re-prices the chosen route at a newer block, not when the route is
+chosen.
+
+The router has since answered the refusal itself.  A leg's bound was a fraction
+of its pool's fee, and on a leg carrying a few raw units of an eight-decimal
+token that fraction is smaller than one unit -- a rate that does not exist, so
+the leg was called unbounded and the whole route refused, which is the wrong
+answer to a trade that is simply small.  It now takes the tightest rate that
+still admits the quote, and `unbounded` means what it says: the floor really
+rounds to zero.  Measured here, $14.48 of tBTC to USDT was refused before the
+change and encodes after it, at 5.00 bp with nothing unbounded.
 
 ### What is not there yet
 

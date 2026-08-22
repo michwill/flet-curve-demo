@@ -251,9 +251,34 @@ class CoinPicker(ft.SearchBar):
             title=ft.Text(entry.symbol, size=BODY, no_wrap=True),
             subtitle=ft.Text(entry.name or entry.address, size=LABEL,
                              color=ft.Colors.ON_SURFACE_VARIANT, no_wrap=True),
+            trailing=self._holding(entry),
             dense=True,
             selected=self._picked is not None and entry.address == self._picked.address,
             on_click=lambda _e, chosen=entry: self._chose(chosen),
+        )
+
+    def _holding(self, entry: CoinEntry) -> ft.Control | None:
+        """What the wallet holds of this coin, where it holds any.
+
+        Only on the coins that carry one, so the rest of the list is not a
+        column of blanks -- and the amount over what it is worth, because the
+        amount is what goes in the box and the dollars are what says whether
+        it is worth going in.
+        """
+        if not entry.balance:
+            return None
+        held = format_units(entry.balance, entry.decimals, precision=entry.decimals)
+        return ft.Column(
+            [
+                ft.Text(token_amount(float(held)), size=LABEL, no_wrap=True,
+                        text_align=ft.TextAlign.RIGHT),
+                ft.Text(f"${entry.worth:,.2f}", size=LABEL - 1, no_wrap=True,
+                        color=ft.Colors.ON_SURFACE_VARIANT,
+                        text_align=ft.TextAlign.RIGHT),
+            ],
+            spacing=0,
+            tight=True,
+            horizontal_alignment=ft.CrossAxisAlignment.END,
         )
 
     def _opened(self, _e: AnyEvent) -> None:

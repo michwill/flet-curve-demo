@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -521,6 +522,30 @@ class CurveApi:
             return cached
         payload = await self._v2(f"/pools/{chain_id}/{address}")
         return self._store(key, payload)
+
+    async def usd_prices(self, chain: str) -> dict[str, float]:
+        """Every token price the Prices API has for a chain, in one request.
+
+        There is a per-token endpoint beside this one and it is the wrong
+        shape for the Swap tab, which wants to know what a wallet's *whole*
+        holding is worth: five hundred requests against one.
+        """
+        key = f"prices:{chain}"
+        cached = self._cached(key)
+        if cached is not None:
+            return cached
+        try:
+            payload = await self._v1(f"/usd_price/{chain}")
+        except ApiError:
+            return {}
+        prices = {}
+        for row in (payload or {}).get("data") or ():
+            address = str((row or {}).get("address") or "").lower()
+            price = row.get("usd_price")
+            if address and price is not None:
+                with contextlib.suppress(TypeError, ValueError):
+                    prices[address] = float(price)
+        return self._store(key, prices)
 
     async def usd_price(self, chain: str, address: str) -> float:
         """What one token is worth, for pricing rewards."""

@@ -35,6 +35,11 @@ class CoinEntry:
     #: and TVL says which are being *held*, which is a different question.
     volume: float = 0.0
     pools: int = 0
+    #: What the connected wallet holds of it, and what that is worth.  Both
+    #: zero until somebody asks -- see `router.holdings`, which fills them in
+    #: to put the coins someone actually has at the top of the picker.
+    balance: int = 0
+    worth: float = 0.0
 
     @property
     def is_native(self) -> bool:

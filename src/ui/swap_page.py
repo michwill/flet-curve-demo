@@ -28,9 +28,20 @@ from curve.gas import (
 )
 from curve.http import ApiError
 from curve.router_contract import RouterContract, RouterError
-from router import Backend, RouterHost, Stage, incidents, load_backend, wrapping
+from router import (
+    Backend,
+    RouterHost,
+    Stage,
+    holdings,
+    incidents,
+    load_backend,
+    wrapping,
+)
 from router.backend import BackendError
-from router.session import build_session, chain_for
+from router.session import (
+    build_session,
+    chain_for,
+)
 from router.universe import coins_by_volume
 from wallet.base import WalletError
 
@@ -65,6 +76,9 @@ class SwapPage:
         self._on_loading = on_loading
         self._on_loaded = on_loaded
 
+        #: The picker's coins, in the order it shows them.  Re-ordered once
+        #: what the wallet holds is known.
+        self._coins: list = []
         self._backend: Backend | None = None
         self._backend_error = ""
         self._quote = None
@@ -171,8 +185,46 @@ class SwapPage:
         if not coins:
             return
         self._opened_chain = chain_id
+        self._coins = coins
         self.view.offer(coins, self._chain_name(), pools=rows)
         await self._open_pair(chain_id, coins)
+        # Behind the pair, not before it: which coins someone holds decides
+        # the *order* of a list that is already usable, and two requests for
+        # an ordering should not hold up the two pickers being filled.
+        self._page.run_task(self._rank_by_holdings)
+
+    async def _rank_by_holdings(self) -> None:
+        """Put the coins the wallet actually holds at the top of the picker.
+
+        A handful of requests for the whole list: every `balanceOf` through
+        Multicall3, the way `curve.portfolio` already reads a wallet's
+        positions, and one more for the chain's prices, which the Prices API
+        serves in bulk.  Per coin it would be three hundred of each.
+
+        Not over the router's endpoint: that key is scoped to reads and
+        `eth_call` against the quoter and the router, and answers a token's
+        `balanceOf` with a 403.
+
+        Quiet when it cannot be done -- no wallet, no endpoint, no prices.  A
+        picker ordered by how busy the markets are is the order it has always
+        had, and losing the list to save the ordering would be a poor trade.
+        """
+        coins, account = self._coins, self._account()
+        provider = self._provider_for()
+        if not coins or not account or provider is None:
+            return
+        held = await holdings.read_balances(provider, account, coins)
+        if not held:
+            return
+        try:
+            prices = await self._api.usd_prices(self._chain_name())
+        except ApiError:
+            return
+        ranked = holdings.rank(coins, held, prices)
+        if self._coins is not coins:
+            return          # the chain moved on while this was in flight
+        self._coins = ranked
+        self.view.offer(ranked, self._chain_name())
 
     async def wallet_changed(self) -> None:
         """A wallet arrived, left, or became a different account.
@@ -186,6 +238,9 @@ class SwapPage:
         idea a wallet exists, so a connection costs no warm and no re-read.
         """
         await self._read_balances()
+        # The picker's order is a wallet question too: a different account
+        # holds different coins.
+        self._page.run_task(self._rank_by_holdings)
         if self._plan is not None:
             await self._sync_approval(self._plan)
             await self._show_gas(self._plan)

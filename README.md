@@ -2380,6 +2380,32 @@ says which is being *held*, which is a different question.  One pass over rows
 that are already in hand -- a dict of address to summed volume, then one sort
 -- so the pickers are filled before the backend has loaded, let alone warmed.
 
+**The coins someone already holds come first.**  Volume is the right order for
+somebody looking for a market and the wrong one for somebody looking for their
+own coins, which are the ones they came to swap -- so `router/holdings.py`
+reads what the wallet has across the whole list and lifts anything worth more
+than a dollar to the top, ordered by what it is worth, with the amount and the
+dollars in the row.
+
+A dollar rather than a non-zero balance, because a token's own units say
+nothing: 1 wei and 1 USDC are both "1", and a dusty airdrop above the busiest
+market on the chain would be the list lying.  A coin with *no* price is not
+promoted either -- worth nothing that can be measured is not the same as worth
+a lot.
+
+Two things it does not do.  It does not ask per coin: three hundred coins is
+three hundred requests that way, so the `balanceOf` calls go through
+Multicall3 the way `curve.portfolio` already reads a wallet's positions --
+measured at 303 coins in 2 requests and half a second, plus one for the
+chain's prices, which the Prices API serves in bulk.  And it does not go
+through the router's endpoint: that key is scoped to reads and `eth_call`
+against the quoter and the router, and answers a token's `balanceOf` with a
+403.
+
+It also runs *behind* the pair rather than before it.  Which coins someone
+holds decides the order of a list that is already usable, and two requests for
+an ordering should not hold up the pickers being filled.
+
 The picker itself is a `SearchBar` rather than the `Dropdown` the pool page
 uses, because a chain has hundreds of coins and a pool has three; but it is
 *dressed* as that dropdown, since a control that does the same job in the same

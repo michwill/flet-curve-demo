@@ -460,6 +460,21 @@ class RouteDiagram(ft.Container):
         self._draw()
         safe_update(self)
 
+    def forget(self) -> None:
+        """Drop the route, and wait with a picture straight away.
+
+        Not the momentary blank that `show(None)` leaves: that one is for the
+        gap between two routes on the same network, where a new one is on its
+        way.  This is a different network arriving, whose warm is twenty
+        seconds, and the route on screen belongs to the one being left.
+        """
+        self._diagram = None
+        self._canvas.shapes = []
+        self._labels.controls = []
+        self._empty.value = self.waiting
+        self._show_meme(True)
+        safe_update(self)
+
     def say(self, message: str) -> None:
         """No route to draw, and a reason for it."""
         self._diagram = None
@@ -1201,6 +1216,17 @@ class SwapView(ft.Container):
         safe_update(self.approve_button)
         safe_update(self.submit_button)
         safe_update(self.amount)
+
+    def forget_chain(self) -> None:
+        """Everything on screen belongs to the network being left."""
+        self.amount.value = ""
+        self.receive.value = ""
+        self.rows.clear()
+        self.diagram.forget()
+        self.clear_status()
+        self.cannot_send("")
+        self._empty = True
+        self._sync()
 
     def clear_amount(self) -> None:
         self.amount.value = ""

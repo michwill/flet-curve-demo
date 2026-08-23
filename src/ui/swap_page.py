@@ -144,6 +144,16 @@ class SwapPage:
             self.view.say("This network has no chain id yet.", FAILED)
             return
         self.view.chain = self._chain_name()
+        if chain_id != self.chain_id_now:
+            # A different network: the amount is a count of a coin that is not
+            # in the new list, the figures were quoted against pools that are
+            # not on it, and the route drawn belongs to the chain being left.
+            # None of it survives, and the warm ahead is long enough that
+            # leaving it up would be showing the old network's answer for
+            # twenty seconds after somebody asked for a different one.
+            self._quote = self._plan = None
+            self._balances = {}
+            self.view.forget_chain()
         self.chain_id_now = chain_id
         await self._offer_coins(chain_id)
         # Before the warm, not after it.  What the wallet holds is a question

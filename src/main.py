@@ -827,7 +827,12 @@ class CurveApp:
         self._show_chain_name()
         self.chain_picker.controls = self._chain_rows()
         safe_update(self.chain_picker)
-        self.show_list()
+        # Whatever was being looked at, on the new network -- except a pool,
+        # which is one particular contract and does not exist over there.
+        if self._page_name == PAGE_SWAP and self._detail is None:
+            self.show_swap()
+        else:
+            self.show_list()
         self.page.run_task(self.load_pools)
         self.page.run_task(self.align_wallet_chain)
 

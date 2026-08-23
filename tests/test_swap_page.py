@@ -782,3 +782,54 @@ async def test_but_it_does_go_up_if_no_route_arrives():
         assert diagram._empty.value == ""
     finally:
         swap_module.MEME_AFTER = monkeyish
+
+
+# -- switching network ------------------------------------------------------
+
+
+async def test_a_new_network_takes_the_old_one_off_the_screen():
+    """The amount counts a coin that is not in the new list, the figures were
+    quoted against pools that are not on it, and the route drawn belongs to
+    the network being left -- and the warm ahead is twenty seconds, which is
+    a long time to show somebody the wrong network's answer."""
+    coins = two_coins()
+    page = swap_page_with(Wallet(), coins)
+    page.chain_id_now = 1
+    page.view.amount.value = "2000"
+    page.view.receive.value = "1999.5"
+    page.view.diagram._diagram = object()
+    page._quote = object()
+    page._plan = Planned()
+    page._balances = {coins[0].address: 5}
+
+    page._chain_id = lambda: _answer(100)
+    page._chain_name = lambda: "gnosis"
+    page._offer_coins = lambda _id: _answer(None)
+    page._read_balances = lambda: _answer(None)
+    page._backend_error = "no backend here"
+
+    await page.open()
+
+    assert page.view.amount.value == "", "the old network's amount stayed"
+    assert page.view.receive.value == "", "the old network's figure stayed"
+    assert page.view.diagram._diagram is None, "the old network's route stayed"
+    assert page._quote is None and page._plan is None
+    assert page._balances == {}
+
+
+async def test_the_frame_waits_with_a_picture_not_the_old_route():
+    coins = two_coins()
+    page = swap_page_with(Wallet(), coins)
+    page.view.diagram._diagram = object()
+    page.view.diagram._meme.visible = False
+
+    page.view.forget_chain()
+
+    assert page.view.diagram._meme.visible, "it left the frame blank"
+    assert page.view.diagram._empty.value == ""
+
+
+def _answer(value):
+    import asyncio
+
+    return asyncio.sleep(0, result=value)

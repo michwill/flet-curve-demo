@@ -13,6 +13,8 @@ What this file owns is the widget.  Deciding when a quote happens belongs to
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from itertools import pairwise
 
 import flet as ft
@@ -56,10 +58,14 @@ DIAGRAM_STACKED_HEIGHT = 300.0
 #: be there from the start rather than appearing under someone's hands.
 EMPTY_ROUTE = "The route appears here"
 
-#: How big the sticker that waits there is.  Big enough to be the thing in an
-#: otherwise empty frame, small enough that the caption under it is still the
-#: thing being read.
-MEME_SIZE = 190.0
+#: How much room the sticker leaves around itself in an otherwise empty
+#: frame.  It fills the rest, keeping its own shape.
+MEME_INSET = 28.0
+
+#: How long each one stays before the next.  Long enough not to be a thing
+#: flashing beside a number somebody is reading, short enough to be worth
+#: waiting through a warm for.
+MEME_EVERY = 30.0
 
 #: Air either side of a column's label.  Two labels closer than this are two
 #: words read as one, so the later of them is left out -- an eighteen-leg
@@ -339,9 +345,13 @@ class RouteDiagram(ft.Container):
                               color=ft.Colors.ON_SURFACE_VARIANT,
                               text_align=ft.TextAlign.CENTER)
         # An empty frame with one line of grey text in the middle of it is a
-        # lot of nothing to look at while somebody decides what to type.
-        self._meme = ft.Image(src="", width=MEME_SIZE, height=MEME_SIZE,
-                              fit=ft.BoxFit.CONTAIN, visible=False)
+        # lot of nothing to look at while somebody decides what to type -- and
+        # the warm takes twenty seconds, which is the longest anyone looks at
+        # this panel.  `CONTAIN` with nothing else set is what keeps the shape
+        # while it takes the room.
+        self._meme = ft.Image(src="", fit=ft.BoxFit.CONTAIN, expand=True,
+                              visible=False)
+        self._slideshow: object | None = None
         self._size = (0.0, 0.0)
         # Whatever the caller wants in the corner -- the save button, which
         # acts on this picture and so belongs on it.  Last in the stack so it
@@ -350,10 +360,12 @@ class RouteDiagram(ft.Container):
         layers: list[ft.Control] = [
             self._canvas, self._labels,
             ft.Container(
-                ft.Column([self._meme, self._empty],
-                          spacing=10, tight=True,
-                          horizontal_alignment=ft.CrossAxisAlignment.CENTER),
-                alignment=ft.Alignment.CENTER),
+                ft.Column(
+                    [self._meme, self._empty], spacing=10, expand=True,
+                    alignment=ft.MainAxisAlignment.CENTER,
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+                alignment=ft.Alignment.CENTER, expand=True,
+                padding=MEME_INSET),
         ]
         if corner is not None:
             layers.append(ft.Container(corner, right=0, top=0))
@@ -364,6 +376,10 @@ class RouteDiagram(ft.Container):
             expand=True,
         )
         self.waiting = EMPTY_ROUTE
+        # From the first frame, not from the first quote.  The warm is twenty
+        # seconds of nothing to do, and it is exactly the stretch this panel
+        # was empty for -- the caption was all anybody saw of it.
+        self._show_meme(True)
 
     def before_update(self) -> None:
         # A sheet of paper with the route drawn on it, rather than another
@@ -448,16 +464,45 @@ class RouteDiagram(ft.Container):
     def _show_meme(self, wanted: bool) -> None:
         """The sticker that waits where a route will go.
 
-        A new one each time the frame goes back to being empty, and the same
-        one for as long as it stays that way -- picking again on every redraw
-        would turn a thing to look at into a thing that flickers.
+        It says nothing beside itself: a caption explaining that the route
+        appears here, under a picture that is plainly not a route, is a line
+        nobody needs twice.  The caption comes back on its own when there is
+        no picture to put there.
         """
-        if wanted and not self._meme.visible:
-            source = assets.meme()
-            self._meme.src = source or ""
-            self._meme.visible = bool(source)
+        if not wanted:
+            self._meme.visible = False
             return
-        self._meme.visible = self._meme.visible and wanted
+        if not self._meme.visible:
+            self._turn_meme()
+        self._keep_turning()
+        if self._meme.visible:
+            self._empty.value = ""
+
+    def _turn_meme(self) -> None:
+        """Put up a different one, or none if the pack was never bundled."""
+        source = assets.meme()
+        self._meme.src = source or ""
+        self._meme.visible = bool(source)
+
+    def _keep_turning(self) -> None:
+        """One picture for a whole warm is a long look at one joke.
+
+        Started when the first one goes up rather than in the constructor,
+        which runs before there is a loop to run it on.
+        """
+        if self._slideshow is not None:
+            return
+        with contextlib.suppress(Exception):
+            self._slideshow = self._page.run_task(self._slideshow_loop)
+
+    async def _slideshow_loop(self) -> None:
+        while True:
+            await asyncio.sleep(MEME_EVERY)
+            if not self._meme.visible:
+                continue
+            self._turn_meme()
+            self._empty.value = ""
+            safe_update(self)
 
     def _resized(self, event) -> None:
         self._size = (getattr(event, "width", 0.0) or 0.0,

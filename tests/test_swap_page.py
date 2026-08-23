@@ -643,3 +643,75 @@ async def test_a_new_selling_coin_is_quoted_in_its_own_units():
     assert asked[-1] == 1998432 * 10 ** 18 + 10 ** 17, (
         f"quoted at the wrong scale: {asked[-1]}"
     )
+
+
+# -- what waits in the frame before there is a route ------------------------
+
+
+def test_the_frame_waits_with_a_sticker_and_no_caption():
+    """From the first frame, not from the first quote.
+
+    Nothing called `show` until a quote or a pair change, so a freshly opened
+    tab sat through the whole warm -- twenty seconds, the longest anyone looks
+    at this panel -- showing a line of grey text and nothing else.
+    """
+    page = swap_page_with(Wallet(), two_coins())
+
+    assert page.view.diagram._meme.visible, "the frame opened empty"
+    assert page.view.diagram._empty.value == "", (
+        "a caption saying the route appears here, under a picture that is "
+        "plainly not a route"
+    )
+
+
+def test_a_reason_is_said_without_a_joke_beside_it():
+    """A picture next to a failure reads as being pleased about it."""
+    page = swap_page_with(Wallet(), two_coins())
+
+    page.view.diagram.say("This route could not be drawn.")
+
+    assert page.view.diagram._meme.visible is False
+    assert page.view.diagram._empty.value == "This route could not be drawn."
+
+
+def test_going_back_to_waiting_asks_for_another(monkeypatch):
+    from ui import swap as swap_module
+
+    asked = []
+
+    def counted() -> str:
+        asked.append(1)
+        return "memes/001.webp"
+
+    monkeypatch.setattr(swap_module.assets, "meme", counted)
+    page = swap_page_with(Wallet(), two_coins())
+    diagram = page.view.diagram
+    before = len(asked)
+
+    diagram.say("nothing to draw")
+    diagram._show_meme(True)
+
+    assert len(asked) == before + 1, "it put the same one back up"
+    assert diagram._meme.visible
+
+
+def test_staying_empty_keeps_the_same_one(monkeypatch):
+    """Picking again on every redraw turns a thing to look at into a
+    thing that flickers -- and `show(None)` runs on every keystroke."""
+    from ui import swap as swap_module
+
+    asked = []
+
+    def counted() -> str:
+        asked.append(1)
+        return "memes/001.webp"
+
+    monkeypatch.setattr(swap_module.assets, "meme", counted)
+    page = swap_page_with(Wallet(), two_coins())
+    diagram = page.view.diagram
+    before = len(asked)
+
+    diagram._show_meme(True)
+    diagram._show_meme(True)
+
+    assert len(asked) == before, "it re-picked while nothing had changed"

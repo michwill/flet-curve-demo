@@ -416,3 +416,77 @@ def test_an_unrelated_coin_leaves_the_other_side_alone():
     page.view.sell.pick(third)
 
     assert page.view.pair == (third, usdt), "the buying side moved for no reason"
+
+
+# -- what a swap of ours changes about this wallet --------------------------
+
+
+class Sending:
+    """A router contract with no chain behind it."""
+
+    can_send = True
+
+    async def execute(self, _plan) -> str:
+        return "0x" + "ef" * 32
+
+    async def needs_approval(self, _plan) -> bool:
+        return False
+
+    async def balance_of(self, _token: str) -> int:
+        return 5_000_000
+
+
+class Planned:
+    """Enough of an execution plan for the send path to read."""
+
+    def __init__(self) -> None:
+        self.reverted = ""
+        self.to = "0x" + "22" * 20
+        self.token_in = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+        self.amount_in = 1_000
+        self.value = 0
+        self.data = b""
+
+
+async def test_a_swap_re_reads_both_balances_and_the_picker_order():
+    """The swap moved this wallet, not just the pools.
+
+    Both boxes print a balance as their hint, and the selling picker is
+    ordered by those balances with the figures beside them -- so a swap that
+    leaves either alone is showing what was true just before the transaction
+    this tab sent.
+    """
+    import asyncio
+
+    coins = two_coins()
+    wallet = Wallet()
+    wallet.connect("0x" + "11" * 20, **{coins[0].address: 5_000_000})
+    page = swap_page_with(wallet, coins)
+
+    scheduled = []
+    page._page.run_task = lambda fn, *a: scheduled.append(fn)
+    read = []
+    original = page._read_balances
+
+    async def watched():
+        read.append(True)
+        await original()
+
+    page._read_balances = watched
+    page._plan = Planned()
+    contract = Sending()
+    page._contract = lambda: contract
+    page._confirm = lambda *a, **k: asyncio.sleep(0, result=0)
+
+    class Host:
+        async def after_swap(self):
+            return 0
+
+    page.host = Host()
+
+    await page._swap()
+
+    assert read, "the boxes still show the balance from before the swap"
+    assert page._rank_by_holdings in scheduled, (
+        "the selling picker kept its pre-swap order and figures"
+    )

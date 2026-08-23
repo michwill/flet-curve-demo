@@ -598,7 +598,13 @@ class SwapPage:
             # has to be priced against what they hold now rather than what
             # they held before it landed.
             await self.host.after_swap()
+            # And it moved this wallet: both boxes show a balance that the
+            # swap has just changed, and the selling picker is *ordered* by
+            # those balances with the figures printed beside them.  Leaving
+            # either alone shows what was true before the swap this tab just
+            # sent, which is the one moment somebody is looking at them.
             await self._read_balances()
+            self._page.run_task(self._rank_by_holdings)
         except WalletError as exc:
             self._rejected(exc)
         finally:

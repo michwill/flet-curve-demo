@@ -1111,7 +1111,10 @@ class SwapView(ft.Container):
         # the typed number across would ask for.  So what the output box
         # worked out becomes what the input box asks for, and the output is
         # left to the quote that follows rather than guessed at here.
-        worked_out = (self.receive.value or "").strip()
+        # Without its thousands separators: what goes in is read back as a
+        # number, and a separator is only ever in the way there -- doubly so
+        # where a comma is how a decimal point is written.
+        worked_out = (self.receive.value or "").strip().replace(",", "")
         if worked_out:
             self.amount.value = worked_out
             self.receive.value = ""

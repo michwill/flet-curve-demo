@@ -378,10 +378,22 @@ class SwapPage:
         if self.host.stage is not Stage.READY or self._wrapping():
             return
         self._on_loading(0.0)
+        # Forgotten before the pair is prepared, and asked again after it.
+        #
+        # What the host holds is a count of the *old* selling coin's smallest
+        # units, and `set_pair` ends by quoting whatever it still has.  Two
+        # million USDC re-read as sDOLA is two millionths of one, which does
+        # not route -- and the refusal clears the amount outright, so every
+        # later change of pair quoted nothing at all and the widget sat there
+        # saying the two coins were not connected.
+        self.host.request(0)
         try:
             await self.host.set_pair(sell, buy)
         finally:
             self._on_loaded()
+        # Read from the box rather than remembered, so it is in the units that
+        # now apply -- and so an amount a failed quote threw away comes back.
+        self.host.request(self.view.amount_in())
         await self._read_balances()
         self.view.show_quote(self._quote)
 

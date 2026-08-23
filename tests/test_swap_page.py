@@ -577,3 +577,69 @@ def test_a_different_chain_does_empty_it():
     page.view.diagram.set_chain("arbitrum")
 
     assert page.view.diagram._pool_coins == {}
+
+
+
+# -- an amount is a count of one particular coin's units --------------------
+
+
+def test_the_flip_writes_a_number_with_no_separators_in_it():
+    """What goes in the box is read back as a number.
+
+    A thousands separator is only ever in the way there, and in a locale
+    where a comma *is* the decimal point it is worse than in the way.
+    """
+    coins = two_coins()
+    page = swap_page_with(Wallet(), coins)
+    page.view.amount.value = "0.01"
+    page.view.receive.value = "1,998,432.10"
+
+    page.view._flip_clicked(None)
+
+    assert page.view.amount.value == "1998432.10"
+
+
+async def test_a_new_selling_coin_is_quoted_in_its_own_units():
+    """2,000,000 USDC and 2,000,000 sDOLA are the same figure and a million
+    million apart in units.
+
+    The host is handed a raw count, and `set_pair` ends by quoting whatever it
+    still holds -- so a pair change used to re-ask at the old coin's scale.
+    Two million USDC read as sDOLA is two millionths of one, which does not
+    route, and the refusal then cleared the amount so nothing quoted again.
+    """
+    from router.universe import CoinEntry
+
+    usdc = CoinEntry("0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", "USDC",
+                     "USD Coin", 6, 0.0, 0)
+    sdola = CoinEntry("0x" + "5d" * 20, "sDOLA", "Staked DOLA", 18, 0.0, 0)
+    page = swap_page_with(Wallet(), [usdc, sdola])
+    page.view.set_pair(sdola, usdc)
+    page.view.amount.value = "1998432.10"
+
+    asked = []
+
+    class Host:
+        stage = Stage.READY
+
+        def request(self, amount):
+            asked.append(amount)
+
+        async def set_pair(self, _src, _dst):
+            return True
+
+    page.host = Host()
+    page._on_loading = lambda *_a: None
+    page._on_loaded = lambda *_a: None
+
+    async def no_balances():
+        return None
+
+    page._read_balances = no_balances
+
+    await page._prepare(sdola.address, usdc.address)
+
+    assert asked[0] == 0, "the old coin's count was left for set_pair to quote"
+    assert asked[-1] == 1998432 * 10 ** 18 + 10 ** 17, (
+        f"quoted at the wrong scale: {asked[-1]}"
+    )

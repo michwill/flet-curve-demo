@@ -490,3 +490,40 @@ async def test_a_swap_re_reads_both_balances_and_the_picker_order():
     assert page._rank_by_holdings in scheduled, (
         "the selling picker kept its pre-swap order and figures"
     )
+
+
+# -- the button between the two boxes ---------------------------------------
+
+
+def test_flipping_carries_the_worked_out_amount_across():
+    """Selling 1,000 USDT for 0.01 WBTC and flipping asks to sell the 0.01.
+
+    Carrying the typed number across instead would ask to sell a thousand
+    WBTC, which is a different question by four orders of magnitude and the
+    one the widget used to put on screen.
+    """
+    coins = two_coins()
+    usdc, usdt = coins
+    page = swap_page_with(Wallet(), coins)
+    page.view.amount.value = "1000"
+    page.view.receive.value = "0.010000"
+
+    page.view._flip_clicked(None)
+
+    assert page.view.pair == (usdt, usdc), "the coins turned round"
+    assert page.view.amount.value == "0.010000", "the amounts did not follow"
+    assert page.view.receive.value == "", "the output was guessed rather than quoted"
+
+
+def test_flipping_with_nothing_quoted_keeps_what_was_typed():
+    """With no output there is nothing better to offer than what was typed."""
+    coins = two_coins()
+    usdc, usdt = coins
+    page = swap_page_with(Wallet(), coins)
+    page.view.amount.value = "1000"
+    page.view.receive.value = ""
+
+    page.view._flip_clicked(None)
+
+    assert page.view.pair == (usdt, usdc)
+    assert page.view.amount.value == "1000"

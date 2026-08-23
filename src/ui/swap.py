@@ -1089,6 +1089,18 @@ class SwapView(ft.Container):
         sell, buy = self.sell.picked, self.buy.picked
         self.sell.pick(buy, tell=False)
         self.buy.pick(sell, tell=False)
+        # The figures turn round with the coins.  Selling 1,000 USDT for
+        # 0.01 WBTC and then pressing this is a request to sell that 0.01
+        # WBTC back -- not to sell a thousand of them, which is what carrying
+        # the typed number across would ask for.  So what the output box
+        # worked out becomes what the input box asks for, and the output is
+        # left to the quote that follows rather than guessed at here.
+        worked_out = (self.receive.value or "").strip()
+        if worked_out:
+            self.amount.value = worked_out
+            self.receive.value = ""
+            safe_update(self.amount)
+            safe_update(self.receive)
         self._sync_hints()
         self._on_pair(buy, sell)
 

@@ -14,10 +14,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from itertools import pairwise
 
+import pytest
+
 from ui.routegraph import (
     MIN_BAND,
     NODE_GAP,
     WAY_GAP,
+    flows,
     layers,
     layout,
     pool_name,
@@ -50,6 +53,16 @@ class FakeElement:
     target: str = "0xpool"
     detail: str = ""
     kind: FakeKind = field(default_factory=FakeKind)
+    #: What the leg takes out of its bus, which is what the widths are split
+    #: by.  Defaults to the share, so a test that says 60/40 gets 60/40.
+    amount_in: str = ""
+    amount_out: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.amount_in:
+            self.amount_in = str(self.share_pct)
+        if not self.amount_out:
+            self.amount_out = self.amount_in
 
 
 @dataclass
@@ -446,3 +459,82 @@ def test_a_leg_named_after_its_two_ends_says_what_it_does_instead():
     assert pool_name(Leg("ETH -> WETH", "WRAP_NATIVE")) == "wrap"
     assert pool_name(Leg("", "SWAP_STABLE")) == "", "nothing to say, so nothing"
     assert pool_name(Leg("A -> B", "SWAP_STABLE")) == "", "and no guessing"
+
+
+# -- the widths have to balance --------------------------------------------
+
+
+def test_a_conversion_does_not_claim_the_whole_trade():
+    """A deposit that fills a merged node reads 100% of its node.
+
+    So do the legs beside it read their own share of the same node, and
+    multiplying the two together had the source emitting more than it held:
+    measured on crvUSD -> sDOLA, 115.13% of itself, while the node the deposit
+    fed passed on 84.87% of what it was given.  The picture showed it -- a
+    band leaving a bus wider than the band that filled it.
+    """
+    diagram = FakeDiagram(
+        buses=[FakeBus(0, "crvUSD", is_source=True), FakeBus(1, "scrvUSD"),
+               FakeBus(2, "frxUSD"), FakeBus(3, "sDOLA", is_dest=True)],
+        elements=[
+            # Straight out of the source, a tenth of it.
+            FakeElement(0, 0, 2, 12.03, amount_in="12030"),
+            # ...and the conversion that takes the rest, which says 100%.
+            FakeElement(1, 0, 1, 100.0, amount_in="87970"),
+            FakeElement(2, 1, 3, 100.0, amount_in="87970"),
+            FakeElement(3, 2, 3, 100.0, amount_in="12030"),
+        ],
+    )
+
+    weight = flows(diagram)
+
+    out_of_source = weight[0] + weight[1]
+    assert out_of_source == pytest.approx(1.0), (
+        f"the source emitted {out_of_source:.4f} of itself"
+    )
+    assert weight[1] == pytest.approx(weight[2]), (
+        "the node the conversion fed passed on something else"
+    )
+
+
+def test_every_bus_passes_on_what_it_was_given():
+    """In equals out, at every bus that is neither source nor destination."""
+    diagram = FakeDiagram(
+        buses=[FakeBus(0, "A", is_source=True), FakeBus(1, "B"),
+               FakeBus(2, "C"), FakeBus(3, "D", is_dest=True)],
+        elements=[
+            FakeElement(0, 0, 1, 100.0, amount_in="70"),
+            FakeElement(1, 0, 2, 100.0, amount_in="30"),
+            FakeElement(2, 1, 3, 60.0, amount_in="42"),
+            FakeElement(3, 1, 2, 40.0, amount_in="28"),
+            FakeElement(4, 2, 3, 100.0, amount_in="58"),
+        ],
+    )
+
+    weight = flows(diagram)
+
+    into: dict[int, float] = {}
+    out: dict[int, float] = {}
+    for element in diagram.elements:
+        out[element.src_slot] = out.get(element.src_slot, 0.0) + weight[element.index]
+        into[element.dst_slot] = into.get(element.dst_slot, 0.0) + weight[element.index]
+    for slot in (1, 2):
+        assert into[slot] == pytest.approx(out[slot]), f"bus {slot} does not balance"
+    assert into[3] == pytest.approx(1.0), "the destination did not receive the trade"
+
+
+def test_a_grouped_amount_is_still_a_number():
+    """`rendermodel.format_units` groups its thousands, so an amount arrives
+    as "100,000.00" -- read as-is, every band comes out at the minimum."""
+    diagram = FakeDiagram(
+        buses=[FakeBus(0, "A", is_source=True), FakeBus(1, "B", is_dest=True)],
+        elements=[
+            FakeElement(0, 0, 1, 25.0, amount_in="1,000.000000"),
+            FakeElement(1, 0, 1, 75.0, amount_in="3,000.000000"),
+        ],
+    )
+
+    weight = flows(diagram)
+
+    assert weight[0] == pytest.approx(0.25)
+    assert weight[1] == pytest.approx(0.75)

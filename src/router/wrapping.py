@@ -132,6 +132,11 @@ class _Element:
     target: str
     detail: str
     kind: _Kind
+    #: What the leg carries, which is how `routegraph` divides a bus between
+    #: the legs out of it.  One for one both ways here, so the two sides of a
+    #: wrapping are the same number.
+    amount_in: str = ""
+    amount_out: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,7 +156,8 @@ def diagram(which: str, sell, buy, wrapped: str, shown: str):
             _Bus(1, getattr(buy, "symbol", "?"), shown,
                  getattr(buy, "address", ""), is_dest=True),
         ],
-        elements=[_Element(0, 0, 1, 100.0, which, wrapped, wrapped, _Kind(kind))],
+        elements=[_Element(0, 0, 1, 100.0, which, wrapped, wrapped, _Kind(kind),
+                           amount_in=shown, amount_out=shown)],
         order=[0, 1],
     )
 

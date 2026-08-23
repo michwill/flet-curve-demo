@@ -350,10 +350,22 @@ def layers(diagram) -> dict[int, int]:
 def flows(diagram) -> dict[int, float]:
     """Each leg's share of the *whole* route, by element index.
 
-    `share_pct` is a share of what leaves that leg's own node, which is what
-    the router means by a split: two legs out of the source read 60 and 40, and
-    two legs out of a node further along read 100 between them.  Drawn as they
-    come, a leg deep in the route looks as important as the whole trade.
+    Split by what the legs carry rather than by `share_pct`.  A share is of
+    what leaves that leg's own node, which composes only where every leg
+    means it the same way -- and a *conversion* does not: the deposit that
+    fills a merged node stands in for the arcs behind it and reads 100%, so
+    multiplying it by what the source holds claimed the whole trade for it
+    while the legs beside it claimed their own share as well.  Measured on
+    crvUSD -> sDOLA: the source emitted 115.13% of itself and the node it fed
+    passed on 84.87% of what it was given, which is a Sankey that does not
+    balance and looked like one.
+
+    Every bus is one token, so the legs out of it are all denominated in that
+    token and their `amount_in` divides it directly.  In equals out at every
+    bus by construction, whatever a share meant.
+
+    The elements are already ordered for execution -- a node's inflows precede
+    its outflows -- which is the order this needs.  See `layers`.
     """
     elements = list(getattr(diagram, "elements", ()) or ())
     if not elements:
@@ -363,14 +375,34 @@ def flows(diagram) -> dict[int, float]:
     if not sources:
         order = list(getattr(diagram, "order", ()) or ())
         sources = {order[0]} if order else {elements[0].src_slot}
+
+    leaving: dict[int, float] = {}
+    for element in elements:
+        leaving[element.src_slot] = (
+            leaving.get(element.src_slot, 0.0) + _carried(element))
+
     held: dict[int, float] = dict.fromkeys(sources, 1.0)
     out: dict[int, float] = {}
     for element in elements:
-        share = max(0.0, float(element.share_pct)) / 100.0
-        carried = held.get(element.src_slot, 0.0) * share
+        total = leaving.get(element.src_slot, 0.0)
+        part = (_carried(element) / total) if total > 0 else 0.0
+        carried = held.get(element.src_slot, 0.0) * part
         out[element.index] = carried
         held[element.dst_slot] = held.get(element.dst_slot, 0.0) + carried
     return out
+
+
+def _carried(element) -> float:
+    """What a leg takes out of its bus, in that bus's own token.
+
+    `rendermodel.format_units` groups its thousands, so this is "100,000.00"
+    rather than a number.  Read with the separators left in, every leg is
+    worth nothing and every band comes out at the minimum.
+    """
+    try:
+        return max(0.0, float(str(element.amount_in).replace(",", "")))
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _through(elements, weight: dict[int, float]) -> dict[int, float]:

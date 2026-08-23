@@ -229,6 +229,7 @@ class CoinPicker(ft.SearchBar):
         return self._picked
 
     def pick(self, entry: CoinEntry | None, *, tell: bool = True) -> None:
+        before = self._picked
         self._picked = entry
         self.value = entry.symbol if entry else ""
         self.bar_leading = (
@@ -238,7 +239,10 @@ class CoinPicker(ft.SearchBar):
         )
         safe_update(self)
         if tell:
-            self._on_pick(entry)
+            # What it was showing goes with it: choosing the coin the other
+            # picker holds is the pair the other way round, and the caller
+            # cannot work that out once this has been overwritten.
+            self._on_pick(entry, before)
 
     # ---------------------------------------------------------- the control
 
@@ -587,6 +591,13 @@ def _stack_width(coins: int) -> float:
     return step * (shown - 1) + POOL_MARK + MARK_GAP
 
 
+def same_coin(one: CoinEntry | None, other: CoinEntry | None) -> bool:
+    """The same token, whatever case the two addresses arrived in."""
+    if one is None or other is None:
+        return False
+    return one.address.lower() == other.address.lower()
+
+
 def _text_width(text: str, size: float, *, bold: bool) -> float:
     """Roughly how wide this reads at this size.
 
@@ -704,8 +715,8 @@ class SwapView(ft.Container):
         self._blocked = False
         self._empty = True
 
-        self.sell = CoinPicker(page, chain, on_pick=self._picked, label="Sell")
-        self.buy = CoinPicker(page, chain, on_pick=self._picked, label="Buy")
+        self.sell = CoinPicker(page, chain, on_pick=self._sell_picked, label="Sell")
+        self.buy = CoinPicker(page, chain, on_pick=self._buy_picked, label="Buy")
 
         self.max_button = ft.TextButton(
             "MAX", on_click=self._max_clicked,
@@ -1114,7 +1125,26 @@ class SwapView(ft.Container):
         self.say(f"Saved the route to {where}" if where
                  else "Saved the route", DONE)
 
-    def _picked(self, _entry: CoinEntry | None) -> None:
+    def _sell_picked(self, entry: CoinEntry | None,
+                     before: CoinEntry | None) -> None:
+        self._picked(self.buy, entry, before)
+
+    def _buy_picked(self, entry: CoinEntry | None,
+                    before: CoinEntry | None) -> None:
+        self._picked(self.sell, entry, before)
+
+    def _picked(self, other: CoinPicker, entry: CoinEntry | None,
+                before: CoinEntry | None) -> None:
+        """One of the pickers changed.
+
+        Choosing the coin the *other* one already holds is nobody's way of
+        asking to swap a coin for itself.  It is the pair the other way round
+        -- which is what the flip button is for -- so the other picker takes
+        what this one was showing, and the pair comes out swapped rather than
+        doubled.
+        """
+        if same_coin(entry, other.picked):
+            other.pick(before, tell=False)
         self._sync_hints()
         self._on_pair(self.sell.picked, self.buy.picked)
 

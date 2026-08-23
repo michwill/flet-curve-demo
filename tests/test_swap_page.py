@@ -375,3 +375,44 @@ async def test_the_floor_only_ever_moves_forward():
 
     page._floor_block = max(page._floor_block, 150)
     assert page._floor_block == 200
+
+
+# -- picking the coin the other side already holds ---------------------------
+
+
+def test_choosing_the_other_side_s_coin_swaps_the_pair():
+    """Nobody asks to swap USDC for USDC.
+
+    Picking the coin the other selector holds is the pair the other way
+    round, which is what the flip button does -- so the other selector takes
+    what this one was showing rather than both ending up the same.
+    """
+    coins = two_coins()
+    usdc, usdt = coins
+    page = swap_page_with(Wallet(), coins)
+    assert page.view.pair == (usdc, usdt)
+
+    page.view.sell.pick(usdt)           # sell := the coin buy already holds
+
+    assert page.view.pair == (usdt, usdc), "it swapped rather than doubled"
+
+
+def test_it_works_from_the_buying_side_too():
+    coins = two_coins()
+    usdc, usdt = coins
+    page = swap_page_with(Wallet(), coins)
+
+    page.view.buy.pick(usdc)            # buy := the coin sell already holds
+
+    assert page.view.pair == (usdt, usdc)
+
+
+def test_an_unrelated_coin_leaves_the_other_side_alone():
+    coins = two_coins()
+    usdc, usdt = coins
+    third = type(usdc)("0x" + "33" * 20, "DAI", "Dai", 18, 0.0, 0)
+    page = swap_page_with(Wallet(), coins)
+
+    page.view.sell.pick(third)
+
+    assert page.view.pair == (third, usdt), "the buying side moved for no reason"

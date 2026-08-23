@@ -946,3 +946,40 @@ def test_the_marks_stay_where_there_is_room_for_them():
     assert len(drawn) == 1
     import flet as ft
     assert isinstance(drawn[0].content.content, ft.Row), "the marks were dropped"
+
+
+# -- and the marks shrink to what is left ------------------------------------
+
+
+def test_marks_take_the_room_left_beside_the_name():
+    from ui.swap import POOL_MARK, _marks_that_fit, _stack_width
+
+    plenty = _marks_that_fit(2, _stack_width(2) + 20.0)
+
+    assert plenty == POOL_MARK, "it drew them smaller than it had to"
+
+
+def test_marks_shrink_rather_than_go():
+    """Taking them off to make a name fit left the room they wanted empty --
+    fifteen to twenty-five points of it, which is a smaller stack."""
+    from ui.swap import POOL_MARK, POOL_MARK_MIN, _marks_that_fit, _stack_width
+
+    tight = _stack_width(2) - 4.0
+    mark = _marks_that_fit(2, tight)
+
+    assert POOL_MARK_MIN <= mark < POOL_MARK
+    assert _stack_width(2, mark) <= tight, "the smaller stack still did not fit"
+
+
+def test_marks_go_when_they_would_be_dots():
+    """Below the floor a token mark says a pool has coins and nothing about
+    which, which is not worth the room."""
+    from ui.swap import _marks_that_fit
+
+    assert _marks_that_fit(2, 8.0) == 0.0
+
+
+def test_a_pool_with_no_coins_asks_for_nothing():
+    from ui.swap import _marks_that_fit
+
+    assert _marks_that_fit(0, 100.0) == 0.0

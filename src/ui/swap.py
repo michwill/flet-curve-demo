@@ -140,6 +140,10 @@ MARK_GAP = 4.0
 #: is how it got there.
 POOL_MARK = 13
 
+#: ...and the smallest they are worth drawing at.  Below this a token mark is
+#: a coloured dot, which says a pool has coins and nothing about which.
+POOL_MARK_MIN = 9
+
 #: How many of a pool's coins are stacked before the rest become "+n", and
 #: how much each overlaps the one before -- `logos.coin_stack`'s own, since
 #: what is being computed here is the width of what it will draw.
@@ -644,17 +648,20 @@ class RouteDiagram(ft.Container):
             # the estimate decides whether the name is drawn at all, and being
             # wrong about that is better than being wrong about the clipping.
             #
-            # The marks go first when it is tight.  They are the ornament and
-            # the name is the thing being read, and on a narrow panel they are
-            # the difference: a fifteen-leg route in 720 points had eleven
-            # names dropped for width and six of them fit without the stack.
+            # The name first, and the marks in whatever is left beside it.
+            # They are the ornament and the name is the thing being read, so
+            # on a narrow panel they give way to it -- but giving way is
+            # shrinking rather than leaving, since the room they were asked to
+            # vacate is mostly still there once the name has had its share.
+            allowed = room * LEG_ROOM
             name_only = _text_width(name, LEG_LABEL, bold=False) + LEG_AIR * 2
-            box = name_only + _stack_width(len(coins))
-            if box > room * LEG_ROOM:
-                if name_only > room * LEG_ROOM:
-                    continue
-                coins, box = [], name_only
-            tall = max(LEG_LABEL, POOL_MARK if coins else 0) + LEG_AIR
+            if name_only > allowed:
+                continue
+            mark = _marks_that_fit(len(coins), allowed - name_only)
+            if not mark:
+                coins = []
+            box = name_only + _stack_width(len(coins), mark)
+            tall = max(LEG_LABEL, mark if coins else 0) + LEG_AIR
             left = min(max(0.0, middle - box / 2), max(0.0, width - box))
             top = centre - tall / 2
             span = (left - LEG_AIR, top, left + box + LEG_AIR, top + tall)
@@ -662,22 +669,27 @@ class RouteDiagram(ft.Container):
                 continue
             claimed.append(span)
             drawn.append(ft.Container(
-                self._leg_chip(name, coins),
+                self._leg_chip(name, coins, mark),
                 left=left, top=top, width=box,
                 alignment=ft.Alignment.TOP_CENTER,
             ))
         return drawn
 
-    def _leg_chip(self, name: str, coins: list[Coin]) -> ft.Control:
+    def _leg_chip(self, name: str, coins: list[Coin],
+                  mark: float = POOL_MARK) -> ft.Control:
         """A pool's name on the same kind of chip a column's name sits on,
         with its coins stacked in front of it the way the pool list draws
-        them -- so a pool reads as the same object in both places."""
+        them -- so a pool reads as the same object in both places.
+
+        `mark` is what the marks are drawn at, which is as big as the room
+        beside the name allowed.
+        """
         text = ft.Text(name, size=LEG_LABEL, no_wrap=True,
                        color=ft.Colors.ON_SURFACE)
         content: ft.Control = text
         if coins:
             content = ft.Row(
-                [coin_stack(coins, self._chain, POOL_MARK, POOL_MARK_LIMIT), text],
+                [coin_stack(coins, self._chain, mark, POOL_MARK_LIMIT), text],
                 spacing=MARK_GAP, tight=True,
                 alignment=ft.MainAxisAlignment.CENTER,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
@@ -733,7 +745,7 @@ class RouteDiagram(ft.Container):
         )
 
 
-def _stack_width(coins: int) -> float:
+def _stack_width(coins: int, mark: float = POOL_MARK) -> float:
     """How wide `coin_stack` comes out for this many coins, plus its gap.
 
     It reports its own width, but this decides whether to build one at all.
@@ -741,8 +753,22 @@ def _stack_width(coins: int) -> float:
     shown = min(coins, POOL_MARK_LIMIT)
     if not shown:
         return 0.0
-    step = POOL_MARK * (1 - STACK_OVERLAP)
-    return step * (shown - 1) + POOL_MARK + MARK_GAP
+    return mark * (1 - STACK_OVERLAP) * (shown - 1) + mark + MARK_GAP
+
+
+def _marks_that_fit(coins: int, room: float) -> float:
+    """The biggest the marks can be drawn in the room left beside the name.
+
+    Taking them off entirely to make a name fit leaves the space they would
+    have used empty -- fifteen to twenty-five points of it on a narrow panel,
+    which is a smaller stack rather than no stack.  Inverts `_stack_width`.
+    """
+    shown = min(coins, POOL_MARK_LIMIT)
+    if not shown:
+        return 0.0
+    span = (1 - STACK_OVERLAP) * (shown - 1) + 1
+    mark = (room - MARK_GAP) / span if span else 0.0
+    return min(POOL_MARK, mark) if mark >= POOL_MARK_MIN else 0.0
 
 
 def same_coin(one: CoinEntry | None, other: CoinEntry | None) -> bool:

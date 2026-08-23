@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import random
 import sys
 from functools import lru_cache
 from pathlib import Path
@@ -273,6 +274,23 @@ def bundled(name: str) -> str:
 def chad_mark() -> str:
     """The Chad, for the theme button."""
     return bundled("chad.png")
+
+
+#: The sticker pack that sits where a route will go, before there is one.
+#: Listed rather than discovered: in the browser there is no directory to
+#: read, only files that can be fetched by name.
+MEMES = (
+    "001.webp", "002.webp", "003.webp", "004.webp", "005.webp", "006.webp",
+    "007.webp", "008.webp", "009.webp", "010.webp", "011.webp", "012.webp",
+    "013.webp", "014.webp", "015.webp", "016.webp", "017.webp", "018.webp",
+    "019.webp", "020.webp", "021.webp", "022.webp", "025.webp", "026.webp",
+    "028.webp", "030.webp",
+)
+
+
+def meme(pick=random.choice) -> str | None:
+    """One of the stickers, at random, or nothing if none were bundled."""
+    return bundled(f"memes/{pick(MEMES)}") if MEMES else None
 
 
 #: Chains whose display name is not just a capitalisation of the API's.

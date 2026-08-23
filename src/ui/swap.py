@@ -23,7 +23,7 @@ from curve.models import Coin
 from router.universe import CoinEntry, matching_coins
 from wallet.erc20 import format_units, parse_units
 
-from . import AnyEvent, buttons, download, routegraph, safe_update, theme
+from . import AnyEvent, assets, buttons, download, routegraph, safe_update, theme
 from .alarm import Alarm, Band
 from .logos import coin_stack, token_mark
 from .responsive import Layout
@@ -55,6 +55,11 @@ DIAGRAM_STACKED_HEIGHT = 300.0
 #: What the frame says before there is a route in it -- so that the frame can
 #: be there from the start rather than appearing under someone's hands.
 EMPTY_ROUTE = "The route appears here"
+
+#: How big the sticker that waits there is.  Big enough to be the thing in an
+#: otherwise empty frame, small enough that the caption under it is still the
+#: thing being read.
+MEME_SIZE = 190.0
 
 #: Air either side of a column's label.  Two labels closer than this are two
 #: words read as one, so the later of them is left out -- an eighteen-leg
@@ -333,6 +338,10 @@ class RouteDiagram(ft.Container):
         self._empty = ft.Text(EMPTY_ROUTE, size=SMALL,
                               color=ft.Colors.ON_SURFACE_VARIANT,
                               text_align=ft.TextAlign.CENTER)
+        # An empty frame with one line of grey text in the middle of it is a
+        # lot of nothing to look at while somebody decides what to type.
+        self._meme = ft.Image(src="", width=MEME_SIZE, height=MEME_SIZE,
+                              fit=ft.BoxFit.CONTAIN, visible=False)
         self._size = (0.0, 0.0)
         # Whatever the caller wants in the corner -- the save button, which
         # acts on this picture and so belongs on it.  Last in the stack so it
@@ -340,7 +349,11 @@ class RouteDiagram(ft.Container):
         # row for it would take height off the drawing.
         layers: list[ft.Control] = [
             self._canvas, self._labels,
-            ft.Container(self._empty, alignment=ft.Alignment.CENTER),
+            ft.Container(
+                ft.Column([self._meme, self._empty],
+                          spacing=10, tight=True,
+                          horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+                alignment=ft.Alignment.CENTER),
         ]
         if corner is not None:
             layers.append(ft.Container(corner, right=0, top=0))
@@ -417,6 +430,7 @@ class RouteDiagram(ft.Container):
             self._chain = chain
         self._diagram = diagram
         self._empty.value = "" if diagram is not None else self.waiting
+        self._show_meme(diagram is None)
         self._draw()
         safe_update(self)
 
@@ -426,7 +440,24 @@ class RouteDiagram(ft.Container):
         self._canvas.shapes = []
         self._labels.controls = []
         self._empty.value = message
+        # Not beside a reason something went wrong: a joke there reads as the
+        # app being pleased with itself about a failure.
+        self._show_meme(False)
         safe_update(self)
+
+    def _show_meme(self, wanted: bool) -> None:
+        """The sticker that waits where a route will go.
+
+        A new one each time the frame goes back to being empty, and the same
+        one for as long as it stays that way -- picking again on every redraw
+        would turn a thing to look at into a thing that flickers.
+        """
+        if wanted and not self._meme.visible:
+            source = assets.meme()
+            self._meme.src = source or ""
+            self._meme.visible = bool(source)
+            return
+        self._meme.visible = self._meme.visible and wanted
 
     def _resized(self, event) -> None:
         self._size = (getattr(event, "width", 0.0) or 0.0,

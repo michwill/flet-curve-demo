@@ -715,3 +715,70 @@ def test_staying_empty_keeps_the_same_one(monkeypatch):
     diagram._show_meme(True)
 
     assert len(asked) == before, "it re-picked while nothing had changed"
+
+
+# -- and not flashing in the gap between two routes -------------------------
+
+
+class Looping:
+    """A page whose `run_task` actually runs the coroutine."""
+
+    def __init__(self) -> None:
+        self.tasks: list = []
+
+    def run_task(self, handler, *args):
+        import asyncio
+
+        task = asyncio.ensure_future(handler(*args))
+        self.tasks.append(task)
+        return task
+
+
+async def test_a_route_going_away_does_not_flash_a_sticker():
+    """The flip empties the frame and fills it again as soon as the new quote
+    lands.  A picture in the few hundred milliseconds between the two is a
+    flash, not something to look at."""
+    import asyncio
+
+    from ui import swap as swap_module
+
+    page = swap_page_with(Wallet(), two_coins())
+    diagram = page.view.diagram
+    diagram._page = Looping()
+    diagram._meme.visible = False
+    diagram._diagram = object()             # a route is showing
+
+    monkeyish = swap_module.MEME_AFTER
+    try:
+        swap_module.MEME_AFTER = 0.05
+        diagram.show(None)                  # the flip empties it
+        assert diagram._meme.visible is False, "it went up straight away"
+        assert diagram._empty.value == "", "the caption flashed instead"
+
+        diagram._diagram = object()         # the new quote lands first
+        await asyncio.sleep(0.12)
+        assert diagram._meme.visible is False, "it went up behind the route"
+    finally:
+        swap_module.MEME_AFTER = monkeyish
+
+
+async def test_but_it_does_go_up_if_no_route_arrives():
+    import asyncio
+
+    from ui import swap as swap_module
+
+    page = swap_page_with(Wallet(), two_coins())
+    diagram = page.view.diagram
+    diagram._page = Looping()
+    diagram._meme.visible = False
+    diagram._diagram = object()
+
+    monkeyish = swap_module.MEME_AFTER
+    try:
+        swap_module.MEME_AFTER = 0.05
+        diagram.show(None)
+        await asyncio.sleep(0.12)
+        assert diagram._meme.visible, "the frame was left blank"
+        assert diagram._empty.value == ""
+    finally:
+        swap_module.MEME_AFTER = monkeyish

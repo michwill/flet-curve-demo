@@ -67,6 +67,13 @@ MEME_INSET = 28.0
 #: waiting through a warm for.
 MEME_EVERY = 30.0
 
+#: How long a frame that *had* a route stays blank before one goes up.  The
+#: flip button empties the panel and fills it again as soon as the new quote
+#: lands, and a picture appearing for the few hundred milliseconds in between
+#: is a flash rather than something to look at.  A frame that never had a
+#: route -- an opening tab, waiting out a warm -- does not wait at all.
+MEME_AFTER = 1.5
+
 #: Air either side of a column's label.  Two labels closer than this are two
 #: words read as one, so the later of them is left out -- an eighteen-leg
 #: route, which this router really does produce, puts a column every twenty
@@ -352,6 +359,7 @@ class RouteDiagram(ft.Container):
         self._meme = ft.Image(src="", fit=ft.BoxFit.CONTAIN, expand=True,
                               visible=False)
         self._slideshow: object | None = None
+        self._due = False
         self._size = (0.0, 0.0)
         # Whatever the caller wants in the corner -- the save button, which
         # acts on this picture and so belongs on it.  Last in the stack so it
@@ -444,9 +452,11 @@ class RouteDiagram(ft.Container):
         """
         if chain is not None:
             self._chain = chain
+        had_route = self._diagram is not None
         self._diagram = diagram
         self._empty.value = "" if diagram is not None else self.waiting
-        self._show_meme(diagram is None)
+        self._show_meme(diagram is None,
+                        after=MEME_AFTER if had_route else 0.0)
         self._draw()
         safe_update(self)
 
@@ -461,7 +471,7 @@ class RouteDiagram(ft.Container):
         self._show_meme(False)
         safe_update(self)
 
-    def _show_meme(self, wanted: bool) -> None:
+    def _show_meme(self, wanted: bool, after: float = 0.0) -> None:
         """The sticker that waits where a route will go.
 
         It says nothing beside itself: a caption explaining that the route
@@ -472,8 +482,38 @@ class RouteDiagram(ft.Container):
         if not wanted:
             self._meme.visible = False
             return
-        if not self._meme.visible:
-            self._turn_meme()
+        if self._meme.visible:
+            self._empty.value = ""
+            self._keep_turning()
+            return
+        if after <= 0:
+            self._put_meme_up()
+            return
+        # Nothing at all while the wait runs: the caption flashing in the gap
+        # is the same complaint as the picture flashing in it.
+        self._empty.value = ""
+        if self._due:
+            return
+        self._due = True
+        started = None
+        with contextlib.suppress(Exception):
+            started = self._page.run_task(self._meme_when_due, after)
+        if started is None:
+            # No loop to wait on, so there is nothing to wait for.
+            self._due = False
+            self._put_meme_up()
+
+    async def _meme_when_due(self, delay: float) -> None:
+        try:
+            await asyncio.sleep(delay)
+            if self._diagram is None and not self._meme.visible:
+                self._put_meme_up()
+                safe_update(self)
+        finally:
+            self._due = False
+
+    def _put_meme_up(self) -> None:
+        self._turn_meme()
         self._keep_turning()
         if self._meme.visible:
             self._empty.value = ""

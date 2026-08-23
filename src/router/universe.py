@@ -94,6 +94,50 @@ def coins_by_volume(rows, *, min_tvl: float = MIN_TVL) -> list[CoinEntry]:
     return out
 
 
+def with_native(coins: list[CoinEntry], *, symbol: str,
+                wrapped: str) -> list[CoinEntry]:
+    """The chain's gas token, on the chains whose pools never name it.
+
+    Curve names native ETH with a sentinel in the eight mainnet pools that
+    hold it, so it has always been in this list there.  Nothing on gnosis,
+    base or polygon names theirs, and the list is built out of the pool rows
+    -- so the coin everybody arrives holding was the one coin they could not
+    pick.
+
+    The router aliases the gas token onto its wrapper's node, which is why
+    the condition here is the wrapper being in the list rather than anything
+    about the gas token: where the wrapper cannot be routed, neither can the
+    thing that wraps into it, and offering it would be offering a coin that
+    answers "not routable in this universe" to everything.  Chains that do
+    not really wrap -- fraxtal, celo -- say so in `Chain.wraps_native`, and
+    the caller does not ask.
+
+    It goes in beside the wrapper, carrying its volume, because those are the
+    same liquidity seen from either side.
+    """
+    if any(coin.is_native for coin in coins):
+        return coins
+    at = next((i for i, coin in enumerate(coins)
+               if coin.address.lower() == wrapped.lower()), None)
+    if at is None:
+        return coins
+    twin = coins[at]
+    native = CoinEntry(
+        NATIVE, symbol, _unwrapped_name(twin, symbol), twin.decimals,
+        twin.volume, twin.pools,
+    )
+    return [*coins[:at], native, *coins[at:]]
+
+
+def _unwrapped_name(twin: CoinEntry, symbol: str) -> str:
+    """"Wrapped Ether" describes the twin, not this."""
+    name = (twin.name or "").strip()
+    for prefix in ("Wrapped ", "Wrapped-"):
+        if name.startswith(prefix):
+            return name[len(prefix):].strip() or symbol
+    return symbol
+
+
 def _decimals(coin: dict) -> int:
     """18 unless the row says otherwise.
 

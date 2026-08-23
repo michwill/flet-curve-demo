@@ -42,7 +42,7 @@ from router.session import (
     build_session,
     chain_for,
 )
-from router.universe import coins_by_volume
+from router.universe import coins_by_volume, with_native
 from wallet.base import WalletError
 
 from .responsive import Layout
@@ -195,7 +195,7 @@ class SwapPage:
         except ApiError as exc:
             self.view.say(f"Could not read this network's pools: {exc}", FAILED)
             return
-        coins = coins_by_volume(rows)
+        coins = self._with_native(coins_by_volume(rows), chain_id)
         if not coins:
             return
         self._opened_chain = chain_id
@@ -367,6 +367,21 @@ class SwapPage:
         )
 
     # -------------------------------------------------------------- the pair
+
+    @staticmethod
+    def _with_native(coins, chain_id: int):
+        """The gas token in the list, where this chain's pools never name it.
+
+        Asked of the router's own table rather than guessed at: it declares
+        which chains genuinely wrap -- fraxtal's `0xFC00..06` answers the whole
+        ERC20 surface and holds no native at all -- and it is the same table
+        the solver merges from, so the list and the graph agree.
+        """
+        chain = chain_for(chain_id)
+        if chain is None or not getattr(chain, "wraps_native", False):
+            return coins
+        return with_native(coins, symbol=chain.native_symbol,
+                           wrapped=chain.wrapped)
 
     def _pair_changed(self, *_coins) -> None:
         sell, buy = self.view.pair

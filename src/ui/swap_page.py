@@ -286,7 +286,9 @@ class SwapPage:
             buy = by_address.get(remembered[1])
         if sell is None or buy is None or sell is buy:
             sell = coins[0]
-            buy = next((coin for coin in coins[1:] if coin is not sell), None)
+            buy = next((coin for coin in coins[1:]
+                        if coin is not sell and not _wraps(sell, coin, chain_id)),
+                       None)
         self.view.set_pair(sell, buy)
 
     async def _remembered_pair(self, chain_id: int) -> tuple[str, str] | None:
@@ -705,6 +707,20 @@ class SwapPage:
             usd = await native_price(self._api, self._chain_name(), chain_id)
         self.view.show_gas(format_fee(amount, native.symbol, amount * usd),
                            estimated=getattr(plan, "gas_estimated", False))
+
+
+def _wraps(sell, buy, chain_id: int) -> bool:
+    """Whether these two are a chain's gas token and its own wrapper.
+
+    A fine pair to choose and a poor one to open on: one for one, for ever,
+    with no rate to quote and nothing to compare.  Worth saying because the
+    gas token is now listed immediately beside its wrapper, which is exactly
+    where "the two busiest coins" takes them from.
+    """
+    chain = chain_for(chain_id) if chain_id else None
+    if chain is None:
+        return False
+    return wrapping.direction(sell.address, buy.address, chain.wrapped) is not None
 
 
 def _with_block(exc: Exception, block: int) -> str:

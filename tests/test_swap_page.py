@@ -833,3 +833,46 @@ def _answer(value):
     import asyncio
 
     return asyncio.sleep(0, result=value)
+
+
+# -- what a chain opens on --------------------------------------------------
+
+
+async def test_a_chain_does_not_open_on_a_wrapping():
+    """The gas token is listed beside its own wrapper, and the default pair
+    is the two busiest coins -- so gnosis would have opened on XDAI to WXDAI,
+    which is one for one, for ever, with no rate to show."""
+    from router.universe import NATIVE, CoinEntry
+
+    wxdai = "0xe91d153e0b41518a2ce8dd3d7944fa863463a97d"
+    coins = [
+        CoinEntry(NATIVE, "XDAI", "xDAI", 18, 900.0, 3),
+        CoinEntry(wxdai, "WXDAI", "Wrapped xDAI", 18, 900.0, 3),
+        CoinEntry("0x" + "11" * 20, "USDC.e", "USD Coin", 6, 500.0, 2),
+    ]
+    page = swap_page_with(Wallet(), coins)
+    page._remembered_pair = lambda _id: _answer(None)
+
+    await page._open_pair(100, coins)
+
+    sell, buy = page.view.pair
+    assert sell.symbol == "XDAI"
+    assert buy.symbol == "USDC.e", f"opened on a wrapping: XDAI -> {buy.symbol}"
+
+
+async def test_a_remembered_wrapping_is_still_honoured():
+    """Choosing one is fine; it is only a poor thing to *open* on."""
+    from router.universe import NATIVE, CoinEntry
+
+    wxdai = "0xe91d153e0b41518a2ce8dd3d7944fa863463a97d"
+    coins = [
+        CoinEntry(NATIVE, "XDAI", "xDAI", 18, 900.0, 3),
+        CoinEntry(wxdai, "WXDAI", "Wrapped xDAI", 18, 900.0, 3),
+        CoinEntry("0x" + "11" * 20, "USDC.e", "USD Coin", 6, 500.0, 2),
+    ]
+    page = swap_page_with(Wallet(), coins)
+    page._remembered_pair = lambda _id: _answer((NATIVE, wxdai))
+
+    await page._open_pair(100, coins)
+
+    assert [c.symbol for c in page.view.pair] == ["XDAI", "WXDAI"]

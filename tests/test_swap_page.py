@@ -527,3 +527,53 @@ def test_flipping_with_nothing_quoted_keeps_what_was_typed():
 
     assert page.view.pair == (usdt, usdc)
     assert page.view.amount.value == "1000"
+
+
+# -- the coins a pool holds, which its ribbon is drawn with -----------------
+
+
+def pool_rows():
+    return [{
+        "address": "0xbebc44782c7db0a1a60cb6fe97d0b483032ff1c7",
+        "name": "Curve.fi DAI/USDC/USDT",
+        "coins": [
+            {"address": "0x6b175474e89094c44da98b954eedeac495271d0f",
+             "symbol": "DAI", "decimals": 18},
+            {"address": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+             "symbol": "USDC", "decimals": 6},
+        ],
+    }]
+
+
+def test_re_ordering_the_coins_keeps_the_pool_logos():
+    """The ribbons lost their logos as soon as a wallet turned up.
+
+    `offer` carries two unrelated things: which coins exist, and which pools
+    hold what.  The callers that re-offer for *ordering* -- a wallet
+    connecting, a swap of ours landing -- have no pool rows to hand over, and
+    passing none used to empty the table, so every pool on the picture went
+    back to being a name on its own for the rest of the session.
+    """
+    coins = two_coins()
+    page = swap_page_with(Wallet(), coins)
+    page.view.offer(coins, "ethereum", pools=pool_rows())
+    assert page.view.diagram._pool_coins, "the rows never arrived"
+
+    page.view.offer(coins, "ethereum", owned=list(reversed(coins)))
+
+    assert page.view.diagram._pool_coins, "re-ordering threw the logos away"
+    held = page.view.diagram._pool_coins[
+        "0xbebc44782c7db0a1a60cb6fe97d0b483032ff1c7"]
+    assert [coin.symbol for coin in held] == ["DAI", "USDC"]
+
+
+def test_a_different_chain_does_empty_it():
+    """An address that means one pool here means nothing on the next network,
+    and the wrong coins on a ribbon are worse than none."""
+    coins = two_coins()
+    page = swap_page_with(Wallet(), coins)
+    page.view.offer(coins, "ethereum", pools=pool_rows())
+
+    page.view.diagram.set_chain("arbitrum")
+
+    assert page.view.diagram._pool_coins == {}

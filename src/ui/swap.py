@@ -367,6 +367,14 @@ class RouteDiagram(ft.Container):
         return self._diagram
 
     def set_chain(self, chain: str) -> None:
+        """A different chain, whose pools are different pools.
+
+        The table goes with it: an address that meant one pool here means
+        nothing on the next network, and a stale entry would put the wrong
+        coins on a ribbon rather than none.
+        """
+        if chain != self._chain:
+            self._pool_coins = {}
         self._chain = chain
 
     def offer_pools(self, rows) -> None:
@@ -376,6 +384,14 @@ class RouteDiagram(ft.Container):
         that has not already been paid: the router's `detail` is the pool's
         address and that is what the table is keyed on.
         """
+        # Nothing offered is not the same as no pools: the coins get re-offered
+        # whenever the *ordering* changes -- when a wallet connects, or after a
+        # swap of ours moves what it holds -- and those callers have no rows to
+        # hand over.  Clearing the table for them left every ribbon on the
+        # picture without its logo, for the whole of a session with a wallet in
+        # it.  `set_chain` is what empties this.
+        if not rows:
+            return
         table: dict[str, list[Coin]] = {}
         for row in rows or ():
             address = str(row.get("address") or "").lower()

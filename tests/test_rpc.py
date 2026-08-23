@@ -166,20 +166,25 @@ async def test_a_directory_that_answers_junk_is_tried_again_too(monkeypatch) -> 
 class FakeTransport:
     """Scripted `post_json`: per-URL behaviour, and a record of the calls."""
 
-    def __init__(self, behaviour: dict[str, object]) -> None:
+    def __init__(self, behaviour: dict[str, object],
+                 slow: dict[str, float] | None = None) -> None:
         self.behaviour = behaviour
+        self.slow = slow or {}
         self.calls: list[str] = []
 
     async def __call__(self, url, payload, timeout=None):
         self.calls.append(url)
+        if url in self.slow:
+            await asyncio.sleep(self.slow[url])
         outcome = self.behaviour.get(url, ApiError(f"{url} is down"))
         if isinstance(outcome, Exception):
             raise outcome
         return outcome
 
 
-def node_with(monkeypatch, behaviour: dict[str, object], chain_id: int = 100):
-    transport = FakeTransport(behaviour)
+def node_with(monkeypatch, behaviour: dict[str, object], chain_id: int = 100,
+              slow: dict[str, float] | None = None):
+    transport = FakeTransport(behaviour, slow)
     monkeypatch.setattr(rpc, "post_json", transport)
 
     class Fixed(ChainlistDirectory):
@@ -730,3 +735,39 @@ async def test_the_directory_answers_for_the_chain_it_loaded(monkeypatch) -> Non
 
     assert params is not None and params["chainName"] == "Fraxtal"
     assert await directory.chain_params(9999) is None
+
+
+# -- a sick endpoint must not cost its whole timeout ------------------------
+
+
+async def test_a_slow_endpoint_does_not_hold_up_a_healthy_one(monkeypatch) -> None:
+    """The failure this guards against was eight of these in a row.
+
+    Walked strictly in turn, an endpoint that accepts the connection and then
+    says nothing costs its full timeout before the next is tried at all -- and
+    a single allowance read went past a minute that way, with the answer
+    sitting on the endpoint behind it the whole time.
+    """
+    node, transport = node_with(
+        monkeypatch,
+        {"https://two.example": {"result": "0x7"}},
+        slow={"https://one.example": 30.0},
+    )
+    began = asyncio.get_running_loop().time()
+    assert await node.request("eth_call") == "0x7"
+    took = asyncio.get_running_loop().time() - began
+
+    assert took < 5.0, "it waited for the sick endpoint instead of going round it"
+    assert transport.calls[:2] == ["https://one.example", "https://two.example"]
+
+
+async def test_the_healthy_endpoint_is_asked_first_next_time(monkeypatch) -> None:
+    node, transport = node_with(
+        monkeypatch,
+        {"https://two.example": {"result": "0x7"}},
+        slow={"https://one.example": 30.0},
+    )
+    await node.request("eth_call")
+    transport.calls.clear()
+    assert await node.request("eth_call") == "0x7"
+    assert transport.calls == ["https://two.example"], "the sick one was asked again"

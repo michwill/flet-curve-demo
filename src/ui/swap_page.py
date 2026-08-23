@@ -561,9 +561,11 @@ class SwapPage:
             await self._confirm(tx, "Approved.")
             # Re-planned, not just re-checked: the plan in hand was built
             # before the approval and its dry run says the route reverts.
+            # Not re-synced afterwards either: `_plan_now` ends by doing
+            # exactly that, and a second one asked the same question of the
+            # same chain a few milliseconds later -- down the read fallback,
+            # which is the one place in this path that can take minutes.
             await self._plan_now()
-            if self._plan is not None:
-                await self._sync_approval(self._plan)
         except WalletError as exc:
             self._rejected(exc)
         finally:

@@ -21,6 +21,15 @@ ENDPOINT_TIMEOUT = 8.0
 #: How many of a chain's endpoints to keep.
 MAX_ENDPOINTS = 8
 
+#: How long one endpoint gets to itself before the next is asked as well.
+#: Walked strictly in turn, a sick endpoint costs its whole `timeout` before
+#: a healthy one behind it is tried at all, and a public list has sick entries
+#: in it more often than not -- eight in a row is over a minute of waiting for
+#: an answer that was there the whole time.  Starting the next one after a
+#: pause, rather than instead, keeps the usual read to a single request and
+#: makes a bad endpoint cost this much instead of `ENDPOINT_TIMEOUT`.
+HEDGE_AFTER = 0.75
+
 #: Preferred first: endpoints that say they keep nothing.
 _TRACKING_RANK = {"none": 0, "limited": 1, "yes": 3}
 
@@ -183,38 +192,67 @@ class PublicNode(WalletProvider):
             "method": method,
             "params": params or [],
         }
+        waiting = [(self._next + offset) % len(endpoints)
+                   for offset in range(len(endpoints))]
+        asked: dict[Any, int] = {}
         last = ""
-        for offset in range(len(endpoints)):
-            index = (self._next + offset) % len(endpoints)
-            url = endpoints[index]
-            try:
-                answer = await post_json(url, payload, timeout=self.timeout)
-            except ApiError as exc:
-                last = str(exc)
-                continue
-            if not isinstance(answer, dict):
-                last = f"{url} answered something that was not JSON-RPC"
-                continue
-            if "id" in answer and answer["id"] != payload["id"]:
-                # Not this question's answer. Nothing here multiplexes, so
-                # it is a broken endpoint rather than a race -- and what it
-                # feeds decides slippage floors, allowances and balances.
-                # Checked only when the endpoint sends one back: a terse
-                # server is not a reason to lose the read.
-                last = f"{url} answered a different request"
-                continue
-            if "error" in answer:
-                self._next = index
-                error = answer["error"] or {}
-                raise RpcError(
-                    int(error.get("code", -1) or -1), str(error.get("message", ""))
+        try:
+            while waiting or asked:
+                if waiting:
+                    index = waiting.pop(0)
+                    asked[asyncio.ensure_future(
+                        self._ask(endpoints[index], payload))] = index
+                # Only the last one in flight is waited on without end: while
+                # there are endpoints left to try, a pause here is what starts
+                # the next one alongside it.
+                done, _ = await asyncio.wait(
+                    asked,
+                    timeout=HEDGE_AFTER if waiting else None,
+                    return_when=asyncio.FIRST_COMPLETED,
                 )
-            if "result" not in answer:
-                last = f"{url} answered with neither a result nor an error"
-                continue
-            self._next = index
-            return answer["result"]
+                for task in done:
+                    index = asked.pop(task)
+                    try:
+                        answered, outcome = task.result()
+                    except RpcError:
+                        # The chain's own answer, not a broken endpoint: keep
+                        # asking this one first, and let it through.
+                        self._next = index
+                        raise
+                    if answered:
+                        self._next = index
+                        return outcome
+                    last = str(outcome)
+        finally:
+            for task in asked:
+                task.cancel()
+            if asked:
+                await asyncio.gather(*asked, return_exceptions=True)
         raise WalletError(f"No public node answered for this network. {last}".strip())
+
+    async def _ask(self, url: str, payload: dict[str, Any]) -> tuple[bool, Any]:
+        """One endpoint: `(True, result)`, or `(False, why it does not count)`."""
+        try:
+            answer = await post_json(url, payload, timeout=self.timeout)
+        except ApiError as exc:
+            return False, str(exc)
+        if not isinstance(answer, dict):
+            return False, f"{url} answered something that was not JSON-RPC"
+        if "id" in answer and answer["id"] != payload["id"]:
+            # Not this question's answer. Nothing here multiplexes, so it is a
+            # broken endpoint rather than a race -- and what it feeds decides
+            # slippage floors, allowances and balances. Checked only when the
+            # endpoint sends one back: a terse server is not a reason to lose
+            # the read.
+            return False, f"{url} answered a different request"
+        if "error" in answer:
+            error = answer["error"] or {}
+            raise RpcError(
+                int(error.get("code", -1) or -1), str(error.get("message", ""))
+            )
+        if "result" not in answer:
+            return False, f"{url} answered with neither a result nor an error"
+        return True, answer["result"]
 
     async def send_transaction(self, tx: dict[str, Any]) -> str:
         raise WalletError("Connect a wallet to send a transaction.")

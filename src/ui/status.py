@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import flet as ft
 
+from . import safe_update
 from .typography import SMALL
 
 #: Green is not in Material's scheme -- there is no `ft.Colors.SUCCESS` --
@@ -54,6 +55,11 @@ class StatusPanel(ft.Container):
         self.spinner.visible = pending
         self.visible = bool(message)
         self.bgcolor = tint(colour, pending)
+        # Drawn here, rather than whenever something else next repaints. Without
+        # this the panel keeps whatever it last said until an unrelated update
+        # flushes it -- which is how "Waiting for the transaction..." stayed up,
+        # spinner and all, past the point where the buttons had come back.
+        safe_update(self)
 
     def clear(self) -> None:
         self.say("")

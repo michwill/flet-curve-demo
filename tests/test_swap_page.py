@@ -876,3 +876,73 @@ async def test_a_remembered_wrapping_is_still_honoured():
     await page._open_pair(100, coins)
 
     assert [c.symbol for c in page.view.pair] == ["XDAI", "WXDAI"]
+
+
+# -- a pool's name on a narrow picture --------------------------------------
+
+
+def a_band(label: str, detail: str, x0: float, x1: float):
+    """One ribbon running straight between two columns."""
+    from ui.routegraph import Band
+
+    return Band(index=0, label=label, kind="SWAP_STABLE", share=1.0,
+                points=((x0, 100.0), (x1, 100.0)), height=40.0, detail=detail)
+
+
+def test_the_marks_go_before_the_name_does():
+    """The stack is the ornament and the name is what is being read.
+
+    A fifteen-leg route in a 720-point panel had eleven names dropped for
+    width -- and six of those fit once the coin stack came off, which is the
+    difference between a picture that says where the money went and one that
+    does not.
+    """
+    from curve.models import Coin
+
+    coins = two_coins()
+    page = swap_page_with(Wallet(), coins)
+    diagram = page.view.diagram
+    pool = "0x" + "ab" * 20
+    diagram._pool_coins = {pool: [
+        Coin(address="0x" + "11" * 20, symbol="DOLA", decimals=18),
+        Coin(address="0x" + "22" * 20, symbol="sUSDe", decimals=18),
+    ]}
+    # Room for the name and not for the name plus two marks.
+    band = a_band("DOLA/sUSDe", pool, 300.0, 400.0)
+
+    drawn = diagram._leg_row([band], 720.0, [])
+
+    assert len(drawn) == 1, "the name was dropped rather than the marks"
+
+
+def test_a_name_that_will_not_fit_at_all_is_still_dropped():
+    """There are eighteen-leg routes, and a name wider than its ribbon put
+    over the top of everything is not a picture of anything."""
+    coins = two_coins()
+    page = swap_page_with(Wallet(), coins)
+    diagram = page.view.diagram
+    pool = "0x" + "cd" * 20
+    diagram._pool_coins = {}
+    band = a_band("Curve Strategic Ethena Reserves", pool, 300.0, 330.0)
+
+    assert diagram._leg_row([band], 720.0, []) == []
+
+
+def test_the_marks_stay_where_there_is_room_for_them():
+    from curve.models import Coin
+
+    coins = two_coins()
+    page = swap_page_with(Wallet(), coins)
+    diagram = page.view.diagram
+    pool = "0x" + "ef" * 20
+    diagram._pool_coins = {pool: [
+        Coin(address="0x" + "11" * 20, symbol="DOLA", decimals=18),
+        Coin(address="0x" + "22" * 20, symbol="sUSDe", decimals=18),
+    ]}
+    band = a_band("DOLA/sUSDe", pool, 100.0, 600.0)
+
+    drawn = diagram._leg_row([band], 720.0, [])
+
+    assert len(drawn) == 1
+    import flet as ft
+    assert isinstance(drawn[0].content.content, ft.Row), "the marks were dropped"

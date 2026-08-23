@@ -639,14 +639,21 @@ class RouteDiagram(ft.Container):
             if not name:
                 continue
             coins = self._pool_coins.get((band.detail or "").lower()) or []
+            middle, centre, room = band.waist()
             # A little wider than the estimate, and the content centred in it:
             # the estimate decides whether the name is drawn at all, and being
             # wrong about that is better than being wrong about the clipping.
-            box = (_text_width(name, LEG_LABEL, bold=False)
-                   + _stack_width(len(coins)) + LEG_AIR * 2)
-            middle, centre, room = band.waist()
+            #
+            # The marks go first when it is tight.  They are the ornament and
+            # the name is the thing being read, and on a narrow panel they are
+            # the difference: a fifteen-leg route in 720 points had eleven
+            # names dropped for width and six of them fit without the stack.
+            name_only = _text_width(name, LEG_LABEL, bold=False) + LEG_AIR * 2
+            box = name_only + _stack_width(len(coins))
             if box > room * LEG_ROOM:
-                continue
+                if name_only > room * LEG_ROOM:
+                    continue
+                coins, box = [], name_only
             tall = max(LEG_LABEL, POOL_MARK if coins else 0) + LEG_AIR
             left = min(max(0.0, middle - box / 2), max(0.0, width - box))
             top = centre - tall / 2

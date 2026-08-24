@@ -41,7 +41,7 @@ from .merkl import (
 )
 from .models import Pool, _first_dead_gauge, _first_live_gauge, _float
 from .portfolio import Target
-from .sort import get_sort
+from .sort import get_sort, sort_field
 
 PRICES_V2 = "https://prices.curve.finance/v2"
 PRICES_V1 = "https://prices.curve.finance/v1"
@@ -498,7 +498,11 @@ class CurveApi:
             "chain_id": chain_id,
             "page": max(1, page),
             "pagination": min(page_size, MAX_PAGE_SIZE),
-            "sort_by": sort_by,
+            # The caller names a column; the server wants its own field for it.
+            # Passing the column through worked only where the two spell it the
+            # same -- volume and TVL -- and `get_sort` below, which needs the
+            # column, then fell back to volume on every lite chain.
+            "sort_by": sort_field(sort_by),
             "sort_direction": direction,
         }
         if min_tvl:

@@ -574,9 +574,10 @@ class PoolListView(ft.Column):
         self._sort = key
         self.sort_picker.value = key
         self._sync_header()
-        from curve.sort import sort_field  # local: avoids a cycle at import
-
-        self.feed.reset(sort_by=sort_field(key))
+        # The column, not the server's field for it: the feed hands this to
+        # `list_pools`, which needs the column to sort a lite chain locally and
+        # translates it for the wire itself.
+        self.feed.reset(sort_by=key)
         self.rows.controls = []
         safe_update(self)
         self._run(self.load_more)

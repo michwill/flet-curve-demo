@@ -23,13 +23,15 @@ class SortOption:
 SORTS: tuple[SortOption, ...] = (
     SortOption("volume", "Volume", "volume", lambda p: p.volume_24h),
     SortOption("tvl", "TVL", "tvl", lambda p: p.tvl),
-    SortOption(
-        "incentives",
-        "Incentives",
-        "aggregate_apr",
-        lambda p: p.base_apr + p.incentives_apr,
-    ),
-    SortOption("base", "Base APY", "base_daily_apr", lambda p: p.base_apr),
+    # Both of these name the field the *column* draws, which is not the field
+    # that reads most naturally.  `aggregate_apr` counts the base APY as well,
+    # so a pool paying 221% base and no incentives at all led the Incentives
+    # column; `base_daily_apr` is a different window from the weekly figure
+    # beside it, and put 15.49% below 2.35%.  Measured over a page of 25:
+    # 7 and 13 neighbours out of order, against 2 and 0 for these.
+    SortOption("incentives", "Incentives", "rewards_apr",
+               lambda p: p.incentives_apr),
+    SortOption("base", "Base APY", "base_weekly_apr", lambda p: p.base_apr),
 )
 
 DEFAULT_SORT = "volume"

@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from curve.format import apr_range, compact_usd, percent, short_address, token_amount
 from curve.models import Pool
-from curve.sort import DEFAULT_SORT, get_sort, search_pools, sort_pools
+from curve.sort import (
+    DEFAULT_SORT,
+    get_sort,
+    search_pools,
+    sort_field,
+    sort_pools,
+)
 
 
 def make_pool(**kwargs) -> Pool:
@@ -58,6 +64,26 @@ def test_incentives_sort_counts_crv_and_reward_tokens() -> None:
     ]
 
 
+def test_incentives_sort_ignores_the_base_apy() -> None:
+    """The Incentives column draws CRV, reward tokens and campaigns, and
+    nothing else -- so a pool paying 221% base and no incentives at all was
+    leading it while the number beside it read zero."""
+    earner = make_pool(symbol="EARNER", base=221.0)
+    payer = make_pool(symbol="PAYER", crv=[0, 5])
+    assert [p.name for p in sort_pools([earner, payer], "incentives")] == [
+        "PAYER",
+        "EARNER",
+    ]
+
+
+def test_each_sort_names_the_field_its_column_draws() -> None:
+    """`base_daily_apr` is a different window from the weekly figure the
+    column shows, and `aggregate_apr` counts the base APY the column does
+    not."""
+    assert sort_field("base") == "base_weekly_apr"
+    assert sort_field("incentives") == "rewards_apr"
+
+
 def test_ties_break_deterministically() -> None:
     a = make_pool(address="0x" + "a" * 40, volume=0, tvl=5)
     b = make_pool(address="0x" + "b" * 40, volume=0, tvl=5)
@@ -73,6 +99,66 @@ def test_sorting_does_not_mutate_the_input() -> None:
     original = list(pools)
     sort_pools(pools, "volume")
     assert pools == original
+
+
+# -- what reaches the server, and what a lite chain does instead -----------
+
+
+class Listing:
+    """A `CurveApi` with the wire and the campaign lookups stubbed out."""
+
+    def __init__(self, lite: bool, pools=()):
+        from curve.api import CurveApi
+
+        self.api = CurveApi()
+        self.asked: dict = {}
+        self.api.is_lite = self._is_lite(lite)
+        self.api._v2 = self._v2
+        self.api._lite_pools = self._lite_pools(list(pools))
+        self.api._campaign_indexes = self._campaigns
+
+    def _is_lite(self, lite):
+        async def answer(_chain_id):
+            return lite
+        return answer
+
+    def _lite_pools(self, pools):
+        async def answer(_chain_id, _chain):
+            return pools
+        return answer
+
+    async def _campaigns(self, _chain_id):
+        return {}, {}
+
+    async def _v2(self, _path, params):
+        self.asked = dict(params)
+        return {"data": [], "count": 0}
+
+
+async def test_the_server_is_asked_for_the_field_not_the_column() -> None:
+    """The two spellings match for volume and TVL and for nothing else, which
+    is why those two were the only sorts that worked."""
+    listing = Listing(lite=False)
+    await listing.api.list_pools(1, chain="ethereum", sort_by="base")
+    assert listing.asked["sort_by"] == "base_weekly_apr"
+
+    listing = Listing(lite=False)
+    await listing.api.list_pools(1, chain="ethereum", sort_by="incentives")
+    assert listing.asked["sort_by"] == "rewards_apr"
+
+
+async def test_a_lite_chain_sorts_by_the_column_it_was_given() -> None:
+    """Nothing sorts these server-side, so the column has to survive the trip
+    -- handed the server's field instead, `get_sort` did not recognise it and
+    quietly ordered every list by volume."""
+    quiet = make_pool(symbol="QUIET", volume=100, crv=[0, 1])
+    paying = make_pool(symbol="PAYING", volume=1, crv=[0, 9])
+    listing = Listing(lite=True, pools=[quiet, paying])
+
+    pools, _ = await listing.api.list_pools(1, chain="fraxtal",
+                                            sort_by="incentives")
+
+    assert [p.name for p in pools] == ["PAYING", "QUIET"]
 
 
 # -- searching -------------------------------------------------------------

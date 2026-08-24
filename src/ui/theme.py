@@ -11,6 +11,7 @@ SEED = ft.Colors.INDIGO
 
 PAGE = "#D3D7CF"       # Aluminium 2  --main-background
 PANEL = "#EEEEEC"      # Aluminium 1  --article-background
+PANEL_WHITE = "#FFFFFF"  # what Chad gives `surface_container_lowest`
 INK = "#3B4245"        #              --text-color
 HEADING = "#232829"    #              --header-color
 TITLE = "#171B1C"      #              --table-link-color
@@ -196,6 +197,17 @@ def paper_bg(page: ft.Page) -> str:
     """The sheet's own colour: the lightest surface in a light theme and the
     deepest in a dark one, so it separates from the page either way."""
     return PANEL if is_chad(page) else ft.Colors.SURFACE_CONTAINER_LOWEST
+
+
+def menu_bg(page: ft.Page) -> str | None:
+    """What a menu or a search view sits on.
+
+    None outside Chad, which leaves Material its own default -- a search
+    view's is `surface_container_high`, and that is the contrast the scheme
+    intends against the page in both light and dark.  Chad maps that slot to
+    a grey; its menus are white paper.
+    """
+    return PANEL_WHITE if is_chad(page) else None
 
 
 def bar_shadow(page: ft.Page) -> ft.BoxShadow | None:

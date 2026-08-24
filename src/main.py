@@ -385,7 +385,7 @@ class CurveApp:
             # open, over a surface tinted by that elevation and composited
             # against the header behind it.  The same object to look at.
             view_elevation=0,
-            view_bgcolor=ft.Colors.SURFACE_CONTAINER_LOWEST,
+            view_bgcolor=themes.menu_bg(page),
             view_side=themes.field_border(),
             controls=[self._chain_row(c) for c in PREFERRED_CHAINS],
             on_tap=self._chain_search_opened,
@@ -817,6 +817,9 @@ class CurveApp:
     def _rebuild_view(self) -> None:
         """Take on a theme that changed, everywhere -- not just on screen."""
         self.header.shadow = themes.bar_shadow(self.page)
+        self.chain_picker.view_bgcolor = themes.menu_bg(self.page)
+        if self.swap_page is not None:
+            self.swap_page.view.retheme()
         self.account_chip.border = themes.panel_border(self.page)
         self.connect_button.style = buttons.style(self.page)
         self.list_view.rebuild()

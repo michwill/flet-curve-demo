@@ -3486,6 +3486,7 @@ def test_a_theme_change_reaches_both_tables() -> None:
     app.connect_button = ft.Button("Connect")
     app._detail = None
     app.swap_page = None
+    app.chain_picker = ft.SearchBar(view_bgcolor=None)
     app.list_view = PoolListView(app.page, on_open=lambda _p: None)
     app.portfolio_view = portfolio_view(app.page)
 
@@ -3501,6 +3502,8 @@ def test_a_theme_change_reaches_both_tables() -> None:
     assert app.portfolio_view._table.border is not None
     assert app.portfolio_view._header.bgcolor == theme.RULE
     assert app.portfolio_view._rows_box.theme.hover_color == theme.HOVER
+    # The menus were read once, at build: nothing repaints them on its own.
+    assert app.chain_picker.view_bgcolor == theme.PANEL_WHITE
 
 
 # -- the bundle must not be the first paint --------------------------------

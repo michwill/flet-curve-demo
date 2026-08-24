@@ -247,7 +247,7 @@ class CoinPicker(ft.SearchBar):
             # against whatever is behind it.  Flat, opaque and outlined
             # instead: the same object to look at, none of it per frame.
             view_elevation=0,
-            view_bgcolor=ft.Colors.SURFACE_CONTAINER_LOWEST,
+            view_bgcolor=theme.menu_bg(page),
             view_side=theme.field_border(),
             on_tap=self._opened,
             on_change=self._typed,
@@ -349,6 +349,11 @@ class CoinPicker(ft.SearchBar):
             tight=True,
             horizontal_alignment=ft.CrossAxisAlignment.END,
         )
+
+    def retheme(self) -> None:
+        """Take on a theme that changed.  See `main._rebuild_view`."""
+        self.view_bgcolor = theme.menu_bg(self._page)
+        safe_update(self)
 
     def _opened(self, _e: AnyEvent) -> None:
         """Open on an empty box, offering every coin.
@@ -1161,6 +1166,11 @@ class SwapView(ft.Container):
             spacing=WORTH_GAP,
             tight=True,
         )
+
+    def retheme(self) -> None:
+        """Take on a theme that changed, in the parts that were read once."""
+        self.sell.retheme()
+        self.buy.retheme()
 
     def set_layout(self, layout: Layout) -> None:
         """Draw the route beside the widget where there is room for it."""

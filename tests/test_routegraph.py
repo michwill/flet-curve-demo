@@ -207,6 +207,47 @@ def test_a_route_that_revisits_a_token_still_fits_its_frame():
     assert max(bus.x + bus.width for bus in got.buses) == 400
 
 
+def loops_past_the_end() -> FakeDiagram:
+    """A route whose loop closes two buses beyond the coin being bought.
+
+    C sells into the destination and into E; E deposits into F; F sells back
+    into B, which is where it came from.  That last leg closes a cycle, so the
+    layering leaves it out -- and with it goes anything that would have pushed
+    the destination past E and F.
+    """
+    return FakeDiagram(
+        buses=[FakeBus(0, "A", is_source=True), FakeBus(1, "B"),
+               FakeBus(2, "C"), FakeBus(3, "D", is_dest=True),
+               FakeBus(4, "E"), FakeBus(5, "F")],
+        elements=[
+            FakeElement(0, 0, 1, 100.0, target="0xa"),
+            FakeElement(1, 1, 2, 100.0, target="0xb"),
+            FakeElement(2, 2, 3, 60.0, target="0xc"),
+            FakeElement(3, 2, 4, 40.0, target="0xd"),
+            FakeElement(4, 4, 5, 40.0, target="0xe"),
+            FakeElement(5, 5, 1, 40.0, target="0xf"),   # back to B
+        ],
+    )
+
+
+def test_the_coin_being_bought_is_the_last_column():
+    """Two buses were drawn past it, and the trade read as unfinished."""
+    depth = layers(loops_past_the_end())
+    assert depth[3] > max(level for slot, level in depth.items() if slot != 3)
+
+
+def test_nothing_is_drawn_to_the_right_of_the_destination():
+    got = layout(loops_past_the_end(), 400, 300)
+    dest = next(bus for bus in got.buses if bus.is_dest)
+    assert dest.x == max(bus.x for bus in got.buses)
+    assert all(band.x1 <= dest.x + dest.width for band in got.bands)
+
+
+def test_a_destination_already_last_is_left_where_it_is():
+    """The extra column is for the loop, not for every route."""
+    assert layers(split()) == {0: 0, 1: 1, 2: 2}
+
+
 def test_a_single_leg_fills_the_height():
     got = layout(straight(), 400, 200)
     assert len(got.bands) == 1

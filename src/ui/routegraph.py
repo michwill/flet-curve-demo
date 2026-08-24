@@ -344,6 +344,19 @@ def layers(diagram) -> dict[int, int]:
         for onward in after.get(slot, ()):
             if place[onward] > place[slot]:
                 depth[onward] = max(depth[onward], depth[slot] + 1)
+
+    # The coin someone is buying belongs at the right-hand edge, whatever the
+    # longest path says.  A leg left out of the layering takes its bus's claim
+    # to a column with it, so a loop closing past the destination -- deposit
+    # into a vault, sell the vault token back into a token from earlier --
+    # leaves buses drawn beyond the coin the trade ends on, and the picture
+    # reads as though the trade carries on after it is over.
+    dest = next((bus.slot for bus in getattr(diagram, "buses", ()) or ()
+                 if getattr(bus, "is_dest", False)), None)
+    if dest in depth:
+        behind = max((level for slot, level in depth.items() if slot != dest),
+                     default=-1)
+        depth[dest] = max(depth[dest], behind + 1)
     return depth
 
 

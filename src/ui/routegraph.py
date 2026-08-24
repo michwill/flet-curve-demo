@@ -77,6 +77,14 @@ BOILERPLATE = (
 #: What a leg *is*, for the ones whose name only restates the two columns it
 #: already runs between -- a vault deposit says "crvUSD -> scrvUSD", which the
 #: picture says twice already.
+#: Conversions whose coin is the one the leg *leaves*: a redeem starts at the
+#: vault share, an unwrap at the wrapper.  Everything else in `LEG_KINDS`
+#: arrives at its coin instead.
+OUT_OF_WRAPPER = frozenset({
+    "ERC4626_REDEEM", "UNWRAP_NATIVE", "WSTETH_UNWRAP", "LEND_REDEEM",
+    "WITHDRAW_STABLE", "WITHDRAW_CRYPTO",
+})
+
 LEG_KINDS = {
     "ERC4626_DEPOSIT": "deposit",
     "ERC4626_REDEEM": "redeem",
@@ -144,6 +152,11 @@ class Band:
     height: float
     colour: int = 0
     detail: str = ""
+    #: The coin a conversion converts *to* or *from* -- the vault share, the
+    #: wrapper -- so a leg with no pool behind it can still say which one it
+    #: is.  Empty on a pool swap, which has its own name and its own coins.
+    token: str = ""
+    symbol: str = ""
 
     def waist(self) -> tuple[float, float, float]:
         """Where a name goes on this ribbon, and how much room it has.
@@ -695,15 +708,24 @@ def _ribbons(elements, boxes: dict[int, BusBox],
             points.append((level * step, y))
             points.append((level * step + bus_width, y))
         points.append((target.x, ends[element.index]))
+        kind = getattr(element.kind, "name", str(element.kind))
+        # Only a conversion wears a coin: a swap has a pool behind it, with a
+        # name of its own and coins of its own, and one end of it stood in
+        # front of that name would be a worse answer than none.
+        wrapper = (boxes.get(element.src_slot if kind in OUT_OF_WRAPPER
+                             else element.dst_slot)
+                   if kind in LEG_KINDS else None)
         bands.append(Band(
             index=element.index,
             label=getattr(element, "label", "") or "",
-            kind=getattr(element.kind, "name", str(element.kind)),
+            kind=kind,
             share=float(element.share_pct),
             points=tuple(points),
             height=max(min_band, weight.get(element.index, 0.0) * scale),
             colour=element.index,
             detail=getattr(element, "detail", "") or "",
+            token=getattr(wrapper, "token", "") or "",
+            symbol=getattr(wrapper, "symbol", "") or "",
         ))
     return bands
 
@@ -735,6 +757,11 @@ def pool_name(band) -> str:
     is just the two tokens either side -- "crvUSD -> scrvUSD" is a vault
     deposit, and the picture has already said both of those twice.  What it
     has not said is that the leg is a deposit.
+
+    A bare verb was not much better: a route that deposits into two vaults
+    said "deposit" on both.  So the coin the conversion is *of* goes in front
+    of it -- "sUSDS deposit", "WETH wrap" -- which is one word longer and
+    names the thing.  The bare verb remains for a leg whose coin is unknown.
     """
     name = (band.label or "").strip()
     for prefix in BOILERPLATE:
@@ -742,7 +769,9 @@ def pool_name(band) -> str:
             name = name[len(prefix):].strip()
             break
     if not name or "->" in name:
-        return LEG_KINDS.get(band.kind, "")
+        verb = LEG_KINDS.get(band.kind, "")
+        symbol = (band.symbol or "").strip()
+        return f"{symbol} {verb}" if verb and symbol else verb
     return name
 
 

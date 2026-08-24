@@ -677,7 +677,7 @@ class RouteDiagram(ft.Container):
             name = routegraph.pool_name(band)
             if not name:
                 continue
-            coins = self._pool_coins.get((band.detail or "").lower()) or []
+            coins = self._leg_coins(band)
             middle, centre, room = band.waist()
             # A little wider than the estimate, and the content centred in it:
             # the estimate decides whether the name is drawn at all, and being
@@ -709,6 +709,22 @@ class RouteDiagram(ft.Container):
                 alignment=ft.Alignment.TOP_CENTER,
             ))
         return drawn
+
+    def _leg_coins(self, band) -> list[Coin]:
+        """Whose logos go in front of a leg's name.
+
+        A pool's own coins, the way the pool list draws them.  A conversion
+        has no pool -- its target is a token -- so it wears the coin it is a
+        conversion of, which is the one its name now says.
+        """
+        coins = self._pool_coins.get((band.detail or "").lower())
+        if coins:
+            return coins
+        token = getattr(band, "token", "")
+        if not token:
+            return []
+        return [Coin(address=token, symbol=getattr(band, "symbol", "") or "?",
+                     decimals=18)]
 
     def _leg_chip(self, name: str, coins: list[Coin],
                   mark: float = POOL_MARK) -> ft.Control:

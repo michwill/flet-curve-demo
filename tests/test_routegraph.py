@@ -491,15 +491,46 @@ def test_a_registry_name_loses_only_its_boilerplate():
 
 def test_a_leg_named_after_its_two_ends_says_what_it_does_instead():
     """The columns either side already carry both names, twice over.  What
-    the picture does not otherwise say is that this one is a deposit."""
+    the picture does not otherwise say is that this one is a deposit -- and
+    which vault it is a deposit into, on a route that has two."""
     class Leg:
-        def __init__(self, label, kind):
-            self.label, self.kind = label, kind
+        def __init__(self, label, kind, symbol=""):
+            self.label, self.kind, self.symbol = label, kind, symbol
 
-    assert pool_name(Leg("crvUSD -> scrvUSD", "ERC4626_DEPOSIT")) == "deposit"
-    assert pool_name(Leg("ETH -> WETH", "WRAP_NATIVE")) == "wrap"
+    assert pool_name(
+        Leg("crvUSD -> scrvUSD", "ERC4626_DEPOSIT", "scrvUSD")) == "scrvUSD deposit"
+    assert pool_name(Leg("ETH -> WETH", "WRAP_NATIVE", "WETH")) == "WETH wrap"
+    assert pool_name(
+        Leg("sUSDS -> USDS", "ERC4626_REDEEM", "sUSDS")) == "sUSDS redeem"
+    assert pool_name(Leg("crvUSD -> scrvUSD", "ERC4626_DEPOSIT")) == "deposit", (
+        "the bare verb where the coin is unknown"
+    )
     assert pool_name(Leg("", "SWAP_STABLE")) == "", "nothing to say, so nothing"
     assert pool_name(Leg("A -> B", "SWAP_STABLE")) == "", "and no guessing"
+
+
+def test_a_conversion_wears_the_coin_it_converts():
+    """Which end depends on the direction: a deposit arrives at the vault
+    share, a redeem leaves from it."""
+    diagram = FakeDiagram(
+        buses=[FakeBus(0, "USDS", token="0xaaa", is_source=True),
+               FakeBus(1, "sUSDS", token="0xbbb"),
+               FakeBus(2, "USDC", token="0xccc", is_dest=True)],
+        elements=[
+            FakeElement(0, 0, 1, 100.0, "USDS -> sUSDS", "0xbbb",
+                        kind=FakeKind("ERC4626_DEPOSIT")),
+            FakeElement(1, 1, 2, 100.0, "sUSDS/USDC", "0xddd"),
+        ],
+    )
+    got = layout(diagram, 400, 300)
+    deposit = next(b for b in got.bands if b.index == 0)
+    assert (deposit.symbol, deposit.token) == ("sUSDS", "0xbbb")
+    assert pool_name(deposit) == "sUSDS deposit"
+
+    swap = next(b for b in got.bands if b.index == 1)
+    assert (swap.symbol, swap.token) == ("", ""), (
+        "a swap has a pool with coins of its own; one end of it would be worse"
+    )
 
 
 # -- the widths have to balance --------------------------------------------

@@ -127,6 +127,12 @@ HINT_COLOUR = ft.Colors.with_opacity(0.55, ft.Colors.ON_SURFACE_VARIANT)
 #: enough that the two read as one thing; the boxes themselves sit 14 apart.
 WORTH_GAP = 2
 
+#: How many coins the picker draws at once.  A tile carries a logo, and
+#: Ethereum's list is 301 of them -- built to open it, and built again on
+#: every keystroke.  Two screenfuls is more than anyone scrolls before
+#: typing, and typing is what the box is for.
+ROWS_SHOWN = 40
+
 #: The size a coin's mark is drawn at in the picker and the boxes -- the same
 #: 20 the pool page's coin dropdown uses for its own.
 MARK = 20
@@ -234,6 +240,15 @@ class CoinPicker(ft.SearchBar):
                 min_width=PICKER_WIDTH, max_width=PICKER_WIDTH,
                 max_height=PICKER_HEIGHT),
             view_shape=ft.RoundedRectangleBorder(radius=12),
+            # The list opens by growing out of the bar, and everything the
+            # frames of that have to paint is paid for on every open.  A
+            # Material view is elevated, which is a blurred shadow redrawn per
+            # frame, over a surface tinted by that elevation and composited
+            # against whatever is behind it.  Flat, opaque and outlined
+            # instead: the same object to look at, none of it per frame.
+            view_elevation=0,
+            view_bgcolor=ft.Colors.SURFACE_CONTAINER_LOWEST,
+            view_side=theme.field_border(),
             on_tap=self._opened,
             on_change=self._typed,
             on_submit=self._entered,
@@ -278,7 +293,26 @@ class CoinPicker(ft.SearchBar):
     # ---------------------------------------------------------- the control
 
     def _rows(self, query: str = "") -> list[ft.Control]:
-        return [self._row(entry) for entry in matching_coins(self._entries, query)]
+        """The matches, up to a screenful.
+
+        Ethereum offers 301 coins, and a tile apiece -- each with a logo in
+        it -- is 301 controls built to open the list and 155 more built on
+        the "u" of "usdc".  A search box is how anyone finds the 40th of
+        those anyway, so the rest wait behind a line saying they are there.
+        """
+        found = matching_coins(self._entries, query)
+        rows: list[ft.Control] = [self._row(entry) for entry in found[:ROWS_SHOWN]]
+        if len(found) > ROWS_SHOWN:
+            rows.append(self._more(len(found) - ROWS_SHOWN))
+        return rows
+
+    def _more(self, hidden: int) -> ft.Control:
+        """What the list is not showing, so nobody concludes it is not there."""
+        return ft.Container(
+            ft.Text(f"{hidden:,} more — keep typing to narrow the list",
+                    size=LABEL, color=ft.Colors.ON_SURFACE_VARIANT),
+            padding=ft.Padding.symmetric(vertical=8, horizontal=16),
+        )
 
     def _row(self, entry: CoinEntry) -> ft.Control:
         return ft.ListTile(

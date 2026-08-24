@@ -308,6 +308,35 @@ class Typed:
         self.data = data
 
 
+def many_coins(count: int):
+    from router.universe import CoinEntry
+
+    return [
+        CoinEntry(f"0x{n:040x}", f"C{n}", f"Coin {n}", 18, 0.0, 0)
+        for n in range(count)
+    ]
+
+
+def test_the_picker_draws_a_screenful_rather_than_the_whole_chain():
+    """Ethereum offers 301 coins and a tile apiece carries a logo, which is
+    301 controls to open the list and 155 more on the "u" of "usdc"."""
+    from ui.swap import ROWS_SHOWN
+
+    coins = many_coins(301)
+    view = view_with(coins)
+
+    rows = view.sell._rows()
+
+    assert len(rows) == ROWS_SHOWN + 1, "a screenful, and a line about the rest"
+    assert "261 more" in rows[-1].content.value
+
+
+def test_a_list_that_fits_says_nothing_about_more():
+    coins = many_coins(5)
+    view = view_with(coins)
+    assert len(view.sell._rows()) == 5
+
+
 def test_what_is_typed_is_priced_under_the_box():
     coins = two_coins()
     view = view_with(coins)

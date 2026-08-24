@@ -380,6 +380,13 @@ class CurveApp:
                 max_height=CHAIN_MENU_HEIGHT,
             ),
             view_shape=ft.RoundedRectangleBorder(radius=CHAIN_BAR_RADIUS),
+            # Flat, opaque and outlined rather than elevated: an elevated
+            # view is a blurred shadow repainted through every frame of the
+            # open, over a surface tinted by that elevation and composited
+            # against the header behind it.  The same object to look at.
+            view_elevation=0,
+            view_bgcolor=ft.Colors.SURFACE_CONTAINER_LOWEST,
+            view_side=themes.field_border(),
             controls=[self._chain_row(c) for c in PREFERRED_CHAINS],
             on_tap=self._chain_search_opened,
             on_change=self._chain_search_typed,

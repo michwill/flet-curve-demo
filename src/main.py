@@ -386,7 +386,10 @@ class CurveApp:
             # against the header behind it.  The same object to look at.
             view_elevation=0,
             view_bgcolor=themes.menu_bg(page),
-            view_side=themes.field_border(),
+            # The bar's own outline, not a text field's: an open list is the
+            # same control with more of it showing, and a frame that changes
+            # colour on the way out says otherwise.
+            view_side=ft.BorderSide(1, ft.Colors.OUTLINE),
             controls=[self._chain_row(c) for c in PREFERRED_CHAINS],
             on_tap=self._chain_search_opened,
             on_change=self._chain_search_typed,

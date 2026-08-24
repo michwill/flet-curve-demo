@@ -384,6 +384,9 @@ class Session:
 
     solver = "rust"
     block = 100
+    #: What `_gas_from_table` hands the router.  None is the router's own
+    #: fallback -- per-kind medians rather than per-pool measurements.
+    gas_table = None
 
     def __init__(self) -> None:
         self.planned: list[int] = []
@@ -470,6 +473,42 @@ async def test_the_picture_ends_on_the_number_in_the_buy_box():
 
     page._quoted(type("Quote", (), {"result": Result()})())
     assert session.drawn == [Result.verified_out]
+
+
+def test_a_route_is_priced_by_its_shape_when_no_balance_can_be_simulated():
+    """`_estimate_gas` grants the approval and never a balance, so nobody
+    without a wallet gets a figure from the dry run -- and they are exactly
+    the people deciding whether the trade is worth it."""
+    from erouter.core.types import ArcKind
+
+    class Leg:
+        kind = ArcKind.SWAP_STABLE
+        target = "0x" + "aa" * 20
+        i, j = 0, 1
+
+    class Realized:
+        leg = Leg()
+
+    class Route:
+        legs = (Realized(), Realized())
+
+    class Result:
+        route = Route()
+
+    page = swap_page_with(Wallet(), two_coins())
+    held = page.host._held
+    held.session = Session()
+    held.stage = Stage.READY
+    page._quote = type("Quote", (), {"result": Result()})()
+
+    gas = page._gas_from_table()
+
+    assert gas > 100_000, "two legs, a transaction and the split overhead"
+
+
+def test_nothing_to_price_costs_nothing():
+    page = swap_page_with(Wallet(), two_coins())
+    assert page._gas_from_table() == 0, "no session, no route, no figure"
 
 
 async def test_the_floor_only_ever_moves_forward():

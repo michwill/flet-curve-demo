@@ -689,10 +689,24 @@ class SwapPage:
         token has not been approved yet, and this one has already run it --
         granting the approval locally where the wallet holds the coin, which
         is what makes a figure possible before the approval is signed.
+
+        Where it cannot run it, the route's shape is priced instead -- see
+        `_gas_from_table`.  Both are marked as estimates, because neither is
+        the call as it stands.
         """
         provider = self._provider_for()
         chain_id = self.chain_id_now
-        if provider is None or not plan.gas or not chain_id:
+        gas = plan.gas
+        estimated = bool(getattr(plan, "gas_estimated", False))
+        if not gas:
+            gas = self._gas_from_table()
+            estimated = bool(gas)
+        # A dry run for `_NOBODY` is a measurement of somebody else's swap --
+        # the placeholder holds real coins on mainnet, which is why a small
+        # size gets a figure there and a large one does not.  Whatever it cost
+        # them, it is an estimate to a viewer who has connected nothing.
+        estimated = estimated or not self._account()
+        if provider is None or not gas or not chain_id:
             self.view.show_gas("")
             return
         try:
@@ -706,12 +720,36 @@ class SwapPage:
         per_gas = settlement_price(base_fee=base, gas_price=price,
                                    node_tip=tip, eip1559=eip1559)
         native = native_for(chain_id)
-        amount = fee_in_native(plan.gas, per_gas)
+        amount = fee_in_native(gas, per_gas)
         usd = 0.0
         with contextlib.suppress(ApiError):
             usd = await native_price(self._api, self._chain_name(), chain_id)
         self.view.show_gas(format_fee(amount, native.symbol, amount * usd),
-                           estimated=getattr(plan, "gas_estimated", False))
+                           estimated=estimated)
+
+    def _gas_from_table(self) -> int:
+        """What this route's shape costs, when no balance can be simulated.
+
+        `_estimate_gas` grants the approval and never a balance -- quoting a
+        trade for a wallet that cannot make it would be quoting somebody
+        else's swap -- so nobody who has not connected a wallet, and nobody
+        holding less than they typed, gets a figure from the dry run.  They
+        are also exactly the people deciding whether the trade is worth it.
+
+        The router prices legs from measured execution for its own candidate
+        screening, and that table asks for no sender at all: per pool and
+        direction where it has been measured, the median of its class where it
+        has not.  Coarser than a run of the real call, and enough to say
+        whether the cost is cents or tens of dollars.
+        """
+        session = self.host.session
+        route = getattr(getattr(self._quote, "result", None), "route", None)
+        if session is None or route is None:
+            return 0
+        from erouter.core.gas import plan_gas
+
+        legs = [realized.leg for realized in route.legs]
+        return plan_gas(legs, getattr(session, "gas_table", None)) if legs else 0
 
 
 def _wraps(sell, buy, chain_id: int) -> bool:

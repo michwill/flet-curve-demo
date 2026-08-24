@@ -200,6 +200,9 @@ class CoinPicker(ft.SearchBar):
         self._chain = chain
         self._entries: list[CoinEntry] = []
         self._picked: CoinEntry | None = None
+        #: What is in the box while the list is open, which the bar's own
+        #: `value` is not: it is blanked on the way in and left alone after.
+        self._query = ""
         self._on_pick = on_pick
         super().__init__(
             value="",
@@ -229,6 +232,8 @@ class CoinPicker(ft.SearchBar):
             view_shape=ft.RoundedRectangleBorder(radius=12),
             on_tap=self._opened,
             on_change=self._typed,
+            on_submit=self._entered,
+            on_blur=self._left,
             on_tap_outside_bar=self._left,
             on_tap_outside_view=self._left,
         )
@@ -313,17 +318,47 @@ class CoinPicker(ft.SearchBar):
         Opening is ours to do: a `SearchBar` reports the tap and waits.
         """
         self.value = ""
+        self._query = ""
         self.controls = self._rows()
         safe_update(self)
         self._page.run_task(self.open_view)
 
     def _typed(self, event: AnyEvent) -> None:
         typed = getattr(event, "data", None)
-        self.controls = self._rows(typed if isinstance(typed, str) else "")
+        self._query = typed if isinstance(typed, str) else ""
+        self.controls = self._rows(self._query)
         safe_update(self)
 
+    def _entered(self, event: AnyEvent) -> None:
+        """Enter takes the coin at the top of what is left of the list.
+
+        Which is the one the typing was narrowing towards: `matching_coins`
+        puts the symbols that start with what was typed first, so typing a
+        symbol and pressing return chooses the row return was pointing at.
+
+        On an unfiltered list it chooses nothing.  The top of *that* list is
+        whatever is busiest on the chain, which is not what someone pressing
+        return meant, and picking it would be the same silent substitution
+        this handler is here to stop.  Kept off `event.data` alone for the
+        same reason: what was typed is known from `_typed` either way.
+        """
+        typed = getattr(event, "data", None)
+        query = typed if isinstance(typed, str) and typed else self._query
+        found = matching_coins(self._entries, query) if query.strip() else []
+        if found:
+            self._chose(found[0])
+        else:
+            self._left(event)
+
     def _left(self, _e: AnyEvent) -> None:
-        """Dismissed without choosing: the coin is what it was."""
+        """Dismissed without choosing: the coin is what it was.
+
+        Every way out of the list ends here, and it has to: the bar is blanked
+        on the way in so that typing does not land in the middle of the symbol
+        already there, so a dismissal that does not restore it leaves the box
+        showing the hint -- or worse, the half-typed query -- beside a mark
+        and a rate that still belong to the coin actually being sold.
+        """
         self.value = self._picked.symbol if self._picked else ""
         self.controls = self._rows()
         safe_update(self)

@@ -301,6 +301,84 @@ def test_with_nothing_held_both_sides_are_the_same_list():
     assert [c.symbol for c in view.buy._entries] == ["USDC", "USDT"]
 
 
+class Typed:
+    """A `SearchBar` event, which carries what is in the box as `data`."""
+
+    def __init__(self, data: str = "") -> None:
+        self.data = data
+
+
+def test_leaving_the_coin_list_puts_the_coin_back_in_the_box():
+    """Opening blanks the box so typing does not land inside the symbol, and
+    every way out has to undo that.  Dismissed with Escape it did not, and the
+    box showed its hint beside a mark and a rate for the coin still being
+    sold."""
+    coins = two_coins()
+    view = view_with(coins)
+    view.set_pair(coins[0], coins[1])
+
+    view.sell._opened(Typed())
+    assert view.sell.value == "", "blanked, so typing starts clean"
+
+    view.sell._left(Typed())
+
+    assert view.sell.value == "USDC"
+    assert view.sell.picked is coins[0], "nothing was chosen either way"
+
+
+def test_return_takes_the_coin_the_typing_was_pointing_at():
+    coins = two_coins()
+    view = view_with(coins)
+    view.set_pair(coins[0], coins[1])
+
+    view.sell._opened(Typed())
+    view.sell._typed(Typed("usdt"))
+    view.sell._entered(Typed("usdt"))
+
+    assert view.sell.picked is coins[1]
+    assert view.sell.value == "USDT"
+
+
+def test_return_reads_what_was_typed_even_if_the_event_forgot_it():
+    """`on_submit` need not carry the box's contents, and picking the top of
+    an unfiltered list would choose the busiest coin on the chain instead of
+    the one that was typed."""
+    coins = two_coins()
+    view = view_with(coins)
+    view.set_pair(coins[0], coins[1])
+
+    view.sell._opened(Typed())
+    view.sell._typed(Typed("usdt"))
+    view.sell._entered(Typed())
+
+    assert view.sell.picked is coins[1]
+
+
+def test_return_on_an_empty_box_chooses_nothing():
+    coins = two_coins()
+    view = view_with(coins)
+    view.set_pair(coins[0], coins[1])
+
+    view.sell._opened(Typed())
+    view.sell._entered(Typed())
+
+    assert view.sell.picked is coins[0]
+    assert view.sell.value == "USDC"
+
+
+def test_return_on_a_query_that_names_nothing_changes_no_coin():
+    coins = two_coins()
+    view = view_with(coins)
+    view.set_pair(coins[0], coins[1])
+
+    view.sell._opened(Typed())
+    view.sell._typed(Typed("zzz"))
+    view.sell._entered(Typed("zzz"))
+
+    assert view.sell.picked is coins[0]
+    assert view.sell.value == "USDC"
+
+
 class Session:
     """A session that records what `plan_call` was told."""
 

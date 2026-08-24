@@ -480,7 +480,12 @@ class SwapPage:
             return
         session = self.host.session
         try:
-            self.view.show_route(session.diagram(quote.result))
+            # With what the chain quoted, so the coin at the end of the
+            # picture reads the same as the Buy box.  Left out, the last bus
+            # is labelled with what the model accumulated, which is a
+            # different number -- and the two sit a hand's width apart.
+            self.view.show_route(session.diagram(
+                quote.result, verified_out=quote.result.verified_out))
         except Exception:
             # Cleared rather than left: a diagram that failed to rebuild goes
             # on showing the *previous* route beside the current numbers, and

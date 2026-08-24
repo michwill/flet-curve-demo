@@ -309,8 +309,11 @@ class Session:
 
     def __init__(self) -> None:
         self.planned: list[int] = []
+        self.drawn: list[int | None] = []
 
-    def diagram(self, _result):
+    def diagram(self, _result, *, verified_out=None):
+        self.drawn.append(verified_out)
+
         class Empty:
             buses = elements = order = ()
         return Empty()
@@ -366,6 +369,29 @@ async def test_a_plan_is_told_the_block_an_approval_landed_in():
     page._floor_block = 25_813_900
     await page._plan_now()
     assert session.planned[-1] == 25_813_900
+
+
+async def test_the_picture_ends_on_the_number_in_the_buy_box():
+    """The last bus is labelled with what the model accumulated unless it is
+    handed the chain's own answer -- and the model's total counts every
+    arrival, including flow that leaves again."""
+    page = swap_page_with(Wallet(), two_coins())
+    session = Session()
+    held = page.host._held
+    held.session = session
+    held.stage = Stage.READY
+
+    class Route:
+        legs = ()
+
+    class Result:
+        route = Route()
+        verified_out = 15_630_256_884_000_000_000_000
+        amount_in = 1
+        price_impact_bp = 0.0
+
+    page._quoted(type("Quote", (), {"result": Result()})())
+    assert session.drawn == [Result.verified_out]
 
 
 async def test_the_floor_only_ever_moves_forward():

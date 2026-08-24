@@ -20,7 +20,7 @@ from itertools import pairwise
 import flet as ft
 import flet.canvas as cv
 
-from curve.format import token_amount
+from curve.format import compact_usd, token_amount
 from curve.models import Coin
 from router.universe import CoinEntry, matching_coins
 from wallet.erc20 import format_units, parse_units
@@ -122,6 +122,10 @@ HINT = "0.0"
 #: what the hint has to say is "this is not the number you are typing" and
 #: nothing here but the colour says it.
 HINT_COLOUR = ft.Colors.with_opacity(0.55, ft.Colors.ON_SURFACE_VARIANT)
+
+#: Between an amount box and the line saying what that amount is worth.  Tight
+#: enough that the two read as one thing; the boxes themselves sit 14 apart.
+WORTH_GAP = 2
 
 #: The size a coin's mark is drawn at in the picker and the boxes -- the same
 #: 20 the pool page's coin dropdown uses for its own.
@@ -982,6 +986,13 @@ class SwapView(ft.Container):
             height=FIELD_HEIGHT, text_style=ft.TextStyle(size=FIELD_TEXT),
             content_padding=ft.Padding.symmetric(horizontal=12, vertical=0),
             hint_style=ft.TextStyle(size=SMALL, color=HINT_COLOUR))
+        # What is in each box, in dollars.  Pale and small: it is a gloss on
+        # the number above it, and the number above it is the subject.
+        self._prices: dict[str, float] = {}
+        self.sell_worth = ft.Text("", size=SMALL, color=HINT_COLOUR,
+                                  no_wrap=True, visible=False)
+        self.buy_worth = ft.Text("", size=SMALL, color=HINT_COLOUR,
+                                 no_wrap=True, visible=False)
         self.reverse = ft.IconButton(
             ft.Icons.SWAP_VERT, tooltip="Swap direction",
             on_click=self._flip_clicked, icon_size=20)
@@ -1012,9 +1023,9 @@ class SwapView(ft.Container):
             ft.Column(
                 [
                     self._heading(),
-                    self._row(self.amount, self.sell),
+                    self._row(self.amount, self.sell, self.sell_worth),
                     ft.Row([self.reverse], alignment=ft.MainAxisAlignment.CENTER),
-                    self._row(self.receive, self.buy),
+                    self._row(self.receive, self.buy, self.buy_worth),
                     self.rows.control,
                     self.approve_button,
                     self.submit_button,
@@ -1058,7 +1069,39 @@ class SwapView(ft.Container):
             spacing=0,
         )
 
-    def _row(self, field: ft.Control, picker: CoinPicker) -> ft.Control:
+    def set_prices(self, prices: dict[str, float]) -> None:
+        """What the chain's coins are worth, for the lines under the boxes."""
+        self._prices = {a.lower(): p for a, p in (prices or {}).items()}
+        self._sync_worth()
+
+    def _worth_of(self, coin: CoinEntry | None, text: str) -> str:
+        """What that many of that coin is worth, as near as anyone can say.
+
+        Approximate on purpose: the price is the Prices API's, the amounts
+        move while it is cached, and a figure to the cent would be claiming
+        the trade is worth that rather than about that.
+        """
+        price = self._prices.get(coin.address.lower()) if coin else 0.0
+        if not price:
+            return ""
+        try:
+            amount = float((text or "").strip().replace(",", ""))
+        except ValueError:
+            return ""
+        return f"~ {compact_usd(amount * price)}" if amount > 0 else ""
+
+    def _sync_worth(self) -> None:
+        """Both lines, from whatever is in the boxes now."""
+        for line, coin, field in (
+            (self.sell_worth, self.sell.picked, self.amount),
+            (self.buy_worth, self.buy.picked, self.receive),
+        ):
+            line.value = self._worth_of(coin, field.value or "")
+            line.visible = bool(line.value)
+            safe_update(line)
+
+    def _row(self, field: ft.Control, picker: CoinPicker,
+             worth: ft.Control | None = None) -> ft.Control:
         """One half of the trade: the field, and the coin beside it.
 
         An ordinary bordered field beside the picker, the way the pool page's
@@ -1068,10 +1111,21 @@ class SwapView(ft.Container):
         between them says which way round it is, and the balance is the box's
         own hint rather than a line under it.
         """
-        return ft.Row(
+        row = ft.Row(
             [ft.Container(field, expand=True), picker],
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
             spacing=8,
+        )
+        if worth is None:
+            return row
+        # Under the box and indented to its text, so it reads as a note on
+        # that number rather than as a row of its own.  Hidden while there is
+        # nothing to say, which is what keeps it from being a blank line on a
+        # chain the Prices API does not cover.
+        return ft.Column(
+            [row, ft.Container(worth, padding=ft.Padding.only(left=12))],
+            spacing=WORTH_GAP,
+            tight=True,
         )
 
     def set_layout(self, layout: Layout) -> None:
@@ -1322,6 +1376,9 @@ class SwapView(ft.Container):
     # ------------------------------------------------------------- handlers
 
     def _typed(self, _e: AnyEvent) -> None:
+        # Before the quote is asked for, not after it: the dollars follow the
+        # keystroke, and waiting for a route would make them lag it.
+        self._sync_worth()
         self._on_amount(self.amount_in())
 
     def _max_clicked(self, _e: AnyEvent) -> None:
@@ -1418,6 +1475,7 @@ class SwapView(ft.Container):
         safe_update(self.buy)
 
     def _sync(self) -> None:
+        self._sync_worth()
         safe_update(self.receive)
         safe_update(self.submit_button)
         safe_update(self.rows.control)

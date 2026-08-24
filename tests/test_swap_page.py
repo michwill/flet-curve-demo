@@ -308,6 +308,50 @@ class Typed:
         self.data = data
 
 
+def test_what_is_typed_is_priced_under_the_box():
+    coins = two_coins()
+    view = view_with(coins)
+    view.set_pair(coins[0], coins[1])
+    view.set_prices({coins[0].address: 1.0005, coins[1].address: 0.9998})
+
+    view.amount.value = "100000"
+    view.receive.value = "99,987.65"
+    view._sync_worth()
+
+    assert view.sell_worth.value == "~ $100.05k"
+    assert view.buy_worth.value == "~ $99.97k"
+    assert view.sell_worth.visible and view.buy_worth.visible
+
+
+def test_a_coin_with_no_price_says_nothing_rather_than_zero():
+    coins = two_coins()
+    view = view_with(coins)
+    view.set_pair(coins[0], coins[1])
+    view.set_prices({coins[1].address: 1.0})
+
+    view.amount.value = "5"
+    view.receive.value = ""
+    view._sync_worth()
+
+    assert view.sell_worth.value == "", "no price for the sell coin"
+    assert not view.sell_worth.visible
+    assert view.buy_worth.value == "", "nothing typed on the buy side"
+
+
+def test_an_unfinished_number_is_not_a_price():
+    """Someone typing `0.` has not typed a number yet, and a line that reads
+    `~ $0` under it would be answering before they finished."""
+    coins = two_coins()
+    view = view_with(coins)
+    view.set_pair(coins[0], coins[1])
+    view.set_prices({coins[0].address: 2.0})
+
+    for text in ("", ".", "0.", "abc", "0"):
+        view.amount.value = text
+        view._sync_worth()
+        assert view.sell_worth.value == "", f"{text!r} priced as something"
+
+
 def test_leaving_the_coin_list_puts_the_coin_back_in_the_box():
     """Opening blanks the box so typing does not land inside the symbol, and
     every way out has to undo that.  Dismissed with Escape it did not, and the

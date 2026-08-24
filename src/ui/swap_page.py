@@ -206,6 +206,22 @@ class SwapPage:
         # the *order* of a list that is already usable, and two requests for
         # an ordering should not hold up the two pickers being filled.
         self._page.run_task(self._rank_by_holdings)
+        self._page.run_task(self._read_prices)
+
+    async def _read_prices(self) -> None:
+        """What this chain's coins are worth, for the lines under the boxes.
+
+        Nothing here needs a wallet: it prices what somebody has typed, which
+        is a question anyone looking at the tab is asking.  One request for
+        the whole chain, out of the same cache every other caller shares.
+        """
+        chain = self._chain_name()
+        try:
+            prices = await self._api.usd_prices(chain)
+        except ApiError:
+            return
+        if prices and chain == self._chain_name():
+            self.view.set_prices(prices)
 
     async def _rank_by_holdings(self) -> None:
         """Put the coins the wallet actually holds at the top of the *sell*

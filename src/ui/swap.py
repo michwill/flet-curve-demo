@@ -1293,17 +1293,29 @@ class SwapView(ft.Container):
         quote, the balances -- rebuilds the subtree the amount box lives in.
         Losing the caret there means the next keystroke goes nowhere.
 
-        The offset is only restored when the text has not moved on: more was
-        typed between the snapshot and here, and putting the caret back where
-        it *was* would drop the reader mid-number rather than where they are.
-        Focus alone is right then; Flutter keeps the end of the line.
+        Focus first and place the caret after, because focusing a field is
+        what selects all of it: someone who had typed "500" got it back
+        highlighted, and the "0" they added next replaced the number instead
+        of extending it.  An explicit collapsed offset afterwards is what
+        makes the difference, and it is set every time rather than only when
+        one was tracked -- `on_selection_change` says where the caret went,
+        not that it moved with the text, so having none is the ordinary case
+        and the one that used to select the lot.
+
+        The end of the number unless the tracked offset still fits the text in
+        the box.  More typed between the snapshot and here means the old
+        offset points somewhere the reader has already left.
         """
         typing, caret, text = held
         if not typing:
             return
-        if caret is not None and (self.amount.value or "") == (text or ""):
-            self.amount.selection = caret
         await self.amount.focus()
+        end = len(self.amount.value or "")
+        keep = (caret is not None and (self.amount.value or "") == (text or "")
+                and 0 <= caret.base_offset <= end
+                and 0 <= caret.extent_offset <= end)
+        self.amount.selection = caret if keep else ft.TextSelection(end, end)
+        safe_update(self.amount)
 
     def show_balances(self, sell: int | None, buy: int | None) -> None:
         """The balance as the box's own hint, not a line under it.

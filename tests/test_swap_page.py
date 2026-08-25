@@ -1464,9 +1464,8 @@ def test_a_caret_is_not_put_back_over_what_was_typed_since():
     asyncio.run(view.restore_caret(held))
 
     assert calls, "still focused"
-    assert view.amount.selection is None, (
-        "the old offset is not written over the newer text; Flutter keeps "
-        "the end of the line, which is where they are")
+    assert view.amount.selection == ft.TextSelection(5, 5), (
+        "the end of the newer number, not the offset they have already left")
 
 
 def test_a_reader_who_was_not_typing_is_left_alone():
@@ -1530,3 +1529,49 @@ async def test_open_leaves_the_caret_alone_when_nobody_was_typing():
     await page.open()
 
     assert not calls, "the warm ending must not pull focus into the box"
+
+
+def test_focus_alone_would_hand_back_the_whole_number_selected():
+    """Focusing a field selects all of it.  Typing "500", having the warm
+    land, then pressing "0" gave "0" -- the keystroke replaced the selection
+    instead of extending the number.  `on_selection_change` reports where the
+    caret went rather than that it moved with the text, so nothing tracked is
+    the ordinary case and it is the one that used to select the lot.
+    """
+    import asyncio
+
+    import flet as ft
+
+    coins = two_coins()
+    page = swap_page_with(Wallet(), coins)
+    view = page.view
+    view._took_caret()
+    view.amount.value = "500"          # typed, with no selection event behind it
+    assert view._caret is None, "the case this is about"
+
+    held = view.caret()
+    _watch_focus(view)
+    asyncio.run(view.restore_caret(held))
+
+    assert view.amount.selection == ft.TextSelection(3, 3), (
+        "a collapsed caret after the number, so the next key extends it")
+
+
+def test_a_tracked_offset_past_the_end_is_not_used():
+    """A stale offset longer than what is in the box would throw."""
+    import asyncio
+
+    import flet as ft
+
+    coins = two_coins()
+    page = swap_page_with(Wallet(), coins)
+    view = page.view
+    view._took_caret()
+    view.amount.value = "5"
+    view._caret_moved(type("E", (), {"selection": ft.TextSelection(9, 9)})())
+
+    held = view.caret()
+    _watch_focus(view)
+    asyncio.run(view.restore_caret(held))
+
+    assert view.amount.selection == ft.TextSelection(1, 1)

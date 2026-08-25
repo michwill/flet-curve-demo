@@ -27,3 +27,44 @@ TITLE = 24
 
 #: The same title where the page is a phone.
 TITLE_NARROW = 20
+
+
+#: Roughly how wide a glyph is, as a fraction of the font size, for the font
+#: Flutter falls back to.  Grouped rather than tabulated per character: the
+#: point is to size a box that holds the text, not to typeset it, and the
+#: groups are what separate `Depth: WBTC / crvUSD` from `LP token`.
+_NARROW = frozenset("iljtfI.,:;'`|!()[]")
+_SPACE = frozenset(" /\\")
+_WIDE = frozenset("WMmw@%")
+
+#: What each group costs, in ems.  Measured off Roboto's advances and then
+#: rounded up, because a box a little too wide reads as a box and a box a
+#: little too narrow reads as a bug.
+_NARROW_EM = 0.34
+_SPACE_EM = 0.32
+_WIDE_EM = 0.92
+_UPPER_EM = 0.68
+_LOWER_EM = 0.56
+
+
+def text_width(text: str, size: float) -> float:
+    """About how wide `text` will draw, in logical pixels.
+
+    An estimate, and deliberately a generous one.  Flet has no way to measure
+    a string before it is drawn, so a control sized to its contents has to
+    guess -- and the guess should err wide, where the cost is a little empty
+    space rather than a clipped word.
+    """
+    total = 0.0
+    for glyph in text:
+        if glyph in _NARROW:
+            total += _NARROW_EM
+        elif glyph in _SPACE:
+            total += _SPACE_EM
+        elif glyph in _WIDE:
+            total += _WIDE_EM
+        elif glyph.isupper() or glyph.isdigit():
+            total += _UPPER_EM
+        else:
+            total += _LOWER_EM
+    return total * size

@@ -776,8 +776,9 @@ def test_a_phone_narrows_the_picker_so_the_candle_size_still_fits() -> None:
     view.set_layout(layout_for(LAPTOP))
 
     assert narrow == pool_detail.SERIES_NARROW_WIDTH
-    assert view.series.width == pool_detail.SERIES_WIDTH
     assert narrow + 110 < PHONE, "the candle size beside it has to fit too"
+    # Wide is sized to this pool's own longest row, between the two bounds.
+    assert narrow < view.series.width <= pool_detail.SERIES_MAX_WIDTH
 
 
 def test_a_phone_drops_the_currency_from_the_lp_series() -> None:
@@ -4153,3 +4154,42 @@ def test_a_narrow_picker_drops_the_depth_prefix():
     wide = [o.text for o in view.series.options
             if pool_detail.depth_pair(o.key) is not None]
     assert wide == ["Depth: C1 / C0"]
+
+
+def test_the_picker_fits_the_pool_it_is_showing():
+    """A pool whose rows read `Depth: C1 / C0` should not wear the width that
+    `Depth: scrvUSD / PYUSD` needs -- which is what a fixed number does."""
+    short = depth_view(2)
+    long_named = depth_view(2)
+    for coin, symbol in zip(long_named.pool.pool_coins,
+                            ("scrvUSD", "PYUSD"), strict=True):
+        coin.symbol = symbol
+    long_named.series.options = long_named._series_options()
+
+    assert short._picker_width() < long_named._picker_width()
+
+
+def test_the_lp_row_sets_the_floor_by_itself():
+    """No floor constant is needed: `LP token (USD)` is in every pool's menu
+    and outruns a short pool's depth rows."""
+    view = depth_view(2)
+    for coin in view.pool.pool_coins:
+        coin.symbol = "A"
+    view.series.options = view._series_options()
+
+    from ui.typography import text_width
+
+    lp = text_width("LP token (USD)", pool_detail.PICKER_TEXT)
+    assert view._picker_width() == pytest.approx(
+        lp + pool_detail.SERIES_CHROME)
+
+
+def test_the_picker_is_never_wider_than_the_ceiling():
+    """Past it the two controls to its right start losing room, so Material
+    clips the label instead of us pushing them off."""
+    view = depth_view(3)
+    for coin in view.pool.pool_coins:
+        coin.symbol = "WWWWWWWWWWWWWWWW"
+    view.series.options = view._series_options()
+
+    assert view._picker_width() == pool_detail.SERIES_MAX_WIDTH

@@ -43,7 +43,15 @@ from .depthchart import DepthChart
 from .logos import OVERLAP, coin_stack, pool_stack, token_mark
 from .pool_list import POINTS_ICON
 from .responsive import Layout, layout_for
-from .typography import BODY, LABEL, METRIC, SMALL, TITLE, TITLE_NARROW
+from .typography import (
+    BODY,
+    LABEL,
+    METRIC,
+    SMALL,
+    TITLE,
+    TITLE_NARROW,
+    text_width,
+)
 
 #: What the fold says while it is reading. Not "Reading them from the
 #: pool...", which is what it said and which has no antecedent: the fold's
@@ -151,16 +159,31 @@ SERIES_MARK_BOX = SERIES_MARK * (2 - OVERLAP)
 FIELD_MARK = 22
 FIELD_BOX = (56, 28)
 
-#: How wide the picker is: the longest name plus the box beside it. A
-#: phone gets the narrower one, or the candle size beside it goes off the
-#: edge -- a 330px screen has room for both and nothing to spare.
+#: How wide the picker is: sized to the longest name this pool actually has,
+#: rather than to the longest any pool might.  A fixed width has to fit
+#: `Depth: scrvUSD / PYUSD` and then wears that width on a pool whose rows
+#: read `Depth: ETH / USDC`, which is most of them.
 #:
-#: The depth rows are what set this.  `Depth: PYUSD / USDC` is half again as
-#: long as `LP token (USD)`, and at 270 it was clipped -- so the wide one
-#: fits the prefix and two six-letter symbols, and the narrow one drops the
-#: prefix instead of growing, because there is nothing beside it to give.
-SERIES_WIDTH = 330
+#: Bounded above only.  There is no floor to set: `LP token (USD)` is in
+#: every pool's menu and is longer than a short pool's depth rows, so it puts
+#: one there by itself.  The ceiling stops the field crowding the two controls
+#: to its right; past it Material clips the label, which is the better of two
+#: bad answers for a pool whose symbols run that long.
+SERIES_MAX_WIDTH = 360
 SERIES_NARROW_WIDTH = 200
+
+#: What sits beside the text inside the field: the marks on the left, and the
+#: arrow and Material's own padding on the right.
+#:
+#: The 44 is the arrow and Material's padding, measured by rendering the
+#: longest label and widening until it stopped losing its last character:
+#: `Depth: scrvUSD / PYUSD` clipped to `... PYUSI` at 44 and fits at 60.
+SERIES_CHROME = FIELD_BOX[0] + 60
+
+#: What size the field's own label is drawn at.  Not `SMALL`: Material draws
+#: a dropdown's text at its body size whatever the rows around it use, and
+#: sizing the box at 13 while it drew at 16 clipped `Depth: scrvUSD / P`.
+PICKER_TEXT = 16
 
 
 def _metric(label: str, value: str) -> ft.Control:
@@ -251,9 +274,10 @@ class PoolDetailView(ft.Column):
             dense=True,
             # Room for the marks as well as the longest name: the box on
             # the left is 56 of it.
-            width=SERIES_WIDTH,
+            width=SERIES_NARROW_WIDTH,  # replaced below, once the rows exist
             on_select=self._series_changed,
         )
+        self.series.width = self._picker_width()
         self._composition_slot = ft.Container(
             ft.Text("Loading pool details…", size=SMALL, color=ft.Colors.ON_SURFACE_VARIANT)
         )
@@ -375,8 +399,8 @@ class PoolDetailView(ft.Column):
         was = self._layout
         self._layout = layout
         if layout.cards != was.cards:
-            self.series.width = SERIES_NARROW_WIDTH if layout.cards else SERIES_WIDTH
             self.series.options = self._series_options()
+            self.series.width = self._picker_width()
             self._parameters_slot.content = self._parameters()
             self._header_slot.content = self._header()
             if self._composition_ready:
@@ -1005,6 +1029,20 @@ class PoolDetailView(ft.Column):
         return ft.Container(
             mark, width=width, height=height, alignment=ft.Alignment.CENTER
         )
+
+    def _picker_width(self) -> float:
+        """Wide enough for this pool's longest row, and no wider.
+
+        Estimated rather than measured: Flet cannot ask how wide a string will
+        draw before it draws it, so `text_width` guesses and guesses generously
+        -- a little empty space reads as a box, a little too little reads as a
+        bug.
+        """
+        if self._layout.cards:
+            return SERIES_NARROW_WIDTH
+        longest = max((text_width(option.text or "", PICKER_TEXT)
+                       for option in self.series.options), default=0.0)
+        return min(longest + SERIES_CHROME, SERIES_MAX_WIDTH)
 
     def _series_options(self) -> list[ft.DropdownOption]:
         options = [

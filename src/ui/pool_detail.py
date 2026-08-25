@@ -95,6 +95,10 @@ DEPTH_SETTLE = 0.35
 #: The share of a balance used to read the pool's own marginal price.
 DEPTH_PROBE = 1_000_000
 
+#: How large the two coin marks are on the flip control.  Smaller than the
+#: menu's, which sit beside text; these sit beside an arrow.
+FLIP_MARK = 20
+
 #: The units the depth axis can be read in.
 DEPTH_USD = "usd"
 DEPTH_COIN = "coin"
@@ -252,9 +256,23 @@ class PoolDetailView(ft.Column):
         #: unit that means the same thing across every pool on the page.
         #: Turns the pair round.  The menu names one ordering per pair and
         #: this is the other, because they are one curve read from either end.
-        self.flip_button = ft.IconButton(
-            icon=ft.Icons.SWAP_HORIZ,
-            icon_size=18,
+        #: The two marks sit either side of it in the order being drawn, so
+        #: the control shows the direction as well as changing it.
+        self._flip_left = ft.Container(width=FLIP_MARK, height=FLIP_MARK)
+        self._flip_right = ft.Container(width=FLIP_MARK, height=FLIP_MARK)
+        self.flip_button = ft.Container(
+            ft.Row(
+                [self._flip_left,
+                 ft.Icon(ft.Icons.SWAP_HORIZ, size=16,
+                         color=ft.Colors.ON_SURFACE_VARIANT),
+                 self._flip_right],
+                spacing=4,
+                tight=True,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+            padding=ft.Padding.symmetric(horizontal=8, vertical=6),
+            border_radius=8,
+            ink=True,
             visible=False,
             on_click=self._flip_clicked,
         )
@@ -1248,10 +1266,14 @@ class PoolDetailView(ft.Column):
             return
         coins = self.pool.pool_coins
         i, j = pair
+        self._flip_left.content = token_mark(coins[i], self.pool.chain, FLIP_MARK)
+        self._flip_right.content = token_mark(coins[j], self.pool.chain, FLIP_MARK)
         self.flip_button.tooltip = (
             f"Showing {coins[i].symbol} / {coins[j].symbol} -- "
             f"click for {coins[j].symbol} / {coins[i].symbol}"
         )
+        safe_update(self._flip_left)
+        safe_update(self._flip_right)
         safe_update(self.flip_button)
 
     def _show(self, which: str) -> None:

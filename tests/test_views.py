@@ -4093,3 +4093,21 @@ async def test_the_caption_says_which_way_round_the_curve_is():
     await view.load_depth()
 
     assert view.chart_caption.value.startswith("C1 / C2 ·")
+
+
+async def test_the_flip_wears_the_two_coins_it_swaps():
+    """The control shows the direction as well as changing it, so the marks
+    sit either side of the arrow in the order being drawn."""
+    view = depth_view(3)
+    view.series.value = "__depth__2:1"
+    await view.load_selection()
+
+    assert view._flip_left.content is not None
+    assert view._flip_right.content is not None
+    left, right = view._flip_left.content, view._flip_right.content
+
+    view._flip_clicked(None)
+    await view.load_depth()
+
+    assert view._flip_left.content is not left, "the marks swapped over"
+    assert view._flip_right.content is not right

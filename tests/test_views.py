@@ -385,8 +385,10 @@ def test_pool_detail_builds_for_any_coin_count(n_coins: int) -> None:
         on_back=lambda: None,
     )
     assert isinstance(view, ft.Column)
-    prices = 1 + n_coins * (n_coins - 1)  # the LP token, then every pair
-    assert len(view.series.options) == prices + 3, "a rule, then the two tables"
+    pairs = n_coins * (n_coins - 1)
+    prices = 1 + pairs                       # the LP token, then every pair
+    # A rule, the two tables, a second rule, then one depth curve per pair.
+    assert len(view.series.options) == prices + 3 + 1 + pairs
 
 
 def test_pool_detail_builds_without_a_gauge() -> None:
@@ -690,9 +692,12 @@ def test_the_picker_offers_the_two_tables_under_a_rule() -> None:
     view = activity_view()
 
     keys = [option.key for option in view.series.options]
-    assert keys[-3:] == [pool_detail.SERIES_RULE, "__trades__", "__liquidity__"]
-    assert [o.text for o in view.series.options[-2:]] == ["Trades", "Liquidity"]
-    rule = view.series.options[-3]
+    at = keys.index(pool_detail.SERIES_RULE)
+    assert keys[at:at + 3] == [pool_detail.SERIES_RULE, "__trades__",
+                               "__liquidity__"]
+    assert [o.text for o in view.series.options[at + 1:at + 3]] == [
+        "Trades", "Liquidity"]
+    rule = view.series.options[at]
     assert rule.disabled, "a rule is not something you can pick"
 
 
@@ -3809,3 +3814,113 @@ def test_a_laptop_closes_the_picker_on_the_name() -> None:
 
 async def _answer(value):
     return value
+
+
+# -- the depth curve --------------------------------------------------------
+
+
+class StubDepthContract:
+    """A balanced two-coin stableswap, answering what `load_depth` asks."""
+
+    def __init__(self, *, quotes: bool = True) -> None:
+        self.quotes = quotes
+        self.asked: list[str] = []
+
+    async def parameters(self):
+        from curve.parameters import Readings
+
+        self.asked.append("parameters")
+        return Readings({"A": 100, "A_precise": 10_000}, ())
+
+    async def reserves(self, count: int):
+        self.asked.append("reserves")
+        return [10**24] * count
+
+    async def get_dy(self, i: int, j: int, dx: int) -> int:
+        self.asked.append("get_dy")
+        if not self.quotes:
+            raise ValueError("this pool will not quote")
+        return int(dx * 0.9997)          # a hair under one, after the fee
+
+    async def fee(self) -> int:
+        return 3_000_000                  # 0.03%
+
+
+def depth_view(coins: int = 2, *, contract=None) -> PoolDetailView:
+    # `PoolDetailView` wants a `PoolContract`; the stub answers the four
+    # methods the curve asks for and nothing else.
+    held = contract if contract is not None else StubDepthContract()
+    return PoolDetailView(
+        StubPage(), api=StubActivityApi(), pool=make_pool(coins),
+        get_contract=lambda: held,  # type: ignore[arg-type,return-value]
+        on_back=lambda: None,
+    )
+
+
+def test_a_depth_entry_names_its_pair():
+    assert pool_detail.depth_pair("__depth__1:0") == (1, 0)
+    assert pool_detail.depth_pair("__depth__") is None
+    assert pool_detail.depth_pair("0:1") is None, "a price series is not one"
+    assert pool_detail.depth_pair("__trades__") is None
+
+
+def test_every_pair_gets_a_curve_of_its_own():
+    """Three coins are six curves, not one: which pair is being drawn is the
+    whole subject, so it belongs in the menu."""
+    view = depth_view(3)
+    keys = [o.key for o in view.series.options
+            if pool_detail.depth_pair(o.key) is not None]
+    assert len(keys) == 6
+    assert "__depth__0:1" in keys and "__depth__2:1" in keys
+
+
+async def test_the_depth_curve_is_drawn_for_the_pair_picked():
+    view = depth_view()
+    view.series.value = "__depth__0:1"
+
+    await view.load_selection()
+
+    assert view.depth_chart.visible, "the curve takes the chart's place"
+    assert not view.chart.visible
+    assert not view.size_picker.visible, "a curve has no candles to size"
+    assert view.depth_units.visible
+    drawn = view.depth_chart._profile
+    assert drawn is not None and drawn.samples
+    assert drawn.spot == pytest.approx(1.0, rel=1e-3), "a balanced pool"
+
+
+async def test_the_pool_is_asked_for_its_own_price_to_settle_the_curve():
+    """The API's type does not separate a YieldBasis pool from the cryptoswap
+    in the same factory, so the pool is asked what it would trade at."""
+    contract = StubDepthContract()
+    view = depth_view(contract=contract)
+    view.series.value = "__depth__0:1"
+
+    await view.load_selection()
+
+    assert "get_dy" in contract.asked
+    assert contract.asked.count("reserves") == 1, "read once, used twice"
+
+
+async def test_a_pool_that_will_not_quote_still_draws():
+    """One candidate for a stableswap, so there is nothing to settle and the
+    curve is the same one either way."""
+    view = depth_view(contract=StubDepthContract(quotes=False))
+    view.series.value = "__depth__0:1"
+
+    await view.load_selection()
+
+    assert view.depth_chart._profile is not None
+
+
+async def test_switching_away_from_the_curve_puts_the_candles_back():
+    view = depth_view()
+    view.series.value = "__depth__0:1"
+    await view.load_selection()
+    assert view.depth_chart.visible
+
+    view.series.value = "__trades__"
+    await view.load_selection()
+
+    assert not view.depth_chart.visible
+    assert view.activity_box.visible

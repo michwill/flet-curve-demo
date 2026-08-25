@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Any
 
 import flet as ft
 
-from curve import explorers, parameters
+from curve import depth, explorers, parameters
 from curve.api import (
     CANDLE_SIZES,
     DEFAULT_CANDLE_SIZE,
@@ -28,14 +30,16 @@ from curve.format import (
     token_amount,
 )
 from curve.http import ApiError
+from curve.liquidity import DepthError
 from curve.merkl import MerklCampaign
 from curve.models import Coin, Pool
-from curve.pool import PoolContract
+from curve.pool import PoolCallFailed, PoolContract
 from wallet.base import WalletError
 
 from . import AnyEvent, activity, safe_update, theme
 from .actions import ClaimTab, DepositTab, StakeTab, SwapTab, WithdrawTab
 from .candles import CandleChart
+from .depthchart import DepthChart
 from .logos import OVERLAP, coin_stack, pool_stack, token_mark
 from .pool_list import POINTS_ICON
 from .responsive import Layout, layout_for
@@ -71,6 +75,40 @@ ACTIVITY_MARKS = {
 }
 ACTIVITY_SERIES = (TRADES_SERIES, LIQUIDITY_SERIES)
 SERIES_RULE = "__rule__"
+
+#: What a depth entry's key starts with; the rest is the pair, as `i:j`.
+#: One entry per ordered pair, because a pool with three coins has six curves
+#: and which one is being drawn has to be visible without opening the menu.
+DEPTH_PREFIX = "__depth__"
+
+#: How the depth chart is labelled, and how many samples it asks for.  160 is
+#: about a sample every two pixels at the widths this chart is drawn at, and
+#: each one costs a bisection over the invariant.
+DEPTH_LABEL = "Depth"
+DEPTH_POINTS = 160
+
+#: How long the price window has to sit still before the profile is solved
+#: again for it.  A wheel arrives as a burst of notches and each one would
+#: otherwise cost a few hundred invariant solves.
+DEPTH_SETTLE = 0.35
+
+#: The share of a balance used to read the pool's own marginal price.
+DEPTH_PROBE = 1_000_000
+
+#: The units the depth axis can be read in.
+DEPTH_USD = "usd"
+DEPTH_COIN = "coin"
+
+
+def depth_pair(key: str) -> tuple[int, int] | None:
+    """The pair a depth entry names, or `None` if it is not one."""
+    if not key.startswith(DEPTH_PREFIX):
+        return None
+    i, _, j = key[len(DEPTH_PREFIX):].partition(":")
+    try:
+        return int(i), int(j)
+    except ValueError:
+        return None
 
 #: The chart's height, which the tables take over unchanged so the page
 #: does not jump when the picker moves between them.
@@ -207,6 +245,24 @@ class PoolDetailView(ft.Column):
         self._parameters_asked = False
         self._parameters_slot = ft.Container(self._parameters())
 
+        self.depth_chart = DepthChart(
+            height=CHART_HEIGHT, on_window_change=self._depth_window_changed)
+        self.depth_chart.visible = False
+        #: What the depth axis is read in.  Dollars by default: it is the one
+        #: unit that means the same thing across every pool on the page.
+        self.depth_units = ft.Dropdown(
+            key="depth-units",
+            options=[ft.DropdownOption(key=DEPTH_USD, text="USD")],
+            value=DEPTH_USD,
+            width=110,
+            dense=True,
+            visible=False,
+            on_select=self._depth_units_changed,
+        )
+        self._depth_window: tuple[float, float] = (0.0, 0.0)
+        self._depth_asked = 0.0
+        self._depth_reading = None
+
         self.size_picker = ft.Dropdown(
             key="candle-size",
             options=[
@@ -234,11 +290,13 @@ class PoolDetailView(ft.Column):
             if pool.lite
             else [
                 ft.Row(
-                    [self.series, ft.Container(expand=True), self.size_picker],
+                    [self.series, ft.Container(expand=True),
+                     self.depth_units, self.size_picker],
                     vertical_alignment=ft.CrossAxisAlignment.CENTER,
                 ),
                 self.chart_caption,
                 self.chart,
+                self.depth_chart,
                 self.activity_box,
                 self.chart_error,
             ]
@@ -926,6 +984,24 @@ class PoolDetailView(ft.Column):
                     key=key, text=text, leading_icon=self._menu_mark(key)
                 )
             )
+        # One per ordered pair.  A pool with three coins has six curves and
+        # they are six different pictures, so which is being drawn belongs in
+        # the menu rather than behind a second control.
+        options.append(
+            ft.DropdownOption(key=f"{SERIES_RULE}2", content=ft.Divider(height=1),
+                              disabled=True)
+        )
+        for i, main in enumerate(self.pool.pool_coins):
+            for j, reference in enumerate(self.pool.pool_coins):
+                if i == j:
+                    continue
+                options.append(
+                    ft.DropdownOption(
+                        key=f"{DEPTH_PREFIX}{i}:{j}",
+                        text=f"{DEPTH_LABEL}: {main.symbol} / {reference.symbol}",
+                        leading_icon=self._series_mark(f"{i}:{j}"),
+                    )
+                )
         return options
 
     @property
@@ -939,19 +1015,181 @@ class PoolDetailView(ft.Column):
         self._page.run_task(self.load_selection)
 
     async def load_selection(self) -> None:
-        """Draw whatever the picker names: a price series, or a table."""
+        """Draw whatever the picker names: a series, a table, or a curve."""
         if self.selection in ACTIVITY_SERIES:
             await self.load_activity()
+        elif depth_pair(self.selection) is not None:
+            await self.load_depth()
         else:
             await self.load_chart()
 
-    def _show_activity(self, showing: bool) -> None:
-        """Hand the chart's space to the table, or take it back. The candle
-        size goes with the chart: a table has no candles to size.
+    async def load_depth(self) -> None:
+        """Draw where this pool's liquidity sits along its own curve.
+
+        Every number this needs is one the pool already answers -- `A`, the
+        rates or `gamma` and `price_scale`, the balances -- so it is one batch
+        and no history.  The marginal price goes with them, because that is
+        what says which curve the pool is actually on: the API's type does not
+        separate a YieldBasis pool from the cryptoswap in the same factory.
         """
-        self.activity_box.visible = showing
-        self.chart.visible = not showing
-        self.size_picker.visible = not showing
+        pair = depth_pair(self.selection)
+        if pair is None:
+            return
+        i, j = pair
+        self._show("depth")
+        self.chart_error.value = ""
+        self._sync_depth_units()
+        self.depth_chart.say("Reading the pool…")
+        self._page.update()
+        contract = self.get_contract()
+        if contract is None:
+            self.depth_chart.say("No endpoint for this network.")
+            return
+        try:
+            reading = await asyncio.wait_for(
+                self._depth_reading_for(contract, i, j), PARAMETER_DEADLINE)
+        except TimeoutError:
+            self.depth_chart.say("The chain did not answer in time.")
+            return
+        except (WalletError, PoolCallFailed) as exc:
+            self.depth_chart.say(str(exc))
+            return
+        except Exception as exc:
+            self.depth_chart.say(f"The pool could not be read: {exc}")
+            return
+        if self.selection != f"{DEPTH_PREFIX}{i}:{j}":
+            return  # the picker moved while we were reading
+        self._depth_reading = reading
+        self._depth_window = (0.0, 0.0)
+        await self._draw_depth(i, j)
+
+    async def _depth_reading_for(self, contract, i: int, j: int):
+        """One batch of reads, as `curve.depth` wants them."""
+        coins = self.pool.pool_coins
+        readings, reserves = await asyncio.gather(
+            contract.parameters(), contract.reserves(len(coins)))
+        reading = depth.Reading(
+            balances=tuple(reserves),
+            decimals=tuple(coin.decimals for coin in coins),
+            values=dict(readings.values),
+            rates=tuple(readings.rates),
+        )
+        return reading, await self._quoted_price(contract, reserves, i, j)
+
+    async def _quoted_price(self, contract, reserves, i: int, j: int) -> float:
+        """What the pool says a marginal trade costs, fee taken back out.
+
+        One `get_dy` at a millionth of the balance: small enough to read as
+        marginal, large enough not to round to nothing on a six-decimal coin.
+        It is what settles which curve the pool is on, so a pool that will not
+        answer gets whichever candidate came first and a caveat with it.
+        """
+        coins = self.pool.pool_coins
+        if i >= len(reserves) or not reserves[i]:
+            return 0.0
+        dx = max(1, reserves[i] // DEPTH_PROBE)
+        try:
+            dy = await contract.get_dy(i, j, dx)
+            fee = await contract.fee()
+        except (WalletError, PoolCallFailed, ValueError):
+            return 0.0
+        if not dy:
+            return 0.0
+        rate = (dy / 10 ** coins[j].decimals) / (dx / 10 ** coins[i].decimals)
+        return rate / max(1e-9, 1 - fee / 1e10)
+
+    async def _draw_depth(self, i: int, j: int) -> None:
+        """Solve the profile for the window on screen and hand it over."""
+        held = self._depth_reading
+        if held is None:
+            return
+        reading, quoted = held
+        low, high = self._depth_window
+        try:
+            found, fitted = await asyncio.to_thread(
+                depth.profile, reading, i, j, quoted=quoted or None,
+                low=low, high=high, points=DEPTH_POINTS)
+        except DepthError as exc:
+            self.depth_chart.say(str(exc))
+            return
+        except Exception as exc:
+            self.depth_chart.say(f"This curve could not be traced: {exc}")
+            return
+        if self.selection != f"{DEPTH_PREFIX}{i}:{j}":
+            return
+        self.depth_chart.show(self._valued(found, i), self._depth_unit_label(i),
+                              keep_view=bool(low and high))
+        self._say_chart(
+            f"{fitted.family} · liquidity per 1% of price range")
+
+    def _valued(self, found, i: int):
+        """The profile in whatever unit the picker names."""
+        if self.depth_units.value != DEPTH_USD:
+            return found
+        price = self.pool.pool_coins[i].usd_price
+        if not price:
+            return found
+        return replace(found, samples=tuple(
+            replace(sample, depth=sample.depth * price)
+            for sample in found.samples))
+
+    def _depth_unit_label(self, i: int) -> str:
+        if self.depth_units.value == DEPTH_USD:
+            return "USD"
+        return self.pool.pool_coins[i].symbol
+
+    def _sync_depth_units(self) -> None:
+        """Offer the coin beside USD, and only where there is a price."""
+        pair = depth_pair(self.selection)
+        if pair is None:
+            return
+        symbol = self.pool.pool_coins[pair[0]].symbol
+        priced = bool(self.pool.pool_coins[pair[0]].usd_price)
+        self.depth_units.options = (
+            [ft.DropdownOption(key=DEPTH_USD, text="USD")] if priced else []
+        ) + [ft.DropdownOption(key=DEPTH_COIN, text=symbol)]
+        if not priced or self.depth_units.value not in (DEPTH_USD, DEPTH_COIN):
+            self.depth_units.value = DEPTH_USD if priced else DEPTH_COIN
+        safe_update(self.depth_units)
+
+    def _depth_units_changed(self, _e: AnyEvent) -> None:
+        pair = depth_pair(self.selection)
+        if pair is not None:
+            self._page.run_task(self._draw_depth, *pair)
+
+    def _depth_window_changed(self, low: float, high: float) -> None:
+        """The view moved; solve the curve again for what is on screen.
+
+        Coalesced rather than debounced with a timer: a wheel burst sets the
+        window a dozen times and only the last one is worth solving, so each
+        wake-up checks whether it is still the newest before doing the work.
+        """
+        self._depth_window = (low, high)
+        self._depth_asked = time.monotonic()
+        self._page.run_task(self._redraw_depth_soon, self._depth_asked)
+
+    async def _redraw_depth_soon(self, asked: float) -> None:
+        await asyncio.sleep(DEPTH_SETTLE)
+        if asked != self._depth_asked:
+            return  # a later move has taken over
+        pair = depth_pair(self.selection)
+        if pair is not None:
+            await self._draw_depth(*pair)
+
+    def _show(self, which: str) -> None:
+        """Give the chart's space to whichever of the three is showing.
+
+        Each control brings its own second picker or none: candles have a size
+        and the depth curve has its units, and a table has neither.
+        """
+        self.chart.visible = which == "chart"
+        self.activity_box.visible = which == "activity"
+        self.depth_chart.visible = which == "depth"
+        self.size_picker.visible = which == "chart"
+        self.depth_units.visible = which == "depth"
+
+    def _show_activity(self, showing: bool) -> None:
+        self._show("activity" if showing else "chart")
 
     def _chart_resized(self) -> None:
         """The chart got materially wider or narrower -- refetch to suit."""

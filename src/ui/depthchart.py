@@ -24,7 +24,7 @@ from collections.abc import Callable
 import flet as ft
 import flet.canvas as cv
 
-from curve.format import token_amount
+from curve.format import compact_usd
 from curve.liquidity import Profile
 
 from . import safe_update
@@ -296,11 +296,18 @@ class DepthChart(ft.Container):
         while value <= view.y_max and depth_step > 0:
             y = plot.pixel_y(value, view)
             shapes.append(cv.Line(plot.left, y, plot.right, y, paint=faint))
-            shapes.append(cv.Text(2, y - 6, token_amount(value), label))
+            shapes.append(cv.Text(2, y - 6, self._amount(value), label))
             value += depth_step
         if self._unit:
-            shapes.append(cv.Text(2, plot.top + 2, self._unit, label))
+            # Top right, not top left: the highest tick sits in the corner the
+            # other way and the two were drawn over each other.
+            shapes.append(cv.Text(plot.right - 78, plot.top + 2,
+                                  f"per 1% · {self._unit}", label))
         return shapes
+
+    def _amount(self, value: float) -> str:
+        """A depth, short enough for an axis. `1,000,000.00` is not."""
+        return compact_usd(value, sign="$" if self._unit == "USD" else "")
 
     def _readout(self, found: Profile, px: float, py: float) -> list[cv.Shape]:
         """What the curve says at the pointer."""
@@ -313,7 +320,8 @@ class DepthChart(ft.Container):
         paint = ft.Paint(color=ft.Colors.ON_SURFACE_VARIANT, stroke_width=1)
         away = 1e2 * (nearest.price / found.spot - 1.0)
         text = (f"{price_text(nearest.price)}  ({away:+.2f}%)   "
-                f"{token_amount(nearest.depth)} {self._unit}")
+                f"{self._amount(nearest.depth)}"
+                f"{'' if self._unit == 'USD' else ' ' + self._unit}")
         left = min(max(px + 8, plot.left), max(plot.right - 210, plot.left))
         return [
             cv.Line(x, plot.top, x, plot.bottom, paint=paint),

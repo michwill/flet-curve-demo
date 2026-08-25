@@ -31,9 +31,24 @@ from . import safe_update
 from .typography import SMALL, TINY
 from .viewport import ZOOM_STEP, Plot, Viewport
 
-#: Roughly how many labels go on each axis.
-PRICE_LABELS = 5
+#: Roughly how many labels go on each axis.  The price axis holds to this at
+#: every zoom: it is logarithmic, so a linear step over the visible range
+#: thinned the lines out the further you zoomed, which is backwards -- a wider
+#: window has *more* round numbers in it, not fewer.
+PRICE_LABELS = 6
 DEPTH_LABELS = 4
+
+#: Multipliers a round price is built from, coarse first.  The ladder that is
+#: fine enough to reach `PRICE_LABELS` across the window is the one used, so
+#: the density holds whether the window is a tenth of a percent or six
+#: decades.
+LADDERS = (
+    (1,),
+    (1, 3),
+    (1, 2, 5),
+    (1, 1.5, 2, 3, 5, 7),
+    (1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6, 7, 8, 9),
+)
 
 #: Hover fires per mouse move and each one is a round trip into Python.
 HOVER_INTERVAL = 0.04
@@ -60,6 +75,54 @@ def _nice_step(span: float, wanted: int) -> float:
         if rough <= step * power:
             return step * power
     return 10.0 * power
+
+
+def price_ticks(low: float, high: float, wanted: int = PRICE_LABELS
+                ) -> list[float]:
+    """Round prices across a log axis, at about the same density at any zoom.
+
+    Round *prices* placed where their logarithm falls, rather than round
+    logarithms: `1`, `2`, `5` read as prices and `10**0.3` does not.  The
+    ladders run coarse to fine and the first one that fills the window wins.
+
+    Below a ladder step there is nothing round left to land on -- a window
+    from 0.999 to 1.001 contains exactly one of them -- so that falls back to
+    an even step, which is what a window that narrow wants anyway.
+    """
+    if low <= 0.0 or high <= low:
+        return []
+    best: list[float] = []
+    for ladder in LADDERS:
+        ticks: list[float] = []
+        power = math.floor(math.log10(low))
+        while 10.0**power <= high:
+            for step in ladder:
+                value = step * 10.0**power
+                if low <= value <= high:
+                    ticks.append(value)
+            power += 1
+        if not best or abs(len(ticks) - wanted) < abs(len(best) - wanted):
+            best = ticks
+        if len(ticks) >= wanted:
+            break
+    # Whichever ladder came closest, whole.  Thinning a finer one to size
+    # dropped whichever entries fell on the stride, and over 0.5 to 2 that
+    # was 1.0 -- the one price on a stablecoin chart worth marking.
+    # Only if it fills the axis.  Some windows hold few round numbers at any
+    # ladder -- 0.9 to 1.1 has two, 2000 to 3000 has three -- and an even step
+    # reads better there than four-fifths of an empty axis.
+    if len(best) >= max(3, wanted // 2):
+        return best
+    span = high - low
+    step = _nice_step(span, wanted)
+    if step <= 0:
+        return []
+    ticks = []
+    value = math.ceil(low / step) * step
+    while value <= high:
+        ticks.append(value)
+        value += step
+    return ticks
 
 
 def price_text(price: float) -> str:
@@ -279,17 +342,12 @@ class DepthChart(ft.Container):
         label = ft.TextStyle(size=TINY, color=ft.Colors.ON_SURFACE_VARIANT)
         shapes: list[cv.Shape] = []
 
-        # Price: the axis is log, so the ticks are round *prices* placed where
-        # their logarithm falls, rather than round logarithms.
         low, high = math.exp(view.x_min), math.exp(view.x_max)
-        step = _nice_step(high - low, PRICE_LABELS)
-        tick = math.ceil(low / step) * step
-        while tick <= high and step > 0:
+        for tick in price_ticks(low, high):
             x = plot.pixel_x(math.log(tick), view)
             shapes.append(cv.Line(x, plot.top, x, plot.bottom, paint=faint))
             shapes.append(cv.Text(x - 28, plot.bottom + 4, price_text(tick),
                                   label))
-            tick += step
 
         depth_step = _nice_step(view.y_max, DEPTH_LABELS)
         value = 0.0
@@ -333,4 +391,4 @@ class DepthChart(ft.Container):
         ]
 
 
-__all__ = ["DepthChart", "price_text"]
+__all__ = ["DepthChart", "price_text", "price_ticks"]

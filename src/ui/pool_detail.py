@@ -264,6 +264,7 @@ class PoolDetailView(ft.Column):
         #: The pool's own numbers and the pair's quoted price, once read.
         #: Kept because the first is the pool's rather than the pair's.
         self._depth_reading: tuple[depth.Reading, float] | None = None
+        self._depth_fee = 0
 
         self.size_picker = ft.Dropdown(
             key="candle-size",
@@ -921,6 +922,12 @@ class PoolDetailView(ft.Column):
         Built fresh each time -- a control belongs to one place in the
         tree, and this is drawn in the menu and again on the closed field.
         """
+        # A depth entry is named by its pair, like the price series it sits
+        # under -- and stripping the prefix here is what puts the mark on the
+        # closed field too, which reads the whole key rather than the pair.
+        pair = depth_pair(key)
+        if pair is not None:
+            key = f"{pair[0]}:{pair[1]}"
         if key == LP_SERIES:
             return pool_stack(self.pool, size=size, limit=3)
         if glyph := ACTIVITY_MARKS.get(key):
@@ -1001,7 +1008,7 @@ class PoolDetailView(ft.Column):
                     ft.DropdownOption(
                         key=f"{DEPTH_PREFIX}{i}:{j}",
                         text=f"{DEPTH_LABEL}: {main.symbol} / {reference.symbol}",
-                        leading_icon=self._series_mark(f"{i}:{j}"),
+                        leading_icon=self._series_mark(f"{DEPTH_PREFIX}{i}:{j}"),
                     )
                 )
         return options
@@ -1056,12 +1063,12 @@ class PoolDetailView(ft.Column):
         held = self._depth_reading
         try:
             if held is None:
-                reading = await asyncio.wait_for(
+                reading, fee = await asyncio.wait_for(
                     self._read_pool(contract), PARAMETER_DEADLINE)
             else:
-                reading = held[0]
+                reading, fee = held[0], self._depth_fee
             quoted = await asyncio.wait_for(
-                self._quoted_price(contract, reading.balances, i, j),
+                self._quoted_price(contract, reading.balances, fee, i, j),
                 PARAMETER_DEADLINE)
         except TimeoutError:
             self.depth_chart.say("The chain did not answer in time.")
@@ -1075,29 +1082,30 @@ class PoolDetailView(ft.Column):
         if self.selection != f"{DEPTH_PREFIX}{i}:{j}":
             return  # the picker moved while we were reading
         self._depth_reading = (reading, quoted)
+        self._depth_fee = fee
         self._depth_window = (0.0, 0.0)
         await self._draw_depth(i, j)
 
 
 
-    async def _read_pool(self, contract) -> depth.Reading:
-        """One batch of reads, as `curve.depth` wants them.
+    async def _read_pool(self, contract) -> tuple[depth.Reading, int]:
+        """One batch of reads, as `curve.depth` wants them, and the fee.
 
         `curve_state`, not `parameters`: the panel's read fills a table and is
         asked for whenever somebody opens it.  Nothing pays for the depth
         curve except the depth curve.
         """
         coins = self.pool.pool_coins
-        readings, reserves = await asyncio.gather(
-            contract.curve_state(), contract.reserves(len(coins)))
+        readings, reserves, fee = await contract.curve_state(len(coins))
         return depth.Reading(
             balances=tuple(reserves),
             decimals=tuple(coin.decimals for coin in coins),
             values=dict(readings.values),
             rates=tuple(readings.rates),
-        )
+        ), fee
 
-    async def _quoted_price(self, contract, reserves, i: int, j: int) -> float:
+    async def _quoted_price(self, contract, reserves, fee: int,
+                            i: int, j: int) -> float:
         """What the pool says a marginal trade costs, fee taken back out.
 
         One `get_dy` at a millionth of the balance: small enough to read as
@@ -1111,7 +1119,6 @@ class PoolDetailView(ft.Column):
         dx = max(1, reserves[i] // DEPTH_PROBE)
         try:
             dy = await contract.get_dy(i, j, dx)
-            fee = await contract.fee()
         except (WalletError, PoolCallFailed, ValueError):
             return 0.0
         if not dy:

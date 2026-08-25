@@ -60,19 +60,32 @@ def _parameter_plan() -> list[tuple[str, str]]:
     return plan
 
 
-def _curve_plan() -> list[tuple[str, str]]:
-    """What the liquidity curve needs, and nothing the panel already asks.
+def _curve_plan(count: int) -> list[tuple[str, str]]:
+    """Everything the liquidity curve needs, in one batch.
 
-    Both spellings of `price_scale` go in: a tricrypto pool takes an index and
-    the others do not, and whichever answers is the one kept.  The second
-    index goes under its own key or the first answer would hold the slot and
-    the second coin would be priced as the first.
+    The balances and the fee come in here rather than through `reserves` and
+    `fee`, which are a multicall and a single call of their own: the curve
+    wants all of it at one moment anyway, and asking separately was four round
+    trips where two will do.  Only `get_dy` has to follow, because how much to
+    ask about depends on the balances.
+
+    Both spellings of the two-spelling reads go in and whichever answers is
+    kept -- `price_scale` takes an index on a tricrypto pool and none on the
+    others, and the balances are `uint256` on some registries and `int128` on
+    the older ones.  The second price scale goes under its own key, or the
+    first answer would hold the slot and the second coin would be priced as
+    the first.
     """
     plan = [(key, abi.encode_parameter(key)) for key in CURVE_PARAMETERS]
     plan += [("price_scale", abi.encode_parameter("price_scale")),
              ("price_scale", abi.encode_indexed_parameter("price_scale", 0)),
              (SECOND_SCALE_KEY, abi.encode_indexed_parameter("price_scale", 1))]
     plan += [(key, abi.encode_parameter(key)) for key in ARRAY_PARAMETERS]
+    plan.append(("fee", abi.encode_fee()))
+    for index in range(count):
+        plan.append((f"balance_{index}",
+                     abi.encode_indexed_parameter("balances", index)))
+        plan.append((f"balance_{index}", abi.encode_balances_int128(index)))
     return plan
 
 
@@ -222,20 +235,20 @@ class PoolContract:
                 found[key] = abi.decode_uint(value)
         return Readings(found, rates)
 
-    async def curve_state(self) -> Readings:
-        """Everything the liquidity curve needs, in one batch.
+    async def curve_state(self, count: int) -> tuple[Readings, list[int], int]:
+        """Everything the liquidity curve needs, and the fee, in one batch.
 
         Separate from `parameters()` on purpose: that one fills a panel and is
-        asked for whenever somebody opens it, and this one is asked for only
-        when a depth curve is actually being drawn.  They overlap in `A` and
+        asked for whenever somebody opens it, and this is asked for only when
+        a depth curve is actually being drawn.  They overlap in `A` and
         `gamma`, which is a word each rather than a reason to make every
         reader of one pay for the other.
 
-        The balances are not in here -- `reserves` already knows both of the
-        spellings they come in -- but they are asked for beside it rather than
-        after it, so the curve is drawn from one moment of the pool.
+        Returns the readings, the balances and the fee, because the curve is a
+        function of all three and reading them a moment apart would describe a
+        pool that never existed.
         """
-        plan = _curve_plan()
+        plan = _curve_plan(count)
         answers = await self._read_many_data(plan)
         found: dict[str, int] = {}
         rates: tuple[int, ...] = ()
@@ -246,7 +259,8 @@ class PoolContract:
                 rates = rates or tuple(abi.decode_uint_array(value))
             elif key not in found:
                 found[key] = abi.decode_uint(value)
-        return Readings(found, rates)
+        balances = [found.pop(f"balance_{index}", 0) for index in range(count)]
+        return Readings(found, rates), balances, found.pop("fee", 0)
 
     async def _read_many(self, plan: list[tuple[str, str]]) -> list[int | None]:
         """The batch, where every call answers one word."""

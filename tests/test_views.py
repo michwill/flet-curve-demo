@@ -3826,27 +3826,27 @@ class StubDepthContract:
         self.quotes = quotes
         self.asked: list[str] = []
 
-    async def curve_state(self):
+    async def curve_state(self, count: int):
         from curve.parameters import Readings
 
         self.asked.append("curve_state")
-        return Readings({"A": 100, "A_precise": 10_000}, ())
+        return (Readings({"A": 100, "A_precise": 10_000}, ()),
+                [10**24] * count, 3_000_000)
 
     async def parameters(self):
         raise AssertionError("the curve must not use the panel's read")
 
     async def reserves(self, count: int):
-        self.asked.append("reserves")
-        return [10**24] * count
+        raise AssertionError("the balances come with the batch")
+
+    async def fee(self) -> int:
+        raise AssertionError("the fee comes with the batch")
 
     async def get_dy(self, i: int, j: int, dx: int) -> int:
         self.asked.append("get_dy")
         if not self.quotes:
             raise ValueError("this pool will not quote")
         return int(dx * 0.9997)          # a hair under one, after the fee
-
-    async def fee(self) -> int:
-        return 3_000_000                  # 0.03%
 
 
 def depth_view(coins: int = 2, *, contract=None) -> PoolDetailView:
@@ -3901,9 +3901,8 @@ async def test_the_pool_is_asked_for_its_own_price_to_settle_the_curve():
 
     await view.load_selection()
 
-    assert "get_dy" in contract.asked
-    assert contract.asked.count("reserves") == 1, "read once, used twice"
-    assert "curve_state" in contract.asked, "its own read, not the panel's"
+    assert contract.asked == ["curve_state", "get_dy"], (
+        "one batch, then the one call whose size depends on it")
 
 
 async def test_a_pool_that_will_not_quote_still_draws():
@@ -3982,3 +3981,14 @@ async def test_changing_units_reads_nothing():
     await view._draw_depth(0, 1)
 
     assert contract.asked == before, "a unit is a redraw, not a read"
+
+
+def test_a_chosen_curve_keeps_its_marks_on_the_field():
+    """The closed field is handed the whole key, and a depth key is not a pair
+    until its prefix comes off -- so it drew nothing at all."""
+    view = depth_view()
+
+    assert view._field_mark("__depth__0:1") is not None
+    assert view._series_mark("__depth__1:0") is not None
+    on_menu = {o.key: o for o in view.series.options}
+    assert on_menu["__depth__0:1"].leading_icon is not None

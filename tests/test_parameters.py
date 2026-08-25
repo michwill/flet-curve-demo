@@ -26,6 +26,7 @@ from curve.parameters import (
 )
 from curve.pool import (
     ARRAY_PARAMETERS,
+    CURVE_PARAMETERS,
     INDEXED_PARAMETERS,
     PoolCallFailed,
     PoolContract,
@@ -227,7 +228,8 @@ async def test_a_chain_without_multicall_asks_one_at_a_time() -> None:
 
     asked = contract.provider.asked
     assert asked[0].startswith(abi.selector(AGGREGATE3), 2)
-    assert len(asked) == 1 + len(PARAMETERS) + len(INDEXED_PARAMETERS) + len(ARRAY_PARAMETERS)
+    assert len(asked) == (1 + len(PARAMETERS) + len(INDEXED_PARAMETERS)
+                          + len(ARRAY_PARAMETERS) + len(CURVE_PARAMETERS) + 1)
 
 
 async def test_a_provider_that_cannot_read_at_all_says_so() -> None:

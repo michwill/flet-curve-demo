@@ -29,6 +29,20 @@ INDEXED_PARAMETERS = ("price_oracle", "price_scale")
 #: answers a single word.
 ARRAY_PARAMETERS = ("stored_rates",)
 
+#: Asked for the liquidity chart's maths and never shown.  `parameters.rows`
+#: walks `PARAMETERS` to build the table, so a key that is not in there cannot
+#: reach it -- which is what keeps `D` and `A_precise` off a panel nobody
+#: wants to read them on.  `A_precise` is the amplification without the digit
+#: `A()` rounds away, and `D` is the invariant: stored on the crypto families
+#: and quoted against, so it is read rather than solved wherever it is there.
+CURVE_PARAMETERS = ("D", "A_precise")
+
+#: A tricrypto pool prices two coins against its first, so the second scale is
+#: asked for by index as well.  Under its own key, or the first answer would
+#: keep the slot and the second coin would be priced as the first.
+SECOND_SCALE = "price_scale"
+SECOND_SCALE_KEY = "price_scale_1"
+
 #: How many `reward_tokens(i)` to walk before giving up.
 MAX_REWARD_TOKENS = 8
 
@@ -38,6 +52,8 @@ def _parameter_plan() -> list[tuple[str, str]]:
     plan = [(parameter.key, abi.encode_parameter(parameter.key)) for parameter in PARAMETERS]
     plan += [(key, abi.encode_indexed_parameter(key, 0)) for key in INDEXED_PARAMETERS]
     plan += [(key, abi.encode_parameter(key)) for key in ARRAY_PARAMETERS]
+    plan += [(key, abi.encode_parameter(key)) for key in CURVE_PARAMETERS]
+    plan.append((SECOND_SCALE_KEY, abi.encode_indexed_parameter(SECOND_SCALE, 1)))
     return plan
 
 

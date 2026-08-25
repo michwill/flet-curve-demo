@@ -99,9 +99,20 @@ DEPTH_PROBE = 1_000_000
 #: menu's, which sit beside text; these sit beside an arrow.
 FLIP_MARK = 20
 
-#: The units the depth axis can be read in.
+#: The units the depth axis can be read in: dollars, or any of the pool's
+#: coins as `coin:<index>`.
 DEPTH_USD = "usd"
 DEPTH_COIN = "coin"
+
+
+def _unit_coin(key: str | None) -> int | None:
+    """Which coin a units key names, or `None` for anything else."""
+    if not key or not key.startswith(f"{DEPTH_COIN}:"):
+        return None
+    try:
+        return int(key.split(":", 1)[1])
+    except ValueError:
+        return None
 
 
 def depth_pair(key: str) -> tuple[int, int] | None:
@@ -1188,33 +1199,65 @@ class PoolDetailView(ft.Column):
             f" · liquidity per 1% of price range")
 
     def _valued(self, found, i: int):
-        """The profile in whatever unit the picker names."""
-        if self.depth_units.value != DEPTH_USD:
-            return found
+        """The profile in whatever unit the picker names.
+
+        The depth arrives counted in the coin being sold, which is the one the
+        curve is a function of.  Dollars are that times its price; another
+        coin is that times the ratio of the two prices.  Reading the same pool
+        in each of its coins is worth having -- what a 1% move costs is a
+        different number in BTC than in crvUSD, and both are the answer to a
+        question somebody asks.
+        """
         price = self.pool.pool_coins[i].usd_price
-        if not price:
+        if self.depth_units.value == DEPTH_USD:
+            scale = price
+        else:
+            wanted = _unit_coin(self.depth_units.value)
+            if wanted is None or wanted == i:
+                return found
+            other = self.pool.pool_coins[wanted].usd_price
+            scale = price / other if price and other else 0.0
+        # Nothing to do for a scale of one, and nothing that *can* be done
+        # for a missing price -- though `_sync_depth_units` does not offer a
+        # coin it cannot reach, so that second case should not arise.
+        if not scale or scale == 1.0:
             return found
         return replace(found, samples=tuple(
-            replace(sample, depth=sample.depth * price)
+            replace(sample, depth=sample.depth * scale)
             for sample in found.samples))
 
     def _depth_unit_label(self, i: int) -> str:
         if self.depth_units.value == DEPTH_USD:
             return "USD"
-        return self.pool.pool_coins[i].symbol
+        wanted = _unit_coin(self.depth_units.value)
+        at = i if wanted is None else wanted
+        return self.pool.pool_coins[at].symbol
 
     def _sync_depth_units(self) -> None:
-        """Offer the coin beside USD, and only where there is a price."""
+        """USD, then every coin in the pool that can be converted to.
+
+        Every coin rather than just the one being sold: the reading is the
+        same depth in different units, and which unit somebody wants is not
+        decided by which way round the pair happens to be.  A coin with no
+        price is left out, because there is no ratio to reach it by -- except
+        the coin being sold, which needs no conversion at all.
+        """
         pair = self._shown_pair()
         if pair is None:
             return
-        symbol = self.pool.pool_coins[pair[0]].symbol
-        priced = bool(self.pool.pool_coins[pair[0]].usd_price)
-        self.depth_units.options = (
-            [ft.DropdownOption(key=DEPTH_USD, text="USD")] if priced else []
-        ) + [ft.DropdownOption(key=DEPTH_COIN, text=symbol)]
-        if not priced or self.depth_units.value not in (DEPTH_USD, DEPTH_COIN):
-            self.depth_units.value = DEPTH_USD if priced else DEPTH_COIN
+        coins = self.pool.pool_coins
+        base = coins[pair[0]].usd_price
+        options = [ft.DropdownOption(key=DEPTH_USD, text="USD")] if base else []
+        for index, coin in enumerate(coins):
+            if index == pair[0] or (base and coin.usd_price):
+                options.append(
+                    ft.DropdownOption(key=f"{DEPTH_COIN}:{index}",
+                                      text=coin.symbol))
+        self.depth_units.options = options
+        offered = {option.key for option in options}
+        if self.depth_units.value not in offered:
+            self.depth_units.value = (
+                DEPTH_USD if base else f"{DEPTH_COIN}:{pair[0]}")
         safe_update(self.depth_units)
 
     def _depth_units_changed(self, _e: AnyEvent) -> None:

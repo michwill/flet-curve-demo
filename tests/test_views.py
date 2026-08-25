@@ -4064,50 +4064,75 @@ async def test_flipping_re_reads_only_the_price():
     assert contract.asked[len(before):] == ["get_dy"]
 
 
-async def test_the_units_follow_the_flip():
-    """The depth is counted in the coin being sold, so which coin that is
-    changes when the pair turns round."""
-    view = depth_view()
+async def test_the_chosen_unit_survives_a_flip():
+    """The unit is a question about the reader, not about the pair: having
+    picked one, turning the curve round must not change it underneath them."""
+    view = depth_view(3)
+    view.series.value = "__depth__2:1"
+    await view.load_selection()
+    view.depth_units.value = "coin:0"
+    assert view._depth_unit_label(2) == "C0"
+
+    view._flip_clicked(None)
+    await view.load_depth()
+
+    assert view.depth_units.value == "coin:0"
+    i, _j = view._shown_pair()
+    assert view._depth_unit_label(i) == "C0", "still the coin that was picked"
+
+
+async def test_the_units_offer_dollars_and_every_coin():
+    """USD plus one per coin: three for a two-coin pool, four for a three."""
+    for coins in (2, 3):
+        view = depth_view(coins)
+        view.series.value = "__depth__1:0"
+        await view.load_selection()
+        keys = [o.key for o in view.depth_units.options]
+        assert keys[0] == pool_detail.DEPTH_USD
+        assert len(keys) == coins + 1, keys
+        assert keys[1:] == [f"coin:{k}" for k in range(coins)]
+
+
+async def test_a_coin_with_no_price_is_not_offered():
+    """There is no ratio to reach it by -- except for the coin being sold,
+    which needs no conversion at all."""
+    view = depth_view(3)
+    view.pool.pool_coins[2].usd_price = 0.0
     view.series.value = "__depth__1:0"
     await view.load_selection()
-    view.depth_units.value = pool_detail.DEPTH_COIN
-    assert view._depth_unit_label(1) == "C1", "the coin being sold"
 
-    view._flip_clicked(None)
-    await view.load_depth()
-
-    i, _j = view._shown_pair()
-    assert view._depth_unit_label(i) == "C0", "and the other one, once turned"
+    keys = [o.key for o in view.depth_units.options]
+    assert "coin:2" not in keys
+    assert "coin:0" in keys and "coin:1" in keys
 
 
-async def test_the_caption_says_which_way_round_the_curve_is():
-    """The menu row goes on naming the ordering it offered, so after a flip it
-    is the one label on screen still pointing the old way.  The caption is
-    what corrects it."""
-    view = depth_view(3)
-    view.series.value = "__depth__2:1"
-    await view.load_selection()
-    assert view.chart_caption.value.startswith("C2 / C1 ·")
-
-    view._flip_clicked(None)
-    await view.load_depth()
-
-    assert view.chart_caption.value.startswith("C1 / C2 ·")
-
-
-async def test_the_flip_wears_the_two_coins_it_swaps():
-    """The control shows the direction as well as changing it, so the marks
-    sit either side of the arrow in the order being drawn."""
-    view = depth_view(3)
-    view.series.value = "__depth__2:1"
+async def test_the_coin_being_sold_is_offered_even_unpriced():
+    view = depth_view(2)
+    for coin in view.pool.pool_coins:
+        coin.usd_price = 0.0
+    view.series.value = "__depth__1:0"
     await view.load_selection()
 
-    assert view._flip_left.content is not None
-    assert view._flip_right.content is not None
-    left, right = view._flip_left.content, view._flip_right.content
+    keys = [o.key for o in view.depth_units.options]
+    assert keys == ["coin:1"], "no dollars to offer, and no ratios either"
+    assert view.depth_units.value == "coin:1"
 
-    view._flip_clicked(None)
-    await view.load_depth()
 
-    assert view._flip_left.content is not left, "the marks swapped over"
-    assert view._flip_right.content is not right
+async def test_a_depth_in_another_coin_is_scaled_by_the_two_prices():
+    """The depth counts the coin being sold; reading it in another one is
+    that times the ratio of their prices."""
+    view = depth_view(2)
+    coins = view.pool.pool_coins
+    coins[0].usd_price, coins[1].usd_price = 1.0, 4.0
+    view.series.value = "__depth__1:0"
+    await view.load_selection()
+
+    view.depth_units.value = "coin:1"
+    await view._draw_depth(1, 0)
+    own = max(s.depth for s in view.depth_chart._profile.samples)
+
+    view.depth_units.value = "coin:0"
+    await view._draw_depth(1, 0)
+    other = max(s.depth for s in view.depth_chart._profile.samples)
+
+    assert other == pytest.approx(own * 4.0, rel=1e-9), "C1 is worth four C0"

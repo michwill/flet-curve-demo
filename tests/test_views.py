@@ -385,10 +385,11 @@ def test_pool_detail_builds_for_any_coin_count(n_coins: int) -> None:
         on_back=lambda: None,
     )
     assert isinstance(view, ft.Column)
-    pairs = n_coins * (n_coins - 1)
-    prices = 1 + pairs                       # the LP token, then every pair
-    # A rule, the two tables, a second rule, then one depth curve per pair.
-    assert len(view.series.options) == prices + 3 + 1 + pairs
+    prices = 1 + n_coins * (n_coins - 1)     # the LP token, then every pair
+    # A rule, the two tables, a second rule, then one depth curve per
+    # *unordered* pair -- the other ordering is a button, not a row.
+    unordered = n_coins * (n_coins - 1) // 2
+    assert len(view.series.options) == prices + 3 + 1 + unordered
 
 
 def test_pool_detail_builds_without_a_gauge() -> None:
@@ -3867,19 +3868,34 @@ def test_a_depth_entry_names_its_pair():
     assert pool_detail.depth_pair("__trades__") is None
 
 
-def test_every_pair_gets_a_curve_of_its_own():
-    """Three coins are six curves, not one: which pair is being drawn is the
-    whole subject, so it belongs in the menu."""
+def test_every_unordered_pair_gets_one_row():
+    """Three coins are three pairs, not six.  Both orderings of a pair are one
+    curve read from either end, so the second is a button."""
     view = depth_view(3)
     keys = [o.key for o in view.series.options
             if pool_detail.depth_pair(o.key) is not None]
-    assert len(keys) == 6
-    assert "__depth__0:1" in keys and "__depth__2:1" in keys
+    assert keys == ["__depth__1:0", "__depth__2:0", "__depth__2:1"]
+
+
+def test_a_two_coin_pool_offers_one_curve():
+    view = depth_view(2)
+    keys = [o.key for o in view.series.options
+            if pool_detail.depth_pair(o.key) is not None]
+    assert keys == ["__depth__1:0"]
+
+
+def test_the_later_coin_leads_by_default():
+    """`C1 / C0`, so the volatile side leads the stable one where a pool has
+    that shape -- WBTC/crvUSD rather than crvUSD/WBTC."""
+    view = depth_view(3)
+    texts = [o.text for o in view.series.options
+             if pool_detail.depth_pair(o.key) is not None]
+    assert texts == ["Depth: C1 / C0", "Depth: C2 / C0", "Depth: C2 / C1"]
 
 
 async def test_the_depth_curve_is_drawn_for_the_pair_picked():
     view = depth_view()
-    view.series.value = "__depth__0:1"
+    view.series.value = "__depth__1:0"
 
     await view.load_selection()
 
@@ -3897,7 +3913,7 @@ async def test_the_pool_is_asked_for_its_own_price_to_settle_the_curve():
     in the same factory, so the pool is asked what it would trade at."""
     contract = StubDepthContract()
     view = depth_view(contract=contract)
-    view.series.value = "__depth__0:1"
+    view.series.value = "__depth__1:0"
 
     await view.load_selection()
 
@@ -3909,7 +3925,7 @@ async def test_a_pool_that_will_not_quote_still_draws():
     """One candidate for a stableswap, so there is nothing to settle and the
     curve is the same one either way."""
     view = depth_view(contract=StubDepthContract(quotes=False))
-    view.series.value = "__depth__0:1"
+    view.series.value = "__depth__1:0"
 
     await view.load_selection()
 
@@ -3918,7 +3934,7 @@ async def test_a_pool_that_will_not_quote_still_draws():
 
 async def test_switching_away_from_the_curve_puts_the_candles_back():
     view = depth_view()
-    view.series.value = "__depth__0:1"
+    view.series.value = "__depth__1:0"
     await view.load_selection()
     assert view.depth_chart.visible
 
@@ -3946,7 +3962,7 @@ async def test_the_panel_and_the_curve_do_not_pay_for_each_other():
     panel's, so this passing is the separation holding."""
     contract = StubDepthContract()
     view = depth_view(contract=contract)
-    view.series.value = "__depth__0:1"
+    view.series.value = "__depth__1:0"
 
     await view.load_selection()
 
@@ -3959,7 +3975,7 @@ async def test_moving_between_pairs_re_reads_only_the_price():
     six curves of a tricrypto pool are six readings of one batch."""
     contract = StubDepthContract()
     view = depth_view(3, contract=contract)
-    view.series.value = "__depth__0:1"
+    view.series.value = "__depth__1:0"
     await view.load_selection()
     after_first = list(contract.asked)
 
@@ -3973,7 +3989,7 @@ async def test_moving_between_pairs_re_reads_only_the_price():
 async def test_changing_units_reads_nothing():
     contract = StubDepthContract()
     view = depth_view(contract=contract)
-    view.series.value = "__depth__0:1"
+    view.series.value = "__depth__1:0"
     await view.load_selection()
     before = list(contract.asked)
 
@@ -3988,7 +4004,92 @@ def test_a_chosen_curve_keeps_its_marks_on_the_field():
     until its prefix comes off -- so it drew nothing at all."""
     view = depth_view()
 
-    assert view._field_mark("__depth__0:1") is not None
+    assert view._field_mark("__depth__1:0") is not None
     assert view._series_mark("__depth__1:0") is not None
     on_menu = {o.key: o for o in view.series.options}
-    assert on_menu["__depth__0:1"].leading_icon is not None
+    assert on_menu["__depth__1:0"].leading_icon is not None
+
+
+async def test_the_flip_turns_the_pair_round():
+    """The menu names one ordering; the button is the other.  Same curve read
+    from the other end, so the price axis inverts."""
+    view = depth_view(contract=StubDepthContract())
+    view.series.value = "__depth__1:0"
+    await view.load_selection()
+    assert view._shown_pair() == (1, 0)
+    first = view.depth_chart._profile.spot
+
+    view._flip_clicked(None)
+    await view.load_depth()
+
+    assert view._shown_pair() == (0, 1)
+    assert view.depth_chart._profile.pair == (0, 1)
+    assert view.depth_chart._profile.spot == pytest.approx(1 / first, rel=1e-6)
+
+
+async def test_the_flip_only_shows_on_a_curve():
+    view = depth_view()
+    view.series.value = "__trades__"
+    await view.load_selection()
+    assert not view.flip_button.visible
+
+    view.series.value = "__depth__1:0"
+    await view.load_selection()
+    assert view.flip_button.visible
+
+
+async def test_the_flip_says_which_way_it_will_turn():
+    view = depth_view()
+    view.series.value = "__depth__1:0"
+    await view.load_selection()
+
+    said = str(view.flip_button.tooltip)
+    assert "C1 / C0" in said, "what it is showing"
+    assert "C0 / C1" in said, "and what clicking gives"
+
+
+async def test_flipping_re_reads_only_the_price():
+    """The balances and parameters are the pool's and do not change with the
+    direction, so turning the pair round costs one `get_dy`."""
+    contract = StubDepthContract()
+    view = depth_view(contract=contract)
+    view.series.value = "__depth__1:0"
+    await view.load_selection()
+    before = list(contract.asked)
+
+    view._flip_clicked(None)             # schedules the reload itself
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    assert contract.asked[len(before):] == ["get_dy"]
+
+
+async def test_the_units_follow_the_flip():
+    """The depth is counted in the coin being sold, so which coin that is
+    changes when the pair turns round."""
+    view = depth_view()
+    view.series.value = "__depth__1:0"
+    await view.load_selection()
+    view.depth_units.value = pool_detail.DEPTH_COIN
+    assert view._depth_unit_label(1) == "C1", "the coin being sold"
+
+    view._flip_clicked(None)
+    await view.load_depth()
+
+    i, _j = view._shown_pair()
+    assert view._depth_unit_label(i) == "C0", "and the other one, once turned"
+
+
+async def test_the_caption_says_which_way_round_the_curve_is():
+    """The menu row goes on naming the ordering it offered, so after a flip it
+    is the one label on screen still pointing the old way.  The caption is
+    what corrects it."""
+    view = depth_view(3)
+    view.series.value = "__depth__2:1"
+    await view.load_selection()
+    assert view.chart_caption.value.startswith("C2 / C1 ·")
+
+    view._flip_clicked(None)
+    await view.load_depth()
+
+    assert view.chart_caption.value.startswith("C1 / C2 ·")

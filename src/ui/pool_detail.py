@@ -250,6 +250,15 @@ class PoolDetailView(ft.Column):
         self.depth_chart.visible = False
         #: What the depth axis is read in.  Dollars by default: it is the one
         #: unit that means the same thing across every pool on the page.
+        #: Turns the pair round.  The menu names one ordering per pair and
+        #: this is the other, because they are one curve read from either end.
+        self.flip_button = ft.IconButton(
+            icon=ft.Icons.SWAP_HORIZ,
+            icon_size=18,
+            visible=False,
+            on_click=self._flip_clicked,
+        )
+        self._depth_flipped = False
         self.depth_units = ft.Dropdown(
             key="depth-units",
             options=[ft.DropdownOption(key=DEPTH_USD, text="USD")],
@@ -294,7 +303,7 @@ class PoolDetailView(ft.Column):
             else [
                 ft.Row(
                     [self.series, ft.Container(expand=True),
-                     self.depth_units, self.size_picker],
+                     self.flip_button, self.depth_units, self.size_picker],
                     vertical_alignment=ft.CrossAxisAlignment.CENTER,
                 ),
                 self.chart_caption,
@@ -993,22 +1002,25 @@ class PoolDetailView(ft.Column):
                     key=key, text=text, leading_icon=self._menu_mark(key)
                 )
             )
-        # One per ordered pair.  A pool with three coins has six curves and
-        # they are six different pictures, so which is being drawn belongs in
-        # the menu rather than behind a second control.
+        # One per *unordered* pair.  The two orderings of a pair are one
+        # curve read from either end, so the second belongs on a button
+        # rather than on a row of its own -- three rows for a tricrypto pool
+        # where six were being offered.  The later coin leads by default,
+        # which puts the volatile one over the stable one on the pools where
+        # that distinction exists.
         options.append(
             ft.DropdownOption(key=f"{SERIES_RULE}2", content=ft.Divider(height=1),
                               disabled=True)
         )
-        for i, main in enumerate(self.pool.pool_coins):
-            for j, reference in enumerate(self.pool.pool_coins):
-                if i == j:
-                    continue
+        coins = self.pool.pool_coins
+        for i, main in enumerate(coins):
+            for j in range(i):
+                key = f"{DEPTH_PREFIX}{i}:{j}"
                 options.append(
                     ft.DropdownOption(
-                        key=f"{DEPTH_PREFIX}{i}:{j}",
-                        text=f"{DEPTH_LABEL}: {main.symbol} / {reference.symbol}",
-                        leading_icon=self._series_mark(f"{DEPTH_PREFIX}{i}:{j}"),
+                        key=key,
+                        text=f"{DEPTH_LABEL}: {main.symbol} / {coins[j].symbol}",
+                        leading_icon=self._series_mark(key),
                     )
                 )
         return options
@@ -1047,11 +1059,13 @@ class PoolDetailView(ft.Column):
         type does not separate a YieldBasis pool from the cryptoswap in the
         same factory.
         """
-        pair = depth_pair(self.selection)
+        menu_key = self.selection
+        pair = self._shown_pair()
         if pair is None:
             return
         i, j = pair
         self._show("depth")
+        self._sync_flip()
         self.chart_error.value = ""
         self._sync_depth_units()
         self.depth_chart.say("Reading the pool…")
@@ -1079,7 +1093,7 @@ class PoolDetailView(ft.Column):
         except Exception as exc:
             self.depth_chart.say(f"The pool could not be read: {exc}")
             return
-        if self.selection != f"{DEPTH_PREFIX}{i}:{j}":
+        if self.selection != menu_key:
             return  # the picker moved while we were reading
         self._depth_reading = (reading, quoted)
         self._depth_fee = fee
@@ -1143,12 +1157,17 @@ class PoolDetailView(ft.Column):
         except Exception as exc:
             self.depth_chart.say(f"This curve could not be traced: {exc}")
             return
-        if self.selection != f"{DEPTH_PREFIX}{i}:{j}":
+        if self._shown_pair() != (i, j):
             return
         self.depth_chart.show(self._valued(found, i), self._depth_unit_label(i),
                               keep_view=bool(low and high))
+        # The pair leads, and says which way round it is: the menu row keeps
+        # naming the ordering it offered, so after a flip that label is the
+        # one thing on screen still saying the old direction.
+        coins = self.pool.pool_coins
         self._say_chart(
-            f"{fitted.family} · liquidity per 1% of price range")
+            f"{coins[i].symbol} / {coins[j].symbol} · {fitted.family}"
+            f" · liquidity per 1% of price range")
 
     def _valued(self, found, i: int):
         """The profile in whatever unit the picker names."""
@@ -1168,7 +1187,7 @@ class PoolDetailView(ft.Column):
 
     def _sync_depth_units(self) -> None:
         """Offer the coin beside USD, and only where there is a price."""
-        pair = depth_pair(self.selection)
+        pair = self._shown_pair()
         if pair is None:
             return
         symbol = self.pool.pool_coins[pair[0]].symbol
@@ -1181,7 +1200,7 @@ class PoolDetailView(ft.Column):
         safe_update(self.depth_units)
 
     def _depth_units_changed(self, _e: AnyEvent) -> None:
-        pair = depth_pair(self.selection)
+        pair = self._shown_pair()
         if pair is not None:
             self._page.run_task(self._draw_depth, *pair)
 
@@ -1200,9 +1219,40 @@ class PoolDetailView(ft.Column):
         await asyncio.sleep(DEPTH_SETTLE)
         if asked != self._depth_asked:
             return  # a later move has taken over
-        pair = depth_pair(self.selection)
+        pair = self._shown_pair()
         if pair is not None:
             await self._draw_depth(*pair)
+
+    def _shown_pair(self) -> tuple[int, int] | None:
+        """The pair being drawn, after the flip.
+
+        The menu names one ordering and the button turns it round; the curve
+        is the same one either way, read from the other end.
+        """
+        pair = depth_pair(self.selection)
+        if pair is None:
+            return None
+        i, j = pair
+        return (j, i) if self._depth_flipped else (i, j)
+
+    def _flip_clicked(self, _e: AnyEvent) -> None:
+        self._depth_flipped = not self._depth_flipped
+        self._sync_flip()
+        if depth_pair(self.selection) is not None:
+            self._page.run_task(self.load_depth)
+
+    def _sync_flip(self) -> None:
+        """Say which way round the curve is, on the button that turns it."""
+        pair = self._shown_pair()
+        if pair is None:
+            return
+        coins = self.pool.pool_coins
+        i, j = pair
+        self.flip_button.tooltip = (
+            f"Showing {coins[i].symbol} / {coins[j].symbol} -- "
+            f"click for {coins[j].symbol} / {coins[i].symbol}"
+        )
+        safe_update(self.flip_button)
 
     def _show(self, which: str) -> None:
         """Give the chart's space to whichever of the three is showing.
@@ -1215,6 +1265,7 @@ class PoolDetailView(ft.Column):
         self.depth_chart.visible = which == "depth"
         self.size_picker.visible = which == "chart"
         self.depth_units.visible = which == "depth"
+        self.flip_button.visible = which == "depth"
 
     def _show_activity(self, showing: bool) -> None:
         self._show("activity" if showing else "chart")

@@ -1346,3 +1346,63 @@ def test_a_ranking_for_the_current_wallet_is_kept(monkeypatch):
 
     assert page._owned is not None
     assert any(e.balance for e in page.view.sell._entries)
+
+
+def test_switching_wallets_drops_the_old_ones_balances_at_once(monkeypatch):
+    """Balances belong to an address.  Shown under a different one they are
+    not stale, they are wrong -- so they go the moment the account does,
+    before anything has had a chance to read the new wallet's.
+    """
+    import asyncio
+    from dataclasses import replace
+
+    coins = two_coins()
+    wallet = Wallet()
+    wallet.connect("0x" + "a" * 40)
+    page = swap_page_with(wallet, coins)
+    page._coins = list(coins)
+    # Where the first wallet left things: a ranking, and a balance MAX reads.
+    page._owned = [replace(coins[1], balance=5_000_000, worth=5.0), coins[0]]
+    page.view.offer(coins, "ethereum", owned=page._owned)
+    page._balances = {coins[1].address: 5_000_000}
+
+    # The second wallet, with nothing read for it yet.
+    wallet.address = "0x" + "b" * 40
+    monkeypatch.setattr("ui.swap_page.holdings.read_balances",
+                        _never_answers)
+    asyncio.run(page.wallet_changed())
+
+    assert page._owned is None
+    assert 5_000_000 not in page._balances.values(), (
+        "MAX must not offer the old wallet's amount")
+    assert all(e.balance == 0 for e in page.view.sell._entries)
+
+
+async def _never_answers(_provider, _owner, _coins):
+    """A wallet whose balances have not come back yet, or at all."""
+    return {}
+
+
+def test_a_wallet_holding_none_of_them_shows_none_of_them(monkeypatch):
+    """The case that used to keep the previous wallet's list: an account that
+    holds nothing on this chain reads as an empty answer, and `_rank_by_
+    holdings` returns without drawing.  It has nothing to undo now.
+    """
+    import asyncio
+    from dataclasses import replace
+
+    coins = two_coins()
+    wallet = Wallet()
+    wallet.connect("0x" + "a" * 40)
+    page = swap_page_with(wallet, coins)
+    page._coins = list(coins)
+    page._owned = [replace(coins[1], balance=5_000_000, worth=5.0), coins[0]]
+    page.view.offer(coins, "ethereum", owned=page._owned)
+
+    wallet.address = "0x" + "b" * 40
+    monkeypatch.setattr("ui.swap_page.holdings.read_balances", _never_answers)
+    asyncio.run(page.wallet_changed())
+    asyncio.run(page._rank_by_holdings())
+
+    assert all(e.balance == 0 for e in page.view.sell._entries), (
+        "an empty answer for the new wallet must not leave the old one's")

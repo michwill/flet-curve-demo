@@ -309,14 +309,25 @@ class SwapPage:
     async def wallet_changed(self) -> None:
         """A wallet arrived, left, or became a different account.
 
-        Everything here that depends on one is read through a callable, so
-        nothing is *stale* -- it is simply never asked again.  Someone who
-        opened the tab first and connected second saw no balance, no MAX and
-        an approval step decided when there was no account to decide it for.
+        The address itself is read through a callable, so nothing here holds
+        one that has gone: someone who opened the tab first and connected
+        second saw no balance, no MAX and an approval step decided when there
+        was no account to decide it for.
 
         The router is untouched: it quotes over the public endpoint and has no
         idea a wallet exists, so a connection costs no warm and no re-read.
+
+        What the account *held* does not survive it.  A different address holds
+        different coins, and the balances on screen belong to the wallet just
+        left: shown under the new one they are not stale, they are wrong. So
+        they go first and are asked for again behind, which shows nothing for
+        the moment in between -- the honest answer until this wallet has been
+        asked.
         """
+        self._owned = None
+        self._balances = {}
+        if self._coins:
+            self.view.offer(self._coins, self._chain_name())
         await self._read_balances()
         # The picker's order is a wallet question too: a different account
         # holds different coins.

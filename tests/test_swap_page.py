@@ -1575,3 +1575,63 @@ def test_a_tracked_offset_past_the_end_is_not_used():
     asyncio.run(view.restore_caret(held))
 
     assert view.amount.selection == ft.TextSelection(1, 1)
+
+
+class Reverting(Planned):
+    """A plan the dry run refused, at the block it was priced against."""
+
+    def __init__(self, why: str = "leg below its minimum rate") -> None:
+        super().__init__()
+        self.reverted = why
+
+
+async def test_a_revert_re_reads_the_state_and_tries_again():
+    """The bound was set against slots that have since moved, which is what
+    `leg below its minimum rate` means.  Re-reading them is the answer, and
+    `plan_call` re-reads the route's own accounts at the newest block.
+    """
+    page = swap_page_with(Wallet(), two_coins())
+    page._plan = Reverting()
+    planned: list[int] = []
+
+    async def replan():
+        planned.append(1)
+        page._plan = Planned()          # fresh state, and now it goes through
+
+    page._plan_now = replan
+    page._read_balances = lambda: _answer(None)
+    page._confirm = lambda *a, **k: _answer(0)
+    page._page.run_task = lambda fn, *a: None
+
+    class Host:
+        async def after_swap(self):
+            return 0
+
+    page.host = Host()
+    sent = Sending()
+    page._contract = lambda: sent
+
+    await page._swap()
+
+    assert planned == [1], "it re-planned rather than refusing"
+    assert page._plan is None, "sent, so the plan is spent"
+
+
+async def test_a_second_refusal_still_leaves_the_tab_able_to_try():
+    """One revert used to stop the tab sending anything ever after: the
+    refused plan stayed put, and every later press read the same answer off
+    it without asking the chain anything.
+    """
+    page = swap_page_with(Wallet(), two_coins())
+    sent = Sending()
+    page._contract = lambda: sent
+    page._plan = Reverting()
+
+    async def replan():
+        page._plan = Reverting()        # the pool really has moved away
+
+    page._plan_now = replan
+
+    await page._swap()
+
+    assert page._plan is None, "cleared, so the next press plans afresh"

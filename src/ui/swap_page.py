@@ -710,6 +710,23 @@ class SwapPage:
         if plan is None:
             return
         if plan.reverted:
+            # Planned against a block that has since moved.  "leg below its
+            # minimum rate" is precisely what a pool moving under a plan looks
+            # like -- the bound was set against slots that are now old -- so
+            # the answer is to re-read them rather than to refuse.  That is
+            # what `plan_call` does: it re-reads the route's own accounts at
+            # the newest block and re-prices every leg against them.
+            self._plan = None
+            await self._plan_now()
+            plan = self._plan
+            if plan is None:
+                return          # `_plan_now` has already said why
+        if plan.reverted:
+            # Still no, against state read a moment ago.  Cleared even so, or
+            # the next press reads this same answer off a plan that is older
+            # again -- which is how one revert used to stop the tab sending
+            # anything ever after.
+            self._plan = None
             self.view.say(f"This route would not go through: {plan.reverted}", FAILED)
             return
         self._sending = True

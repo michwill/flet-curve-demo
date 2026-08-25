@@ -981,6 +981,11 @@ class SwapView(ft.Container):
         self._stacked = False
         self._has_route = False
         self._on_amount = on_amount
+        #: Whether the amount box holds the caret and where it sits.  Kept
+        #: because a redraw takes both, and the warm finishing is a redraw
+        #: that lands while somebody is still typing a number.
+        self._typing = False
+        self._caret = None
         self._on_pair = on_pair
         self._on_max = on_max
         self._on_approve = on_approve
@@ -1013,6 +1018,9 @@ class SwapView(ft.Container):
             # number in the same ink as a typed one reads as a typed one.
             hint_style=ft.TextStyle(size=SMALL, color=HINT_COLOUR),
             on_change=self._typed,
+            on_focus=self._took_caret,
+            on_blur=self._lost_caret,
+            on_selection_change=self._caret_moved,
             expand=True,
             suffix_icon=self.max_button,
             suffix_icon_size_constraints=ft.BoxConstraints(
@@ -1255,6 +1263,47 @@ class SwapView(ft.Container):
             return parse_units(text, coin.decimals)
         except (ValueError, IndexError):
             return 0
+
+    # ---------------------------------------------------------------- the caret
+
+    def _took_caret(self, _event=None) -> None:
+        self._typing = True
+
+    def _lost_caret(self, _event=None) -> None:
+        self._typing = False
+
+    def _caret_moved(self, event) -> None:
+        self._caret = getattr(event, "selection", None)
+
+    def caret(self) -> tuple:
+        """Whether the amount box has the caret, where it sits, and the text.
+
+        Taken *before* a redraw rather than read after one, because a redraw
+        that takes the focus away may blur the field on its way out -- and
+        then there is nothing left to say the reader was in the middle of a
+        number.
+        """
+        return self._typing, self._caret, self.amount.value
+
+    async def restore_caret(self, held: tuple) -> None:
+        """Put the reader back where they were typing.
+
+        The warm ends whenever it ends, which is mid-word as often as not, and
+        every redraw behind it -- the vaults joining the picker, the first
+        quote, the balances -- rebuilds the subtree the amount box lives in.
+        Losing the caret there means the next keystroke goes nowhere.
+
+        The offset is only restored when the text has not moved on: more was
+        typed between the snapshot and here, and putting the caret back where
+        it *was* would drop the reader mid-number rather than where they are.
+        Focus alone is right then; Flutter keeps the end of the line.
+        """
+        typing, caret, text = held
+        if not typing:
+            return
+        if caret is not None and (self.amount.value or "") == (text or ""):
+            self.amount.selection = caret
+        await self.amount.focus()
 
     def show_balances(self, sell: int | None, buy: int | None) -> None:
         """The balance as the box's own hint, not a line under it.

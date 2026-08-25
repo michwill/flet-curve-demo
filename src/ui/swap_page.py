@@ -179,6 +179,12 @@ class SwapPage:
         await self.host.open(chain_id)
         if self.host.stage is not Stage.READY:
             return
+        # Taken before the redraws behind the warm, not after: somebody who
+        # started typing while the bar was moving is mid-number now, and the
+        # vaults joining the picker, the first quote and the balances each
+        # rebuild the subtree that box lives in.  Whatever they have typed
+        # keeps working -- this is only about where the next keystroke goes.
+        caret = self.view.caret()
         self._offer_unlisted(chain_id)
         # The pair was chosen before there was anything to price it with, so
         # this is where it actually gets prepared.
@@ -192,6 +198,7 @@ class SwapPage:
         if self._wrapping():
             await self._wrap_quote(self.view.amount_in())
         await self._read_balances()
+        await self.view.restore_caret(caret)
 
     async def _offer_coins(self, chain_id: int) -> None:
         """Fill the pickers off the pool list, before anything is warmed."""

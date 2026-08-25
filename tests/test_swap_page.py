@@ -1406,3 +1406,127 @@ def test_a_wallet_holding_none_of_them_shows_none_of_them(monkeypatch):
 
     assert all(e.balance == 0 for e in page.view.sell._entries), (
         "an empty answer for the new wallet must not leave the old one's")
+
+
+def _watch_focus(view):
+    """Record `focus()` calls on the amount box.  It is a coroutine in Flet."""
+    calls = []
+
+    async def focus():
+        calls.append(True)
+
+    view.amount.focus = focus
+    return calls
+
+
+def test_the_caret_stays_in_the_box_when_the_warm_lands_mid_number():
+    """The warm ends whenever it ends, and every redraw behind it rebuilds the
+    subtree the amount box lives in.  Somebody typing through that has to keep
+    the caret, or the next keystroke goes nowhere.
+    """
+    import asyncio
+
+    import flet as ft
+
+    coins = two_coins()
+    page = swap_page_with(Wallet(), coins)
+    view = page.view
+    view._took_caret()
+    view.amount.value = "100"
+    view._caret_moved(type("E", (), {"selection": ft.TextSelection(3, 3)})())
+
+    held = view.caret()
+    calls = _watch_focus(view)
+    asyncio.run(view.restore_caret(held))
+
+    assert calls, "the box has to be focused again"
+    assert view.amount.selection.base_offset == 3, "and at the same offset"
+
+
+def test_a_caret_is_not_put_back_over_what_was_typed_since():
+    """More arrived between the snapshot and the redraw finishing.  Restoring
+    the old offset would drop the reader mid-number instead of where they are.
+    """
+    import asyncio
+
+    import flet as ft
+
+    coins = two_coins()
+    page = swap_page_with(Wallet(), coins)
+    view = page.view
+    view._took_caret()
+    view.amount.value = "100"
+    view._caret_moved(type("E", (), {"selection": ft.TextSelection(3, 3)})())
+    held = view.caret()
+
+    view.amount.value = "10050"          # typed on while the warm finished
+    calls = _watch_focus(view)
+    asyncio.run(view.restore_caret(held))
+
+    assert calls, "still focused"
+    assert view.amount.selection is None, (
+        "the old offset is not written over the newer text; Flutter keeps "
+        "the end of the line, which is where they are")
+
+
+def test_a_reader_who_was_not_typing_is_left_alone():
+    """Nobody in the box means nobody to put back, and stealing focus into it
+    would be worse than the bug.
+    """
+    import asyncio
+
+    coins = two_coins()
+    page = swap_page_with(Wallet(), coins)
+    view = page.view
+    held = view.caret()
+    calls = _watch_focus(view)
+
+    asyncio.run(view.restore_caret(held))
+
+    assert not calls
+
+
+async def test_open_puts_the_caret_back_after_the_warm():
+    """The whole path, not just the view: somebody typing while the bar moves
+    is still in the box when `open` returns."""
+    import flet as ft
+
+    coins = two_coins()
+    page = swap_page_with(Wallet(), coins)
+    page.chain_id_now = 1
+    page._backend = object()
+    page._chain_id = lambda: _answer(1)
+    page._offer_coins = lambda _id: _answer(None)
+    page._read_balances = lambda: _answer(None)
+    page._prepare = lambda _s, _b: _answer(None)
+    page.host.open = lambda _id: _answer(None)
+    page.host._held.stage = Stage.READY
+
+    # Mid-number when the warm lands.
+    page.view._took_caret()
+    page.view.amount.value = "12"
+    page.view._caret_moved(type("E", (), {"selection": ft.TextSelection(2, 2)})())
+    calls = _watch_focus(page.view)
+
+    await page.open()
+
+    assert calls, "the reader was left outside the box they were typing in"
+    assert page.view.amount.value == "12", "and what they typed is still there"
+
+
+async def test_open_leaves_the_caret_alone_when_nobody_was_typing():
+    coins = two_coins()
+    page = swap_page_with(Wallet(), coins)
+    page.chain_id_now = 1
+    page._backend = object()
+    page._chain_id = lambda: _answer(1)
+    page._offer_coins = lambda _id: _answer(None)
+    page._read_balances = lambda: _answer(None)
+    page._prepare = lambda _s, _b: _answer(None)
+    page.host.open = lambda _id: _answer(None)
+    page.host._held.stage = Stage.READY
+    calls = _watch_focus(page.view)
+
+    await page.open()
+
+    assert not calls, "the warm ending must not pull focus into the box"

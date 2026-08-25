@@ -750,9 +750,35 @@ class SwapPage:
             self._page.run_task(self._rank_by_holdings)
         except WalletError as exc:
             self._rejected(exc)
+            # Whatever went wrong, the plan was priced against a block that
+            # has since gone, so it is not the thing to press again.  Cleared,
+            # and the next press prices a new one.
+            self._plan = None
+            if not exc.rejected_by_user:
+                await self._after_failed_send()
         finally:
             self._sending = False
             self.view.busy(False)
+
+    async def _after_failed_send(self) -> None:
+        """The transaction went out and did not do what it was priced to do.
+
+        A revert on chain is the pool saying its state is not the state this
+        was built against -- reported as `leg below its minimum rate`, which
+        is a bound set against slots that have since moved.  So the state is
+        exactly what to go and re-read, the same re-read a swap of ours
+        triggers when it *does* land, and for the same reason.
+
+        Guarded, because this is already the failure path: a refresh that
+        cannot be done should leave the message about the transaction on
+        screen rather than replacing it with one about the refresh.
+        """
+        with contextlib.suppress(Exception):
+            await self.host.after_swap()
+        with contextlib.suppress(Exception):
+            await self._read_balances()
+        with contextlib.suppress(Exception):
+            self.host.request(self.view.amount_in())
 
     async def _confirm(self, tx: str, done: str) -> int:
         """Wait for it to land, and remember which block it landed in.

@@ -1635,3 +1635,84 @@ async def test_a_second_refusal_still_leaves_the_tab_able_to_try():
     await page._swap()
 
     assert page._plan is None, "cleared, so the next press plans afresh"
+
+
+class Failing(Sending):
+    """A router whose transaction is mined and reverts."""
+
+    def __init__(self, rejected: bool = False) -> None:
+        self.rejected = rejected
+
+    async def execute(self, _plan) -> str:
+        # `rejected_by_user` is a property the class answers, so a rejection
+        # is raised as the thing that really carries one.
+        from wallet.base import USER_REJECTED_REQUEST, RpcError, WalletError
+
+        if self.rejected:
+            raise RpcError(USER_REJECTED_REQUEST, "User rejected the request")
+        raise WalletError("The transaction was mined but reverted.")
+
+
+class WatchedHost:
+    def __init__(self) -> None:
+        self.refreshed = 0
+        self.quoted: list = []
+
+    async def after_swap(self) -> int:
+        self.refreshed += 1
+        return 0
+
+    def request(self, amount) -> None:
+        self.quoted.append(amount)
+
+
+async def test_a_revert_on_chain_sends_us_back_for_the_state():
+    """A revert is the pool saying its state is not what the plan was priced
+    against, so the state is what to re-read -- the same re-read a swap of
+    ours triggers when it lands, and for the same reason.
+    """
+    page = swap_page_with(Wallet(), two_coins())
+    contract = Failing()
+    page._contract = lambda: contract
+    page._plan = Planned()
+    page._read_balances = lambda: _answer(None)
+    host = WatchedHost()
+    page.host = host
+
+    await page._swap()
+
+    assert host.refreshed == 1, "the slots were re-read"
+    assert host.quoted, "and the quote priced against them"
+    assert page._plan is None, "the plan it was priced from is spent"
+
+
+async def test_a_wallet_rejection_leaves_the_chain_alone():
+    """Nothing went out, so nothing moved: re-reading would be a round trip
+    spent on the news that everything is as it was.
+    """
+    page = swap_page_with(Wallet(), two_coins())
+    contract = Failing(rejected=True)
+    page._contract = lambda: contract
+    page._plan = Planned()
+    host = WatchedHost()
+    page.host = host
+
+    await page._swap()
+
+    assert host.refreshed == 0, "nothing to re-read"
+    assert page._plan is None, "but the block has moved, so it is stale anyway"
+
+
+async def test_the_tab_can_send_again_after_a_revert():
+    """One revert on chain used to need the whole UI reloading."""
+    page = swap_page_with(Wallet(), two_coins())
+    reverting = Failing()
+    page._contract = lambda: reverting
+    page._plan = Planned()
+    page._read_balances = lambda: _answer(None)
+    page.host = WatchedHost()
+
+    await page._swap()
+
+    assert not page._sending, "not stuck mid-send"
+    assert page._plan is None, "and the next press plans afresh"

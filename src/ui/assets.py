@@ -108,6 +108,11 @@ _COMPLETE: set[tuple[str, int]] = set()
 #: No pause between them, because the pause is already there: an ask that
 #: fails this way has spent the gateway's whole timeout failing, which is the
 #: time its fetch had to run.
+#:
+#: A ceiling, not a schedule: `_load_marks` spends two of them on one visit
+#: to a chain, and the third is there for the next one.  Nor does asking
+#: always work -- 4everland answered six straight 504s at 30s each for a CID
+#: it had no route to.  That is what `_COLD` is for.
 BUNDLE_ATTEMPTS = 3
 
 #: Directories whose bundle timed out rather than 404ing.  An edge that could

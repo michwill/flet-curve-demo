@@ -452,6 +452,95 @@ def profile(curve: Curve, i: int, j: int, *, low: float, high: float,
 # ------------------------------------------------------------------ families
 
 
+def crypto_invariant(xp: Sequence[float], amp: float, gamma: float, *,
+                     stable: bool = False,
+                     a_multiplier: float = 10_000.0) -> float:
+    """`D` for a crypto pool, solved rather than read.
+
+    A fallback, and only that.  Where a pool exposes `D()`, read it: on the
+    crypto families `D` is *stored* and updated in `tweak_price`, and `get_dy`
+    quotes against the stored value -- so between updates the fees that have
+    accrued into the balances leave the stored `D` no longer solving the
+    invariant for what the pool now holds.  Measured on YB/crvUSD the two are
+    1.1e-4 apart, and the pool's own answer is the one that quotes.  A pool
+    with no `D()` to read is computing it from the balances itself, which is
+    what this reproduces.
+
+    Which invariant depends on the pool.  An FX Swap runs Curve's *stableswap*
+    invariant in `price_scale`-adjusted space at `A_MULTIPLIER` precision, so
+    it gets the stableswap solve; solving the cryptoswap one for it was 2.2%
+    out on a $95M YieldBasis pool, which is a different curve rather than a
+    rounding error.  The rest solve
+
+        K0 = prod(x) * N**N / D**N
+        K  = A * K0 * gamma**2 / (gamma + 1 - K0)**2
+        K * D**(N-1) * sum(x) + prod(x) = K * D**N + (D/N)**N
+
+    Scaled to O(1) first.  Every term there is degree `N` in `(x, D)`, so the
+    whole thing can be divided through by the mean balance and multiplied back
+    afterwards -- and it has to be: at `D ~ 1e26` with three coins, `D**N` is
+    1e78 and the differences between terms of that size have no significant
+    digits left.  Unscaled this agreed with the chain to 1e-4 where it should
+    agree to 1e-12.
+
+    Bisection rather than the contract's Newton: what is wanted is a number
+    that agrees to a dozen digits, not one that agrees to the wei through the
+    same rounding, and bisection cannot be walked off the curve by a bad first
+    step.  `tools/liquidity_survey.py` is what checks the result against the
+    chain.
+
+    `amp` is `A()` over `A_MULTIPLIER` and `gamma` is `gamma()` over 1e18.
+    """
+    count = len(xp)
+    if count < 2 or any(v <= 0.0 for v in xp):
+        raise DepthError("a pool with an empty balance has no invariant")
+    if stable:
+        from erouter.core.stableswap import StableSwapError, d_fast
+        try:
+            return d_fast(list(xp), amp * a_multiplier, a_multiplier, count)
+        except StableSwapError as exc:
+            raise DepthError(str(exc)) from exc
+
+    unit = math.fsum(xp) / count
+    scaled = [v / unit for v in xp]
+    total = math.fsum(scaled)
+    product = 1.0
+    for value in scaled:
+        product *= value
+
+    def residual(d: float) -> float:
+        k0 = product * count**count / d**count
+        gap = gamma + 1.0 - k0
+        if gap == 0.0:
+            raise DepthError("the invariant is singular here")
+        k = amp * k0 * gamma * gamma / (gap * gap)
+        return (k * d ** (count - 1) * total + product
+                - k * d**count - (d / count) ** count)
+
+    low, high = total / count, total * count
+    for _ in range(MAX_STEPS):
+        if residual(low) > 0.0:
+            break
+        low /= 2.0
+    else:
+        raise DepthError("no invariant below the balances")
+    for _ in range(MAX_STEPS):
+        if residual(high) < 0.0:
+            break
+        high *= 2.0
+    else:
+        raise DepthError("no invariant above the balances")
+    for _ in range(MAX_STEPS):
+        middle = 0.5 * (low + high)
+        if residual(middle) > 0.0:
+            low = middle
+        else:
+            high = middle
+        if high - low <= high * TOLERANCE:
+            break
+    return 0.5 * (low + high) * unit
+
+
 def stableswap_curve(balances: Sequence[int], rates: Sequence[int], amp: int,
                      decimals: Sequence[int], *, a_precision: int = 100) -> Curve:
     """A stableswap pool, from what `parameters()` and `reserves()` return.

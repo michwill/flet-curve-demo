@@ -3826,11 +3826,14 @@ class StubDepthContract:
         self.quotes = quotes
         self.asked: list[str] = []
 
-    async def parameters(self):
+    async def curve_state(self):
         from curve.parameters import Readings
 
-        self.asked.append("parameters")
+        self.asked.append("curve_state")
         return Readings({"A": 100, "A_precise": 10_000}, ())
+
+    async def parameters(self):
+        raise AssertionError("the curve must not use the panel's read")
 
     async def reserves(self, count: int):
         self.asked.append("reserves")
@@ -3900,6 +3903,7 @@ async def test_the_pool_is_asked_for_its_own_price_to_settle_the_curve():
 
     assert "get_dy" in contract.asked
     assert contract.asked.count("reserves") == 1, "read once, used twice"
+    assert "curve_state" in contract.asked, "its own read, not the panel's"
 
 
 async def test_a_pool_that_will_not_quote_still_draws():
@@ -3924,3 +3928,57 @@ async def test_switching_away_from_the_curve_puts_the_candles_back():
 
     assert not view.depth_chart.visible
     assert view.activity_box.visible
+
+
+async def test_nothing_is_read_until_a_curve_is_picked():
+    """The chain is not asked for any of this until somebody asks for a
+    curve, and never for a pool whose curve nobody opened."""
+    contract = StubDepthContract()
+    view = depth_view(contract=contract)
+
+    await view.load_selection()          # the LP series, which the page opens on
+
+    assert contract.asked == [], "opening a pool must cost the curve nothing"
+
+
+async def test_the_panel_and_the_curve_do_not_pay_for_each_other():
+    """`parameters()` fills a table and is asked whenever the panel opens; the
+    curve has its own read.  The stub raises if the curve reaches for the
+    panel's, so this passing is the separation holding."""
+    contract = StubDepthContract()
+    view = depth_view(contract=contract)
+    view.series.value = "__depth__0:1"
+
+    await view.load_selection()
+
+    assert "curve_state" in contract.asked
+    assert "parameters" not in contract.asked
+
+
+async def test_moving_between_pairs_re_reads_only_the_price():
+    """The balances and the parameters are the pool's, not the pair's, so the
+    six curves of a tricrypto pool are six readings of one batch."""
+    contract = StubDepthContract()
+    view = depth_view(3, contract=contract)
+    view.series.value = "__depth__0:1"
+    await view.load_selection()
+    after_first = list(contract.asked)
+
+    view.series.value = "__depth__0:2"
+    await view.load_selection()
+
+    added = contract.asked[len(after_first):]
+    assert added == ["get_dy"], f"only the pair's own price, got {added}"
+
+
+async def test_changing_units_reads_nothing():
+    contract = StubDepthContract()
+    view = depth_view(contract=contract)
+    view.series.value = "__depth__0:1"
+    await view.load_selection()
+    before = list(contract.asked)
+
+    view.depth_units.value = pool_detail.DEPTH_COIN
+    await view._draw_depth(0, 1)
+
+    assert contract.asked == before, "a unit is a redraw, not a read"

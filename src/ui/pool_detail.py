@@ -261,7 +261,9 @@ class PoolDetailView(ft.Column):
         )
         self._depth_window: tuple[float, float] = (0.0, 0.0)
         self._depth_asked = 0.0
-        self._depth_reading = None
+        #: The pool's own numbers and the pair's quoted price, once read.
+        #: Kept because the first is the pool's rather than the pair's.
+        self._depth_reading: tuple[depth.Reading, float] | None = None
 
         self.size_picker = ft.Dropdown(
             key="candle-size",
@@ -1026,11 +1028,17 @@ class PoolDetailView(ft.Column):
     async def load_depth(self) -> None:
         """Draw where this pool's liquidity sits along its own curve.
 
-        Every number this needs is one the pool already answers -- `A`, the
-        rates or `gamma` and `price_scale`, the balances -- so it is one batch
-        and no history.  The marginal price goes with them, because that is
-        what says which curve the pool is actually on: the API's type does not
-        separate a YieldBasis pool from the cryptoswap in the same factory.
+        Read here and nowhere else.  Nothing on this page asks the chain for
+        any of it until somebody picks a curve, and then it is one batch --
+        `A`, `gamma`, the rates or `price_scale`, the balances -- plus one
+        `get_dy`.  No history, and nothing for the other pools on the list.
+
+        The batch is the *pool's*, so it is kept: the six curves of a
+        tricrypto pool are six readings of one set of balances, and moving
+        between them re-asks only the marginal price.  That one is the pair's,
+        and it is what says which curve the pool is actually on -- the API's
+        type does not separate a YieldBasis pool from the cryptoswap in the
+        same factory.
         """
         pair = depth_pair(self.selection)
         if pair is None:
@@ -1045,9 +1053,16 @@ class PoolDetailView(ft.Column):
         if contract is None:
             self.depth_chart.say("No endpoint for this network.")
             return
+        held = self._depth_reading
         try:
-            reading = await asyncio.wait_for(
-                self._depth_reading_for(contract, i, j), PARAMETER_DEADLINE)
+            if held is None:
+                reading = await asyncio.wait_for(
+                    self._read_pool(contract), PARAMETER_DEADLINE)
+            else:
+                reading = held[0]
+            quoted = await asyncio.wait_for(
+                self._quoted_price(contract, reading.balances, i, j),
+                PARAMETER_DEADLINE)
         except TimeoutError:
             self.depth_chart.say("The chain did not answer in time.")
             return
@@ -1059,22 +1074,28 @@ class PoolDetailView(ft.Column):
             return
         if self.selection != f"{DEPTH_PREFIX}{i}:{j}":
             return  # the picker moved while we were reading
-        self._depth_reading = reading
+        self._depth_reading = (reading, quoted)
         self._depth_window = (0.0, 0.0)
         await self._draw_depth(i, j)
 
-    async def _depth_reading_for(self, contract, i: int, j: int):
-        """One batch of reads, as `curve.depth` wants them."""
+
+
+    async def _read_pool(self, contract) -> depth.Reading:
+        """One batch of reads, as `curve.depth` wants them.
+
+        `curve_state`, not `parameters`: the panel's read fills a table and is
+        asked for whenever somebody opens it.  Nothing pays for the depth
+        curve except the depth curve.
+        """
         coins = self.pool.pool_coins
         readings, reserves = await asyncio.gather(
-            contract.parameters(), contract.reserves(len(coins)))
-        reading = depth.Reading(
+            contract.curve_state(), contract.reserves(len(coins)))
+        return depth.Reading(
             balances=tuple(reserves),
             decimals=tuple(coin.decimals for coin in coins),
             values=dict(readings.values),
             rates=tuple(readings.rates),
         )
-        return reading, await self._quoted_price(contract, reserves, i, j)
 
     async def _quoted_price(self, contract, reserves, i: int, j: int) -> float:
         """What the pool says a marginal trade costs, fee taken back out.

@@ -35,12 +35,17 @@ ARRAY_PARAMETERS = ("stored_rates",)
 #: wants to read them on.  `A_precise` is the amplification without the digit
 #: `A()` rounds away, and `D` is the invariant: stored on the crypto families
 #: and quoted against, so it is read rather than solved wherever it is there.
-CURVE_PARAMETERS = ("D", "A_precise")
+#:
+#: Asked by `curve_state` and nowhere else.  They were in the shared plan to
+#: begin with, which made the *parameters panel* fetch three numbers it does
+#: not show -- free inside a multicall and three more round trips on a chain
+#: without one.  Nothing should pay for the depth curve except the depth
+#: curve.
+CURVE_PARAMETERS = ("A", "A_precise", "gamma", "D")
 
 #: A tricrypto pool prices two coins against its first, so the second scale is
 #: asked for by index as well.  Under its own key, or the first answer would
 #: keep the slot and the second coin would be priced as the first.
-SECOND_SCALE = "price_scale"
 SECOND_SCALE_KEY = "price_scale_1"
 
 #: How many `reward_tokens(i)` to walk before giving up.
@@ -52,8 +57,22 @@ def _parameter_plan() -> list[tuple[str, str]]:
     plan = [(parameter.key, abi.encode_parameter(parameter.key)) for parameter in PARAMETERS]
     plan += [(key, abi.encode_indexed_parameter(key, 0)) for key in INDEXED_PARAMETERS]
     plan += [(key, abi.encode_parameter(key)) for key in ARRAY_PARAMETERS]
-    plan += [(key, abi.encode_parameter(key)) for key in CURVE_PARAMETERS]
-    plan.append((SECOND_SCALE_KEY, abi.encode_indexed_parameter(SECOND_SCALE, 1)))
+    return plan
+
+
+def _curve_plan() -> list[tuple[str, str]]:
+    """What the liquidity curve needs, and nothing the panel already asks.
+
+    Both spellings of `price_scale` go in: a tricrypto pool takes an index and
+    the others do not, and whichever answers is the one kept.  The second
+    index goes under its own key or the first answer would hold the slot and
+    the second coin would be priced as the first.
+    """
+    plan = [(key, abi.encode_parameter(key)) for key in CURVE_PARAMETERS]
+    plan += [("price_scale", abi.encode_parameter("price_scale")),
+             ("price_scale", abi.encode_indexed_parameter("price_scale", 0)),
+             (SECOND_SCALE_KEY, abi.encode_indexed_parameter("price_scale", 1))]
+    plan += [(key, abi.encode_parameter(key)) for key in ARRAY_PARAMETERS]
     return plan
 
 
@@ -191,6 +210,32 @@ class PoolContract:
     async def parameters(self) -> Readings:
         """Every curve parameter this pool will answer, raw and unscaled."""
         plan = _parameter_plan()
+        answers = await self._read_many_data(plan)
+        found: dict[str, int] = {}
+        rates: tuple[int, ...] = ()
+        for (key, _data), value in zip(plan, answers, strict=True):
+            if value is None:
+                continue
+            if key in ARRAY_PARAMETERS:
+                rates = rates or tuple(abi.decode_uint_array(value))
+            elif key not in found:
+                found[key] = abi.decode_uint(value)
+        return Readings(found, rates)
+
+    async def curve_state(self) -> Readings:
+        """Everything the liquidity curve needs, in one batch.
+
+        Separate from `parameters()` on purpose: that one fills a panel and is
+        asked for whenever somebody opens it, and this one is asked for only
+        when a depth curve is actually being drawn.  They overlap in `A` and
+        `gamma`, which is a word each rather than a reason to make every
+        reader of one pay for the other.
+
+        The balances are not in here -- `reserves` already knows both of the
+        spellings they come in -- but they are asked for beside it rather than
+        after it, so the curve is drawn from one moment of the pool.
+        """
+        plan = _curve_plan()
         answers = await self._read_many_data(plan)
         found: dict[str, int] = {}
         rates: tuple[int, ...] = ()

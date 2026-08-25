@@ -4136,3 +4136,20 @@ async def test_a_depth_in_another_coin_is_scaled_by_the_two_prices():
     other = max(s.depth for s in view.depth_chart._profile.samples)
 
     assert other == pytest.approx(own * 4.0, rel=1e-9), "C1 is worth four C0"
+
+
+def test_a_narrow_picker_drops_the_depth_prefix():
+    """`Depth: PYUSD / USDC` does not fit a phone's 200px picker, and there is
+    nothing beside it to take width from -- so the pair goes on alone."""
+    from ui.responsive import layout_for
+
+    view = depth_view(2)
+    view.set_layout(layout_for(360))
+    narrow = [o.text for o in view.series.options
+              if pool_detail.depth_pair(o.key) is not None]
+    assert narrow == ["C1 / C0"]
+
+    view.set_layout(layout_for(1400))
+    wide = [o.text for o in view.series.options
+            if pool_detail.depth_pair(o.key) is not None]
+    assert wide == ["Depth: C1 / C0"]

@@ -154,7 +154,12 @@ FIELD_BOX = (56, 28)
 #: How wide the picker is: the longest name plus the box beside it. A
 #: phone gets the narrower one, or the candle size beside it goes off the
 #: edge -- a 330px screen has room for both and nothing to spare.
-SERIES_WIDTH = 270
+#:
+#: The depth rows are what set this.  `Depth: PYUSD / USDC` is half again as
+#: long as `LP token (USD)`, and at 270 it was clipped -- so the wide one
+#: fits the prefix and two six-letter symbols, and the narrow one drops the
+#: prefix instead of growing, because there is nothing beside it to give.
+SERIES_WIDTH = 330
 SERIES_NARROW_WIDTH = 200
 
 
@@ -1045,10 +1050,15 @@ class PoolDetailView(ft.Column):
         for i, main in enumerate(coins):
             for j in range(i):
                 key = f"{DEPTH_PREFIX}{i}:{j}"
+                # The prefix goes on a phone, where the pair alone is as much
+                # as fits.  What is being drawn stays obvious from the drawing
+                # and from the caption under it.
+                pair_text = f"{main.symbol} / {coins[j].symbol}"
                 options.append(
                     ft.DropdownOption(
                         key=key,
-                        text=f"{DEPTH_LABEL}: {main.symbol} / {coins[j].symbol}",
+                        text=(pair_text if self._layout.cards
+                              else f"{DEPTH_LABEL}: {pair_text}"),
                         leading_icon=self._series_mark(key),
                     )
                 )

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
-from curve.api import PoolFeed
+from curve.api import MAX_PAGE_SIZE, PoolFeed
 from curve.http import ApiError
 from curve.models import Pool
 
@@ -50,6 +50,21 @@ class FakeApi:
 
 def feed(api: FakeApi, **kwargs) -> PoolFeed:
     return PoolFeed(api, "ethereum", 1, **kwargs)
+
+
+class Incentivised(FakeApi):
+    """Serves pools the server ranks by one number and the column by another.
+
+    Which is the real shape: campaigns are attached after a page comes down,
+    so the server's order is by on-chain rewards alone.  Here the pool the
+    column would lead with is the one the server puts last.
+    """
+
+    def __init__(self, total: int = 7, *, page_size: int = 3) -> None:
+        super().__init__(total=total, page_size=page_size)
+        for rank, pool in enumerate(self.all):
+            # Ascending in the server's order, so the last page holds the top.
+            pool.merkle_apr = float(rank)
 
 
 # -- paging ----------------------------------------------------------------
@@ -153,3 +168,56 @@ async def test_the_feed_recovers_after_a_failed_page() -> None:
     api.fail_with = None
     assert len(await f.load_more()) == 5
     assert f.exhausted
+
+
+# -- a column the server cannot rank ---------------------------------------
+
+
+async def test_a_local_sort_reaches_the_pools_the_server_ranks_last() -> None:
+    """Paging by the server's order shows the top of the wrong order and
+    calls it the top -- and what it leaves out is exactly what the column
+    would have led with."""
+    api = Incentivised(total=120, page_size=50)
+    f = feed(api, sort_by="incentives")
+
+    first = await f.load_more()
+
+    assert [p.incentives_apr for p in first[:3]] == [119.0, 118.0, 117.0]
+    assert len(api.queries) == 3, "every page, before anything is ordered"
+    assert f.total == 120
+
+
+async def test_a_local_sort_is_still_handed_out_a_page_at_a_time() -> None:
+    """The view builds a row per pool it is given, so a whole chain at once
+    is a whole chain of controls at once."""
+    api = Incentivised(total=120, page_size=50)
+    f = feed(api, sort_by="incentives")
+
+    first = await f.load_more()
+    assert len(first) == MAX_PAGE_SIZE and not f.exhausted
+
+    rest = await f.load_more()
+    assert [p.incentives_apr for p in rest[:2]] == [69.0, 68.0]
+    assert len(api.queries) == 3, "fetched once, let out since"
+
+    last = await f.load_more()
+    assert len(last) == 20 and f.exhausted
+
+
+async def test_a_server_sort_still_pages_one_request_at_a_time() -> None:
+    api = FakeApi(total=7, page_size=3)
+    f = feed(api, sort_by="volume")
+
+    await f.load_more()
+
+    assert len(api.queries) == 1, "the server ordered it; take the top and stop"
+
+
+async def test_a_local_sort_that_fails_says_so_rather_than_ordering_nothing() -> None:
+    api = Incentivised(total=7, page_size=3)
+    api.fail_with = ApiError("the endpoint went away")
+    f = feed(api, sort_by="incentives")
+
+    assert await f.load_more() == []
+    assert "went away" in f.error
+    assert f.loaded == 0

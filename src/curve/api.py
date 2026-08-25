@@ -41,7 +41,7 @@ from .merkl import (
 )
 from .models import Pool, _first_dead_gauge, _first_live_gauge, _float
 from .portfolio import Target
-from .sort import get_sort, sort_field
+from .sort import get_sort, sort_field, sort_pools
 
 PRICES_V2 = "https://prices.curve.finance/v2"
 PRICES_V1 = "https://prices.curve.finance/v1"
@@ -52,6 +52,11 @@ MAX_PAGE_SIZE = 50
 #: Per-pool detail requests in flight at once, when `pool_rates` has to fall
 #: back to asking one at a time.
 DETAIL_REQUESTS = 8
+
+#: How many pages a whole-chain sort will walk before giving up.  Ethereum is
+#: eight; this is room for a chain four times its size and a stop for a
+#: `total` that never comes down.
+MAX_PAGES = 40
 
 #: Below this the list is mostly dust: thousands of abandoned factory pools
 #: with no liquidity.
@@ -1219,6 +1224,9 @@ class PoolFeed:
         self.min_tvl = min_tvl
 
         self.pools: list[Pool] = []
+        #: The whole chain, ordered here, for a sort the server cannot do.
+        #: None until it has been fetched; see `_next_ordered_page`.
+        self._ordered: list[Pool] | None = None
         self.total: int | None = None
         self.loading = False
         self.error: str = ""
@@ -1253,6 +1261,7 @@ class PoolFeed:
         if search is not None:
             self.search = search
         self.pools = []
+        self._ordered = None
         self.total = None
         self.error = ""
         self._page = 0
@@ -1264,6 +1273,8 @@ class PoolFeed:
         """Fetch the next page and append it. Returns the new pools only."""
         if self.loading or self.exhausted:
             return []
+        if not get_sort(self.sort_by).on_server:
+            return await self._next_ordered_page()
         generation = self._generation
         self.loading = True
         try:
@@ -1294,3 +1305,65 @@ class PoolFeed:
             return []
         self.pools.extend(pools)
         return pools
+
+    async def _next_ordered_page(self) -> list[Pool]:
+        """A page of the chain, ordered here rather than by the server.
+
+        The fetching is all-or-nothing and the *showing* is not: the view
+        appends what it is handed, and handing it 387 rows at once builds 387
+        of them.  So the whole chain comes down once, is sorted once, and is
+        then let out a page at a time exactly as the server's own order is.
+        """
+        if self._ordered is None:
+            self._ordered = await self._gather_every_page()
+            if self._ordered is None:
+                return []
+        start = len(self.pools)
+        chunk = self._ordered[start:start + MAX_PAGE_SIZE]
+        self.pools.extend(chunk)
+        self.total = len(self._ordered)
+        return chunk
+
+    async def _gather_every_page(self) -> list[Pool] | None:
+        """The whole chain, ordered here.
+
+        For a column the server cannot rank -- see `SortOption.on_server`.
+        Paging under such a sort shows the top of the *wrong* order and calls
+        it the top, and the pools it leaves out are exactly the ones the
+        column would have led with, so there is nothing to do but fetch them
+        all and sort what came back.
+
+        Ethereum is eight pages of fifty.  Bounded, because a `total` that
+        never falls behind what has come down would otherwise page for ever.
+        `None` where it failed, which is not the same as an empty chain.
+        """
+        generation = self._generation
+        self.loading = True
+        gathered: list[Pool] = []
+        try:
+            for page in range(1, MAX_PAGES + 1):
+                pools, total = await self.api.list_pools(
+                    self.chain_id,
+                    chain=self.chain,
+                    page=page,
+                    sort_by=self.sort_by,
+                    direction=self.direction,
+                    search=self.search,
+                    min_tvl=self.min_tvl,
+                )
+                if generation != self._generation:
+                    return []
+                gathered.extend(pools)
+                self._page = page
+                if not pools or len(gathered) >= total:
+                    break
+        except ApiError as exc:
+            if generation == self._generation:
+                self.error = str(exc)
+            return None
+        finally:
+            self.loading = False
+
+        if generation != self._generation:
+            return None
+        return sort_pools(gathered, self.sort_by)

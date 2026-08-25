@@ -16,6 +16,11 @@ class SortOption:
     field: str
     #: Local equivalent, for tests and for sorting an in-memory list.
     local: Callable[[Pool], float]
+    #: Whether the server can order by the number the column draws.  Where it
+    #: cannot, paging is not enough: the pools it ranks low are the ones the
+    #: column would put at the top, so the whole chain has to come down before
+    #: anything is ordered.  See `PoolFeed.load_more`.
+    on_server: bool = True
 
 
 #: Volume first: it is the default Curve's own UI opens on, and the closest
@@ -29,8 +34,15 @@ SORTS: tuple[SortOption, ...] = (
     # column; `base_daily_apr` is a different window from the weekly figure
     # beside it, and put 15.49% below 2.35%.  Measured over a page of 25:
     # 7 and 13 neighbours out of order, against 2 and 0 for these.
+    # `rewards_apr` is the closest the server has and it is not close enough:
+    # campaigns are attached *here*, from Merkl and from Curve's own list,
+    # after a page comes down, and the boosted CRV the column shows is not the
+    # end the server ranks by.  On mainnet frxUSD/USP draws 345.68% of which
+    # 326.98 is campaign, and on fraxtal five of nineteen neighbours come back
+    # out of order -- so a campaign-heavy pool deep in the chain is ranked as
+    # though it paid nothing, and paging never reaches it.
     SortOption("incentives", "Incentives", "rewards_apr",
-               lambda p: p.incentives_apr),
+               lambda p: p.incentives_apr, on_server=False),
     SortOption("base", "Base APY", "base_weekly_apr", lambda p: p.base_apr),
 )
 

@@ -167,3 +167,44 @@ def test_the_third_coin_is_held_still():
     assert L.spot_price(curve, 0, 1) == pytest.approx(1.0, rel=1e-7)
     moved = L.balance_at_price(curve, 0, 1, 0.999)
     assert moved > curve.xp[0]
+
+
+def test_a_stableswap_has_no_background_to_speak_of():
+    """The subtraction has to be near enough a no-op where there is nothing
+    under the peak, or every stableswap window would come out wrong.
+
+    Not zero in absolute terms -- a stableswap still quotes far from its peg
+    -- but small beside the peak, which is what the subtraction cares about.
+    A cryptoswap's floor is a different order: measured at a 300th of the peak
+    on one Gnosis pool and at four fifths of it on a mainnet pair.
+    """
+    curve = stable([1_000_000, 1_000_000], amp=200)
+    spot = L.spot_price(curve, 0, 1)
+    peak = L.depth_at(curve, 0, 1, spot)
+    assert L.background(curve, 0, 1) < peak / 100
+
+
+def test_the_window_measures_the_peak_not_the_background():
+    """A curve whose peak is barely above its floor still gets framed on the
+    peak.  Measured on the total instead, one mainnet pair at 1.3x background
+    ran the search to the horizon and drew its whole peak in one sample.
+    """
+    curve = stable([1_000_000, 1_000_000], amp=200)
+    spot = L.spot_price(curve, 0, 1)
+    _low, high = L.auto_window(curve, 0, 1, seed=L.stableswap_seed(200 * 100))
+    edge = L.depth_at(curve, 0, 1, high) - L.background(curve, 0, 1)
+    peak = L.depth_at(curve, 0, 1, spot) - L.background(curve, 0, 1)
+    assert edge == pytest.approx(peak * L.EDGE_SHARE, rel=0.35)
+
+
+def test_the_crypto_seed_follows_gamma():
+    """`gamma` sets the width: the amplified region reaches out to
+    `t ~ sqrt(gamma)`, so a hundredth of the gamma is a tenth of the seed."""
+    wide = L.crypto_seed(10**16, 400_000)
+    narrow = L.crypto_seed(10**14, 400_000)
+    assert wide / narrow == pytest.approx(10.0, rel=1e-6)
+
+
+def test_the_crypto_seed_survives_nonsense():
+    assert L.crypto_seed(0, 400_000) == L.CRYPTO_SEED
+    assert L.crypto_seed(10**16, 0) == L.CRYPTO_SEED

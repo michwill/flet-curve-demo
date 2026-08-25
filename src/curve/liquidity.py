@@ -227,6 +227,27 @@ MIN_WIDTH = 2e-4
 CRYPTO_SEED = 0.05
 
 
+def crypto_seed(gamma: int, amp: int, *, n: int = 2,
+                a_multiplier: int = 10_000) -> float:
+    """Where to start looking for a crypto pool's peak.
+
+    `gamma` is what sets the width: the amplified region is where `1 - K0`
+    stays inside it, and `K0 = 1 - t**2` at balance, so the peak reaches out
+    to `t ~ sqrt(gamma)` in imbalance.  A price offset is `t` over the
+    effective amplification, which gives `sqrt(gamma) * N**N / A`.
+
+    A seed and not an answer.  Measured across four pools the constant moves
+    around by three orders -- the same `A` and `gamma` gave 5.0e-3 and 1.7e-3
+    for two pairs of one tricrypto pool -- because where a *pair* sits
+    relative to `price_scale` matters as much as the parameters do.  So this
+    starts the search in the right decade and `auto_window` measures the rest.
+    """
+    a = amp / a_multiplier
+    if a <= 0 or gamma <= 0:
+        return CRYPTO_SEED
+    return max(math.sqrt(gamma / 1e18) * n**n / a, MIN_WIDTH)
+
+
 def stableswap_seed(amp: int, *, a_precision: int = 100) -> float:
     """The scale of a stableswap's peak, as a relative price offset."""
     a = amp / a_precision
@@ -241,29 +262,58 @@ def depth_at(curve: Curve, i: int, j: int, price: float, *,
     return abs(above - below) * (BAND / (2 * math.log1p(band)))
 
 
+def background(curve: Curve, i: int, j: int, *, out: float = MAX_WIDTH) -> float:
+    """The depth a long way from the peak, which is not zero.
+
+    A cryptoswap is a constant-product curve wearing an amplified peak: `A`
+    sets how tall that peak is and `gamma` how wide, and underneath it the
+    pool still quotes.  Measuring a width against the *total* depth therefore
+    measures the background as well, and where the peak is only a little above
+    it -- 1.3x on one mainnet pool -- the answer runs away to the horizon.
+    Subtracting this first is what leaves the feature on its own.
+
+    Zero for a stableswap, which really does run out: the reads that far off
+    the curve fail, and failing is the answer.
+    """
+    found = []
+    for offset in (out, out * 0.5):
+        for price in (1 + offset, 1 / (1 + offset)):
+            try:
+                found.append(depth_at(curve, i, j,
+                                      spot_price(curve, i, j) * price))
+            except DepthError:
+                continue
+    return min(found) if found else 0.0
+
+
 def auto_window(curve: Curve, i: int, j: int, *, seed: float = CRYPTO_SEED,
                 floor: float = MIN_WIDTH, ceiling: float = MAX_WIDTH
                 ) -> tuple[float, float]:
     """A price window that frames the pool's own feature, whatever its size.
 
     Sampling a stableswap over +/-10% draws a spike one pixel wide with a flat
-    line either side; sampling a cryptoswap over +/-0.1% draws a straight line
-    and no feature at all.  The two differ by four orders of magnitude, so the
-    window has to come from the curve rather than from a constant.
+    line either side; sampling a cryptoswap over +/-200% does the same thing
+    for the opposite reason -- its peak is a `gamma`-scale feature sitting on
+    a constant-product background, and at that width the whole peak lands in
+    one sample.  Both were drawn before this measured the excess rather than
+    the total.
 
-    Found rather than derived: the offset is grown until the depth there has
-    fallen to `EDGE_SHARE` of the depth at spot.  `seed` only says where to
-    start looking, which is what the analytic width is good for.
+    Found rather than derived: the offset is grown until the depth *above the
+    background* has fallen to `EDGE_SHARE` of its height at spot.  `seed` only
+    says where to start looking, which is what an analytic width is good for.
     """
     spot = spot_price(curve, i, j)
-    here = depth_at(curve, i, j, spot)
+    floor_depth = background(curve, i, j)
+    here = depth_at(curve, i, j, spot) - floor_depth
     if here <= 0.0:
-        raise DepthError("no depth at the current price")
-    low, high = max(floor, seed * 1e-3), min(ceiling, max(seed * 1e3, floor * 10))
+        # No peak to frame -- a pure constant-product stretch.  Open wide and
+        # let the shape speak for itself.
+        return spot / (1 + ceiling), spot * (1 + ceiling)
+    low, high = max(floor, seed * 1e-3), ceiling
     for _ in range(48):
         middle = math.sqrt(low * high)
         try:
-            there = depth_at(curve, i, j, spot * (1 + middle))
+            there = depth_at(curve, i, j, spot * (1 + middle)) - floor_depth
         except DepthError:
             high = middle
             continue

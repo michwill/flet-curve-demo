@@ -857,7 +857,7 @@ async def test_a_failed_bundle_is_asked_for_once_more_and_then_left() -> None:
     for _ in range(4):
         await load_bundle(token_bundle("ethereum"), 80, cold)
 
-    assert BUNDLE_ATTEMPTS == 2
+    assert BUNDLE_ATTEMPTS == 3
     assert sum(url.endswith(".bin") for url in asked) == BUNDLE_ATTEMPTS
 
 
@@ -1107,3 +1107,48 @@ def test_a_desktop_build_answers_from_the_filesystem_as_it_did(monkeypatch) -> N
     assert assets.token_logo("xdai", "0xbb", 80) is None
     monkeypatch.setattr(assets, "_exists", lambda _relative: True)
     assert assets.token_logo("xdai", "0xbb", 80)
+
+
+async def test_a_gateway_that_cannot_serve_the_bundle_is_not_asked_for_marks(
+    monkeypatch,
+) -> None:
+    """An edge that could not finish one 8 KB fetch will not finish three
+    hundred small ones, and trying is what turns a slow page into a page that
+    looks broken.  Letters until a later ask lands the bundle."""
+    from curve.http import ApiError
+    from ui import assets
+
+    monkeypatch.setattr(assets, "is_browser", lambda: True)
+
+    async def cold(url):
+        raise ApiError(f"HTTP 504 from {url}", status=504)
+
+    assert await assets.load_bundle(assets.token_bundle("xdai"), 80, cold) == 0
+
+    assert assets.edge_is_cold(assets.token_bundle("xdai"))
+    assert assets.token_logo("xdai", "0xbb", 80) is None
+
+
+async def test_the_ask_that_lands_makes_it_worth_asking_again(monkeypatch) -> None:
+    """A cold edge is a moment, not a verdict: the failed ask is what starts
+    the fetch, and the next one gets the file."""
+    from curve.http import ApiError
+    from ui import assets
+
+    monkeypatch.setattr(assets, "is_browser", lambda: True)
+    blob, index = make_bundle({"0xaa": PNG_A})
+    asked: list[str] = []
+
+    async def warming(url):
+        asked.append(url)
+        if len([u for u in asked if u.endswith(".bin")]) == 1:
+            raise ApiError(f"HTTP 504 from {url}", status=504)
+        return json.dumps(index).encode() if url.endswith(".json") else blob
+
+    assert await assets.load_bundle(assets.token_bundle("xdai"), 80, warming) == 0
+    assert assets.edge_is_cold(assets.token_bundle("xdai"))
+
+    assert await assets.load_bundle(assets.token_bundle("xdai"), 80, warming) == 1
+    assert not assets.edge_is_cold(assets.token_bundle("xdai")), (
+        "the bundle landed, so the marks are worth asking for again"
+    )

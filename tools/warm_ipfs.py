@@ -20,9 +20,30 @@ from tools.publish_ipfs import (
     verify,
 )
 
-#: Both of them, because they are separate infrastructure behind one name
-#: and a visitor does not choose between them.
+#: Both of the ENS names, and the public gateways beside them.
+#:
+#: Not because a visitor chooses -- they do not -- but because each gateway
+#: fetches from the network on its own, and the one that has never been asked
+#: is the one that answers 504.  A report of missing marks came from a build
+#: whose CID served them fine here: the reporter's edge had them, the
+#: reporter's neighbours' edge did not.
+#:
+#: `.limo` and `.link` answer with the same `server: eth.limo`, so they are
+#: one operator rather than two, and their `cache-control` is 300 seconds --
+#: which is what this can and cannot buy.  Warming does not fill a cache for
+#: long; what lasts is the gateway's node having seen the blocks.
+#:
+#: The CID-addressed ones are formatted with the published CID, which is why
+#: they carry a `{cid}` rather than being usable as they stand.
 GATEWAYS = ("https://curve.eth.limo", "https://curve.eth.link")
+
+#: Filled in with the CID being warmed.  These serve any CID, so a name is no
+#: use to them.
+CID_GATEWAYS = (
+    "https://ipfs.io/ipfs/{cid}",
+    "https://{cid}.ipfs.dweb.link",
+    "https://{cid}.ipfs.w3s.link",
+)
 
 #: How long to wait for a gateway to notice the name has moved, and how
 #: often to ask. Their own ENS lookups are cached for minutes, so a warm
@@ -176,6 +197,20 @@ def wanted_cid(host: str, options, *, say=print) -> str:
     return cid
 
 
+def _published_cid(hosts: list[str]) -> str:
+    """What the ENS names point at, for the gateways that need it spelled out."""
+    for host in hosts:
+        name = name_behind(host)
+        if not name:
+            continue
+        try:
+            if cid := contenthash(name):
+                return cid
+        except EnsError:
+            continue
+    return ""
+
+
 def wait_for_flip(
     host: str,
     cid: str,
@@ -248,6 +283,21 @@ def warm_one(host: str, paths: list[str], options) -> dict:
             break
     if report.inline:
         print()
+    if bad:
+        # The ask is what makes the content arrive: a gateway answers 504 when
+        # it has started fetching and run out of patience, not when it has
+        # decided against it.  Measured against ipfs.io on a live CID -- ten
+        # of 305 timed out at 28s each on the first pass and every one of them
+        # served in under a second when asked again.  So the stragglers get a
+        # second pass before they are called failures.
+        print(f"  {len(bad)} timed out; asking again now the fetch has started")
+        again = verify("", sorted(bad), gateway=host,
+                       deadline=min(CHUNK_DEADLINE, options.deadline),
+                       workers=options.workers, whole=True)
+        landed = len(bad) - len(again)
+        if landed:
+            print(f"  {landed} of them landed on the second ask")
+        bad = again
     took = elapsed_text(time.monotonic() - started)
     if not bad:
         print(f"  all {len(paths)} served after {took}")
@@ -321,6 +371,11 @@ def main() -> int:
         "points at",
     )
     parser.add_argument(
+        "--no-cid-gateways",
+        action="store_true",
+        help="only the ENS names, not the public gateways beside them",
+    )
+    parser.add_argument(
         "--no-wait",
         action="store_true",
         help="do not read ENS or wait for the gateway to catch up with it",
@@ -341,6 +396,16 @@ def main() -> int:
     options.tiers = parse_tiers(options.tiers)
     options.chains = [c for c in options.chains.replace(",", " ").split() if c]
     hosts = [h.rstrip("/") for h in (options.gateways or GATEWAYS)]
+    if not options.gateways and not options.no_cid_gateways:
+        # The public ones too, addressed by CID.  Each gateway fetches from the
+        # network on its own, so the one nobody has asked is the one that
+        # answers 504 -- which is what a visitor arriving through it meets.
+        cid = options.cid or _published_cid(hosts)
+        if cid:
+            hosts += [g.format(cid=cid) for g in CID_GATEWAYS]
+        else:
+            print("  no CID to address the public gateways by; warming the "
+                  "ENS names only")
 
     root = options.dist
     if not root.is_dir():

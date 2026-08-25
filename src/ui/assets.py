@@ -98,7 +98,28 @@ _COMPLETE: set[tuple[str, int]] = set()
 
 #: How many times a bundle is asked for before the page settles for
 #: individual marks.
-BUNDLE_ATTEMPTS = 2
+#:
+#: Three rather than two, because a gateway's 504 is not a refusal: it is the
+#: fetch starting and the answer coming before it finishes.  Measured against
+#: ipfs.io on a live CID -- of 305 mark files, 295 came back on the first ask
+#: and the ten that timed out at 28s each served in under a second when asked
+#: again.  The ask is what makes the content arrive.
+#:
+#: No pause between them, because the pause is already there: an ask that
+#: fails this way has spent the gateway's whole timeout failing, which is the
+#: time its fetch had to run.
+BUNDLE_ATTEMPTS = 3
+
+#: Directories whose bundle timed out rather than 404ing.  An edge that could
+#: not finish one 8 KB fetch will not finish three hundred small ones, and
+#: trying is what turns a slow page into a request storm -- so these get their
+#: letters until a later ask lands the bundle.
+_COLD: set[str] = set()
+
+
+def edge_is_cold(directory: str) -> bool:
+    """Whether asking this directory for marks one at a time is worth it."""
+    return directory in _COLD
 
 
 #: Which tiers a build actually bundles, and the source of truth for it --
@@ -187,11 +208,21 @@ async def load_bundle(
         if rest and getattr(exc, "status", None) == 404:
             _COMPLETE.add((directory, tier))
             return len(_BUNDLES.get((directory, tier), {}))
+        # A 404 is an answer; anything else is a gateway that has not found
+        # the blocks yet, and one that cannot serve this file cannot serve the
+        # marks inside it one at a time either.
+        #
+        # The *head* only.  A `-rest` that dropped leaves the head bundle in
+        # hand and only the long tail missing, and those are worth asking for
+        # one at a time -- which is what the ask is for.
+        if not rest and getattr(exc, "status", None) != 404:
+            _COLD.add(directory)
         if tries < BUNDLE_ATTEMPTS:
             _FETCHED.discard(key)
         return 0
     if rest:
         _COMPLETE.add((directory, tier))
+    _COLD.discard(directory)
     return remember_bundle(directory, tier, bytes(blob), index)
 
 
@@ -254,7 +285,13 @@ def token_logo(
     """
     if not chain or not address:
         return None
-    if is_browser() and have_every_mark(token_bundle(chain), device_pixels):
+    directory = token_bundle(chain)
+    if is_browser() and have_every_mark(directory, device_pixels):
+        return None
+    # And not while the bundle is timing out: three hundred requests to a
+    # gateway that could not finish one is what turns a slow page into a
+    # broken-looking one.  Letters until an ask lands the bundle.
+    if is_browser() and edge_is_cold(directory):
         return None
     filename = tiered(f"{address.strip().lower()}.png", mark_tier(device_pixels))
     relative = f"tokens/{chain}/{filename}"

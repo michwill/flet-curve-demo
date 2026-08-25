@@ -197,10 +197,10 @@ def balance_at_price(curve: Curve, i: int, j: int, target: float) -> float:
     return 0.5 * (low + high)
 
 
-#: Where a window's edge sits, as a share of the depth at spot.  An eighth
-#: shows the peak with its shoulders either side and stops well before the
-#: tails, which run for decades and say nothing.
-EDGE_SHARE = 0.125
+#: The height at which the peak's width is measured, as a share of the peak
+#: above its background.  Half, which is what the width of a peak ordinarily
+#: means; the window is then some number of those wide.
+PEAK_SHARE = 0.5
 
 #: How far the window is allowed to open, as a relative price offset.  A
 #: constant-product curve never reaches `EDGE_SHARE` anywhere useful -- its
@@ -212,6 +212,20 @@ MAX_WIDTH = 2.0
 #: And how far it must open regardless, so a very flat pool still shows the
 #: curve either side of its peak rather than one column of pixels.
 MIN_WIDTH = 2e-4
+
+#: A share of the window's own span, added at both ends.  The margin above is
+#: measured in peak widths, so where the peak and the spot price are further
+#: apart than the peak is wide -- an imbalanced pool -- both of them end up
+#: hard against an edge with nothing either side.  This is what keeps them off
+#: it, whatever set the width.
+EDGE_AIR = 0.12
+
+#: How many peak widths of air the default window leaves around what it has
+#: to contain.  Enough to show the shoulders coming down on both sides and
+#: where the curve settles onto its background, without running so far that
+#: the peak stops being the subject.  Measured at half height, so the tails
+#: get roughly twice this again before the edge.
+MARGIN_WIDTHS = 5.0
 
 #: The seed for a stableswap's feature width.  Measured against three mainnet
 #: pools: the depth halves at 1.31/A, 0.87/A and 0.96/A, so `1/A` is the scale
@@ -286,25 +300,83 @@ def background(curve: Curve, i: int, j: int, *, out: float = MAX_WIDTH) -> float
     return min(found) if found else 0.0
 
 
+def peak_price(curve: Curve, i: int, j: int) -> float:
+    """The price at the deepest point of the curve, wherever the pool sits.
+
+    The deepest point is the flattest one, and on every invariant here that is
+    where the pair is balanced in `xp` space -- equal rate-scaled balances for
+    a stableswap, equal `price_scale`-adjusted ones for the crypto families.
+    So this solves `x = y(x)` rather than hunting a maximum: one monotone root
+    instead of a search over a quantity that is itself two solves deep.
+
+    Worth having separately from the spot price because they are not the same
+    number.  A pool trades where its balances put it, and an imbalanced one
+    trades off its own peak -- which is exactly the case a window centred on
+    spot would push out of frame.
+    """
+    def gap(x: float) -> float:
+        return x - curve.y_at(i, j, x)
+
+    here = curve.xp[i]
+    low = high = here
+    if gap(here) > 0.0:            # too much `i`: the balance point is below
+        for _ in range(MAX_STEPS):
+            low /= 2.0
+            if low < here / MAX_REACH:
+                raise DepthError("no balance point below the pool")
+            try:
+                if gap(low) <= 0.0:
+                    break
+            except DepthError:
+                raise DepthError("the curve ends before it balances") from None
+        high = low * 2.0
+    else:
+        for _ in range(MAX_STEPS):
+            high *= 2.0
+            if high > here * MAX_REACH:
+                raise DepthError("no balance point above the pool")
+            try:
+                if gap(high) >= 0.0:
+                    break
+            except DepthError:
+                raise DepthError("the curve ends before it balances") from None
+        low = high / 2.0
+    for _ in range(MAX_STEPS):
+        middle = 0.5 * (low + high)
+        if gap(middle) > 0.0:
+            high = middle
+        else:
+            low = middle
+        if high - low <= abs(high) * TOLERANCE:
+            break
+    return curve.price_at(i, j, 0.5 * (low + high))
+
+
 def auto_window(curve: Curve, i: int, j: int, *, seed: float = CRYPTO_SEED,
                 floor: float = MIN_WIDTH, ceiling: float = MAX_WIDTH
                 ) -> tuple[float, float]:
     """A price window that frames the pool's own feature, whatever its size.
 
-    Sampling a stableswap over +/-10% draws a spike one pixel wide with a flat
-    line either side; sampling a cryptoswap over +/-200% does the same thing
-    for the opposite reason -- its peak is a `gamma`-scale feature sitting on
-    a constant-product background, and at that width the whole peak lands in
-    one sample.  Both were drawn before this measured the excess rather than
-    the total.
+    Three things have to be in it: where the pool is deepest, where it is
+    trading now, and several widths of the peak either side so the shoulders
+    and the background are both visible.  The first two are the same price
+    only for a balanced pool -- an imbalanced one trades off its own peak, and
+    a window centred on spot pushes the peak out of frame exactly when the
+    chart is most worth looking at.
 
-    Found rather than derived: the offset is grown until the depth *above the
-    background* has fallen to `EDGE_SHARE` of its height at spot.  `seed` only
-    says where to start looking, which is what an analytic width is good for.
+    The width itself is found rather than derived: the offset is grown until
+    the depth *above the background* has fallen to half its height at the
+    peak, which is the peak's own width.  `seed` only says where to start looking, which is what an
+    analytic width is good for -- `1/A` for a stableswap, `sqrt(gamma)` for
+    the crypto families.
     """
     spot = spot_price(curve, i, j)
+    try:
+        crest = peak_price(curve, i, j)
+    except DepthError:
+        crest = spot
     floor_depth = background(curve, i, j)
-    here = depth_at(curve, i, j, spot) - floor_depth
+    here = depth_at(curve, i, j, crest) - floor_depth
     if here <= 0.0:
         # No peak to frame -- a pure constant-product stretch.  Open wide and
         # let the shape speak for itself.
@@ -313,18 +385,29 @@ def auto_window(curve: Curve, i: int, j: int, *, seed: float = CRYPTO_SEED,
     for _ in range(48):
         middle = math.sqrt(low * high)
         try:
-            there = depth_at(curve, i, j, spot * (1 + middle)) - floor_depth
+            there = depth_at(curve, i, j, crest * (1 + middle)) - floor_depth
         except DepthError:
             high = middle
             continue
-        if there > here * EDGE_SHARE:
+        if there > here * PEAK_SHARE:
             low = middle
         else:
             high = middle
         if high / low < 1.02:
             break
-    width = min(max(math.sqrt(low * high), floor), ceiling)
-    return spot / (1 + width), spot * (1 + width)
+    width = math.sqrt(low * high)
+    margin = min(max(width * MARGIN_WIDTHS, floor), ceiling)
+    inside_low, inside_high = min(spot, crest), max(spot, crest)
+    lower = inside_low / (1 + margin)
+    upper = inside_high * (1 + margin)
+    # The air goes on last but still inside the cap, which is measured from
+    # what the window has to hold rather than from the spot price: a peak far
+    # from where the pool trades must stay in frame, and clamping around spot
+    # would be the one thing that pushed it out.
+    pad = math.log(upper / lower) * EDGE_AIR
+    lower = max(lower * math.exp(-pad), inside_low / (1 + ceiling))
+    upper = min(upper * math.exp(pad), inside_high * (1 + ceiling))
+    return lower, upper
 
 
 def profile(curve: Curve, i: int, j: int, *, low: float, high: float,

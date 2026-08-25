@@ -62,7 +62,11 @@ def test_the_peak_sits_where_the_curve_is_flattest():
     low, high = L.auto_window(curve, 0, 1, seed=L.stableswap_seed(200 * 100))
     got = L.profile(curve, 0, 1, low=low, high=high, points=80)
     best = max(got.samples, key=lambda s: s.depth)
-    assert best.price == pytest.approx(1.0, abs=2e-4)
+    # Within a sample of the balance point, which is where `peak_price` says
+    # the curve is flattest.  The window carries four peak widths of air
+    # either side now, so a sample is wider than it used to be.
+    step = math.log(high / low) / len(got.samples)
+    assert abs(math.log(best.price / L.peak_price(curve, 0, 1))) < step
     assert got.samples[0].depth < best.depth
     assert got.samples[-1].depth < best.depth
 
@@ -190,11 +194,44 @@ def test_the_window_measures_the_peak_not_the_background():
     ran the search to the horizon and drew its whole peak in one sample.
     """
     curve = stable([1_000_000, 1_000_000], amp=200)
-    spot = L.spot_price(curve, 0, 1)
+    crest = L.peak_price(curve, 0, 1)
     _low, high = L.auto_window(curve, 0, 1, seed=L.stableswap_seed(200 * 100))
-    edge = L.depth_at(curve, 0, 1, high) - L.background(curve, 0, 1)
-    peak = L.depth_at(curve, 0, 1, spot) - L.background(curve, 0, 1)
-    assert edge == pytest.approx(peak * L.EDGE_SHARE, rel=0.35)
+    floor_depth = L.background(curve, 0, 1)
+    edge = L.depth_at(curve, 0, 1, high) - floor_depth
+    peak = L.depth_at(curve, 0, 1, crest) - floor_depth
+    # Well past half height: the window carries `MARGIN_WIDTHS` of the peak's
+    # own width beyond where that width was measured.
+    assert 0.0 <= edge < peak * L.PEAK_SHARE
+
+
+def test_the_window_holds_both_the_peak_and_the_price():
+    """The two are the same only for a balanced pool.  A window centred on
+    spot pushes the peak out of frame exactly when the chart is worth looking
+    at -- a pool far enough from balance to be worth asking about.
+    """
+    curve = stable([1_400_000, 600_000], amp=200)
+    spot = L.spot_price(curve, 0, 1)
+    crest = L.peak_price(curve, 0, 1)
+    assert spot != pytest.approx(crest, rel=1e-6), "an imbalanced pool"
+    low, high = L.auto_window(curve, 0, 1, seed=L.stableswap_seed(200 * 100))
+    assert low < spot < high
+    assert low < crest < high
+
+
+def test_the_peak_of_a_balanced_pool_is_where_it_trades():
+    curve = stable([1_000_000, 1_000_000], amp=200)
+    assert L.peak_price(curve, 0, 1) == pytest.approx(
+        L.spot_price(curve, 0, 1), rel=1e-6)
+
+
+def test_the_peak_is_the_balance_point_not_the_spot_price():
+    """Solved as `x = y(x)` rather than hunted as a maximum: one monotone root
+    instead of a search over a quantity that is two solves deep."""
+    curve = stable([1_400_000, 600_000], amp=200)
+    crest = L.peak_price(curve, 0, 1)
+    at_peak = L.depth_at(curve, 0, 1, crest)
+    for offset in (-0.01, -0.001, 0.001, 0.01):
+        assert L.depth_at(curve, 0, 1, crest * (1 + offset)) < at_peak
 
 
 def test_the_crypto_seed_follows_gamma():

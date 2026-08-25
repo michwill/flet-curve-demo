@@ -93,6 +93,11 @@ class SwapPage:
         self._planner: asyncio.Task | None = None
         self._balances: dict[str, int] = {}
         self._opened_chain = 0
+        #: The coin list with what the wallet holds lifted to the top, as
+        #: `_rank_by_holdings` last built it.  Kept because it is what the
+        #: selling side draws: whoever re-offers the coins has to hand it back
+        #: or the balances go with the old list.
+        self._owned: list | None = None
         #: Which chain is on screen, for the fee table.
         self.chain_id_now = 0
         self._sending = False
@@ -153,6 +158,7 @@ class SwapPage:
             # twenty seconds after somebody asked for a different one.
             self._quote = self._plan = None
             self._balances = {}
+            self._owned = None
             self.view.forget_chain()
         self.chain_id_now = chain_id
         await self._offer_coins(chain_id)
@@ -238,7 +244,16 @@ class SwapPage:
         if not extra:
             return
         self._coins = [*self._coins, *extra]
-        self.view.offer(self._coins, self._chain_name())
+        # With the ranking, not without it.  This lands twenty seconds after
+        # the holdings did -- the warm is what it waits for -- and `offer`
+        # draws the selling side from `owned`, so passing the plain list here
+        # puts it back in volume order and takes every balance off it, which
+        # reads as a wallet that is not connected.
+        owned = [*self._owned, *extra] if self._owned else None
+        self.view.offer(self._coins, self._chain_name(), owned=owned)
+        # The extras go on the end unranked: they are exactly the sort of coin
+        # somebody holds -- sreUSD is a vault -- so ask what they have of them.
+        self._page.run_task(self._rank_by_holdings)
 
     async def _read_prices(self) -> None:
         """What this chain's coins are worth, for the lines under the boxes.
@@ -284,8 +299,9 @@ class SwapPage:
         except ApiError:
             return
         ranked = holdings.rank(coins, held, prices)
-        if self._coins is not coins:
-            return          # the chain moved on while this was in flight
+        if self._coins is not coins or self._account() != account:
+            return          # the chain or the wallet moved on while in flight
+        self._owned = ranked
         # `coins` stays the volume order and stays what this is re-ranked
         # from; the ranking is handed over beside it, for the selling side.
         self.view.offer(coins, self._chain_name(), owned=ranked)

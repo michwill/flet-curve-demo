@@ -1259,3 +1259,90 @@ def test_a_pool_with_no_coins_asks_for_nothing():
     from ui.swap import _marks_that_fit
 
     assert _marks_that_fit(0, 100.0) == 0.0
+
+
+def test_a_late_vault_does_not_take_the_balances_off_the_picker():
+    """The unlisted vaults arrive after the warm, twenty seconds behind the
+    holdings that were ranked while the bar was still moving.  Handing `offer`
+    the plain list there puts the selling side back in volume order -- and the
+    balances ride on the ranked entries, so every one of them goes with it,
+    which reads as a wallet that is not connected.
+    """
+    from dataclasses import replace
+
+    from router.session import chain_for
+
+    address, symbol = chain_for(1).unlisted_vaults[0]
+    coins = two_coins()
+    page = swap_page_with(Wallet(), coins)
+    page._coins = list(coins)
+    # What `_rank_by_holdings` hands over once the balances are in.
+    owned = [replace(coins[1], balance=5_000_000, worth=5.0), coins[0]]
+    page._owned = owned          # what `_rank_by_holdings` leaves behind
+    page.view.offer(coins, "ethereum", owned=owned)
+    assert any(e.balance for e in page.view.sell._entries), "balances to lose"
+
+    warmed(page, Graph({address: 6}))
+    page._offer_unlisted(1)
+
+    assert any(coin.symbol == symbol for coin in page._coins), "the vault landed"
+    held = {e.address: e.balance for e in page.view.sell._entries}
+    assert held.get(coins[1].address) == 5_000_000, (
+        "the vault arriving must not blank what the wallet holds")
+
+
+def _ranked_with(page, coins, monkeypatch, *, on_read=None):
+    """Drive `_rank_by_holdings` with the balances stubbed at the multicall."""
+    async def read_balances(_provider, _owner, _coins):
+        if on_read is not None:
+            on_read()
+        return {coins[1].address: 5_000_000}
+
+    monkeypatch.setattr("ui.swap_page.holdings.read_balances", read_balances)
+
+    class Prices:
+        async def usd_prices(self, _chain):
+            return {c.address: 1.0 for c in coins}
+
+    page._api = Prices()
+
+
+def test_a_ranking_for_the_old_wallet_is_dropped_when_the_account_moved(monkeypatch):
+    """Switching wallets starts a second ranking while the first is still in
+    flight, and the two race.  The slower one carries the *previous* account's
+    balances, so applying it would show one wallet's holdings under another's
+    address.
+    """
+    import asyncio
+
+    coins = two_coins()
+    wallet = Wallet()
+    wallet.connect("0x" + "a" * 40)
+    page = swap_page_with(wallet, coins)
+    page._coins = list(coins)
+    # The switch lands while the balances are being read, which is exactly the
+    # window a wallet change opens.
+    _ranked_with(page, coins, monkeypatch,
+                 on_read=lambda: setattr(wallet, "address", "0x" + "b" * 40))
+
+    asyncio.run(page._rank_by_holdings())
+
+    assert page._owned is None, "a ranking for the account we left is not ours"
+    assert all(e.balance == 0 for e in page.view.sell._entries)
+
+
+def test_a_ranking_for_the_current_wallet_is_kept(monkeypatch):
+    """The same path with nothing moving under it still has to land."""
+    import asyncio
+
+    coins = two_coins()
+    wallet = Wallet()
+    wallet.connect("0x" + "a" * 40)
+    page = swap_page_with(wallet, coins)
+    page._coins = list(coins)
+    _ranked_with(page, coins, monkeypatch)
+
+    asyncio.run(page._rank_by_holdings())
+
+    assert page._owned is not None
+    assert any(e.balance for e in page.view.sell._entries)

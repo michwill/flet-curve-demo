@@ -337,6 +337,66 @@ def test_a_list_that_fits_says_nothing_about_more():
     assert len(view.sell._rows()) == 5
 
 
+class Graph:
+    """A `nodes` that knows some tokens and the decimals it read for them."""
+
+    def __init__(self, known: dict[str, int]) -> None:
+        self.known = {a.lower(): d for a, d in known.items()}
+
+    def has(self, token: str) -> bool:
+        return token.lower() in self.known
+
+    def decimals(self, token: str) -> int:
+        # 18 for anything else, exactly as the router's own does -- which is
+        # why `has` has to be the test rather than this.
+        return self.known.get(token.lower(), 18)
+
+
+def warmed(page, graph: Graph) -> None:
+    held = page.host._held
+    held.session = type("Warm", (), {"nodes": graph})()
+    held.stage = Stage.READY
+
+
+def test_a_vault_no_pool_holds_still_reaches_the_picker():
+    """sreUSD is $27.7M of assets and trades in nothing, so the pool list --
+    which is where the pickers come from -- has never heard of it."""
+    from router.session import chain_for
+
+    vaults = chain_for(1).unlisted_vaults
+    assert vaults, "the router names at least one of these on ethereum"
+    address, symbol = vaults[0]
+
+    coins = two_coins()
+    page = swap_page_with(Wallet(), coins)
+    page._coins = list(coins)
+    warmed(page, Graph({address: 6}))
+
+    page._offer_unlisted(1)
+
+    added = [coin for coin in page._coins if coin.symbol == symbol]
+    assert len(added) == 1
+    assert added[0].address == address.lower()
+    assert added[0].decimals == 6, "what the warm read, not a guess at 18"
+
+
+def test_a_vault_the_graph_never_took_is_left_out():
+    """`decimals` answers 18 for a token it has not met, and a wrong 18 on
+    the selling side is a factor of a million."""
+    from router.session import chain_for
+
+    coins = two_coins()
+    page = swap_page_with(Wallet(), coins)
+    page._coins = list(coins)
+    warmed(page, Graph({}))
+
+    page._offer_unlisted(1)
+
+    assert len(page._coins) == len(coins)
+    assert all(symbol not in {c.symbol for c in page._coins}
+               for _address, symbol in chain_for(1).unlisted_vaults)
+
+
 def test_what_is_typed_is_priced_under_the_box():
     coins = two_coins()
     view = view_with(coins)

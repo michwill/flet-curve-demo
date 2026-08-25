@@ -42,7 +42,7 @@ from router.session import (
     build_session,
     chain_for,
 )
-from router.universe import coins_by_volume, with_native
+from router.universe import CoinEntry, coins_by_volume, with_native
 from wallet.base import WalletError
 
 from .responsive import Layout
@@ -173,6 +173,7 @@ class SwapPage:
         await self.host.open(chain_id)
         if self.host.stage is not Stage.READY:
             return
+        self._offer_unlisted(chain_id)
         # The pair was chosen before there was anything to price it with, so
         # this is where it actually gets prepared.
         sell, buy = self.view.pair
@@ -207,6 +208,37 @@ class SwapPage:
         # an ordering should not hold up the two pickers being filled.
         self._page.run_task(self._rank_by_holdings)
         self._page.run_task(self._read_prices)
+
+    def _offer_unlisted(self, chain_id: int) -> None:
+        """Vaults the pool list cannot know about, once the router does.
+
+        The pickers are filled from the pool list, so a vault no pool holds is
+        invisible to them however deep it is -- sreUSD is $27.7M of assets and
+        trades in nothing.  The router names those on its chain table and puts
+        them in the graph, which is what makes them routable and what makes
+        this safe to read: their `decimals` were read on chain during the warm,
+        and a wrong 18 on the selling side is a factor of a million.
+
+        After the warm rather than beside the pool list, for that reason.
+        """
+        chain = chain_for(chain_id)
+        nodes = getattr(self.host.session, "nodes", None)
+        if chain is None or nodes is None or not self._coins:
+            return
+        known = {coin.address.lower() for coin in self._coins}
+        extra = []
+        for address, symbol in getattr(chain, "unlisted_vaults", ()) or ():
+            token = address.lower()
+            # `has` is the whole test: a token the graph took is a token the
+            # warm read, and `decimals` falls back to 18 for anything else.
+            if token in known or not nodes.has(token):
+                continue
+            extra.append(CoinEntry(address=token, symbol=symbol, name=symbol,
+                                   decimals=int(nodes.decimals(token))))
+        if not extra:
+            return
+        self._coins = [*self._coins, *extra]
+        self.view.offer(self._coins, self._chain_name())
 
     async def _read_prices(self) -> None:
         """What this chain's coins are worth, for the lines under the boxes.

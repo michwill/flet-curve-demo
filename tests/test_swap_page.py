@@ -524,6 +524,7 @@ class Session:
     def __init__(self) -> None:
         self.planned: list[int] = []
         self.budgets: list[float | None] = []
+        self.floors: list[float] = []
         self.drawn: list[int | None] = []
 
     def diagram(self, _result, *, verified_out=None):
@@ -534,9 +535,10 @@ class Session:
         return Empty()
 
     async def plan_call(self, _result, *, receiver, sender, not_before=0,
-                        slippage_bp=None):
+                        slippage_bp=None, min_out_bp=0.0):
         self.planned.append(not_before)
         self.budgets.append(slippage_bp)
+        self.floors.append(min_out_bp)
 
         class Plan:
             to = "0x" + "22" * 20
@@ -1937,3 +1939,28 @@ def test_sending_still_locks_the_button():
 
     assert view.submit_button.disabled
     assert view.approve_button.disabled
+
+
+async def test_a_named_budget_also_bounds_the_whole_route():
+    """The per-leg bounds are what protects each hop; `min_out` is the promise
+    about the number on screen.  Somebody who said "no worse than 0.5%" has
+    named exactly that, so the contract is told it too.
+    """
+    page, session = swap_page_with_session()
+    page.view._set_slippage(50.0)
+
+    await page._plan_now()
+
+    assert session.budgets[-1] == 50.0
+    assert session.floors[-1] == 50.0
+
+
+async def test_the_automatic_rule_names_no_end_to_end_bound():
+    """There is no figure to make one from: the total under the automatic
+    rule is whatever the pools' own fees came to."""
+    page, session = swap_page_with_session()
+
+    await page._plan_now()
+
+    assert session.budgets[-1] is None
+    assert session.floors[-1] == 0.0

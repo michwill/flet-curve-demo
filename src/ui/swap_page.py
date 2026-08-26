@@ -602,9 +602,16 @@ class SwapPage:
         if quote is None or session is None or quote.result.route is None:
             return
         try:
+            # A named budget buys an end-to-end bound as well as the per-leg
+            # ones.  The per-leg bounds are what the router protects each hop
+            # with; `min_out` is the promise about the number on screen, and
+            # somebody who has said "no worse than 0.5%" has named exactly
+            # that.  Under the automatic rule there is no figure to make one
+            # from -- the total is whatever the pools' own fees came to.
+            budget = self.view.slippage_bp
             plan = await session.plan_call(
                 quote.result, receiver=account or _NOBODY, sender=account or _NOBODY,
-                slippage_bp=self.view.slippage_bp,
+                slippage_bp=budget, min_out_bp=budget or 0.0,
                 not_before=self._floor_block)
         except Exception as exc:
             if self._quote is not quote:

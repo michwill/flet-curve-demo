@@ -345,6 +345,8 @@ class PoolDetailView(ft.Column):
             on_select=self._size_changed,
         )
 
+        self._controls_slot = ft.Container(self._chart_controls())
+
         chart_block: list[ft.Control] = (
             [
                 ft.Container(
@@ -359,11 +361,7 @@ class PoolDetailView(ft.Column):
             ]
             if pool.lite
             else [
-                ft.Row(
-                    [self.series, ft.Container(expand=True),
-                     self.flip_button, self.depth_units, self.size_picker],
-                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                ),
+                self._controls_slot,
                 self.chart_caption,
                 self.chart,
                 self.depth_chart,
@@ -395,12 +393,41 @@ class PoolDetailView(ft.Column):
 
     # -- layout -----------------------------------------------------------
 
+    def _chart_controls(self) -> ft.Control:
+        """The picker, and whatever belongs beside it.
+
+        On a phone they go under it instead.  The picker alone is most of a
+        360px screen, and the depth chart brings two companions rather than
+        the candle chart's one -- so the row ran off the edge and took the
+        units with it.
+        """
+        beside: list[ft.Control] = [
+            self.flip_button, self.depth_units, self.size_picker]
+        if self._layout.cards:
+            # Nothing sits beside it now, so it takes the width rather than a
+            # number: a phone is 320 to 430 across and `expand` fits them all,
+            # where any constant fits one of them.
+            self.series.width = None
+            self.series.expand = True
+            return ft.Column(
+                [ft.Row([self.series]),
+                 ft.Row(beside, spacing=6, wrap=True,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER)],
+                spacing=6,
+            )
+        self.series.expand = False
+        self.series.width = self._picker_width()
+        return ft.Row(
+            [self.series, ft.Container(expand=True), *beside],
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        )
+
     def set_layout(self, layout: Layout) -> None:
         was = self._layout
         self._layout = layout
         if layout.cards != was.cards:
             self.series.options = self._series_options()
-            self.series.width = self._picker_width()
+            self._controls_slot.content = self._chart_controls()
             self._parameters_slot.content = self._parameters()
             self._header_slot.content = self._header()
             if self._composition_ready:
@@ -529,26 +556,7 @@ class PoolDetailView(ft.Column):
                 ft.Container(
                     ft.Row(
                         [
-                            cell(
-                                ft.Row(
-                                    [
-                                        token_mark(coin, self.pool.chain, 26),
-                                        ft.Column(
-                                            [
-                                                ft.Text(coin.symbol, size=BODY),
-                                                ft.Text(
-                                                    short_address(coin.address),
-                                                    size=LABEL,
-                                                    color=ft.Colors.ON_SURFACE_VARIANT,
-                                                ),
-                                            ],
-                                            spacing=0,
-                                        ),
-                                    ],
-                                    spacing=8,
-                                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                                )
-                            ),
+                            cell(self._asset_cell(coin)),
                             cell(ft.Text(price(coin.usd_price), size=BODY), 110, True),
                             cell(
                                 ft.Text(
@@ -585,6 +593,42 @@ class PoolDetailView(ft.Column):
             spacing=2,
         )
 
+    def _asset_cell(self, coin) -> ft.Control:
+        """A coin's mark, symbol and address, linked to the block explorer.
+
+        The address is already printed under the symbol, which is exactly the
+        thing somebody wants to go and look up -- so the whole cell is the
+        link rather than a separate icon beside it, and the row keeps its
+        four columns.
+        """
+        url = explorers.address_url(self.pool.chain_id, coin.address,
+                                    self._explorer)
+        inside = ft.Row(
+            [
+                token_mark(coin, self.pool.chain, 26),
+                ft.Column(
+                    [
+                        ft.Text(coin.symbol, size=BODY),
+                        ft.Text(short_address(coin.address), size=LABEL,
+                                color=ft.Colors.ON_SURFACE_VARIANT),
+                    ],
+                    spacing=0,
+                    expand=True,
+                ),
+            ],
+            spacing=8,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        )
+        if not url:
+            return inside
+        return ft.Container(
+            inside,
+            url=ft.Url(url, target=ft.UrlTarget.BLANK),
+            tooltip=f"{coin.symbol} on the explorer",
+            border_radius=6,
+            ink=True,
+        )
+
     def _composition_card(self, coin, total: float) -> ft.Control:
         """One asset on two lines instead of four columns."""
         return ft.Container(
@@ -592,19 +636,7 @@ class PoolDetailView(ft.Column):
                 [
                     ft.Row(
                         [
-                            token_mark(coin, self.pool.chain, 26),
-                            ft.Column(
-                                [
-                                    ft.Text(coin.symbol, size=BODY),
-                                    ft.Text(
-                                        short_address(coin.address),
-                                        size=LABEL,
-                                        color=ft.Colors.ON_SURFACE_VARIANT,
-                                    ),
-                                ],
-                                spacing=0,
-                                expand=True,
-                            ),
+                            ft.Container(self._asset_cell(coin), expand=True),
                             ft.Column(
                                 [
                                     ft.Text(token_amount(coin.balance), size=BODY),
@@ -1038,8 +1070,6 @@ class PoolDetailView(ft.Column):
         -- a little empty space reads as a box, a little too little reads as a
         bug.
         """
-        if self._layout.cards:
-            return SERIES_NARROW_WIDTH
         longest = max((text_width(option.text or "", PICKER_TEXT)
                        for option in self.series.options), default=0.0)
         return min(longest + SERIES_CHROME, SERIES_MAX_WIDTH)
@@ -1088,15 +1118,10 @@ class PoolDetailView(ft.Column):
         for i, main in enumerate(coins):
             for j in range(i):
                 key = f"{DEPTH_PREFIX}{i}:{j}"
-                # The prefix goes on a phone, where the pair alone is as much
-                # as fits.  What is being drawn stays obvious from the drawing
-                # and from the caption under it.
-                pair_text = f"{main.symbol} / {coins[j].symbol}"
                 options.append(
                     ft.DropdownOption(
                         key=key,
-                        text=(pair_text if self._layout.cards
-                              else f"{DEPTH_LABEL}: {pair_text}"),
+                        text=f"{DEPTH_LABEL}: {main.symbol} / {coins[j].symbol}",
                         leading_icon=self._series_mark(key),
                     )
                 )

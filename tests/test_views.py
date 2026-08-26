@@ -771,14 +771,16 @@ def test_a_phone_narrows_the_picker_so_the_candle_size_still_fits() -> None:
 
     view = activity_view(coins=3)
     view.set_layout(layout_for(PHONE))
-    narrow = view.series.width
+
+    # A phone gives the picker the whole line, the controls having moved to
+    # one of their own -- so it takes the width rather than a number.
+    assert view.series.width is None and view.series.expand
 
     view.set_layout(layout_for(LAPTOP))
 
-    assert narrow == pool_detail.SERIES_NARROW_WIDTH
-    assert narrow + 110 < PHONE, "the candle size beside it has to fit too"
-    # Wide is sized to this pool's own longest row, between the two bounds.
-    assert narrow < view.series.width <= pool_detail.SERIES_MAX_WIDTH
+    assert not view.series.expand
+    assert view.series.width is not None
+    assert view.series.width <= pool_detail.SERIES_MAX_WIDTH
 
 
 def test_a_phone_drops_the_currency_from_the_lp_series() -> None:
@@ -4139,21 +4141,17 @@ async def test_a_depth_in_another_coin_is_scaled_by_the_two_prices():
     assert other == pytest.approx(own * 4.0, rel=1e-9), "C1 is worth four C0"
 
 
-def test_a_narrow_picker_drops_the_depth_prefix():
-    """`Depth: PYUSD / USDC` does not fit a phone's 200px picker, and there is
-    nothing beside it to take width from -- so the pair goes on alone."""
+def test_a_phone_keeps_the_depth_prefix_now_the_row_is_its_own():
+    """It was dropped when the picker shared a 360px row with two other
+    controls.  Those moved to a line of their own, so the name fits."""
     from ui.responsive import layout_for
 
     view = depth_view(2)
-    view.set_layout(layout_for(360))
-    narrow = [o.text for o in view.series.options
-              if pool_detail.depth_pair(o.key) is not None]
-    assert narrow == ["C1 / C0"]
-
-    view.set_layout(layout_for(1400))
-    wide = [o.text for o in view.series.options
-            if pool_detail.depth_pair(o.key) is not None]
-    assert wide == ["Depth: C1 / C0"]
+    for width in (360, 1400):
+        view.set_layout(layout_for(width))
+        named = [o.text for o in view.series.options
+                 if pool_detail.depth_pair(o.key) is not None]
+        assert named == ["Depth: C1 / C0"], width
 
 
 def test_the_picker_fits_the_pool_it_is_showing():
@@ -4193,3 +4191,48 @@ def test_the_picker_is_never_wider_than_the_ceiling():
     view.series.options = view._series_options()
 
     assert view._picker_width() == pool_detail.SERIES_MAX_WIDTH
+
+
+def test_a_pool_asset_links_to_the_block_explorer():
+    """The address is already printed under the symbol, which is the thing
+    somebody wants to look up -- so the cell is the link."""
+    view = depth_view(2)
+    cell = view._asset_cell(view.pool.pool_coins[0])
+
+    assert isinstance(cell, ft.Container)
+    assert cell.url is not None
+    assert view.pool.pool_coins[0].address.lower() in cell.url.url.lower()
+    assert cell.url.target == ft.UrlTarget.BLANK, "a new tab, not this one"
+
+
+def test_an_asset_with_no_address_is_still_drawn():
+    """`address_url` falls back to blockscan for a chain it does not know, so
+    the only cell without a link is one with no address to link to."""
+    view = depth_view(2)
+    view.pool.chain_id = 0
+    known = view._asset_cell(view.pool.pool_coins[0])
+    assert isinstance(known, ft.Container) and known.url is not None
+
+    view.pool.pool_coins[0].address = ""
+    bare = view._asset_cell(view.pool.pool_coins[0])
+    assert not isinstance(bare, ft.Container) or bare.url is None
+
+
+def test_a_phone_puts_the_chart_controls_on_their_own_line():
+    """The picker alone is most of a 360px screen, and the depth chart brings
+    two companions where the candle chart brings one -- so on a phone the row
+    ran off the edge and took the units with it.
+    """
+    from ui.responsive import layout_for
+
+    view = depth_view(2)
+    view.set_layout(layout_for(1400))
+    assert isinstance(view._controls_slot.content, ft.Row), "one line, wide"
+
+    view.set_layout(layout_for(360))
+
+    stacked = view._controls_slot.content
+    assert isinstance(stacked, ft.Column), "two lines on a phone"
+    assert len(stacked.controls) == 2
+    beside = stacked.controls[1].controls
+    assert view.flip_button in beside and view.depth_units in beside

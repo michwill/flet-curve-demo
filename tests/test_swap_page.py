@@ -2052,3 +2052,56 @@ async def test_a_re_solve_that_overtakes_the_press_says_so():
 
     assert "moved" in page.view.status.text.value
     assert not page.view.status.spinner.visible, "the note came down"
+
+
+def test_flipping_turns_the_balances_round_with_the_coins():
+    """The balances are read from the wallet, which is a round trip.  Until it
+    answered, each box showed the balance of the coin that used to be in it.
+    """
+    coins = two_coins()
+    usdc, usdt = coins
+    page = swap_page_with(Wallet(), coins)
+    page.view.show_balances(1_500_000, 250_000)
+    before = (page.view.amount.hint_text, page.view.receive.hint_text)
+
+    page.view._flip_clicked(None)
+
+    assert page.view.pair == (usdt, usdc), "the coins turned round"
+    assert page.view.amount.hint_text == before[1], "and so did the figures"
+    assert page.view.receive.hint_text == before[0]
+
+
+def test_flipping_onto_an_empty_balance_takes_the_max_button_away():
+    """MAX is the sell box's, and after a flip the sell box holds what was
+    being bought -- which may be a coin the wallet has none of.
+    """
+    page = swap_page_with(Wallet(), two_coins())
+    page.view.show_balances(1_500_000, None)
+    assert page.view.max_button.visible
+
+    page.view._flip_clicked(None)
+
+    assert not page.view.max_button.visible
+
+
+async def test_both_balances_are_remembered_not_just_the_one_being_sold():
+    """A flip makes the buy coin the sell coin at once, and MAX turns up with
+    it -- with nothing to fill from until the next round trip answered.
+    """
+    coins = two_coins()
+    usdc, usdt = coins
+    page = swap_page_with(Wallet(), coins)
+
+    class Holding:
+        can_send = True
+
+        async def balance_of(self, address):
+            return 1_500_000 if address == usdc.address else 250_000
+
+    holding = Holding()
+    page._contract = lambda: holding
+
+    await page._read_balances()
+
+    assert page._balances[usdc.address] == 1_500_000
+    assert page._balances[usdt.address] == 250_000, "the buy side too"

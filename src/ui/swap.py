@@ -1063,6 +1063,10 @@ class SwapView(ft.Container):
         self.blocked = ft.Text("", size=SMALL, color=ft.Colors.ERROR,
                                visible=False)
         self.status = StatusPanel(page)
+        #: What each box was last told is held there, so a flip can exchange
+        #: them.  Both `None` until the wallet has answered, which is also
+        #: what a disconnected wallet leaves them at.
+        self._held: tuple[int | None, int | None] = (None, None)
         # As tall as the amount box and the coin beside it.  These are what
         # the widget is *for*, and at the default height they were the
         # smallest things in it.
@@ -1422,6 +1426,9 @@ class SwapView(ft.Container):
         balance is worth reading -- and it buys back the two lines the pair
         of captions was costing, on a widget that has to fit a phone.
         """
+        # Kept, so a flip can turn them round with the coins rather than wait
+        # on a wallet round trip to say what was already on screen.
+        self._held = (sell, buy)
         self.amount.hint_text = _balance_line(self.sell.picked, sell) or HINT
         self.receive.hint_text = _balance_line(self.buy.picked, buy) or HINT
         self.max_button.visible = bool(sell)
@@ -1629,6 +1636,13 @@ class SwapView(ft.Container):
             self.receive.value = ""
             safe_update(self.amount)
             safe_update(self.receive)
+        # The balances turn round too.  They are read from the wallet, which
+        # is a round trip, and until it answered the boxes showed the old
+        # figures against the new coins -- each balance sitting against the
+        # wrong one.  Both are already known, so they are simply exchanged,
+        # and the read that follows confirms what is on screen rather than
+        # correcting it.
+        self.show_balances(*reversed(self._held))
         self._sync_hints()
         self._on_pair(buy, sell)
 

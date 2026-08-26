@@ -679,8 +679,13 @@ class SwapPage:
                 held.append(await contract.balance_of(coin.address))
             except (RouterError, WalletError):
                 held.append(None)
-        if sell is not None and held[0] is not None:
-            self._balances[sell.address] = held[0]
+        # Both sides, not just the one being sold.  A flip makes the buy coin
+        # the sell coin at once -- MAX turns up with it -- and reading only
+        # the sell side left that button with nothing to fill from until the
+        # next round trip answered.
+        for coin, amount in zip((sell, buy), held, strict=True):
+            if coin is not None and amount is not None:
+                self._balances[coin.address] = amount
         self.view.show_balances(held[0], held[1])
 
     def _max_clicked(self) -> None:

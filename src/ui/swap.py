@@ -30,7 +30,7 @@ from .alarm import Alarm, Band
 from .logos import coin_stack, token_mark
 from .responsive import Layout
 from .status import DONE, FAILED, StatusPanel
-from .typography import BODY, LABEL, SMALL, TITLE
+from .typography import BODY, LABEL, SMALL, TINY, TITLE
 
 #: How wide the widget is allowed to get.  Curve's own is about this, and a
 #: swap box that spans a desktop window reads as a form rather than a control.
@@ -1052,7 +1052,7 @@ class SwapView(ft.Container):
             on_click=self._save_clicked, icon_size=SAVE_ICON, visible=False,
             width=SAVE_BUTTON, height=SAVE_BUTTON)
 
-        self.rows = _InfoRows(page, on_slippage=self._slippage_chosen)
+        self.rows = _InfoRows(page, on_slippage=self._open_slippage)
         # Why a quoted route cannot be *sent*, which is a different thing
         # from a transaction going wrong and belongs next to the button
         # rather than in the status panel.
@@ -1328,13 +1328,68 @@ class SwapView(ft.Container):
         """The budget somebody named, or `None` while it is automatic."""
         return self._slippage_bp
 
-    def _slippage_chosen(self, budget: float | None) -> None:
+    def _open_slippage(self) -> None:
+        """Ask for a number, with an empty box meaning the automatic rule.
+
+        A box rather than a list of percentages.  A list is a guess at which
+        numbers somebody wants and it is wrong for whoever wanted a different
+        one; the reader either takes the automatic bound or has a figure of
+        their own in mind, and there is no third case for a menu to serve.
+        """
+        field = ft.TextField(
+            value=slippage_percent(self._slippage_bp),
+            hint_text="auto",
+            suffix=ft.Text("%", size=SMALL),
+            autofocus=True,
+            dense=True,
+            keyboard_type=ft.KeyboardType.NUMBER,
+        )
+        note = ft.Text(
+            "Empty for auto: each leg bounded by its own pool's fee.",
+            size=TINY, color=ft.Colors.ON_SURFACE_VARIANT,
+        )
+        dialog: ft.AlertDialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Maximum slippage", size=BODY),
+            content=ft.Column([field, note], spacing=8, tight=True, width=280),
+            actions=[
+                ft.TextButton("Auto",
+                              on_click=lambda _e: self._set_slippage(None, dialog)),
+                ft.TextButton("Cancel", on_click=lambda _e: self._shut(dialog)),
+                ft.FilledButton(
+                    "Apply",
+                    on_click=lambda _e: self._slippage_typed(field, dialog)),
+            ],
+        )
+        # Set after the dialog exists, so neither has to be named before it
+        # is built: Enter in the box does what Apply does.
+        field.on_submit = lambda _e: self._slippage_typed(field, dialog)
+        self._page.show_dialog(dialog)
+
+    def _slippage_typed(self, field: ft.TextField, dialog: ft.AlertDialog) -> None:
+        """Read the box, and say so in it rather than closing on a bad number."""
+        try:
+            budget = parse_slippage(field.value or "")
+        except ValueError as exc:
+            field.error = ft.Text(str(exc), size=TINY)
+            safe_update(field)
+            return
+        self._set_slippage(budget, dialog)
+
+    def _set_slippage(self, budget: float | None,
+                      dialog: ft.AlertDialog | None = None) -> None:
+        if dialog is not None:
+            self._shut(dialog)
         if budget == self._slippage_bp:
             return
         self._slippage_bp = budget
         self.rows.say_slippage(budget)
         if self._on_slippage is not None:
             self._on_slippage(budget)
+
+    def _shut(self, dialog: ft.AlertDialog) -> None:
+        with contextlib.suppress(Exception):
+            self._page.pop_dialog()
 
     def show_balances(self, sell: int | None, buy: int | None) -> None:
         """The balance as the box's own hint, not a line under it.
@@ -1605,19 +1660,32 @@ class SwapView(ft.Container):
         safe_update(self.rows.control)
 
 
-#: What the slippage row offers, as `(label, basis points)`.  `None` is the
-#: automatic rule, which is not a number at all: every leg is bounded from
-#: its own pool's fee and the route's total is whatever those come to.  The
-#: rest name a budget for the whole route, which `core.slippage` then divides
-#: between the legs -- once per *path*, so a route that branches and merges
-#: spends it once however many legs a branch has.
-SLIPPAGE_CHOICES: tuple[tuple[str, float | None], ...] = (
-    ("Auto", None),
-    ("0.1%", 10.0),
-    ("0.3%", 30.0),
-    ("0.5%", 50.0),
-    ("1%", 100.0),
-)
+#: The widest budget the box will take, as a percent.  Not a safety rail so
+#: much as a typo rail: 5000 in a field meant for 0.5 is a route that will
+#: sell at any price at all, and nobody means that.
+MAX_SLIPPAGE_PCT = 50.0
+
+
+def parse_slippage(typed: str) -> float | None:
+    """A typed percent as basis points, or `None` for the automatic rule.
+
+    Empty means auto, because that is what an empty box should mean: the
+    reader has taken their number back rather than named a new one.  Anything
+    unreadable, negative or past `MAX_SLIPPAGE_PCT` is refused by returning
+    the same `None` -- see `SwapView._slippage_typed`, which tells them.
+    """
+    text = (typed or "").strip().rstrip("%").replace(",", ".")
+    if not text:
+        return None
+    try:
+        percent = float(text)
+    except ValueError:
+        raise ValueError("That is not a number.") from None
+    if percent <= 0:
+        raise ValueError("Slippage has to be more than zero.")
+    if percent > MAX_SLIPPAGE_PCT:
+        raise ValueError(f"{MAX_SLIPPAGE_PCT:g}% is as far as this goes.")
+    return percent * 100.0
 
 
 def slippage_text(budget: float | None) -> str:
@@ -1630,6 +1698,11 @@ def slippage_text(budget: float | None) -> str:
     if budget is None:
         return "auto"
     return f"{budget / 100:g}%"
+
+
+def slippage_percent(budget: float | None) -> str:
+    """The same setting as something to put back in the box."""
+    return "" if budget is None else f"{budget / 100:g}"
 
 
 class _InfoRows:
@@ -1745,34 +1818,30 @@ class _InfoRows:
     def _slippage_menu(self, value: ft.Text) -> ft.Control:
         """The row's own figure, made into the control that sets it.
 
-        A menu hung on the text rather than a picker beside it: the five rows
-        are bands that have to sit at the same height and the same indent, and
-        a control tall enough to notice would push this one out of line with
-        the four under it.
+        A click rather than a picker beside it: the five rows are bands that
+        have to sit at the same height and the same indent, and any control
+        tall enough to notice would push this one out of line with the four
+        under it.  So the figure is the button, with a pencil beside it.
         """
-        return ft.PopupMenuButton(
-            content=ft.Row(
+        return ft.Container(
+            ft.Row(
                 [value,
-                 ft.Icon(ft.Icons.ARROW_DROP_DOWN, size=14,
+                 ft.Icon(ft.Icons.EDIT_OUTLINED, size=12,
                          color=ft.Colors.ON_SURFACE_VARIANT)],
-                spacing=0,
+                spacing=4,
                 tight=True,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
             ),
             tooltip="How far the price may move before this reverts",
-            padding=ft.Padding.all(0),
-            items=[
-                ft.PopupMenuItem(
-                    content=ft.Text(label, size=SMALL),
-                    on_click=lambda _e, bp=budget: self._chose(bp),
-                )
-                for label, budget in SLIPPAGE_CHOICES
-            ],
+            padding=ft.Padding.symmetric(horizontal=4, vertical=0),
+            border_radius=4,
+            ink=True,
+            on_click=lambda _e: self._chose(),
         )
 
-    def _chose(self, budget: float | None) -> None:
+    def _chose(self) -> None:
         if self._on_slippage is not None:
-            self._on_slippage(budget)
+            self._on_slippage()
 
     def _tint_impact(self, showing: bool) -> None:
         """Colour the impact row only once there is an impact in it.

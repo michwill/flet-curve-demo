@@ -1761,7 +1761,7 @@ async def test_a_named_budget_reaches_the_router():
     page, session = swap_page_with_session()
     await page._plan_now()
 
-    page.view._slippage_chosen(50.0)
+    page.view._set_slippage(50.0)
     await page._plan_now()
 
     assert page.view.slippage_bp == 50.0
@@ -1778,7 +1778,7 @@ async def test_choosing_a_budget_re_plans_but_does_not_re_quote():
     asked: list = []
     page._page.run_task = lambda fn, *a: asked.append(fn)
 
-    page.view._slippage_chosen(30.0)
+    page.view._set_slippage(30.0)
 
     assert page._plan is None, "the old bounds are not the new ones"
     assert asked == [page._plan_now], "re-planned, and nothing else"
@@ -1786,10 +1786,10 @@ async def test_choosing_a_budget_re_plans_but_does_not_re_quote():
 
 async def test_going_back_to_auto_says_so():
     page, session = swap_page_with_session()
-    page.view._slippage_chosen(100.0)
+    page.view._set_slippage(100.0)
     await page._plan_now()
 
-    page.view._slippage_chosen(None)
+    page.view._set_slippage(None)
     await page._plan_now()
 
     assert session.budgets[-1] is None
@@ -1800,11 +1800,11 @@ def test_the_same_choice_twice_changes_nothing():
     """A menu that fires on every open would re-plan for a decision nobody
     took."""
     page, _session = swap_page_with_session()
-    page.view._slippage_chosen(50.0)
+    page.view._set_slippage(50.0)
     asked: list = []
     page._page.run_task = lambda fn, *a: asked.append(fn)
 
-    page.view._slippage_chosen(50.0)
+    page.view._set_slippage(50.0)
 
     assert asked == []
 
@@ -1816,3 +1816,68 @@ def test_the_slippage_row_reads_as_a_setting_before_any_quote():
 
     assert page.view.rows.said("slippage") == "auto"
     assert page.view.rows.said("impact") == "-"
+
+
+def test_an_empty_box_means_auto():
+    """Which is what an empty box should mean: the reader has taken their
+    number back rather than named a new one."""
+    from ui.swap import parse_slippage
+
+    assert parse_slippage("") is None
+    assert parse_slippage("   ") is None
+
+
+def test_a_typed_percent_becomes_basis_points():
+    from ui.swap import parse_slippage
+
+    assert parse_slippage("0.5") == 50.0
+    assert parse_slippage("1") == 100.0
+    assert parse_slippage("0.05") == 5.0
+    assert parse_slippage("0,5") == 50.0, "a decimal comma is a decimal point"
+    assert parse_slippage("0.5%") == 50.0, "the suffix is already on the box"
+
+
+def test_a_number_that_is_not_one_is_refused():
+    import pytest as _pytest
+
+    from ui.swap import parse_slippage
+
+    for typed in ("abc", "1.2.3", "-", "one"):
+        with _pytest.raises(ValueError):
+            parse_slippage(typed)
+
+    # A bare "%" is the suffix with no number in front of it, which is an
+    # empty box wearing a sign -- so it reads as auto rather than as a fault.
+    assert parse_slippage("%") is None
+
+
+def test_zero_and_less_are_refused():
+    """A budget of nothing is not a budget, and the router floors every leg
+    at its rounding room anyway."""
+    import pytest as _pytest
+
+    from ui.swap import parse_slippage
+
+    for typed in ("0", "-1", "-0.5"):
+        with _pytest.raises(ValueError):
+            parse_slippage(typed)
+
+
+def test_a_typo_sized_number_is_refused():
+    """5000 in a box meant for 0.5 is a route that sells at any price at all,
+    and nobody means that."""
+    import pytest as _pytest
+
+    from ui.swap import MAX_SLIPPAGE_PCT, parse_slippage
+
+    assert parse_slippage(str(MAX_SLIPPAGE_PCT)) == MAX_SLIPPAGE_PCT * 100
+    with _pytest.raises(ValueError):
+        parse_slippage(str(MAX_SLIPPAGE_PCT + 0.1))
+
+
+def test_the_setting_goes_back_into_the_box_as_it_was_typed():
+    from ui.swap import slippage_percent
+
+    assert slippage_percent(None) == "", "auto leaves it empty"
+    assert slippage_percent(50.0) == "0.5"
+    assert slippage_percent(100.0) == "1"

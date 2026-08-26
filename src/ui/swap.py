@@ -1348,16 +1348,31 @@ class SwapView(ft.Container):
             "Empty for auto: each leg bounded by its own pool's fee.",
             size=TINY, color=ft.Colors.ON_SURFACE_VARIANT,
         )
+        # Dressed in whatever theme is on screen.  Built fresh each time it
+        # is opened, so reading the theme here is enough -- unlike a control
+        # that outlives a change of it, which is what `buttons.Themed` is for.
+        chad = theme.is_chad(self._page)
+        dressed = buttons.style(self._page)
         dialog: ft.AlertDialog = ft.AlertDialog(
             modal=True,
+            bgcolor=theme.paper_bg(self._page),
+            # Chad's panels are flat paper with a hard edge; Material lifts
+            # its dialogs and tints them, and the two do not mix.
+            elevation=0 if chad else None,
+            shadow_color=ft.Colors.TRANSPARENT if chad else None,
+            shape=ft.RoundedRectangleBorder(
+                radius=buttons.RADIUS,
+                side=ft.BorderSide(1, ft.Colors.OUTLINE),
+            ) if chad else None,
             title=ft.Text("Maximum slippage", size=BODY),
             content=ft.Column([field, note], spacing=8, tight=True, width=280),
             actions=[
-                ft.TextButton("Auto",
+                ft.TextButton("Auto", style=dressed,
                               on_click=lambda _e: self._set_slippage(None, dialog)),
-                ft.TextButton("Cancel", on_click=lambda _e: self._shut(dialog)),
+                ft.TextButton("Cancel", style=dressed,
+                              on_click=lambda _e: self._shut(dialog)),
                 ft.FilledButton(
-                    "Apply",
+                    "Apply", style=dressed,
                     on_click=lambda _e: self._slippage_typed(field, dialog)),
             ],
         )

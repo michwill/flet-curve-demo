@@ -1511,6 +1511,15 @@ class SwapView(ft.Container):
     def clear_status(self) -> None:
         self.status.clear()
 
+    def clear_failure(self) -> None:
+        """Take down a failure that a fresh answer has overtaken.
+
+        Only a failure: `say` also carries the pending lines, and a quote
+        landing behind one of those must not wipe it.
+        """
+        if self.status.failed:
+            self.status.clear()
+
     def cannot_send(self, reason: str) -> None:
         """Say a quoted route cannot be sent, or take that back.
 

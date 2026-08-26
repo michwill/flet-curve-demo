@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from router import Stage
 from ui.responsive import layout_for
+from ui.status import FAILED
 from ui.swap import SwapView
 from ui.swap_page import _why_unsendable
 
@@ -1964,3 +1965,90 @@ async def test_the_automatic_rule_names_no_end_to_end_bound():
 
     assert session.budgets[-1] is None
     assert session.floors[-1] == 0.0
+
+
+async def test_a_revert_re_sweeps_the_whole_state_not_just_the_route():
+    """`plan_call` re-reads the route's own accounts and no others.  What
+    moved a pool under a plan may be a slot nothing on the route touched, so
+    the recovery is the full sweep the on-chain revert path already gets.
+    """
+    page = swap_page_with(Wallet(), two_coins())
+    page._plan = Reverting()
+    order: list[str] = []
+
+    async def replan():
+        order.append("plan")
+        page._plan = Planned()
+
+    page._plan_now = replan
+    page._read_balances = lambda: _answer(None)
+    page._confirm = lambda *a, **k: _answer(0)
+    page._page.run_task = lambda fn, *a: None
+
+    class Host:
+        async def refresh(self):
+            order.append("sweep")
+            return 0
+
+        async def after_swap(self):
+            return 0
+
+    page.host = Host()
+    sent = Sending()
+    page._contract = lambda: sent
+
+    await page._swap()
+
+    assert order == ["sweep", "plan"], "swept before re-pricing against it"
+
+
+async def test_a_refusal_that_outlives_its_block_is_taken_down_by_a_quote():
+    """The tab used to read as broken long after it had recovered: the line
+    sat there through every later quote.
+    """
+    page = swap_page_with(Wallet(), two_coins())
+    page.view.say("This route would not go through: <min", FAILED)
+    assert page.view.status.visible
+
+    page._quoted(None)
+
+    assert not page.view.status.visible, "a fresh answer overtakes it"
+
+
+async def test_a_quote_landing_behind_a_pending_line_leaves_it_alone():
+    """Only a failure is a later answer's to remove.  A quote arriving while
+    the wallet is confirming must not wipe what that is saying.
+    """
+    page = swap_page_with(Wallet(), two_coins())
+    page.view.say("Waiting for the transaction…", pending=True)
+
+    page._quoted(None)
+
+    assert page.view.status.visible
+    assert page.view.status.text.value == "Waiting for the transaction…"
+
+
+async def test_a_re_solve_that_overtakes_the_press_says_so():
+    """Re-reading re-solves, and a solve landing mid-press leaves it holding
+    numbers nobody is looking at.  Silence there looked like a dead button.
+    """
+    page = swap_page_with(Wallet(), two_coins())
+    page._plan = Reverting()
+
+    async def replan():
+        page._plan = None               # a newer quote took it out from under
+
+    page._plan_now = replan
+    sent = Sending()
+    page._contract = lambda: sent
+
+    class Host:
+        async def refresh(self):
+            return 0
+
+    page.host = Host()
+
+    await page._swap()
+
+    assert "moved" in page.view.status.text.value
+    assert not page.view.status.spinner.visible, "the note came down"

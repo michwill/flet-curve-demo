@@ -68,3 +68,14 @@ class StatusPanel(ft.Container):
     def busy(self) -> bool:
         """Is something in flight? What greys the buttons that start it."""
         return bool(self.visible and self.spinner.visible)
+
+    @property
+    def failed(self) -> bool:
+        """Is a failure showing? What a later answer is entitled to take down.
+
+        Not everything on this line is: a pending message is something still
+        happening, and a fresh quote arriving behind "Waiting for the
+        transaction..." must leave it alone.
+        """
+        return bool(self.visible and not self.spinner.visible
+                    and self.text.color == FAILED)

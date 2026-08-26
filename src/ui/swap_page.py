@@ -557,6 +557,11 @@ class SwapPage:
 
     def _quoted(self, quote) -> None:
         self._quote = quote
+        # A fresh answer overtakes whatever went wrong last time.  "This route
+        # would not go through" is a statement about a block that has since
+        # gone, and it used to sit there through every later quote -- the tab
+        # reading as broken long after it had recovered.
+        self.view.clear_failure()
         self.view.show_quote(quote)
         if quote is None or quote.result is None or quote.result.route is None:
             self.view.diagram.show(None)
@@ -729,17 +734,33 @@ class SwapPage:
         if plan is None:
             return
         if plan.reverted:
-            # Planned against a block that has since moved.  "leg below its
-            # minimum rate" is precisely what a pool moving under a plan looks
-            # like -- the bound was set against slots that are now old -- so
-            # the answer is to re-read them rather than to refuse.  That is
-            # what `plan_call` does: it re-reads the route's own accounts at
-            # the newest block and re-prices every leg against them.
+            # Planned against a block that has since moved.  A pool moving
+            # under a plan is precisely this -- a bound set against slots that
+            # are now old -- so the answer is to re-read them rather than to
+            # refuse.
+            #
+            # Wider than `plan_call`'s own re-read, which covers the route's
+            # accounts and no others.  A leg reverts on what its pool holds
+            # *now*, and what moved it may be a slot nothing on this route
+            # ever touched: an oracle round, a rebase, a band. So the whole
+            # sweep is redone and the route re-solved against it, which is the
+            # same recovery a revert on chain gets and for the same reason.
             self._plan = None
+            self.view.say("Re-reading the pools…", pending=True)
+            await self._restate()
             await self._plan_now()
             plan = self._plan
             if plan is None:
-                return          # `_plan_now` has already said why
+                # Re-reading the pools re-solves the route, and a solve that
+                # lands while this one is in flight leaves the press holding
+                # numbers nobody is looking at any more.  `_plan_now` reports
+                # an outright failure on its own line, so either way what is
+                # on the status line is still the note above and it has to
+                # come down.  Said as a failure so the next quote clears it.
+                self.view.say(
+                    "The pools have moved. Check the new quote and press again.",
+                    FAILED)
+                return
         if plan.reverted:
             # Still no, against state read a moment ago.  Cleared even so, or
             # the next press reads this same answer off a plan that is older
@@ -778,6 +799,16 @@ class SwapPage:
         finally:
             self._sending = False
             self.view.busy(False)
+
+    async def _restate(self) -> None:
+        """Re-sweep every slot at the newest block and re-price the route.
+
+        Guarded throughout: this is already a recovery, and a refresh that
+        cannot be done should leave the caller to report the original fault
+        rather than replace it with one about the refresh.
+        """
+        with contextlib.suppress(Exception):
+            await self.host.refresh()
 
     async def _after_failed_send(self) -> None:
         """The transaction went out and did not do what it was priced to do.

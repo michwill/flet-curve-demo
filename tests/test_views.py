@@ -1270,11 +1270,25 @@ def test_a_disabled_button_says_what_colour_it_is_in_full() -> None:
     assert _state(style.bgcolor, on) == ft.Colors.SURFACE_CONTAINER_LOW
 
 
-def test_elsewhere_a_button_is_left_to_material() -> None:
+def test_elsewhere_a_button_gets_an_edge_and_nothing_else() -> None:
+    """Material's own default has no border and a fill a shade off the
+    surface behind it, which on this app's panels left the Swap button a word
+    in the primary colour with no edge at all until hovered.
+
+    Only the edge: the fill, the shape and the ink stay the scheme's, because
+    what was missing was the outline rather than the rest.
+    """
     from ui import buttons
 
-    assert buttons.style(ThemedPage("light")) is None
-    assert buttons.style(ThemedPage("dark")) is None
+    for mode in ("light", "dark"):
+        style = buttons.style(ThemedPage(mode))
+        assert style is not None, mode
+        assert _state(style.side, ft.ControlState.DEFAULT).color == (
+            ft.Colors.OUTLINE)
+        assert _state(style.side, ft.ControlState.DISABLED).color == (
+            ft.Colors.OUTLINE_VARIANT)
+        assert style.bgcolor is None, "the fill is the scheme's"
+        assert style.shape is None, "and so is the shape"
 
 
 def test_the_action_buttons_cast_the_hard_shadow_under_chad() -> None:

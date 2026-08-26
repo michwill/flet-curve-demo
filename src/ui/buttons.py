@@ -31,9 +31,24 @@ DISABLED_TEXT = _over(theme.INK, DISABLED_FILL, 0.38)
 
 
 def style(page: ft.Page) -> ft.ButtonStyle | None:
-    """How a button is drawn under Chad. None -- Material's own -- elsewhere."""
+    """How a button is drawn, in whichever theme is on screen.
+
+    Material's own default has no border and a fill a shade off the surface
+    behind it, which on this app's panels leaves a button that is a word in
+    the primary colour and nothing else -- no edge at all until the pointer
+    is over it, in light and in dark alike.  So it gets an outline, and only
+    an outline: the fill, the shape and the ink stay the scheme's, because
+    the complaint is that the edge is missing rather than that the rest is
+    wrong.
+    """
     if not theme.is_chad(page):
-        return None
+        return ft.ButtonStyle(
+            side={
+                ft.ControlState.DEFAULT: ft.BorderSide(1, ft.Colors.OUTLINE),
+                ft.ControlState.DISABLED: ft.BorderSide(
+                    1, ft.Colors.OUTLINE_VARIANT),
+            },
+        )
     return ft.ButtonStyle(
         shape=ft.RoundedRectangleBorder(radius=RADIUS),
         side={

@@ -67,6 +67,8 @@ class Session:
         self.platform_brightness = ft.Brightness.LIGHT
         self.shared_preferences = FakePreferences()
         self.root: ft.Control | None = None
+        #: Dialogs shown, newest last, so a test can look at one.
+        self.dialogs: list[Any] = []
         self.tasks: list[tuple[Any, tuple[Any, ...]]] = []
         self.pushed: list[str] = []
         self.updates = 0
@@ -79,6 +81,13 @@ class Session:
 
     def add(self, control: ft.Control) -> None:
         self.root = control
+
+    def show_dialog(self, dialog: Any) -> None:
+        """What the real page does with an `AlertDialog`, remembered."""
+        self.dialogs.append(dialog)
+
+    def pop_dialog(self) -> Any:
+        return self.dialogs.pop() if self.dialogs else None
 
     def update(self, *_controls: Any) -> None:
         self.updates += 1

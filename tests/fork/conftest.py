@@ -179,6 +179,30 @@ class Fork:
         assert receipt and int(receipt["status"], 16) == 1, f"funding failed: {tx}"
 
 
+@pytest.fixture(scope="session")
+def router_backend():
+    """The native EVM extension the router runs its local chain in.
+
+    Session-scoped and loaded once: `load_backend` has to run before
+    `erouter.core` is first imported, because `accel.py` decides whether there
+    is a solver at import time.
+    """
+    from router.backend import BackendError, load_backend
+
+    try:
+        return asyncio.run(load_backend())
+    except BackendError as exc:
+        pytest.skip(str(exc))
+
+
+@pytest.fixture(scope="session")
+def router_api():
+    """Curve's API, for the pool list the router routes over."""
+    from curve.api import CurveApi
+
+    return CurveApi()
+
+
 @pytest.fixture
 def fork(anvil: str):
     """A fork, rolled back to its starting state after each test."""

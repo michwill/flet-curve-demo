@@ -997,6 +997,10 @@ class SwapView(ft.Container):
         self._busy = False
         self._blocked = False
         self._empty = True
+        #: Whether the selling token still needs an allowance.  Swap waits on
+        #: it: an unapproved token reverts on the `transferFrom` before it
+        #: reaches a pool.
+        self._unapproved = False
 
         self.sell = CoinPicker(page, chain, on_pick=self._sell_picked, label="Sell")
         self.buy = CoinPicker(page, chain, on_pick=self._buy_picked, label="Buy")
@@ -1100,9 +1104,14 @@ class SwapView(ft.Container):
         super().__init__(self._body, padding=ft.Padding.symmetric(vertical=18))
 
     def before_update(self) -> None:
-        self.widget.shadow = theme.panel_shadow(self._page)
+        # The same three the picture beside it takes, and for the reason
+        # given there: `panel_shadow` is Chad-only, so in the Material themes
+        # this was a rectangle of background with nothing round it while the
+        # diagram next to it sat on paper with a shadow.  Chad maps both to
+        # one panel, which is why only Chad looked right.
+        self.widget.shadow = theme.paper_shadow(self._page)
         self.widget.border = theme.panel_border(self._page)
-        self.widget.bgcolor = ft.Colors.SURFACE_CONTAINER_LOW
+        self.widget.bgcolor = theme.paper_bg(self._page)
 
     # ------------------------------------------------------------- assembly
 
@@ -1445,7 +1454,7 @@ class SwapView(ft.Container):
             self.diagram.show(None)
             self._set_has_route(False)
             self._empty = True
-            self.submit_button.disabled = True
+            self._sync_submit()
             self._sync()
             return
         result = quote.result
@@ -1454,7 +1463,7 @@ class SwapView(ft.Container):
             token_amount(out / 10 ** buy.decimals, places=6) if buy else "")
         self.rows.show(result, plan, sell, buy)
         self._empty = out <= 0
-        self.submit_button.disabled = self._busy or self._blocked or self._empty
+        self._sync_submit()
         self._sync()
 
     def show_wrap(self, amount: int, plan=None) -> None:
@@ -1470,7 +1479,7 @@ class SwapView(ft.Container):
             if buy and amount else "")
         self.rows.show_wrap(sell, buy)
         self._empty = amount <= 0
-        self.submit_button.disabled = self._busy or self._blocked or self._empty
+        self._sync_submit()
         self._sync()
 
     def show_route(self, diagram) -> None:
@@ -1512,7 +1521,7 @@ class SwapView(ft.Container):
         self._blocked = bool(reason)
         self.blocked.value = reason
         self.blocked.visible = bool(reason)
-        self.submit_button.disabled = self._busy or self._blocked or self._empty
+        self._sync_submit()
         safe_update(self.blocked)
         safe_update(self.submit_button)
 
@@ -1528,11 +1537,25 @@ class SwapView(ft.Container):
         safe_update(self.rows.control)
 
     def show_approval(self, needed: bool) -> None:
-        """Two steps or one, the way Curve's own widget puts it."""
+        """Two steps or one, the way Curve's own widget puts it.
+
+        Step two waits for step one.  An unapproved token cannot be swapped,
+        so offering the button is offering a transaction that reverts on the
+        `transferFrom` before it reaches a pool -- and the dry run behind it
+        cannot price the route either, so the figures beside it are estimates
+        of a trade nobody can send yet.
+        """
+        self._unapproved = needed
         self.approve_button.visible = needed
         self.submit_button.content = "2. Swap" if needed else "Swap"
+        self._sync_submit()
         safe_update(self.approve_button)
         safe_update(self.submit_button)
+
+    def _sync_submit(self) -> None:
+        """Whether Swap can be pressed, in the one place that decides it."""
+        self.submit_button.disabled = bool(
+            self._busy or self._blocked or self._empty or self._unapproved)
 
     def busy(self, busy: bool) -> None:
         """Nothing is clickable while a transaction is in flight.
@@ -1543,7 +1566,7 @@ class SwapView(ft.Container):
         """
         self._busy = busy
         self.approve_button.disabled = busy
-        self.submit_button.disabled = busy or self._blocked or self._empty
+        self._sync_submit()
         self.amount.disabled = busy
         safe_update(self.approve_button)
         safe_update(self.submit_button)

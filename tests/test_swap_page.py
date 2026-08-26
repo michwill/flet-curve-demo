@@ -1881,3 +1881,59 @@ def test_the_setting_goes_back_into_the_box_as_it_was_typed():
     assert slippage_percent(None) == "", "auto leaves it empty"
     assert slippage_percent(50.0) == "0.5"
     assert slippage_percent(100.0) == "1"
+
+
+def _view_with_a_route():
+    """A view holding a quote, so Swap is offered at all."""
+    page = swap_page_with(Wallet(), two_coins())
+    view = page.view
+    view._empty = False
+    view._blocked = False
+    view._sync_submit()
+    return view
+
+
+def test_swap_waits_for_the_allowance():
+    """An unapproved token reverts on the `transferFrom` before it reaches a
+    pool, so offering the button is offering a transaction that cannot land.
+    """
+    view = _view_with_a_route()
+    assert not view.submit_button.disabled, "nothing in the way yet"
+
+    view.show_approval(True)
+
+    assert view.submit_button.disabled
+    assert view.approve_button.visible
+    assert view.submit_button.content == "2. Swap"
+
+
+def test_swap_comes_back_when_the_approval_lands():
+    view = _view_with_a_route()
+    view.show_approval(True)
+
+    view.show_approval(False)
+
+    assert not view.submit_button.disabled
+    assert not view.approve_button.visible
+    assert view.submit_button.content == "Swap"
+
+
+def test_an_approval_does_not_override_the_other_reasons():
+    """Approved is one term of four, not the answer on its own."""
+    view = _view_with_a_route()
+    view.show_approval(False)
+    view._empty = True
+
+    view._sync_submit()
+
+    assert view.submit_button.disabled, "no amount is still no swap"
+
+
+def test_sending_still_locks_the_button():
+    view = _view_with_a_route()
+    view.show_approval(False)
+
+    view.busy(True)
+
+    assert view.submit_button.disabled
+    assert view.approve_button.disabled

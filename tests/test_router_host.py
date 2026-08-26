@@ -315,3 +315,32 @@ async def test_a_failed_warm_is_reported_not_swallowed():
     assert "declined" in host.error
     assert seen["errors"], "the exception reaches the view"
     host.close()
+
+
+async def test_settling_waits_for_the_quote_a_refresh_started():
+    """`refresh` starts a quote and returns without it, which is right for a
+    background re-read.  A caller about to act on the numbers wants the answer
+    for the state just re-read, not the one from before it.
+    """
+    host, _session, seen = build()
+    await host.open(1)
+    await host.set_pair("0xa", "0xb")
+    host.request(9)
+    for _ in range(6):
+        await asyncio.sleep(0)
+    seen["quotes"].clear()
+
+    await host.refresh()
+    assert not seen["quotes"], "the refresh did not wait, and should not have"
+
+    await host.settle()
+
+    assert [q.amount_in for q in seen["quotes"]] == [9], "the answer landed"
+    host.close()
+
+
+async def test_settling_with_nothing_in_flight_is_free():
+    host, _session, _seen = build()
+    await host.open(1)
+    await host.settle()
+    host.close()

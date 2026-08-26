@@ -18,6 +18,7 @@ the view decides what a stage looks like and this decides when one happens.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -326,6 +327,19 @@ class RouterHost:
         elif self._wanted is not None:
             self._pump()
         return block
+
+    async def settle(self) -> None:
+        """Wait for the quote already in flight, if there is one.
+
+        `refresh` starts one and does not wait -- nothing on screen is waiting
+        for it either, which is the right answer for a background re-read.  A
+        caller about to act on the numbers is the exception: it wants the
+        answer for the state that was just re-read, not the one from before.
+        """
+        quoter = self._quoter
+        if quoter is not None and not quoter.done():
+            with contextlib.suppress(Exception):
+                await quoter
 
     async def after_swap(self) -> int:
         """A swap of ours landed, so the pools it went through have moved."""

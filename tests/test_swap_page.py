@@ -2028,15 +2028,54 @@ async def test_a_quote_landing_behind_a_pending_line_leaves_it_alone():
     assert page.view.status.text.value == "Waiting for the transaction…"
 
 
-async def test_a_re_solve_that_overtakes_the_press_says_so():
-    """Re-reading re-solves, and a solve landing mid-press leaves it holding
-    numbers nobody is looking at.  Silence there looked like a dead button.
+async def test_the_press_waits_for_the_quote_the_re_read_started():
+    """`refresh` starts a quote and does not wait for it.  Planning before it
+    lands reads the quote from *before* the re-read, and the new one arriving
+    underneath drops the plan -- which is how a swap right after our own swap
+    came back "the pools have moved" instead of a fresh quote.
+    """
+    page = swap_page_with(Wallet(), two_coins())
+    page._plan = Reverting()
+    order: list[str] = []
+
+    async def replan():
+        order.append("plan")
+        page._plan = Planned()
+
+    page._plan_now = replan
+    page._read_balances = lambda: _answer(None)
+    page._confirm = lambda *a, **k: _answer(0)
+    page._page.run_task = lambda fn, *a: None
+
+    class Host:
+        async def refresh(self):
+            order.append("sweep")
+            return 0
+
+        async def settle(self):
+            order.append("settle")
+
+        async def after_swap(self):
+            return 0
+
+    page.host = Host()
+    sent = Sending()
+    page._contract = lambda: sent
+
+    await page._swap()
+
+    assert order == ["sweep", "settle", "plan"], "planned on the new quote"
+
+
+async def test_a_press_with_no_plan_left_says_nothing_and_leaves_a_quote():
+    """The re-read puts a fresh quote on screen, which is the answer to the
+    press.  Telling somebody to press again on top of it is noise.
     """
     page = swap_page_with(Wallet(), two_coins())
     page._plan = Reverting()
 
     async def replan():
-        page._plan = None               # a newer quote took it out from under
+        page._plan = None
 
     page._plan_now = replan
     sent = Sending()
@@ -2046,12 +2085,14 @@ async def test_a_re_solve_that_overtakes_the_press_says_so():
         async def refresh(self):
             return 0
 
+        async def settle(self):
+            return None
+
     page.host = Host()
 
     await page._swap()
 
-    assert "moved" in page.view.status.text.value
-    assert not page.view.status.spinner.visible, "the note came down"
+    assert not page.view.status.visible, "no spinner and nothing said"
 
 
 def test_flipping_turns_the_balances_round_with_the_coins():

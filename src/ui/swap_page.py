@@ -756,15 +756,11 @@ class SwapPage:
             await self._plan_now()
             plan = self._plan
             if plan is None:
-                # Re-reading the pools re-solves the route, and a solve that
-                # lands while this one is in flight leaves the press holding
-                # numbers nobody is looking at any more.  `_plan_now` reports
-                # an outright failure on its own line, so either way what is
-                # on the status line is still the note above and it has to
-                # come down.  Said as a failure so the next quote clears it.
-                self.view.say(
-                    "The pools have moved. Check the new quote and press again.",
-                    FAILED)
+                # `_plan_now` reports an outright failure on its own line, so
+                # what is left on the status line is the note above; it comes
+                # down either way.  Nothing else to say: the re-read has put a
+                # fresh quote on screen, which is the answer to the press.
+                self.view.clear_status()
                 return
         if plan.reverted:
             # Still no, against state read a moment ago.  Cleared even so, or
@@ -814,6 +810,12 @@ class SwapPage:
         """
         with contextlib.suppress(Exception):
             await self.host.refresh()
+        # And wait for the quote it started.  Without this the press races the
+        # answer it just asked for: `_plan_now` reads the quote from before
+        # the re-read, the new one lands under it, and the plan is dropped for
+        # being about numbers nobody is looking at any more.
+        with contextlib.suppress(Exception):
+            await self.host.settle()
 
     async def _after_failed_send(self) -> None:
         """The transaction went out and did not do what it was priced to do.

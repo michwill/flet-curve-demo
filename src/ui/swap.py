@@ -974,7 +974,7 @@ class SwapView(ft.Container):
     """The page: the widget, and the route beside it when there is room."""
 
     def __init__(self, page: ft.Page, chain: str, *, on_amount, on_pair,
-                 on_max, on_approve, on_swap):
+                 on_max, on_approve, on_swap, on_slippage=None):
         self._page = page
         self.chain = chain
         self._layout: Layout | None = None
@@ -990,6 +990,10 @@ class SwapView(ft.Container):
         self._on_max = on_max
         self._on_approve = on_approve
         self._on_swap = on_swap
+        #: The route's slippage budget in basis points, or `None` for the
+        #: automatic per-leg rule -- which is the default and the usual answer.
+        self._slippage_bp: float | None = None
+        self._on_slippage = on_slippage
         self._busy = False
         self._blocked = False
         self._empty = True
@@ -1048,7 +1052,7 @@ class SwapView(ft.Container):
             on_click=self._save_clicked, icon_size=SAVE_ICON, visible=False,
             width=SAVE_BUTTON, height=SAVE_BUTTON)
 
-        self.rows = _InfoRows(page)
+        self.rows = _InfoRows(page, on_slippage=self._slippage_chosen)
         # Why a quoted route cannot be *sent*, which is a different thing
         # from a transaction going wrong and belongs next to the button
         # rather than in the status panel.
@@ -1316,6 +1320,21 @@ class SwapView(ft.Container):
                 and 0 <= caret.extent_offset <= end)
         self.amount.selection = caret if keep else ft.TextSelection(end, end)
         safe_update(self.amount)
+
+    # -------------------------------------------------------------- slippage
+
+    @property
+    def slippage_bp(self) -> float | None:
+        """The budget somebody named, or `None` while it is automatic."""
+        return self._slippage_bp
+
+    def _slippage_chosen(self, budget: float | None) -> None:
+        if budget == self._slippage_bp:
+            return
+        self._slippage_bp = budget
+        self.rows.say_slippage(budget)
+        if self._on_slippage is not None:
+            self._on_slippage(budget)
 
     def show_balances(self, sell: int | None, buy: int | None) -> None:
         """The balance as the box's own hint, not a line under it.
@@ -1586,14 +1605,44 @@ class SwapView(ft.Container):
         safe_update(self.rows.control)
 
 
+#: What the slippage row offers, as `(label, basis points)`.  `None` is the
+#: automatic rule, which is not a number at all: every leg is bounded from
+#: its own pool's fee and the route's total is whatever those come to.  The
+#: rest name a budget for the whole route, which `core.slippage` then divides
+#: between the legs -- once per *path*, so a route that branches and merges
+#: spends it once however many legs a branch has.
+SLIPPAGE_CHOICES: tuple[tuple[str, float | None], ...] = (
+    ("Auto", None),
+    ("0.1%", 10.0),
+    ("0.3%", 30.0),
+    ("0.5%", 50.0),
+    ("1%", 100.0),
+)
+
+
+def slippage_text(budget: float | None) -> str:
+    """What the row reads for a setting.
+
+    "auto" and not a figure, because the automatic bound is *per leg*: a
+    single number for a fifteen-pool route describes none of them, and the
+    compounded total this used to show read like a setting, which it was not.
+    """
+    if budget is None:
+        return "auto"
+    return f"{budget / 100:g}%"
+
+
 class _InfoRows:
     """The figures under the amounts: what this trade costs and promises."""
 
-    def __init__(self, page: ft.Page) -> None:
+    def __init__(self, page: ft.Page, on_slippage=None) -> None:
         self._page = page
         self._rows: dict[str, ft.Text] = {}
         self._alarms = Alarm(page)
         self._high = False
+        self._on_slippage = on_slippage
+        #: What was last chosen, so a redraw does not put "auto" back over it.
+        self._budget: float | None = None
         lines: list[ft.Control] = []
         for key, label in (
             ("slippage", "Slippage"),
@@ -1602,9 +1651,16 @@ class _InfoRows:
             ("route", "Trade route"),
             ("gas", "Estimated tx cost"),
         ):
-            value = ft.Text("-", size=SMALL, no_wrap=True,
+            # Slippage starts at "auto" where the rest start at "-": it is a
+            # setting rather than a figure, so it has an answer before there
+            # is a quote and the control reads as one from the start.
+            value = ft.Text(slippage_text(None) if key == "slippage" else "-",
+                            size=SMALL, no_wrap=True,
                             color=ft.Colors.ON_SURFACE_VARIANT)
             self._rows[key] = value
+            shown: ft.Control = value
+            if key == "slippage" and on_slippage is not None:
+                shown = self._slippage_menu(value)
             # Every row is a band and only one of them is ever tinted: they
             # have to sit at the same height and the same indent, and a row
             # that grew padding the moment it had something to say would be
@@ -1612,7 +1668,7 @@ class _InfoRows:
             line = Band(
                 ft.Row(
                     [ft.Text(label, size=SMALL,
-                             color=ft.Colors.ON_SURFACE_VARIANT), value],
+                             color=ft.Colors.ON_SURFACE_VARIANT), shown],
                     alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                 ),
                 page,
@@ -1671,15 +1727,52 @@ class _InfoRows:
         self._set_high(high)
         self._tint_impact(True)
         self._set("rate", _rate_line(result, sell, buy))
-        # Just "auto".  The bound is *per leg*, derived from the least each
-        # pool can charge, so a single figure for a fifteen-pool route is a
-        # number that describes none of them -- and the compounded total it
-        # used to show read like a slippage setting, which it is not.
-        self._set("slippage", "auto")
+        self.say_slippage(self._budget)
         if plan is None or not plan.gas:
             # No figure: the route did not execute locally, which for an
             # unapproved token is the expected answer and not a fault.
             self._set("gas", "-")
+
+    def said(self, key: str) -> str:
+        """What one row currently reads. For tests, and for nothing else."""
+        return self._rows[key].value or ""
+
+    def say_slippage(self, budget: float | None) -> None:
+        """Show the setting, and remember it across the next redraw."""
+        self._budget = budget
+        self._set("slippage", slippage_text(budget))
+
+    def _slippage_menu(self, value: ft.Text) -> ft.Control:
+        """The row's own figure, made into the control that sets it.
+
+        A menu hung on the text rather than a picker beside it: the five rows
+        are bands that have to sit at the same height and the same indent, and
+        a control tall enough to notice would push this one out of line with
+        the four under it.
+        """
+        return ft.PopupMenuButton(
+            content=ft.Row(
+                [value,
+                 ft.Icon(ft.Icons.ARROW_DROP_DOWN, size=14,
+                         color=ft.Colors.ON_SURFACE_VARIANT)],
+                spacing=0,
+                tight=True,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+            tooltip="How far the price may move before this reverts",
+            padding=ft.Padding.all(0),
+            items=[
+                ft.PopupMenuItem(
+                    content=ft.Text(label, size=SMALL),
+                    on_click=lambda _e, bp=budget: self._chose(bp),
+                )
+                for label, budget in SLIPPAGE_CHOICES
+            ],
+        )
+
+    def _chose(self, budget: float | None) -> None:
+        if self._on_slippage is not None:
+            self._on_slippage(budget)
 
     def _tint_impact(self, showing: bool) -> None:
         """Colour the impact row only once there is an impact in it.

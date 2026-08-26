@@ -116,6 +116,7 @@ class SwapPage:
             on_max=self._max_clicked,
             on_approve=self._approve,
             on_swap=self._swap,
+            on_slippage=self._slippage_chosen,
         )
 
     @property
@@ -603,6 +604,7 @@ class SwapPage:
         try:
             plan = await session.plan_call(
                 quote.result, receiver=account or _NOBODY, sender=account or _NOBODY,
+                slippage_bp=self.view.slippage_bp,
                 not_before=self._floor_block)
         except Exception as exc:
             if self._quote is not quote:
@@ -626,6 +628,16 @@ class SwapPage:
         self.view.show_quote(quote, plan)
         await self._show_gas(plan)
         await self._sync_approval(plan)
+
+    def _slippage_chosen(self, _budget: float | None) -> None:
+        """Somebody named a budget, or went back to the automatic rule.
+
+        The plan carries the bounds, so it is the plan that has to be built
+        again -- the quote is unaffected, and re-quoting would take the number
+        on screen away for no reason.
+        """
+        self._plan = None
+        self._page.run_task(self._plan_now)
 
     async def _sync_approval(self, plan) -> None:
         contract = self._contract()

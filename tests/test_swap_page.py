@@ -523,6 +523,7 @@ class Session:
 
     def __init__(self) -> None:
         self.planned: list[int] = []
+        self.budgets: list[float | None] = []
         self.drawn: list[int | None] = []
 
     def diagram(self, _result, *, verified_out=None):
@@ -532,8 +533,10 @@ class Session:
             buses = elements = order = ()
         return Empty()
 
-    async def plan_call(self, _result, *, receiver, sender, not_before=0):
+    async def plan_call(self, _result, *, receiver, sender, not_before=0,
+                        slippage_bp=None):
         self.planned.append(not_before)
+        self.budgets.append(slippage_bp)
 
         class Plan:
             to = "0x" + "22" * 20
@@ -1716,3 +1719,100 @@ async def test_the_tab_can_send_again_after_a_revert():
 
     assert not page._sending, "not stuck mid-send"
     assert page._plan is None, "and the next press plans afresh"
+
+
+def swap_page_with_session():
+    """A page whose `plan_call` is recorded rather than sent anywhere."""
+    page = swap_page_with(Wallet(), two_coins())
+    session = Session()
+    held = page.host._held          # where `RouterHost.session` reads from
+    held.session = session
+    held.stage = Stage.READY
+
+    class Route:
+        legs = ()
+
+    class Result:
+        route = Route()
+        verified_out = 1
+        amount_in = 1
+        price_impact_bp = 0.0
+
+    page._quote = type("Quote", (), {"result": Result()})()
+    return page, session
+
+
+async def test_the_automatic_rule_is_what_ships_by_default():
+    """Naming a budget is the exception.  Left alone, every leg is bounded
+    from its own pool's fee and the route's total is whatever those come to.
+    """
+    page, session = swap_page_with_session()
+
+    await page._plan_now()
+
+    assert page.view.slippage_bp is None
+    assert session.budgets == [None]
+    assert page.view.rows.said("slippage") == "auto"
+
+
+async def test_a_named_budget_reaches_the_router():
+    """`core.slippage` divides it between the legs -- once per path, so a
+    route that branches spends it once however many legs a branch has."""
+    page, session = swap_page_with_session()
+    await page._plan_now()
+
+    page.view._slippage_chosen(50.0)
+    await page._plan_now()
+
+    assert page.view.slippage_bp == 50.0
+    assert session.budgets[-1] == 50.0
+    assert page.view.rows.said("slippage") == "0.5%"
+
+
+async def test_choosing_a_budget_re_plans_but_does_not_re_quote():
+    """The bounds live on the plan, so the plan is what has to be built
+    again; re-quoting would take the number on screen away for nothing."""
+    page, _session = swap_page_with_session()
+    await page._plan_now()
+    assert page._plan is not None
+    asked: list = []
+    page._page.run_task = lambda fn, *a: asked.append(fn)
+
+    page.view._slippage_chosen(30.0)
+
+    assert page._plan is None, "the old bounds are not the new ones"
+    assert asked == [page._plan_now], "re-planned, and nothing else"
+
+
+async def test_going_back_to_auto_says_so():
+    page, session = swap_page_with_session()
+    page.view._slippage_chosen(100.0)
+    await page._plan_now()
+
+    page.view._slippage_chosen(None)
+    await page._plan_now()
+
+    assert session.budgets[-1] is None
+    assert page.view.rows.said("slippage") == "auto"
+
+
+def test_the_same_choice_twice_changes_nothing():
+    """A menu that fires on every open would re-plan for a decision nobody
+    took."""
+    page, _session = swap_page_with_session()
+    page.view._slippage_chosen(50.0)
+    asked: list = []
+    page._page.run_task = lambda fn, *a: asked.append(fn)
+
+    page.view._slippage_chosen(50.0)
+
+    assert asked == []
+
+
+def test_the_slippage_row_reads_as_a_setting_before_any_quote():
+    """The other four are figures and have nothing to say yet; this one is a
+    setting and always does."""
+    page = swap_page_with(Wallet(), two_coins())
+
+    assert page.view.rows.said("slippage") == "auto"
+    assert page.view.rows.said("impact") == "-"

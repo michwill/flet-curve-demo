@@ -35,6 +35,9 @@ class FakeSession:
 
     def __init__(self, *, unreadable=0, quote_ms=0.0):
         self.block = 100
+        #: Scripted block heights for successive refreshes; empty means each
+        #: one simply moves the chain on.
+        self.blocks: list[int] = []
         self.solver = "rust"
         self.warms = 0
         self.pairs: list[tuple[str, str]] = []
@@ -63,7 +66,10 @@ class FakeSession:
 
     async def refresh(self):
         self.refreshes += 1
-        self.block += 1
+        # `blocks` scripts what the endpoint answers, so a test can put a node
+        # that has not moved in front of one that has -- which is what a load
+        # balancer does, and what the real `refresh` turns into a no-op.
+        self.block = self.blocks.pop(0) if self.blocks else self.block + 1
         return self.block
 
 
@@ -343,4 +349,42 @@ async def test_settling_with_nothing_in_flight_is_free():
     host, _session, _seen = build()
     await host.open(1)
     await host.settle()
+    host.close()
+
+
+async def test_a_swap_of_ours_is_not_re_read_from_a_node_behind_it():
+    """The endpoint is a load balancer and its nodes sit at different heights.
+    One still behind the block our swap landed in does not see it, and
+    `refresh` does nothing at all when it answers with the block already held
+    -- so the next quote is priced on pools this swap has already moved.
+    """
+    ticks: list[float] = []
+
+    async def sleep(seconds):
+        ticks.append(seconds)
+        await asyncio.sleep(0)
+
+    host, session, _seen = build(sleep=sleep)
+    await host.open(1)
+    await host.set_pair("0xa", "0xb")
+    # Two nodes behind, then one that has caught up.
+    session.blocks = [100, 100, 103]
+    before = session.refreshes
+
+    landed = await host.after_swap(103)
+
+    assert landed >= 103, "it waited for the chain it had already seen"
+    assert session.refreshes == before + 3, "and re-read once it had"
+    assert ticks, "it paused between tries rather than spinning"
+    host.close()
+
+
+async def test_a_swap_with_no_block_to_wait_for_re_reads_once():
+    host, session, _seen = build()
+    await host.open(1)
+    before = session.refreshes
+
+    await host.after_swap()
+
+    assert session.refreshes == before + 1
     host.close()

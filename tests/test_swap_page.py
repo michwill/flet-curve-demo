@@ -761,7 +761,7 @@ async def test_a_swap_re_reads_both_balances_and_the_picker_order():
     page._confirm = lambda *a, **k: asyncio.sleep(0, result=0)
 
     class Host:
-        async def after_swap(self):
+        async def after_swap(self, not_before=0):
             return 0
 
     page.host = Host()
@@ -1610,7 +1610,7 @@ async def test_a_revert_re_reads_the_state_and_tries_again():
     page._page.run_task = lambda fn, *a: None
 
     class Host:
-        async def after_swap(self):
+        async def after_swap(self, not_before=0):
             return 0
 
     page.host = Host()
@@ -1663,9 +1663,11 @@ class WatchedHost:
     def __init__(self) -> None:
         self.refreshed = 0
         self.quoted: list = []
+        self.floors: list[int] = []
 
-    async def after_swap(self) -> int:
+    async def after_swap(self, not_before: int = 0) -> int:
         self.refreshed += 1
+        self.floors.append(not_before)
         return 0
 
     def request(self, amount) -> None:
@@ -1990,7 +1992,7 @@ async def test_a_revert_re_sweeps_the_whole_state_not_just_the_route():
             order.append("sweep")
             return 0
 
-        async def after_swap(self):
+        async def after_swap(self, not_before=0):
             return 0
 
     page.host = Host()
@@ -2055,7 +2057,7 @@ async def test_the_press_waits_for_the_quote_the_re_read_started():
         async def settle(self):
             order.append("settle")
 
-        async def after_swap(self):
+        async def after_swap(self, not_before=0):
             return 0
 
     page.host = Host()

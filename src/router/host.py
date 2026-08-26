@@ -30,6 +30,12 @@ from typing import Any
 #: re-read catches, but only after someone has decided to sign it.
 REFRESH_SECONDS = 120.0
 
+#: How many times a re-read waits for the endpoint to reach a block we have
+#: already seen a transaction confirmed in, and how long it waits between.
+#: The router's own numbers, for the same load balancer and the same reason.
+CATCH_UP_TRIES = 8
+CATCH_UP_PAUSE = 1.5
+
 #: How long a failed warm waits before trying again.  The endpoint is a load
 #: balancer and a raised warm is usually a bad backend.
 RETRY_SECONDS = 20.0
@@ -341,11 +347,31 @@ class RouterHost:
             with contextlib.suppress(Exception):
                 await quoter
 
-    async def after_swap(self) -> int:
-        """A swap of ours landed, so the pools it went through have moved."""
+    async def after_swap(self, not_before: int = 0) -> int:
+        """A swap of ours landed, so the pools it went through have moved.
+
+        `not_before` is the block it landed in.  The endpoint is a load
+        balancer and its nodes are not at the same height, so a re-read taken
+        from one still behind does not see our own swap -- and `refresh` does
+        nothing at all when that node answers with the block already held.
+        The next quote is then priced on pools this swap has already moved,
+        while `plan_call` waits for the block and dry-runs against the ones it
+        did.  A `min_out` taken off that quote is a promise the chain will not
+        keep, and the call comes back "below min_out".
+
+        So the re-read waits for the chain the caller has already seen, which
+        is what `plan_call` does with the same number.
+        """
         held = self._held
         held.warmed_at = 0.0
-        return await self.refresh()
+        block = await self.refresh()
+        for _ in range(CATCH_UP_TRIES):
+            if not not_before or block >= not_before:
+                break
+            await self._sleep(CATCH_UP_PAUSE)
+            held.warmed_at = 0.0
+            block = await self.refresh()
+        return block
 
     def close(self) -> None:
         for task in (self._refresher, self._quoter):

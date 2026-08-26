@@ -780,8 +780,9 @@ class SwapPage:
             self._plan = None
             # Our own swap moved the pools it went through, so the next quote
             # has to be priced against what they hold now rather than what
-            # they held before it landed.
-            await self.host.after_swap()
+            # they held before it landed -- and read from a node that has
+            # actually seen it, which is what the block is for.
+            await self.host.after_swap(self._floor_block)
             # And it moved this wallet: both boxes show a balance that the
             # swap has just changed, and the selling picker is *ordered* by
             # those balances with the figures printed beside them.  Leaving
@@ -831,7 +832,7 @@ class SwapPage:
         screen rather than replacing it with one about the refresh.
         """
         with contextlib.suppress(Exception):
-            await self.host.after_swap()
+            await self.host.after_swap(self._floor_block)
         with contextlib.suppress(Exception):
             await self._read_balances()
         with contextlib.suppress(Exception):

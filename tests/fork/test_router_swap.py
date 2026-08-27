@@ -28,7 +28,15 @@ SELL, BUY = "ETH", "DOLA"
 #: 0.1 ETH, the size that was being swapped when this was reported.
 AMOUNT = 10**17
 
+#: Sizes to move the market with, tried in turn until a plan priced before
+#: them is refused.  Growing rather than fixed, because how far a trade moves
+#: a pool is not something this can know in advance.
+MARKET_MOVES = (100 * 10**18, 400 * 10**18, 1600 * 10**18, 6400 * 10**18)
 
+#: What those moves ship with.  Wide on purpose: they are scaffolding and
+#: must not revert on bounds of their own while putting the price where the
+#: test needs it.
+MOVE_SLIPPAGE_BP = 500.0
 
 ETHEREUM = 1
 
@@ -123,3 +131,100 @@ async def test_a_named_budget_binds_the_whole_route_on_a_fork(
     # which is what was asked for.
     under = (plan.quoted_out - plan.guaranteed_out) / plan.quoted_out * 1e4
     assert under == pytest.approx(50.0, abs=0.5), f"the bound sits {under:.2f} bp under"
+
+
+async def test_a_plan_priced_before_the_market_moved_is_refused(
+        fork, router_api, router_backend):
+    """What the wallet was reporting: a plan built when the typing stopped,
+    pressed a minute later, and refused at the head before it was signed.
+
+    So the press has to price again.  Here the market is moved on purpose,
+    which is what a minute of a volatile pair does on its own.
+
+    **Staging that is not always possible, and where it is not this skips
+    rather than fails.**  Which pools a trade goes through is the router's
+    choice and it changes: after a facts rebuild, a hundred ether through
+    this pair stopped touching the stale plan's pools, and 8,500 did not
+    touch them either -- a large order goes by a different path than a tenth
+    of one, so it was never a question of size.  None of that is a fault in
+    the app and none of it should read as one.
+
+    What stays an assertion is the subject: a plan priced before a move the
+    chain *did* feel is refused, and re-pricing fixes it.
+    """
+    fork.give_eth(TRADER, 20_000)
+    host = await _warmed(fork, router_api, router_backend)
+    sell, buy = await _coin(host.coins, SELL), await _coin(host.coins, BUY)
+    assert await host.set_pair(sell.address, buy.address)
+    session = host.session
+
+    stale_result = session.quote(AMOUNT)
+    stale_route = stale_result.route
+    stale = await session.plan_call(
+        stale_result, receiver=TRADER, sender=TRADER,
+        slippage_bp=None, min_out_bp=0.0)
+    assert not stale.reverted, "the plan was refused before anything moved"
+
+    # Moved through the first *priced* leg's own pair.  Not the route's,
+    # because a large order does not take the small one's path; and not the
+    # first leg, which is the ETH -> WETH wrap, where any size moves nothing
+    # because wrapping is one for one.
+    leg = next(one for one in stale_route.legs
+               if not one.is_conversion and one.amount_in and one.amount_out)
+    # Sold from the *native* side, not from the leg's own input token.  The
+    # trader holds ether and nothing else: pointing this at WETH -> crvUSD
+    # made every move revert on the `transferFrom`, having neither the token
+    # nor an allowance, which reads as a market that would not move and is
+    # nothing of the sort.  Buying the leg's output with ether wraps on the
+    # way and arrives at the same pool.
+    if not await host.set_pair(sell.address, leg.token_out):
+        pytest.skip(f"could not prepare {sell.symbol} -> {leg.token_out}")
+
+    contract = RouterContract(fork.provider(), TRADER)
+    moved: list[float] = []
+    refused: list[str] = []
+    for size in MARKET_MOVES:
+        # Bounded wide, and the state re-read after each: these exist to move
+        # the price, not to be protected from it, and under the automatic rule
+        # each is priced against pools the one before it has already moved.
+        big = await session.plan_call(
+            session.quote(size), receiver=TRADER, sender=TRADER,
+            slippage_bp=MOVE_SLIPPAGE_BP, min_out_bp=0.0)
+        try:
+            fork.wait(await contract.execute(big))
+        except AssertionError as exc:
+            # One size refusing is not the end of it -- the next may go
+            # through, and giving up on the first was skipping runs that
+            # could still have staged the move.
+            refused.append(f"{size / 10**18:,.0f} ({str(exc).splitlines()[0]})")
+            continue
+        moved.append(size / 10**18)
+        if _refused(fork, stale):
+            break
+        await host.after_swap(int(fork.rpc("eth_blockNumber"), 16))
+    else:
+        pytest.skip(
+            f"could not stage a move into {leg.token_out}: "
+            f"{sum(moved):,.0f} went through and did not shift it enough"
+            + (f"; refused outright: {', '.join(refused)}" if refused else "")
+        )
+
+    # Back to the pair under test before re-pricing it.
+    assert await host.set_pair(sell.address, buy.address)
+    await host.after_swap(int(fork.rpc("eth_blockNumber"), 16))
+    fresh = await session.plan_call(
+        session.quote(AMOUNT), receiver=TRADER, sender=TRADER,
+        slippage_bp=None, min_out_bp=0.0)
+    assert not fresh.reverted, f"re-pricing did not help: {fresh.reverted}"
+    assert not _refused(fork, fresh), "the wallet would still have refused it"
+
+
+def _refused(fork, plan) -> bool:
+    """Whether the chain refuses this exact call, as a wallet would find out."""
+    payload = {"from": TRADER, "to": plan.to,
+               "value": hex(int(plan.value)), "data": "0x" + plan.data.hex()}
+    try:
+        fork.rpc("eth_call", [payload, "latest"])
+    except AssertionError:
+        return True
+    return False

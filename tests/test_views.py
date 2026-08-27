@@ -385,11 +385,11 @@ def test_pool_detail_builds_for_any_coin_count(n_coins: int) -> None:
         on_back=lambda: None,
     )
     assert isinstance(view, ft.Column)
-    prices = 1 + n_coins * (n_coins - 1)     # the LP token, then every pair
-    # A rule, the two tables, a second rule, then one depth curve per
-    # *unordered* pair -- the other ordering is a button, not a row.
+    # One row per *unordered* pair on both charts -- the other ordering is a
+    # button, not a row -- plus the LP token, a rule, the two tables and a
+    # second rule.
     unordered = n_coins * (n_coins - 1) // 2
-    assert len(view.series.options) == prices + 3 + 1 + unordered
+    assert len(view.series.options) == 1 + unordered + 3 + 1 + unordered
 
 
 def test_pool_detail_builds_without_a_gauge() -> None:
@@ -710,7 +710,7 @@ def test_each_series_is_named_by_its_marks() -> None:
     by_key = {option.key: option for option in view.series.options}
 
     assert by_key[pool_detail.LP_SERIES].leading_icon is not None
-    assert by_key["0:1"].leading_icon is not None
+    assert by_key["1:0"].leading_icon is not None      # the later coin leads
 
     # The tables have no coins, so they are named by a glyph instead --
     # without one they were the only rows in the menu starting further left.
@@ -4250,3 +4250,50 @@ def test_a_phone_puts_the_chart_controls_on_their_own_line():
     assert len(stacked.controls) == 2
     beside = stacked.controls[1].controls
     assert view.flip_button in beside and view.depth_units in beside
+
+
+def test_a_price_pair_turns_round_on_the_button() -> None:
+    """The menu names one ordering; the button reads it from the other end.
+    A price and its reciprocal are one series, so the second belongs there
+    rather than on a row of its own.
+    """
+    view = activity_view()
+    view.series.value = "1:0"
+
+    assert view._shown_pair() == (1, 0)
+
+    view._flip_clicked(None)
+
+    assert view._shown_pair() == (0, 1)
+
+
+def test_the_button_is_there_for_a_price_pair_too() -> None:
+    view = activity_view()
+    view.series.value = "1:0"
+
+    view._show("chart")
+
+    assert view.flip_button.visible
+
+
+def test_a_table_has_no_pair_and_no_button() -> None:
+    view = activity_view()
+    view.series.value = pool_detail.LP_SERIES
+
+    view._show("chart")
+
+    assert not view.flip_button.visible
+
+
+def test_the_flip_is_the_same_question_of_either_chart() -> None:
+    """One flag, because "which way round" means the same thing whichever
+    chart is up -- and switching between them with the answer changing under
+    you would be its own surprise.
+    """
+    view = activity_view()
+    view.series.value = "1:0"
+    view._flip_clicked(None)
+
+    view.series.value = f"{pool_detail.DEPTH_PREFIX}1:0"
+
+    assert view._shown_pair() == (0, 1)

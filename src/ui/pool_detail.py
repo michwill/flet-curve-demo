@@ -123,6 +123,21 @@ def _unit_coin(key: str | None) -> int | None:
         return None
 
 
+def price_pair(key: str) -> tuple[int, int] | None:
+    """The pair a price entry names, or `None` if it is not one.
+
+    Bare `i:j`, which is what tells it from a depth entry and from the named
+    series -- `LP`, the rules, Trades and Liquidity are none of them numbers.
+    """
+    i, sep, j = key.partition(":")
+    if not sep:
+        return None
+    try:
+        return int(i), int(j)
+    except ValueError:
+        return None
+
+
 def depth_pair(key: str) -> tuple[int, int] | None:
     """The pair a depth entry names, or `None` if it is not one."""
     if not key.startswith(DEPTH_PREFIX):
@@ -316,7 +331,9 @@ class PoolDetailView(ft.Column):
             visible=False,
             on_click=self._flip_clicked,
         )
-        self._depth_flipped = False
+        #: Whether the pair on screen is being read the other way round.
+        #: One flag for both charts: it is the same question of either.
+        self._flipped = False
         self.depth_units = ft.Dropdown(
             key="depth-units",
             options=[ft.DropdownOption(key=DEPTH_USD, text="USD")],
@@ -1082,15 +1099,19 @@ class PoolDetailView(ft.Column):
                 leading_icon=self._series_mark(LP_SERIES),
             )
         ]
+        # One per *unordered* pair, the way the depth entries are: a price and
+        # its reciprocal are the same series read from the other end, so the
+        # second ordering belongs on the button that turns it round rather
+        # than on a row of its own.  Three rows for a tricrypto pool where six
+        # were being offered, and six where twelve were.
         for i, main in enumerate(self.pool.pool_coins):
-            for j, reference in enumerate(self.pool.pool_coins):
-                if i == j:
-                    continue
+            for j in range(i):
+                key = f"{i}:{j}"
                 options.append(
                     ft.DropdownOption(
-                        key=f"{i}:{j}",
-                        text=f"{main.symbol} / {reference.symbol}",
-                        leading_icon=self._series_mark(f"{i}:{j}"),
+                        key=key,
+                        text=f"{main.symbol} / {self.pool.pool_coins[j].symbol}",
+                        leading_icon=self._series_mark(key),
                     )
                 )
         # Under a rule, because these two are not a third way of drawing the
@@ -1357,23 +1378,30 @@ class PoolDetailView(ft.Column):
         if pair is not None:
             await self._draw_depth(*pair)
 
+    def _selected_pair(self) -> tuple[int, int] | None:
+        """The pair the menu names, whichever chart it names it for."""
+        return depth_pair(self.selection) or price_pair(self.selection)
+
     def _shown_pair(self) -> tuple[int, int] | None:
         """The pair being drawn, after the flip.
 
         The menu names one ordering and the button turns it round; the curve
-        is the same one either way, read from the other end.
+        is the same one either way, read from the other end -- which is as
+        true of a price and its reciprocal as it is of a depth curve.
         """
-        pair = depth_pair(self.selection)
+        pair = self._selected_pair()
         if pair is None:
             return None
         i, j = pair
-        return (j, i) if self._depth_flipped else (i, j)
+        return (j, i) if self._flipped else (i, j)
 
     def _flip_clicked(self, _e: AnyEvent) -> None:
-        self._depth_flipped = not self._depth_flipped
+        self._flipped = not self._flipped
         self._sync_flip()
         if depth_pair(self.selection) is not None:
             self._page.run_task(self.load_depth)
+        elif price_pair(self.selection) is not None:
+            self._page.run_task(self.load_chart)
 
     def _sync_flip(self) -> None:
         """Say which way round the curve is, on the button that turns it."""
@@ -1403,7 +1431,10 @@ class PoolDetailView(ft.Column):
         self.depth_chart.visible = which == "depth"
         self.size_picker.visible = which == "chart"
         self.depth_units.visible = which == "depth"
-        self.flip_button.visible = which == "depth"
+        # Shown for either chart, since both draw a pair the menu names one
+        # ordering of.  The tables have no pair and no button.
+        self.flip_button.visible = (
+            which in ("depth", "chart") and self._selected_pair() is not None)
 
     def _show_activity(self, showing: bool) -> None:
         self._show("activity" if showing else "chart")
@@ -1435,7 +1466,10 @@ class PoolDetailView(ft.Column):
                     self.pool.chain, self.pool.address, size=size, count=count
                 )
             else:
-                i, j = (int(x) for x in value.split(":"))
+                shown = self._shown_pair()
+                if shown is None:
+                    raise ApiError(f"{value} does not name a pair")
+                i, j = shown
                 candles = await self.api.pair_candles(
                     self.pool.chain,
                     self.pool.address,

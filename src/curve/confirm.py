@@ -19,7 +19,17 @@ CATCH_UP_TIMEOUT = 30.0
 
 
 class TransactionFailed(WalletError):
-    """Mined, and reverted."""
+    """Mined, and reverted.
+
+    Carries the block it was mined in.  A reverted transaction still moved
+    the chain on, and whatever is re-read afterwards has to be read from a
+    node that has reached it -- otherwise the recovery re-reads the state the
+    plan was already built against and nothing changes.
+    """
+
+    def __init__(self, message: str, block: int = 0) -> None:
+        super().__init__(message)
+        self.block = block
 
 
 class StillPending(WalletError):
@@ -43,7 +53,8 @@ async def wait_for_receipt(
         if receipt:
             if _status_of(receipt) == 0:
                 raise TransactionFailed(
-                    "The transaction was mined but reverted. Nothing changed on chain."
+                    "The transaction was mined but reverted. Nothing changed on chain.",
+                    _block_of(receipt),
                 )
             return receipt
         if waited >= timeout:

@@ -2148,3 +2148,80 @@ async def test_both_balances_are_remembered_not_just_the_one_being_sold():
 
     assert page._balances[usdc.address] == 1_500_000
     assert page._balances[usdt.address] == 250_000, "the buy side too"
+
+
+async def test_a_reverted_swap_still_says_so_after_the_re_read():
+    """The recovery re-reads and re-quotes, and the quote landing underneath
+    used to take the only explanation off the screen -- so a swap that
+    reverted on chain said nothing at all.
+    """
+    page = swap_page_with(Wallet(), two_coins())
+    page.view.say("The transaction was mined but reverted.", FAILED, sticky=True)
+
+    page._quoted(None)
+
+    assert page.view.status.visible, "an account of what happened stays put"
+    assert "reverted" in page.view.status.text.value
+
+
+async def test_a_refusal_to_plan_is_still_taken_down_by_a_quote():
+    """Only what happened is sticky.  "This route would not go through" is a
+    statement about a block that has since gone.
+    """
+    page = swap_page_with(Wallet(), two_coins())
+    page.view.say("This route would not go through: <min", FAILED)
+
+    page._quoted(None)
+
+    assert not page.view.status.visible
+
+
+async def test_the_tab_is_usable_again_before_the_housekeeping_finishes():
+    """`after_swap` waits for the chain, sweeps every slot and re-solves.
+    Held through that, the amount box stays disabled and MAX stale for tens of
+    seconds after "Swapped." -- which reads as a frozen tab.
+    """
+    page = swap_page_with(Wallet(), two_coins())
+    page._plan = Planned()
+    page._confirm = lambda *a, **k: _answer(0)
+    page._read_balances = lambda: _answer(None)
+    page._page.run_task = lambda fn, *a: None
+    seen: list[bool] = []
+
+    class Host:
+        async def after_swap(self, not_before=0):
+            seen.append(page.view.amount.disabled)
+            return 0
+
+    page.host = Host()
+    sent = Sending()
+    page._contract = lambda: sent
+
+    await page._swap()
+
+    assert seen == [False], "the box was still disabled during the re-read"
+
+
+async def test_a_reverted_send_re_reads_at_the_block_it_landed_in():
+    """A reverted transaction was still mined.  Re-reading below that block
+    re-reads the state the plan was already built against.
+    """
+    from curve.confirm import TransactionFailed
+
+    page = swap_page_with(Wallet(), two_coins())
+    page._read_balances = lambda: _answer(None)
+    floors: list[int] = []
+
+    class Host:
+        async def after_swap(self, not_before=0):
+            floors.append(not_before)
+            return not_before
+
+        def request(self, _amount):
+            pass
+
+    page.host = Host()
+
+    await page._after_failed_send(TransactionFailed("reverted", 4242).block)
+
+    assert floors == [4242]

@@ -1512,8 +1512,8 @@ class SwapView(ft.Container):
             safe_update(self.diagram)
 
     def say(self, message: str, colour: str | None = None, *,
-            pending: bool = False) -> None:
-        self.status.say(message, colour, pending=pending)
+            pending: bool = False, sticky: bool = False) -> None:
+        self.status.say(message, colour, pending=pending, sticky=sticky)
 
     def clear_status(self) -> None:
         self.status.clear()

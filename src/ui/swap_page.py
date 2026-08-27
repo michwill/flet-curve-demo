@@ -778,6 +778,14 @@ class SwapPage:
             await self._confirm(tx, "Swapped.")
             self.view.clear_amount()
             self._plan = None
+            # The transaction is done, so the tab is somebody's again.  What
+            # follows is housekeeping and takes as long as the chain does --
+            # a catch-up wait, a full sweep, a re-solve.  Held through that,
+            # the amount box stays disabled and the balances stale for tens of
+            # seconds after "Swapped.", which reads as a frozen tab: picking
+            # another coin does nothing and MAX still shows the old one.
+            self._sending = False
+            self.view.busy(False)
             # Our own swap moved the pools it went through, so the next quote
             # has to be priced against what they hold now rather than what
             # they held before it landed -- and read from a node that has
@@ -797,7 +805,12 @@ class SwapPage:
             # and the next press prices a new one.
             self._plan = None
             if not exc.rejected_by_user:
-                await self._after_failed_send()
+                # A reverted transaction was still mined, so the chain has
+                # moved past the plan -- and the block it landed in is the one
+                # the re-read has to reach, or it re-reads the state the plan
+                # was already built against and the next press fails the same
+                # way.  `TransactionFailed` carries it; a timeout does not.
+                await self._after_failed_send(getattr(exc, "block", 0))
         finally:
             self._sending = False
             self.view.busy(False)
@@ -818,7 +831,7 @@ class SwapPage:
         with contextlib.suppress(Exception):
             await self.host.settle()
 
-    async def _after_failed_send(self) -> None:
+    async def _after_failed_send(self, landed: int = 0) -> None:
         """The transaction went out and did not do what it was priced to do.
 
         A revert on chain is the pool saying its state is not the state this
@@ -831,6 +844,7 @@ class SwapPage:
         cannot be done should leave the message about the transaction on
         screen rather than replacing it with one about the refresh.
         """
+        self._floor_block = max(self._floor_block, int(landed or 0))
         with contextlib.suppress(Exception):
             await self.host.after_swap(self._floor_block)
         with contextlib.suppress(Exception):
@@ -858,9 +872,15 @@ class SwapPage:
         return block
 
     def _rejected(self, error: WalletError) -> None:
-        """A rejection is not an error worth a red line -- it is a decision."""
+        """A rejection is not an error worth a red line -- it is a decision.
+
+        Anything else is an account of what happened to a transaction, and
+        stays put: the recovery behind it re-reads the state and re-quotes,
+        and a quote landing underneath used to take the only explanation off
+        the screen -- so a swap that reverted on chain said nothing at all.
+        """
         self.view.say("" if getattr(error, "rejected_by_user", False) else str(error),
-                      FAILED)
+                      FAILED, sticky=True)
 
     # ------------------------------------------------------------------ gas
 

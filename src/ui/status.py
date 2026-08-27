@@ -39,6 +39,9 @@ class StatusPanel(ft.Container):
         self._page = page
         self.text = ft.Text("", size=SMALL, selectable=True, expand=True)
         self.spinner = ft.ProgressRing(width=14, height=14, stroke_width=2)
+        #: Whether what is showing is an account of something that happened.
+        #: Those outlive the next quote; see `say`.
+        self._sticky = False
         super().__init__(
             ft.Row([self.spinner, self.text], spacing=10, tight=True),
             padding=ft.Padding.symmetric(horizontal=10, vertical=8),
@@ -47,9 +50,16 @@ class StatusPanel(ft.Container):
         )
 
     def say(
-        self, message: str, colour: str | None = None, *, pending: bool = False
+        self, message: str, colour: str | None = None, *, pending: bool = False,
+        sticky: bool = False,
     ) -> None:
-        """Show a status. `pending` means a spinner and a neutral tint."""
+        """Show a status. `pending` means a spinner and a neutral tint.
+
+        `sticky` marks something that happened rather than something that is
+        so: a transaction reverted on chain is true whatever the pools do
+        next, and a quote landing behind it must not take it down.
+        """
+        self._sticky = sticky
         self.text.value = message
         self.text.color = colour or ft.Colors.ON_SURFACE_VARIANT
         self.spinner.visible = pending
@@ -78,4 +88,4 @@ class StatusPanel(ft.Container):
         transaction..." must leave it alone.
         """
         return bool(self.visible and not self.spinner.visible
-                    and self.text.color == FAILED)
+                    and not self._sticky and self.text.color == FAILED)

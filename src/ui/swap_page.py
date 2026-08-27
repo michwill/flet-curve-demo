@@ -827,7 +827,7 @@ class SwapPage:
             await self._read_balances()
             self._page.run_task(self._rank_by_holdings)
             return
-        if plan.reverted:
+        if plan.reverted or await self._chain_refuses(contract, plan):
             # Planned against a block that has since moved.  A pool moving
             # under a plan is precisely this -- a bound set against slots that
             # are now old -- so the answer is to re-read them rather than to
@@ -851,13 +851,21 @@ class SwapPage:
                 # fresh quote on screen, which is the answer to the press.
                 self.view.clear_status()
                 return
-        if plan.reverted:
+        # And now ask the chain itself.  The dry run above ran in the app's
+        # local EVM, whose state is swept rather than live, and where the two
+        # disagree the chain is right -- which is how a transaction the app was
+        # happy with reached a wallet that flagged it as certain to fail, twice
+        # in a row, until the tab was switched away and back.  One `eth_call`
+        # against the wallet's own node is the same answer it is about to give,
+        # asked before anybody is invited to sign.
+        refusal = plan.reverted or await self._chain_refuses(contract, plan)
+        if refusal:
             # Still no, against state read a moment ago.  Cleared even so, or
             # the next press reads this same answer off a plan that is older
             # again -- which is how one revert used to stop the tab sending
             # anything ever after.
             self._plan = None
-            self.view.say(f"This route would not go through: {plan.reverted}", FAILED)
+            self.view.say(f"This route would not go through: {refusal}", FAILED)
             return
         self._sending = True
         self.view.busy(True)
@@ -866,6 +874,11 @@ class SwapPage:
             tx = await contract.execute(plan)
             await self._confirm(tx, "Swapped.")
             self.view.clear_amount()
+            # And the amount the host is still holding, or the re-quote the
+            # refresh below sets going would put a figure straight back into
+            # the box this just emptied -- an answer for a trade that has
+            # already happened, sitting over the balance it changed.
+            self.host.request(0)
             self._plan = None
             # The transaction is done, so the tab is somebody's again.  What
             # follows is housekeeping and takes as long as the chain does --
@@ -893,16 +906,33 @@ class SwapPage:
             # has since gone, so it is not the thing to press again.  Cleared,
             # and the next press prices a new one.
             self._plan = None
-            if not exc.rejected_by_user:
-                # A reverted transaction was still mined, so the chain has
-                # moved past the plan -- and the block it landed in is the one
-                # the re-read has to reach, or it re-reads the state the plan
-                # was already built against and the next press fails the same
-                # way.  `TransactionFailed` carries it; a timeout does not.
-                await self._after_failed_send(getattr(exc, "block", 0))
+            # Including a rejection.  Somebody who declined did so because
+            # their wallet told them the transaction would fail, as often as
+            # not -- which is exactly the moment the state behind it is worth
+            # re-reading, and the moment it used to be left alone.
+            #
+            # A reverted transaction was still mined, so the chain has moved
+            # past the plan, and the block it landed in is the one the re-read
+            # has to reach -- or it re-reads the state the plan was already
+            # built against and the next press fails the same way.
+            # `TransactionFailed` carries it; a rejection has none.
+            await self._after_failed_send(getattr(exc, "block", 0))
         finally:
             self._sending = False
             self.view.busy(False)
+
+    async def _chain_refuses(self, contract, plan) -> str:
+        """What the chain says about the call, or "" if it has no objection.
+
+        Skipped while an approval is outstanding: without an allowance the
+        call reverts on the `transferFrom` whatever the route would have done,
+        so the answer would be about the approval and not about the route.
+        """
+        if self._unapproved or plan is None:
+            return ""
+        with contextlib.suppress(Exception):
+            return await contract.refused(plan)
+        return ""
 
     async def _restate(self) -> None:
         """Re-sweep every slot at the newest block and re-price the route.

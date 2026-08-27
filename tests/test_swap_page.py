@@ -767,6 +767,9 @@ async def test_a_swap_re_reads_both_balances_and_the_picker_order():
     class Host:
         session = None
 
+        def request(self, _amount=0):
+            pass
+
         async def after_swap(self, not_before=0):
             return 0
 
@@ -1618,6 +1621,9 @@ async def test_a_revert_re_reads_the_state_and_tries_again():
     class Host:
         session = None
 
+        def request(self, _amount=0):
+            pass
+
         async def after_swap(self, not_before=0):
             return 0
 
@@ -1704,9 +1710,12 @@ async def test_a_revert_on_chain_sends_us_back_for_the_state():
     assert page._plan is None, "the plan it was priced from is spent"
 
 
-async def test_a_wallet_rejection_leaves_the_chain_alone():
-    """Nothing went out, so nothing moved: re-reading would be a round trip
-    spent on the news that everything is as it was.
+async def test_a_wallet_rejection_re_reads_the_state_too():
+    """It used to be left alone on the grounds that nothing had gone out, so
+    nothing had moved.  But somebody who declined did so because their wallet
+    told them it would fail, as often as not -- which is precisely when the
+    state behind it is worth re-reading, and precisely when a stale one goes
+    on producing the same doomed transaction.
     """
     page = swap_page_with(Wallet(), two_coins())
     contract = Failing(rejected=True)
@@ -1717,8 +1726,8 @@ async def test_a_wallet_rejection_leaves_the_chain_alone():
 
     await page._swap()
 
-    assert host.refreshed == 0, "nothing to re-read"
-    assert page._plan is None, "but the block has moved, so it is stale anyway"
+    assert host.refreshed == 1, "the rejection taught it nothing"
+    assert page._plan is None, "and the plan is stale either way"
 
 
 async def test_the_tab_can_send_again_after_a_revert():
@@ -2002,6 +2011,9 @@ async def test_a_revert_re_sweeps_the_whole_state_not_just_the_route():
     class Host:
         session = None
 
+        def request(self, _amount=0):
+            pass
+
         async def refresh(self):
             order.append("sweep")
             return 0
@@ -2068,6 +2080,9 @@ async def test_the_press_waits_for_the_quote_the_re_read_started():
     class Host:
         session = None
 
+        def request(self, _amount=0):
+            pass
+
         async def refresh(self):
             order.append("sweep")
             return 0
@@ -2103,6 +2118,9 @@ async def test_a_press_with_no_plan_left_says_nothing_and_leaves_a_quote():
 
     class Host:
         session = None
+
+        def request(self, _amount=0):
+            pass
 
         async def refresh(self):
             return 0
@@ -2211,6 +2229,9 @@ async def test_the_tab_is_usable_again_before_the_housekeeping_finishes():
     class Host:
         session = None
 
+        def request(self, _amount=0):
+            pass
+
         async def after_swap(self, not_before=0):
             seen.append(page.view.amount.disabled)
             return 0
@@ -2237,12 +2258,12 @@ async def test_a_reverted_send_re_reads_at_the_block_it_landed_in():
     class Host:
         session = None
 
+        def request(self, _amount=0):
+            pass
+
         async def after_swap(self, not_before=0):
             floors.append(not_before)
             return not_before
-
-        def request(self, _amount):
-            pass
 
     page.host = Host()
 
@@ -2272,6 +2293,9 @@ async def test_every_press_prices_the_route_again():
 
     class Host:
         session = None
+
+        def request(self, _amount=0):
+            pass
 
         async def after_swap(self, not_before=0):
             return 0
@@ -2322,6 +2346,9 @@ async def test_an_approval_and_the_swap_go_over_together():
 
     class Host:
         session = None
+
+        def request(self, _amount=0):
+            pass
 
         async def after_swap(self, not_before=0):
             return 0
@@ -2411,3 +2438,107 @@ async def test_a_wallet_that_does_not_batch_is_left_alone():
     page._batches = False
 
     assert await page._send_as_batch(Batching(), Planned()) is False
+
+
+class Refusing(Sending):
+    """A router whose chain says the call would revert, whatever we think."""
+
+    def __init__(self, why: str = "leg below its minimum rate") -> None:
+        super().__init__()
+        self.why = why
+
+    async def refused(self, _plan) -> str:
+        return self.why
+
+
+async def test_a_call_the_chain_refuses_is_not_offered():
+    """The dry run runs in the app's local EVM, whose state is swept rather
+    than live.  Where the two disagree the chain is right -- which is how a
+    transaction the app was happy with reached a wallet that flagged it as
+    certain to fail.
+    """
+    page = swap_page_with(Wallet(), two_coins())
+    page._plan = Planned()
+
+    async def replan():
+        page._plan = Planned()      # re-priced, and the chain still says no
+
+    page._plan_now = replan
+    page._restate = lambda: _answer(None)
+    contract = Refusing()
+    page._contract = lambda: contract
+
+    class Host:
+        session = None
+
+        def request(self, _amount=0):
+            pass
+
+        async def refresh(self):
+            return 0
+
+        async def settle(self):
+            return None
+
+    page.host = Host()
+
+    await page._swap()
+
+    assert not contract.sent, "it sent a call the chain had already refused"
+    assert "would not go through" in page.view.status.text.value
+    assert "minimum rate" in page.view.status.text.value
+
+
+async def test_the_chain_is_not_asked_while_an_approval_is_outstanding():
+    """Without an allowance the call reverts on the `transferFrom` whatever
+    the route would have done, so the answer would be about the approval."""
+    page = swap_page_with(Wallet(), two_coins())
+    page._unapproved = True
+
+    assert await page._chain_refuses(Refusing(), Planned()) == ""
+
+
+async def test_a_transport_that_cannot_answer_is_not_a_refusal():
+    """Saying the chain refused, because nothing could be asked, would stop a
+    route the chain never objected to."""
+    page = swap_page_with(Wallet(), two_coins())
+
+    class Unreachable(Sending):
+        async def refused(self, _plan):
+            raise RuntimeError("no endpoint")
+
+    assert await page._chain_refuses(Unreachable(), Planned()) == ""
+
+
+async def test_a_finished_swap_leaves_the_output_box_empty():
+    """The host is still holding the amount, so the re-quote behind the
+    refresh would put a figure straight back into the box the swap emptied --
+    an answer for a trade that has already happened, sitting over the balance
+    it changed.
+    """
+    page = swap_page_with(Wallet(), two_coins())
+    page._plan = Planned()
+    page._plan_now = lambda: _answer(None)
+    page._confirm = lambda *a, **k: _answer(0)
+    page._read_balances = lambda: _answer(None)
+    page._page.run_task = lambda fn, *a: None
+    page.view.receive.value = "876.5"
+    wanted: list = []
+
+    class Host:
+        session = None
+
+        def request(self, amount=0):
+            wanted.append(amount)
+
+        async def after_swap(self, not_before=0):
+            return 0
+
+    page.host = Host()
+    sent = Sending()
+    page._contract = lambda: sent
+
+    await page._swap()
+
+    assert wanted == [0], "the host kept the amount and will re-quote it"
+    assert page.view.receive.value == ""

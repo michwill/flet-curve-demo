@@ -12,7 +12,7 @@ as `msg.value`.
 
 from __future__ import annotations
 
-from wallet.base import RpcError, WalletProvider
+from wallet.base import RpcError, WalletError, WalletProvider
 
 from . import abi
 
@@ -88,6 +88,39 @@ class RouterContract:
         token, data = self.build_approve(plan)
         return await self.provider.send_transaction(
             {"from": self.account, "to": token, "value": "0x0", "data": data})
+
+    async def refused(self, plan) -> str:
+        """What the *chain* says about this exact call, or "" if it is happy.
+
+        Asked of the wallet's own endpoint, which is the node the wallet
+        simulates against before it shows the transaction -- so this is the
+        same answer the reader is about to be given, obtained before they are
+        asked to sign anything.
+
+        The dry run behind a plan runs in the app's local EVM, and that state
+        is swept and re-read rather than live.  Where the two disagree the
+        chain is right, and it was the app that offered a transaction the
+        wallet then flagged as certain to fail.
+
+        Only meaningful once the input token is approved: without an allowance
+        this reverts on the `transferFrom` whatever the route would have done.
+        """
+        if not self.can_send:
+            return ""
+        try:
+            await self.provider.request("eth_call", [{
+                "from": self.account,
+                "to": plan.to,
+                "value": hex(int(plan.value)) if plan.value else "0x0",
+                "data": "0x" + bytes(plan.data).hex(),
+            }, "latest"])
+        except RpcError as exc:
+            return exc.message or "the chain refused this call"
+        except WalletError:
+            # A transport that could not answer is not a refusal.  Saying so
+            # would stop a route the chain never objected to.
+            return ""
+        return ""
 
     async def execute(self, plan) -> str:
         """Send the route.  `plan.data` is already encoded and bounded."""

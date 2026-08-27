@@ -109,10 +109,18 @@ async def test_a_named_budget_binds_the_whole_route_on_a_fork(
     fork.wait(await contract.execute(plan))
     got = fork.erc20_balance(buy.address, TRADER) - before
 
-    floor = int(result.route.modelled_out * (1 - 50.0 / 1e4))
-    assert got >= floor, (
-        f"produced {got} against a {floor} min_out the contract accepted"
+    # Against what the contract was actually given, not against a second
+    # derivation of it -- and this test carried the very bug it was meant to
+    # catch, taking its floor off the *model* where the model stood 50 bp
+    # above what the route paid.
+    assert got >= plan.guaranteed_out, (
+        f"produced {got} against a {plan.guaranteed_out} min_out the contract "
+        f"accepted"
     )
+    # And the promise is about the number on screen: 50 bp under the quote,
+    # which is what was asked for.
+    under = (plan.quoted_out - plan.guaranteed_out) / plan.quoted_out * 1e4
+    assert under == pytest.approx(50.0, abs=0.5), f"the bound sits {under:.2f} bp under"
 
 
 async def test_a_plan_priced_before_the_market_moved_is_refused(

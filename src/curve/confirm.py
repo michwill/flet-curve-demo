@@ -105,6 +105,51 @@ async def wait_for_confirmation(
     return block
 
 
+async def wait_for_batch(
+    provider: WalletProvider,
+    batch_id: str,
+    *,
+    timeout: float = RECEIPT_TIMEOUT,
+    interval: float = POLL_INTERVAL,
+) -> int:
+    """The same promise as `wait_for_confirmation`, for a batch.
+
+    A batch is asked about by its own id rather than by a transaction hash --
+    it may not have one yet, and on a wallet that does not batch atomically it
+    ends up with several.  What comes back is the last block it touched, which
+    is the number everything downstream re-reads against.
+
+    A batch that a cosigner has yet to sign sits at `PENDING` for as long as
+    the humans take, which is why the caller's timeout is the one that matters
+    here and not any notion of a block.
+    """
+    from wallet import batch as calls
+
+    waited = 0.0
+    while True:
+        try:
+            answer = await calls.status(provider, batch_id)
+        except RpcError:
+            answer = None
+        if answer is not None and not answer.pending:
+            if answer.failed:
+                raise TransactionFailed(
+                    "The batch was submitted but reverted. Nothing changed on chain.",
+                    answer.block,
+                )
+            block = answer.block
+            if block:
+                await wait_for_block(provider, block, interval=interval)
+            return block
+        if waited >= timeout:
+            raise StillPending(
+                f"{batch_id[:14]}… has not been completed yet. It may still "
+                "land; this app has stopped watching."
+            )
+        await asyncio.sleep(interval)
+        waited += interval
+
+
 def _status_of(receipt: dict[str, Any]) -> int:
     """1 for success, 0 for a mined revert."""
     raw = receipt.get("status")

@@ -2179,3 +2179,68 @@ async def test_a_theme_change_repaints_the_bands() -> None:
 
     assert tab.impact_panel.bgcolor != light
     assert tab.impact_panel.bgcolor == theme.NOTE_IMPACT_CHAD
+
+
+# -- batching an approval with the action it is for --------------------------
+
+
+async def test_an_action_that_waits_on_its_own_transaction_refuses_to_batch():
+    """A withdrawal that has to unstake first waits for the unstake, and what
+    it does next is built from what that produced.  Inside a collection
+    nothing has been sent, so batching it would send a second call computed
+    against a chain that never happened.
+    """
+    from curve.pool import PoolContract
+    from ui.actions import NotBatchable
+
+    provider = FakeProvider()
+    tab = make_tab(provider)
+    contract = PoolContract(provider, make_pool(), ACCOUNT)
+
+    with pytest.raises(NotBatchable), contract.collecting():
+        await tab._step(contract, "0x" + "ab" * 32, "Unstaked.")
+
+    assert not provider.sent, "it sent something on the way to refusing"
+
+
+async def test_a_step_outside_a_collection_still_waits():
+    """The guard is on the collection, not on the step: the two-transaction
+    path is what those actions need and it has to keep working."""
+    from curve.pool import PoolContract
+
+    provider = FakeProvider()
+    tab = make_tab(provider)
+    contract = PoolContract(provider, make_pool(), ACCOUNT)
+    waited: list[str] = []
+
+    async def confirmed(_provider, tx, **_kw):
+        waited.append(tx)
+        return 1
+
+    import ui.actions as actions_module
+    original = actions_module.wait_for_confirmation
+    actions_module.wait_for_confirmation = confirmed
+    try:
+        await tab._step(contract, "0x" + "ab" * 32, "Unstaked.")
+    finally:
+        actions_module.wait_for_confirmation = original
+
+    assert waited == ["0x" + "ab" * 32]
+
+
+async def test_a_wallet_that_does_not_batch_takes_the_two_step_path():
+    provider = FakeProvider()
+    tab = make_tab(provider)
+    tab._batches = False
+    tab._pending_approval = ("0x" + "aa" * 20, "0x" + "cc" * 20, 1000)
+
+    assert await tab._submit_as_batch(tab.get_contract(), "Withdrew.") is False
+
+
+async def test_nothing_to_approve_is_nothing_to_batch():
+    provider = FakeProvider()
+    tab = make_tab(provider)
+    tab._batches = True
+    tab._pending_approval = None
+
+    assert await tab._submit_as_batch(tab.get_contract(), "Withdrew.") is False

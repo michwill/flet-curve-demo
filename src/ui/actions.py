@@ -11,7 +11,7 @@ import flet as ft
 
 from curve.abi import FEE_DENOMINATOR, apply_slippage
 from curve.api import CurveApi
-from curve.confirm import POLL_INTERVAL, wait_for_confirmation
+from curve.confirm import POLL_INTERVAL, wait_for_batch, wait_for_confirmation
 from curve.format import is_dust, token_amount, units_to_float
 from curve.gas import (
     fee_in_native,
@@ -27,6 +27,7 @@ from curve.pool import PoolContract
 from curve.rewards import CRV_DECIMALS, crv_token
 from curve.stake_zaps import stake_zap_for
 from curve.zaps import zap_for
+from wallet import batch
 from wallet.base import WalletError
 from wallet.erc20 import format_units, parse_units
 
@@ -155,6 +156,15 @@ def _aside(control: ft.Control) -> ft.Row:
     return ft.Row([control], alignment=ft.MainAxisAlignment.END, tight=True)
 
 
+class NotBatchable(Exception):
+    """This action cannot be handed over as one batch, and why.
+
+    Raised out of a collection rather than returned, because it has to stop
+    the action where it stands: everything after the wait it interrupted
+    would be built against state that has not moved.
+    """
+
+
 class ActionTab:
     """Base for the four panels. Subclasses build fields and submit."""
 
@@ -226,6 +236,10 @@ class ActionTab:
         self.fee = ft.Text("", size=SMALL, color=ft.Colors.ON_SURFACE_VARIANT)
         self.fee_panel = self._band(self.fee, visible=False, kind="fee")
         self._pending_approval: tuple[str, str, int] | None = None
+        #: Whether this wallet takes several calls in one prompt (EIP-5792).
+        #: None until asked; a property of the wallet and the chain, so it is
+        #: asked once and kept for as long as the panel is open.
+        self._batches: bool | None = None
         self._fees: tuple[int, int, int, bool] | None = None
         self._fees_read_at = 0.0
         self._alarms = Alarm(self._page_of())
@@ -554,7 +568,18 @@ class ActionTab:
         self.page.update()
 
     async def _step(self, contract: PoolContract, tx: str, done: str) -> None:
-        """Wait for a transaction that is *not* the last one in this action."""
+        """Wait for a transaction that is *not* the last one in this action.
+
+        Refused while the contract is collecting: an action that waits here
+        builds what comes next out of what the wait produced -- the LP a
+        deposit minted, the stake it can then make -- and inside a collection
+        nothing has been sent, so that state has not moved.  Batching it would
+        send a second call computed from a chain that never happened.  So the
+        collection is abandoned and the caller falls back to prompting once
+        per transaction, which is what those actions need anyway.
+        """
+        if contract.is_collecting:
+            raise NotBatchable(done)
         self._say(f"{done} Waiting for {tx[:14]}… to confirm.", pending=True)
         await wait_for_confirmation(contract.provider, tx, interval=CONFIRM_INTERVAL)
 
@@ -612,8 +637,12 @@ class ActionTab:
             return
         self._busy(True)
         try:
-            self._say("Confirm in your wallet…", pending=True)
             done = self.done_message()
+            if await self._submit_as_batch(contract, done):
+                self.clear_inputs()
+                await self.on_done()
+                return
+            self._say("Confirm in your wallet…", pending=True)
             tx = await self.submit(contract)
             await self._confirm(contract, tx, done)
             self.clear_inputs()
@@ -623,6 +652,53 @@ class ActionTab:
         finally:
             self._busy(False)
             await self.refresh()
+
+    async def _submit_as_batch(self, contract: PoolContract, done: str) -> bool:
+        """Hand the approval and the action over together, if that is on offer.
+
+        False means it is not, and the caller does what it always did.  Every
+        reason to decline is a reason to fall back rather than to fail: no
+        approval outstanding, a wallet that does not batch, an action that
+        cannot be collected.  Only once the wallet has actually accepted the
+        batch does this own the outcome.
+        """
+        pending = self._pending_approval
+        if pending is None or not await self._wallet_batches(contract):
+            return False
+        try:
+            with contract.collecting() as calls:
+                await self.submit(contract)
+                action = list(calls)
+        except NotBatchable:
+            return False
+        if len(action) != 1:
+            # Nothing else should reach here -- a multi-send action waits
+            # between its sends and `_step` has already refused -- but an
+            # action that somehow sent twice without waiting is not one this
+            # knows how to promise anything about.
+            return False
+        token, spender, amount = pending
+        self._say("Confirm both in your wallet…", pending=True)
+        batch_id = await batch.send(
+            contract.provider, contract.account, self.pool.chain_id,
+            [batch.Call(*contract.build_approve(token, spender, amount)), *action],
+        )
+        self._say(f"Waiting for {batch_id[:14]}… to confirm.", pending=True)
+        await wait_for_batch(contract.provider, batch_id, interval=CONFIRM_INTERVAL)
+        self._say(done, DONE)
+        return True
+
+    async def _wallet_batches(self, contract: PoolContract) -> bool:
+        """Whether this wallet will take the pair in one go.
+
+        Asked once per tab and remembered: it is a property of the wallet and
+        the chain, neither of which moves while a panel is open, and a prompt
+        should not wait on a capability read it has already done.
+        """
+        if self._batches is None:
+            self._batches = await batch.supported(
+                contract.provider, contract.account, self.pool.chain_id)
+        return self._batches
 
     async def _sync_approval(self, contract: PoolContract | None) -> None:
         """Show or hide the approve step based on the current allowance."""

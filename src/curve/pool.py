@@ -9,6 +9,7 @@ from pathlib import Path
 if __package__ in (None, ""):  # pragma: no cover - direct-script import
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from wallet import batch
 from wallet.base import RpcError, WalletError, WalletProvider
 
 from . import abi
@@ -102,6 +103,9 @@ class PoolContract:
         self.account = account
         self.zap: Zap | None = zap_for(pool)
         self.stake_zap: StakeZap | None = stake_zap_for(pool)
+        #: Set while `collecting` is open: sends are recorded here instead of
+        #: being made, so a caller can turn a whole action into one batch.
+        self._collected: list[batch.Call] | None = None
 
     @property
     def can_send(self) -> bool:
@@ -452,9 +456,41 @@ class PoolContract:
     # wallet fills them in and knows the chain better than this app does.
 
     async def _send(self, to: str, data: str) -> str:
+        if self._collected is not None:
+            self._collected.append(batch.Call(to, data))
+            return ""       # there is no hash yet; the batch is what waits
         return await self.provider.send_transaction(
             {"from": self.account, "to": to, "value": "0x0", "data": data}
         )
+
+    @property
+    def is_collecting(self) -> bool:
+        """Whether sends are being recorded rather than made."""
+        return self._collected is not None
+
+    @contextlib.contextmanager
+    def collecting(self):
+        """Record what an action *would* send, without sending any of it.
+
+        A wallet that batches wants the calls, not a sequence of prompts, and
+        the calls are already built one layer down -- so rather than a second
+        description of every action, the action itself is run with its sends
+        diverted into a list.
+
+        Only sound while nothing in the action depends on an earlier send
+        having landed.  Where something does, the action waits for it, and
+        `ActionTab._step` refuses to wait inside here rather than let the step
+        after it be built from state that has not moved.  So the guard lives
+        at the wait, and everything that reaches the end of a collection is
+        something that never needed one.
+        """
+        if self._collected is not None:
+            raise RuntimeError("already collecting")
+        self._collected = []
+        try:
+            yield self._collected
+        finally:
+            self._collected = None
 
     async def estimate_gas(self, built: tuple[str, str]) -> int:
         """What the chain says this transaction would burn."""

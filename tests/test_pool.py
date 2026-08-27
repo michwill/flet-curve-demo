@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+
 import pytest
 
 from curve import abi
@@ -330,3 +332,63 @@ async def test_the_index_width_still_follows_the_family() -> None:
     assert not make_pool(registry="twocryptong").is_stableswap
     assert not make_pool(registry="factory_tricrypto").is_stableswap
     assert not make_pool(registry="crypto").is_stableswap
+
+
+# -- collecting, for a wallet that takes several calls at once ---------------
+
+
+async def test_collecting_records_a_send_instead_of_making_it():
+    """The calls are already built one layer down, so an action can be run
+    with its sends diverted rather than described a second time."""
+    provider = FakeProvider()
+    pool = contract(provider)
+
+    with pool.collecting() as calls:
+        await pool.approve("0x" + "aa" * 20, GAUGE, 1000)
+
+    assert not provider.sent, "it went to the wallet after all"
+    assert len(calls) == 1
+    assert calls[0].to == "0x" + "aa" * 20
+    assert calls[0].data.startswith("0x095ea7b3"), "not an approval"
+
+
+async def test_everything_an_action_sends_lands_in_the_collection():
+    provider = FakeProvider()
+    pool = contract(provider)
+
+    with pool.collecting() as calls:
+        await pool.approve("0x" + "aa" * 20, GAUGE, 1)
+        await pool.stake(5)
+
+    assert len(calls) == 2 and not provider.sent
+
+
+async def test_sending_resumes_after_the_collection_closes():
+    provider = FakeProvider()
+    pool = contract(provider)
+
+    with pool.collecting():
+        await pool.stake(1)
+    await pool.stake(2)
+
+    assert len(provider.sent) == 1, "the diversion outlived its block"
+
+
+async def test_a_collection_closes_even_when_the_action_raises():
+    provider = FakeProvider()
+    pool = contract(provider)
+
+    with contextlib.suppress(RuntimeError), pool.collecting():
+        await pool.stake(1)
+        raise RuntimeError("the action gave up")
+
+    assert not pool.is_collecting
+    await pool.stake(2)
+    assert len(provider.sent) == 1
+
+
+def test_collecting_twice_at_once_is_a_mistake():
+    pool = contract(FakeProvider())
+
+    with pool.collecting(), pytest.raises(RuntimeError), pool.collecting():
+        pass

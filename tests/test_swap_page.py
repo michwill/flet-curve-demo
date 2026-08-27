@@ -2284,3 +2284,88 @@ async def test_every_press_prices_the_route_again():
 
     assert priced == [1], "it sent the plan on screen rather than a fresh one"
     assert sent.sent, "and it did go on to send"
+
+
+class Batching(Sending):
+    """A router contract whose wallet takes several calls in one prompt."""
+
+    provider = object()
+    account = "0x" + "11" * 20
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.approved: list = []
+
+    def build_approve(self, plan):
+        self.approved.append(plan)
+        return ("0x" + "cc" * 20, "0xapprove")
+
+
+async def test_an_approval_and_the_swap_go_over_together():
+    """One prompt, not two -- which on a multisig is one round of cosigners
+    rather than two.
+    """
+    page = swap_page_with(Wallet(), two_coins())
+    page._unapproved = True
+    page._batches = True
+    page.chain_id_now = 1
+    plan = Planned()
+    page._plan = plan
+    page._plan_now = lambda: _answer(None)
+    page._read_balances = lambda: _answer(None)
+    page._page.run_task = lambda fn, *a: None
+    sent: list = []
+
+    async def send(_provider, _account, _chain, calls, **_kw):
+        sent.append(calls)
+        return "0xbatch"
+
+    class Host:
+        session = None
+
+        async def after_swap(self, not_before=0):
+            return 0
+
+    page.host = Host()
+    contract = Batching()
+    page._contract = lambda: contract
+
+    import ui.swap_page as page_module
+    original_send, original_wait = page_module.batch.send, None
+    page_module.batch.send = send
+    import curve.confirm as confirm_module
+    original_wait = confirm_module.wait_for_batch
+    confirm_module.wait_for_batch = lambda *a, **k: _answer(99)
+    try:
+        await page._swap()
+    finally:
+        page_module.batch.send = original_send
+        confirm_module.wait_for_batch = original_wait
+
+    assert len(sent) == 1, "the approval and the swap were not batched"
+    assert len(sent[0]) == 2, "the batch did not carry both calls"
+    assert not contract.sent, "it also sent the swap on its own"
+    assert page._floor_block == 99, "the block the batch landed in was not kept"
+
+
+async def test_a_refusal_that_is_not_the_missing_allowance_is_not_batched():
+    """The dry run reverts on a missing allowance, which the batch is about to
+    grant.  Any other refusal is a route that will not go through, and sending
+    it because a wallet happens to batch would be sending a known failure.
+    """
+    page = swap_page_with(Wallet(), two_coins())
+    page._unapproved = True
+    page._batches = True
+    page.chain_id_now = 1
+    plan = Reverting()
+    plan.gas_estimated = False      # the estimate could not run it either
+
+    assert await page._send_as_batch(Batching(), plan) is False
+
+
+async def test_a_wallet_that_does_not_batch_is_left_alone():
+    page = swap_page_with(Wallet(), two_coins())
+    page._unapproved = True
+    page._batches = False
+
+    assert await page._send_as_batch(Batching(), Planned()) is False

@@ -43,6 +43,7 @@ from router.session import (
     chain_for,
 )
 from router.universe import CoinEntry, coins_by_volume, with_native
+from wallet import batch
 from wallet.base import WalletError
 
 from .responsive import Layout
@@ -80,6 +81,12 @@ class SwapPage:
         #: confirm in.  Every plan after that waits for the endpoint to reach
         #: it -- see `_confirm`.
         self._floor_block = 0
+        #: Whether the connected wallet takes several calls in one prompt.
+        #: None until asked; forgotten when the wallet or the chain changes.
+        self._batches: bool | None = None
+        #: Whether the input token still needs approving, before batching is
+        #: taken into account -- `show_approval` is told a different thing.
+        self._unapproved = False
         #: The picker's coins, in the order it shows them.  Re-ordered once
         #: what the wallet holds is known.
         self._coins: list = []
@@ -160,6 +167,9 @@ class SwapPage:
             self._quote = self._plan = None
             self._balances = {}
             self._owned = None
+            # Batching is per chain as well as per wallet: a wallet may take
+            # several calls on one network and not on the next.
+            self._forget_batching()
             self.view.forget_chain()
         self.chain_id_now = chain_id
         await self._offer_coins(chain_id)
@@ -331,7 +341,11 @@ class SwapPage:
         they go first and are asked for again behind, which shows nothing for
         the moment in between -- the honest answer until this wallet has been
         asked.
+
+        Nor does what the wallet could *do*: whether it takes several calls in
+        one prompt is a property of the wallet that just left.
         """
+        self._forget_batching()
         self._owned = None
         self._balances = {}
         if self._coins:
@@ -660,7 +674,60 @@ class SwapPage:
             needed = await contract.needs_approval(plan)
         except RouterError:
             needed = False
+        self._unapproved = needed
+        # A wallet that batches is not offered two steps: it takes the
+        # approval and the swap in one prompt, so the second button would be
+        # asking for something the first one already covers.
+        if needed and await self._wallet_batches(contract):
+            needed = False
         self.view.show_approval(needed)
+
+    async def _wallet_batches(self, contract) -> bool:
+        """Whether this wallet takes several calls in one prompt (EIP-5792).
+
+        Asked once and kept: a property of the wallet and the chain, and a
+        press should not wait on a capability read already done.  Forgotten
+        when either changes -- see `_forget_batching`.
+        """
+        if self._batches is None:
+            self._batches = await batch.supported(
+                contract.provider, contract.account, self.chain_id_now or 0)
+        return self._batches
+
+    def _forget_batching(self) -> None:
+        """A different wallet, or a different chain, answers for itself."""
+        self._batches = None
+
+    async def _send_as_batch(self, contract, plan) -> bool:
+        """Send the approval and the swap together, if that is on offer.
+
+        False means it is not, and the caller sends the swap on its own.
+
+        The dry run behind `plan` reverts when the allowance is not there --
+        on the `transferFrom`, before it reaches a pool -- so a refusal is not
+        by itself a reason to hold back here.  `gas_estimated` is what tells
+        the two apart: it is set only when the estimate, which grants the
+        approval in its own EVM and runs the whole route, came back with a
+        figure.  So the route is known to work once the approval exists, which
+        is exactly what the batch is about to make true.
+        """
+        from curve.confirm import wait_for_batch
+
+        if not self._unapproved or not await self._wallet_batches(contract):
+            return False
+        if plan.reverted and not plan.gas_estimated:
+            return False        # refused for some other reason; not ours to send
+        self.view.say("Confirm both in your wallet…", pending=True)
+        batch_id = await batch.send(
+            contract.provider, contract.account, self.chain_id_now or 0,
+            [batch.Call(*contract.build_approve(plan)),
+             batch.Call(plan.to, "0x" + bytes(plan.data).hex(), int(plan.value))],
+        )
+        self.view.say(f"Waiting for {batch_id[:14]}… to confirm.", pending=True)
+        landed = await wait_for_batch(contract.provider, batch_id)
+        self._floor_block = max(self._floor_block, int(landed or 0))
+        self.view.say("Swapped.", DONE)
+        return True
 
     # ----------------------------------------------------------- the balances
 
@@ -746,6 +813,16 @@ class SwapPage:
         plan = self._plan
         if plan is None:
             self.view.clear_status()
+            return
+        # An approval and the swap in one prompt, where the wallet takes them
+        # that way.  Before the refusal below, because the commonest refusal
+        # is the missing allowance this very batch grants.
+        if await self._send_as_batch(contract, plan):
+            self._plan = None
+            self.view.clear_amount()
+            await self.host.after_swap(self._floor_block)
+            await self._read_balances()
+            self._page.run_task(self._rank_by_holdings)
             return
         if plan.reverted:
             # Planned against a block that has since moved.  A pool moving

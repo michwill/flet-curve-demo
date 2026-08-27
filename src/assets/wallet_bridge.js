@@ -269,6 +269,17 @@
                   "eth_sendTransaction",
                   "personal_sign",
                   "eth_signTypedData_v4",
+                  // EIP-5792, for a wallet that takes an approval and the
+                  // thing it is for in one prompt.  WalletConnect approves
+                  // methods at connect time and refuses whatever was not
+                  // asked for, so a wallet that batches -- a Safe, notably --
+                  // cannot be asked to unless these are named here.
+                  // Optional: a wallet that has never heard of them declines
+                  // and the session is unaffected.
+                  "wallet_getCapabilities",
+                  "wallet_sendCalls",
+                  "wallet_getCallsStatus",
+                  "wallet_showCallsStatus",
                 ],
                 optionalEvents: ["accountsChanged", "chainChanged"],
                 showQrModal: true,

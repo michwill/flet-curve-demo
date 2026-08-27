@@ -493,6 +493,16 @@ def encode_claim_rewards_for(owner: str) -> str:
     return _call("claim_rewards(address)", _address(owner))
 
 
+def encode_gauge_factory() -> str:
+    """`factory()` on a child gauge: who is allowed to mint for it.
+
+    Immutable, set when the gauge was deployed.  A chain can have more than
+    one child gauge factory, and the gauge's own answer is the only thing
+    that says which of them owns it.
+    """
+    return _call("factory()")
+
+
 def encode_minter_mint(gauge: str) -> str:
     """Mint the CRV this gauge has recorded for the caller."""
     return _call("mint(address)", _address(gauge))

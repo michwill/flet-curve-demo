@@ -6,14 +6,19 @@ import inspect
 
 import pytest
 
+from curve import abi
 from curve.models import Pool
 from curve.pool import PoolContract
-from wallet.base import WalletProvider
+from wallet.base import RpcError, WalletProvider
 
 ACCOUNT = "0x1111111111111111111111111111111111111111"
 POOL = "0x" + "22" * 20
 LP = "0x" + "33" * 20
 GAUGE = "0x" + "44" * 20
+
+
+#: `factory()`, which a mainnet gauge does not answer.
+FACTORY_SELECTOR = abi.encode_gauge_factory()
 
 
 class Recorder(WalletProvider):
@@ -28,6 +33,13 @@ class Recorder(WalletProvider):
         if method == "eth_chainId":
             return "0x1"
         if method == "eth_call":
+            # `factory()` is a child-gauge thing.  This fixture is a mainnet
+            # pool, whose gauge does not implement it and whose minter is the
+            # Minter contract -- so it answers nothing, as the chain would.
+            # Without this the recorder's stand-in word decodes as an address
+            # and the mint goes wherever that lands.
+            if (params[0].get("data") or "").startswith(FACTORY_SELECTOR):
+                raise RpcError(-32000, "execution reverted")
             return "0x" + f"{10**18:064x}"
         if method == "eth_estimateGas":
             self.estimated.append(params[0])

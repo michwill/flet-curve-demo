@@ -16,7 +16,7 @@ from . import abi
 from .models import Pool
 from .multicall import MULTICALL3, decode_aggregate3, encode_aggregate3
 from .parameters import PARAMETERS, Readings
-from .rewards import rewards_for
+from .rewards import minter_from_factory, rewards_for
 from .stake_zaps import ZERO_ADDRESS, StakeZap, stake_zap_for
 from .zaps import Zap, zap_for
 
@@ -719,17 +719,43 @@ class PoolContract:
                     decimals = value
         return symbol, decimals
 
-    def build_claim_crv(self) -> tuple[str, str]:
-        """Mint the CRV. Goes to the minter, not to the gauge."""
+    def build_claim_crv(self, minter: str = "") -> tuple[str, str]:
+        """Mint the CRV. Goes to the minter, not to the gauge.
+
+        `minter` is the gauge's own, where it has been read; without one this
+        falls back to the chain's table entry, which is right for every chain
+        with a single factory and wrong for the gauges deployed before a
+        second one.  `claim_crv` reads it; the preview does not, because a
+        preview that costs a round trip is not one.
+        """
         entry = rewards_for(self.pool)
         if entry is None:
             raise PoolCallFailed(
                 "CRV is not minted on this network, so there is nothing to claim."
             )
-        return entry.minter, abi.encode_minter_mint(self.pool.any_gauge)
+        return minter or entry.minter, abi.encode_minter_mint(self.pool.any_gauge)
+
+    async def minter_for_gauge(self) -> str:
+        """Who may mint this gauge, asked of the gauge.
+
+        The chain table names one factory and a chain can have several.  A
+        gauge deployed before the newest one is still minted through the
+        factory that deployed it, and the address is immutable in the gauge --
+        so the table is a fallback and this is the answer.
+
+        Empty where the gauge will not say, which covers Ethereum, where the
+        minter is the Minter contract and not a factory at all.
+        """
+        gauge = self.pool.any_gauge
+        if not gauge:
+            return ""
+        with contextlib.suppress(Exception):
+            return minter_from_factory(
+                await self.provider.call(gauge, abi.encode_gauge_factory()))
+        return ""
 
     async def claim_crv(self) -> str:
-        return await self._send(*self.build_claim_crv())
+        return await self._send(*self.build_claim_crv(await self.minter_for_gauge()))
 
     def build_claim_rewards(self) -> tuple[str, str]:
         """Claim every incentive token at once. Goes to the gauge."""

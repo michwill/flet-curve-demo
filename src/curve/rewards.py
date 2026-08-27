@@ -89,6 +89,31 @@ REWARDS: dict[int, Rewards] = {
 CRV_DECIMALS = 18
 
 
+#: Child gauge factories a chain has retired but whose gauges still mint
+#: through them.  Not a list this keeps: a gauge names its own factory and
+#: that is the answer.  Here only to say why the table above is a fallback
+#: and not the truth -- Arbitrum's entry is the v2 factory, which knows
+#: nineteen gauges, while the one before it knows a hundred and forty-nine.
+MINTER_IS_A_FALLBACK = True
+
+
+def minter_from_factory(answer: str | None) -> str:
+    """The minter a gauge's own `factory()` names, or "" if it did not say.
+
+    A child gauge is minted through the factory that deployed it, and the
+    address is immutable in the gauge: `assert msg.sender in [addr, FACTORY]`.
+    So a chain with two factories has two independent minters, with separate
+    `minted[user][gauge]` accounting and no lookup between them -- minting a
+    pre-v2 gauge through the v2 factory fails on `gauge_data[gauge] == 0`,
+    a bare assert with no reason string, which is why it reaches a wallet as
+    an empty revert and an explorer shows nothing at all.
+    """
+    if not answer or len(answer) < 42:
+        return ""
+    found = "0x" + answer[-40:]
+    return "" if int(found, 16) == 0 else found
+
+
 def rewards_for(pool: Pool) -> Rewards | None:
     """Where to read and mint this pool's CRV, if CRV is minted here at all."""
     if not pool.has_gauge:

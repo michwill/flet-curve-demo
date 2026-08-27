@@ -1417,7 +1417,19 @@ class CurveApp:
                 status.FAILED,
             )
             return
-        plan = earnings.claim_plan(chain_id, self._earnings)
+        # Asked of the gauges, not taken from the chain table.  A chain can
+        # have more than one child gauge factory, each with its own
+        # `minted[user][gauge]`, and a gauge is minted through the one that
+        # deployed it.  A `mint_many` naming a gauge its factory does not know
+        # dies on a bare assert -- empty revert, no message anywhere -- and
+        # takes the gauges that would have paid down with it.
+        minters = {}
+        if crv:
+            with contextlib.suppress(Exception):
+                minters = await earnings.read_minters(
+                    wallet.provider,
+                    [e.gauge for e in self._earnings if e.gauge and e.has_crv])
+        plan = earnings.claim_plan(chain_id, self._earnings, minters)
         count = len(plan.crv) if crv else (1 if plan.extras else 0)
         if not count:
             view.claiming("Nothing to claim.", status.FAILED)

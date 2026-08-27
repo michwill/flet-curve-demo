@@ -392,3 +392,61 @@ def test_collecting_twice_at_once_is_a_mistake():
 
     with pool.collecting(), pytest.raises(RuntimeError), pool.collecting():
         pass
+
+
+# -- minting through the gauge's own factory --------------------------------
+
+#: The gauge from the Arbitrum revert, and the two factories involved.
+OLD_FACTORY = "0xabC000d88f23Bb45525E447528DBF656A9D55bf5"
+NEW_FACTORY = "0x988d1037e9608B21050A8EFba0c6C45e01A3Bce7"
+
+
+def arbitrum_pool() -> Pool:
+    """A pool on a chain whose table entry is the newer factory."""
+    return Pool.from_v2({
+        "address": POOL_ADDRESS,
+        "pool_type": "crvusd",
+        "chain_id": 42161,
+        "lp_token_address": LP_TOKEN,
+        "gauges": [{"address": GAUGE, "is_killed": False}],
+        "coins": [
+            {"symbol": "USDT", "address": "0x" + "aa" * 20, "decimals": 6},
+            {"symbol": "crvUSD", "address": "0x" + "bb" * 20, "decimals": 18},
+        ],
+    })
+
+
+async def test_the_mint_goes_to_the_factory_the_gauge_names():
+    """The reported revert: a gauge deployed before the v2 factory, minted
+    through v2, dies on `gauge_data[gauge] == 0` -- a bare assert, so an
+    empty revert and no message anywhere.  The gauge names its own minter.
+    """
+    provider = FakeProvider({
+        abi.encode_gauge_factory()[:10]: word(int(OLD_FACTORY, 16)),
+    })
+    pool = contract(provider, arbitrum_pool())
+
+    to, _data = pool.build_claim_crv(await pool.minter_for_gauge())
+
+    assert to.lower() == OLD_FACTORY.lower(), "minted through the wrong factory"
+
+
+async def test_a_gauge_that_will_not_say_falls_back_to_the_table():
+    """Ethereum's minter is the Minter contract, not a factory, and a mainnet
+    gauge has no `factory()` to ask."""
+    provider = FakeProvider()
+    provider.raise_on_call = RpcError(-32000, "execution reverted")
+    pool = contract(provider, arbitrum_pool())
+
+    assert await pool.minter_for_gauge() == ""
+    to, _data = pool.build_claim_crv("")
+    assert to == NEW_FACTORY, "the chain entry is what is left"
+
+
+def test_a_zero_factory_is_not_an_answer():
+    from curve.rewards import minter_from_factory
+
+    assert minter_from_factory(word(0)) == ""
+    assert minter_from_factory("") == ""
+    assert minter_from_factory(None) == ""
+    assert minter_from_factory(word(int(OLD_FACTORY, 16))).lower() == OLD_FACTORY.lower()

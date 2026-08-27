@@ -422,3 +422,53 @@ async def test_a_read_that_failed_everywhere_is_not_a_page_of_zeros() -> None:
 
     with pytest.raises(WalletError, match="Could not read"):
         await read_earnings(Down(), "0x" + "aa" * 20, positions)
+
+
+# -- one chain, two factories ------------------------------------------------
+
+OLD_FACTORY = "0xabc000d88f23bb45525e447528dbf656a9d55bf5"
+NEW_FACTORY = "0x988d1037e9608B21050A8EFba0c6C45e01A3Bce7"
+
+
+def test_gauges_are_batched_by_the_factory_that_may_mint_them() -> None:
+    """A chain can have more than one child gauge factory, each keeping its
+    own `minted[user][gauge]`.  One `mint_many` naming a gauge its factory
+    does not know dies on a bare assert and takes the whole batch with it --
+    including the gauges that would have paid.
+    """
+    old = [Earning(pool=f"o{i}", gauge=f"0x{i:040x}", staked=1, rewards=(CRV,))
+           for i in range(3)]
+    new = [Earning(pool=f"n{i}", gauge=f"0x{i + 100:040x}", staked=1, rewards=(CRV,))
+           for i in range(2)]
+    minters = {e.gauge.lower(): OLD_FACTORY for e in old}
+
+    plan = claim_plan(42161, old + new, minters)
+
+    by_minter = dict(plan.crv)
+    assert len(by_minter) == 2, "the two factories were mixed into one call"
+    assert set(by_minter[OLD_FACTORY]) == {e.gauge for e in old}
+    assert set(by_minter[NEW_FACTORY]) == {e.gauge for e in new}
+
+
+def test_without_the_map_it_does_what_it_always_did() -> None:
+    """Right wherever a chain has only ever had one factory, and what a failed
+    read falls back to."""
+    some = [Earning(pool=f"p{i}", gauge=f"0x{i:040x}", staked=1, rewards=(CRV,))
+            for i in range(3)]
+
+    plan = claim_plan(42161, some)
+
+    assert [minter for minter, _ in plan.crv] == [NEW_FACTORY]
+
+
+def test_a_gauge_the_read_missed_falls_back_rather_than_being_dropped() -> None:
+    """Silence about one gauge must not lose it: it goes to the chain entry,
+    which is where it was going before any of this."""
+    some = [Earning(pool=f"p{i}", gauge=f"0x{i:040x}", staked=1, rewards=(CRV,))
+            for i in range(3)]
+    minters = {some[0].gauge.lower(): OLD_FACTORY}
+
+    plan = claim_plan(42161, some, minters)
+
+    claimed = {g for _minter, gauges in plan.crv for g in gauges}
+    assert claimed == {e.gauge for e in some}, "a gauge was dropped"

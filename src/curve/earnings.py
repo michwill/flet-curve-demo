@@ -163,16 +163,33 @@ class ClaimPlan:
         return len(self.crv) + (1 if self.extras else 0)
 
 
-def claim_plan(chain_id: int, earnings: list[Earning]) -> ClaimPlan:
-    """What to send to collect everything owed across a portfolio."""
+def claim_plan(chain_id: int, earnings: list[Earning],
+               minters: dict[str, str] | None = None) -> ClaimPlan:
+    """What to send to collect everything owed across a portfolio.
+
+    `minters` maps a gauge to the factory that may mint it, read from the
+    gauges themselves.  Grouped by that rather than one per chain, because a
+    chain can have more than one child gauge factory and each keeps its own
+    `minted[user][gauge]`: a `mint_many` naming a gauge the factory does not
+    know fails on `gauge_data[gauge] == 0` and takes the whole batch with it,
+    including the gauges that would have paid.
+
+    Without the map this falls back to the chain's entry, which is what it
+    always did and is right wherever a chain has only ever had one factory.
+    """
     entry = REWARDS.get(chain_id)
     crv_gauges = [e.gauge for e in earnings if e.gauge and e.has_crv]
     batches: list[tuple[str, tuple[str, ...]]] = []
     if entry is not None and crv_gauges:
         size = entry.mint_many_size
+        by_minter: dict[str, list[str]] = {}
+        for gauge in crv_gauges:
+            who = (minters or {}).get(gauge.lower()) or entry.minter
+            by_minter.setdefault(who, []).append(gauge)
         batches = [
-            (entry.minter, tuple(crv_gauges[start : start + size]))
-            for start in range(0, len(crv_gauges), size)
+            (who, tuple(gauges[start : start + size]))
+            for who, gauges in by_minter.items()
+            for start in range(0, len(gauges), size)
         ]
     return ClaimPlan(
         crv=tuple(batches),
@@ -207,6 +224,31 @@ async def _batch(
 
 def _word_to_address(value: int) -> str:
     return "0x" + f"{value:040x}"
+
+
+async def read_minters(
+    provider: WalletProvider, gauges: list[str]
+) -> dict[str, str]:
+    """Which factory may mint each gauge, asked of the gauges themselves.
+
+    One Multicall3 round, keyed lower-case.  A gauge that does not answer is
+    left out rather than guessed at, and `claim_plan` then falls back to the
+    chain's entry for it -- which is what the whole app did before, so a
+    silent read failure costs nothing it was not already costing.
+
+    Ethereum answers nothing here and should not: its minter is the Minter
+    contract, and a `factory()` on a mainnet gauge is a different thing.
+    """
+    wanted = list(dict.fromkeys(g.lower() for g in gauges if g))
+    if not wanted:
+        return {}
+    answers = await _batch(
+        provider, [(gauge, abi.encode_gauge_factory()) for gauge in wanted])
+    found: dict[str, str] = {}
+    for gauge, value in zip(wanted, answers, strict=True):
+        if value:
+            found[gauge] = _word_to_address(value)
+    return found
 
 
 async def read_earnings(

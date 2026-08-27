@@ -2715,3 +2715,17 @@ change and encodes after it, at 5.00 bp with nothing unbounded.
   against a sandwich.
 - **No claim-rewards button.** Staking and unstaking are there; `mint`/
   `claim_rewards` are not.
+
+## Licence
+
+AGPL-3.0-or-later, the same as [electric-router](../electric-router), whose
+`src/erouter` this bundles at build time -- a frontend under a weaker licence
+would be distributing that package under terms it does not carry.
+
+The network clause is the one that matters for this app rather than the
+distribution clause. §13 says that where users interact with the program
+remotely, they must be offered the corresponding source; a build pinned to
+IPFS and reached through `curve.eth` is exactly that case. The offer is not
+made in the interface today -- there is no "source" link in the app -- so
+anyone publishing a modified build should add one before pointing a name at
+it.

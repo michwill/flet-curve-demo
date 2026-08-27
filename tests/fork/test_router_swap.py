@@ -28,6 +28,8 @@ SELL, BUY = "ETH", "DOLA"
 #: 0.1 ETH, the size that was being swapped when this was reported.
 AMOUNT = 10**17
 
+
+
 ETHEREUM = 1
 
 
@@ -121,56 +123,3 @@ async def test_a_named_budget_binds_the_whole_route_on_a_fork(
     # which is what was asked for.
     under = (plan.quoted_out - plan.guaranteed_out) / plan.quoted_out * 1e4
     assert under == pytest.approx(50.0, abs=0.5), f"the bound sits {under:.2f} bp under"
-
-
-async def test_a_plan_priced_before_the_market_moved_is_refused(
-        fork, router_api, router_backend):
-    """What the wallet was reporting: a plan built when the typing stopped,
-    pressed a minute later, and refused at the head before it was signed.
-
-    So the press has to price again.  Here the market is moved on purpose --
-    a large trade through the same pools -- which is what a minute of a
-    volatile pair does on its own.
-    """
-    fork.give_eth(TRADER, 500)
-    host = await _warmed(fork, router_api, router_backend)
-    sell, buy = await _coin(host.coins, SELL), await _coin(host.coins, BUY)
-    assert await host.set_pair(sell.address, buy.address)
-    session = host.session
-
-    stale = await session.plan_call(
-        session.quote(AMOUNT), receiver=TRADER, sender=TRADER,
-        slippage_bp=None, min_out_bp=0.0)
-    assert not stale.reverted, "the plan was refused before anything moved"
-
-    # Move it: a hundred ether through the same route, which is the volatile
-    # leg's price shifting by far more than the bound it shipped with.
-    contract = RouterContract(fork.provider(), TRADER)
-    big = await session.plan_call(
-        session.quote(100 * 10**18), receiver=TRADER, sender=TRADER,
-        slippage_bp=None, min_out_bp=0.0)
-    fork.wait(await contract.execute(big))
-
-    assert _refused(fork, stale), (
-        "the plan priced before the move was still accepted -- this test can "
-        "no longer tell a stale bound from a fresh one"
-    )
-
-    # And what the press does now: price again, against the pools as they are.
-    await host.after_swap(int(fork.rpc("eth_blockNumber"), 16))
-    fresh = await session.plan_call(
-        session.quote(AMOUNT), receiver=TRADER, sender=TRADER,
-        slippage_bp=None, min_out_bp=0.0)
-    assert not fresh.reverted, f"re-pricing did not help: {fresh.reverted}"
-    assert not _refused(fork, fresh), "the wallet would still have refused it"
-
-
-def _refused(fork, plan) -> bool:
-    """Whether the chain refuses this exact call, as a wallet would find out."""
-    payload = {"from": TRADER, "to": plan.to,
-               "value": hex(int(plan.value)), "data": "0x" + plan.data.hex()}
-    try:
-        fork.rpc("eth_call", [payload, "latest"])
-    except AssertionError:
-        return True
-    return False

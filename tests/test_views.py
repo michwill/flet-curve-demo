@@ -4297,3 +4297,28 @@ def test_the_flip_is_the_same_question_of_either_chart() -> None:
     view.series.value = f"{pool_detail.DEPTH_PREFIX}1:0"
 
     assert view._shown_pair() == (0, 1)
+
+
+def test_the_flip_button_is_dressed_before_it_is_pressed() -> None:
+    """The marks used to arrive only once the button had been clicked: the
+    depth loader dressed it and the candle loader did not, so a price pair
+    showed a bare glyph until something else had already put them there.
+    """
+    view = activity_view()
+    view.series.value = "1:0"
+
+    view._show("chart")
+
+    assert view._flip_left.content is not None
+    assert view._flip_right.content is not None
+    assert "Showing" in (view.flip_button.tooltip or "")
+
+
+def test_the_depth_button_is_dressed_the_same_way() -> None:
+    view = activity_view()
+    view.series.value = f"{pool_detail.DEPTH_PREFIX}1:0"
+
+    view._show("depth")
+
+    assert view._flip_left.content is not None
+    assert view._flip_right.content is not None

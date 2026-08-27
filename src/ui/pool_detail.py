@@ -1188,7 +1188,6 @@ class PoolDetailView(ft.Column):
             return
         i, j = pair
         self._show("depth")
-        self._sync_flip()
         self.chart_error.value = ""
         self._sync_depth_units()
         self.depth_chart.say("Reading the pool…")
@@ -1435,6 +1434,11 @@ class PoolDetailView(ft.Column):
         # ordering of.  The tables have no pair and no button.
         self.flip_button.visible = (
             which in ("depth", "chart") and self._selected_pair() is not None)
+        # And dressed here rather than by whichever loader remembered to.  The
+        # depth one did and the candle one did not, so a price pair drew a bare
+        # glyph until it was pressed -- the marks arriving only once something
+        # else had already put them there.
+        self._sync_flip()
 
     def _show_activity(self, showing: bool) -> None:
         self._show("activity" if showing else "chart")

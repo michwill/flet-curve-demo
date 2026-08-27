@@ -2244,3 +2244,142 @@ async def test_nothing_to_approve_is_nothing_to_batch():
     tab._pending_approval = None
 
     assert await tab._submit_as_batch(tab.get_contract(), "Withdrew.") is False
+
+
+async def test_a_deposit_batches_every_coin_it_still_needs_approving():
+    """A deposit spends more than one coin, so more than one allowance can be
+    short.  A batch carrying only the coin the button names would revert on
+    the rest -- a worse answer than the two prompts it replaced.
+    """
+    from curve.pool import PoolContract
+    from ui.actions import DepositTab
+
+    provider = FakeProvider()
+    pool = make_pool()
+    contract = PoolContract(provider, pool, ACCOUNT)
+    tab = DepositTab(StubPage(), pool, lambda: contract, None)
+    tab.slippage.value = "1"
+    tab._quote_ok = True
+    tab._expected_lp = 10**18
+    for row, value in zip(tab.rows.fields, ["1000", "1000"]):
+        row.value = value
+    # Every allowance reads zero from the fake, so both coins are short.
+    pending = await tab.approvals_needed(contract)
+
+    assert len(pending) == 2, "only one coin was reported as needing approval"
+    assert {token for token, _s, _a in pending} == {
+        coin.address for coin in pool.pool_coins
+    }
+
+
+async def test_the_one_it_names_is_the_first_of_the_ones_it_found():
+    """The two-step path still walks them in order, so the button has to keep
+    naming a single concrete step."""
+    from curve.pool import PoolContract
+    from ui.actions import DepositTab
+
+    provider = FakeProvider()
+    pool = make_pool()
+    contract = PoolContract(provider, pool, ACCOUNT)
+    tab = DepositTab(StubPage(), pool, lambda: contract, None)
+    tab._quote_ok = True
+    for row, value in zip(tab.rows.fields, ["1000", "1000"]):
+        row.value = value
+
+    named = await tab.approval_needed(contract)
+    everything = await tab.approvals_needed(contract)
+
+    assert named == everything[0]
+    assert "Approve" in str(tab.approve_button.content)
+
+
+async def test_a_plain_deposit_collects_as_one_call():
+    """`Approve + Deposit`: the deposit is a single send, so the collection
+    reaches the end and the pair goes over together."""
+    from curve.pool import PoolContract
+    from ui.actions import DepositTab
+
+    provider = FakeProvider()
+    pool = make_pool()
+    contract = PoolContract(provider, pool, ACCOUNT)
+    tab = DepositTab(StubPage(), pool, lambda: contract, None)
+    tab.slippage.value = "1"
+    tab._quote_ok = True
+    tab._expected_lp = 10**18
+    tab.rows.fields[0].value = "1000"
+
+    with contract.collecting() as calls:
+        await tab.submit(contract)
+
+    assert len(calls) == 1, "the deposit was not a single call"
+    assert not provider.sent, "it went to the wallet during a collection"
+
+
+async def test_deposit_and_stake_collects_as_one_call_too():
+    """`Approve + deposit-and-stake` batches as well: the zap does both in one
+    transaction, so there is nothing to wait for in the middle."""
+    from curve.pool import PoolContract
+    from ui.actions import DepositTab
+
+    provider = FakeProvider()
+    # A gauge and a chain the zap is deployed on: `stake_zap_for` needs both,
+    # and without them this would skip and prove nothing.
+    pool = Pool.from_v2({
+        "address": POOL_ADDRESS,
+        "pool_type": "crvusd",
+        "lp_token_address": LP_TOKEN,
+        "chain_id": 1,
+        "gauges": [{"address": "0x" + "cc" * 20, "is_killed": False}],
+        "coins": [
+            {"symbol": "USDT", "address": "0x" + "aa" * 20, "decimals": 6},
+            {"symbol": "crvUSD", "address": "0x" + "bb" * 20, "decimals": 18},
+        ],
+    })
+    contract = PoolContract(provider, pool, ACCOUNT)
+    assert contract.stake_zap is not None, "the zap did not resolve"
+    tab = DepositTab(StubPage(), pool, lambda: contract, None)
+    tab.slippage.value = "1"
+    tab._quote_ok = True
+    tab._expected_lp = 10**18
+    tab.rows.fields[0].value = "1000"
+    tab.stake_box.value = True          # `staking` and `combined` are derived
+
+    with contract.collecting() as calls:
+        await tab.submit(contract)
+
+    assert len(calls) == 1, "deposit-and-stake was not a single call"
+    assert calls[0].to.lower() == contract.stake_zap.address.lower()
+
+
+async def test_a_deposit_that_stakes_the_long_way_refuses_to_batch():
+    """Without a zap, staking waits for the deposit to land so it can read the
+    LP it minted.  That cannot be collected, and must not be guessed at."""
+    from curve.pool import PoolContract
+    from ui.actions import DepositTab, NotBatchable
+
+    provider = FakeProvider()
+    # `staking` needs somewhere to stake as well as a ticked box; `Pool` is
+    # frozen, so the gauge goes in when it is built.
+    pool = Pool.from_v2({
+        "address": POOL_ADDRESS,
+        "pool_type": "crvusd",
+        "lp_token_address": LP_TOKEN,
+        "gauges": [{"address": "0x" + "cc" * 20, "is_killed": False}],
+        "coins": [
+            {"symbol": "USDT", "address": "0x" + "aa" * 20, "decimals": 6},
+            {"symbol": "crvUSD", "address": "0x" + "bb" * 20, "decimals": 18},
+        ],
+    })
+    contract = PoolContract(provider, pool, ACCOUNT)
+    tab = DepositTab(StubPage(), pool, lambda: contract, None)
+    tab.slippage.value = "1"
+    tab._quote_ok = True
+    tab._expected_lp = 10**18
+    tab.rows.fields[0].value = "1000"
+    tab.stake_box.value = True
+    tab.stake_zap = None                # no zap, so staking is the long way
+
+    with pytest.raises(NotBatchable), contract.collecting():
+        await tab.submit(contract)
+
+    assert not provider.sent

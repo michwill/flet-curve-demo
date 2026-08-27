@@ -472,6 +472,20 @@ class ActionTab:
         """Return `(token, spender, amount)` still needing an allowance."""
         return None
 
+    async def approvals_needed(
+        self, contract: PoolContract
+    ) -> list[tuple[str, str, int]]:
+        """Every allowance still missing, not just the next one.
+
+        `approval_needed` names one because the two-step path walks them in
+        order and its button has to name a concrete step.  A batch is under no
+        such constraint, and every missing allowance has to be in it: a
+        deposit of two coins that folds in only the first reverts on the
+        second, which is a worse answer than the two prompts it replaced.
+        """
+        single = await self.approval_needed(contract)
+        return [single] if single is not None else []
+
     # -- shared behaviour -------------------------------------------------
 
     def mount(self) -> ft.Column:
@@ -662,8 +676,12 @@ class ActionTab:
         cannot be collected.  Only once the wallet has actually accepted the
         batch does this own the outcome.
         """
-        pending = self._pending_approval
-        if pending is None or not await self._wallet_batches(contract):
+        if self._pending_approval is None or not await self._wallet_batches(contract):
+            return False
+        # Every missing allowance, not just the one the button names: a
+        # deposit spends more than one coin and can be short on several.
+        pending = await self.approvals_needed(contract)
+        if not pending:
             return False
         try:
             with contract.collecting() as calls:
@@ -677,11 +695,13 @@ class ActionTab:
             # action that somehow sent twice without waiting is not one this
             # knows how to promise anything about.
             return False
-        token, spender, amount = pending
-        self._say("Confirm both in your wallet…", pending=True)
+        self._say("Confirm both in your wallet…" if len(pending) == 1
+                  else f"Confirm all {len(pending) + 1} in your wallet…",
+                  pending=True)
         batch_id = await batch.send(
             contract.provider, contract.account, self.pool.chain_id,
-            [batch.Call(*contract.build_approve(token, spender, amount)), *action],
+            [batch.Call(*contract.build_approve(token, spender, amount))
+             for token, spender, amount in pending] + action,
         )
         self._say(f"Waiting for {batch_id[:14]}… to confirm.", pending=True)
         await wait_for_batch(contract.provider, batch_id, interval=CONFIRM_INTERVAL)
@@ -1053,21 +1073,35 @@ class DepositTab(ActionTab):
             self.submit_button.disabled = True
         self.page.update()
 
-    async def approval_needed(self, contract: PoolContract) -> tuple[str, str, int] | None:
-        # One coin at a time: each ERC-20 needs its own approval, and
-        # the UI walks them in order rather than batching, so the
-        # button always names a single concrete step.
+    async def approvals_needed(
+        self, contract: PoolContract
+    ) -> list[tuple[str, str, int]]:
+        """Every coin in this deposit whose allowance is short.
+
+        A deposit spends more than one, so more than one can be missing --
+        and a batch that carried only the first would revert on the rest.
+        """
         if not self._quote_ok:
-            return None
-        rows = self.rows
-        for coin, amount in zip(rows.coins, rows.amounts()):
+            return []
+        out: list[tuple[str, str, int]] = []
+        for coin, amount in zip(self.rows.coins, self.rows.amounts()):
             if amount <= 0:
                 continue
             allowance = await contract.allowance(coin.address, self.spender)
             if allowance < amount:
-                self.approve_button.content = f"1. Approve {coin.symbol}"
-                return (coin.address, self.spender, amount)
-        return None
+                out.append((coin.address, self.spender, amount))
+        return out
+
+    async def approval_needed(self, contract: PoolContract) -> tuple[str, str, int] | None:
+        # One coin at a time: each ERC-20 needs its own approval, and the
+        # two-step path walks them in order, so the button always names a
+        # single concrete step.  `approvals_needed` is what a batch uses.
+        pending = await self.approvals_needed(contract)
+        if not pending:
+            return None
+        by_address = {coin.address: coin.symbol for coin in self.rows.coins}
+        self.approve_button.content = f"1. Approve {by_address.get(pending[0][0], '')}"
+        return pending[0]
 
     @property
     def done_verb(self) -> str:

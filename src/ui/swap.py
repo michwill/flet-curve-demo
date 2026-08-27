@@ -1552,7 +1552,7 @@ class SwapView(ft.Container):
         self.rows.set_gas(f"≈ {text}" if text and estimated else text)
         safe_update(self.rows.control)
 
-    def show_approval(self, needed: bool) -> None:
+    def show_approval(self, needed: bool, *, batched: bool = False) -> None:
         """Two steps or one, the way Curve's own widget puts it.
 
         Step two waits for step one.  An unapproved token cannot be swapped,
@@ -1560,10 +1560,19 @@ class SwapView(ft.Container):
         `transferFrom` before it reaches a pool -- and the dry run behind it
         cannot price the route either, so the figures beside it are estimates
         of a trade nobody can send yet.
+
+        `batched` is a wallet that takes both at once: one button, and it says
+        what it will do.  Saying nothing was worse than either -- the approval
+        step simply disappeared, and the only way to find out an approval was
+        still involved was to press Swap and be told the route would not go
+        through.
         """
-        self._unapproved = needed
-        self.approve_button.visible = needed
-        self.submit_button.content = "2. Swap" if needed else "Swap"
+        self._unapproved = needed and not batched
+        self.approve_button.visible = needed and not batched
+        if batched and needed:
+            self.submit_button.content = "Approve & Swap"
+        else:
+            self.submit_button.content = "2. Swap" if needed else "Swap"
         self._sync_submit()
         safe_update(self.approve_button)
         safe_update(self.submit_button)

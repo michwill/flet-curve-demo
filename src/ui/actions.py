@@ -712,12 +712,21 @@ class ActionTab:
         except WalletError:
             pending = None
         self._pending_approval = pending
-        self.approve_button.visible = pending is not None
+        # A wallet that takes both at once gets one button that says so, and
+        # no second step to wait for.  Without this the submit stayed disabled
+        # until the approval had confirmed, which is the very wait batching
+        # exists to remove -- and left the batch unreachable.
+        batched = pending is not None and await self._wallet_batches(contract)
+        self.approve_button.visible = pending is not None and not batched
         self.approve_button.disabled = pending is None or self._sending
-        self.submit_button.content = (
-            f"2. {self.submit_label}" if pending is not None else self.submit_label
-        )
-        self.submit_button.disabled = pending is not None or self._sending
+        if batched:
+            self.submit_button.content = f"Approve & {self.submit_label}"
+        else:
+            self.submit_button.content = (
+                f"2. {self.submit_label}" if pending is not None else self.submit_label
+            )
+        self.submit_button.disabled = (
+            (pending is not None and not batched) or self._sending)
 
 
 def _max_button(on_click) -> ft.TextButton:

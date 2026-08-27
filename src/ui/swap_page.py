@@ -676,11 +676,10 @@ class SwapPage:
             needed = False
         self._unapproved = needed
         # A wallet that batches is not offered two steps: it takes the
-        # approval and the swap in one prompt, so the second button would be
-        # asking for something the first one already covers.
-        if needed and await self._wallet_batches(contract):
-            needed = False
-        self.view.show_approval(needed)
+        # approval and the swap in one prompt.  The button says so rather
+        # than the approval quietly vanishing.
+        batched = needed and await self._wallet_batches(contract)
+        self.view.show_approval(needed, batched=batched)
 
     async def _wallet_batches(self, contract) -> bool:
         """Whether this wallet takes several calls in one prompt (EIP-5792).
@@ -703,20 +702,24 @@ class SwapPage:
 
         False means it is not, and the caller sends the swap on its own.
 
-        The dry run behind `plan` reverts when the allowance is not there --
-        on the `transferFrom`, before it reaches a pool -- so a refusal is not
-        by itself a reason to hold back here.  `gas_estimated` is what tells
-        the two apart: it is set only when the estimate, which grants the
-        approval in its own EVM and runs the whole route, came back with a
-        figure.  So the route is known to work once the approval exists, which
-        is exactly what the batch is about to make true.
+        The dry run behind `plan` reverts whenever the allowance is not there
+        -- on the `transferFrom`, before it reaches a pool -- so with an
+        approval outstanding a refusal says nothing about the route, and
+        holding back on one leaves the tab with no way forward at all: no
+        approve button, because the wallet batches, and a swap that reports a
+        revert it was always going to report.  Measured on a Safe over
+        WalletConnect, which is the wallet this is for.
+
+        So the batch goes when there is an approval to fold into it.  What it
+        costs is that a route which really would not go through is found out
+        by the wallet's own simulation rather than by ours -- which is where
+        the reader sees it anyway, and is the same bargain the two-prompt path
+        makes when it lets an approval through before pricing the swap.
         """
         from curve.confirm import wait_for_batch
 
         if not self._unapproved or not await self._wallet_batches(contract):
             return False
-        if plan.reverted and not plan.gas_estimated:
-            return False        # refused for some other reason; not ours to send
         self.view.say("Confirm both in your wallet…", pending=True)
         batch_id = await batch.send(
             contract.provider, contract.account, self.chain_id_now or 0,

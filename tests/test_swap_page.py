@@ -2348,19 +2348,61 @@ async def test_an_approval_and_the_swap_go_over_together():
     assert page._floor_block == 99, "the block the batch landed in was not kept"
 
 
-async def test_a_refusal_that_is_not_the_missing_allowance_is_not_batched():
-    """The dry run reverts on a missing allowance, which the batch is about to
-    grant.  Any other refusal is a route that will not go through, and sending
-    it because a wallet happens to batch would be sending a known failure.
+async def test_an_outstanding_approval_is_batched_even_though_it_reverts():
+    """With no allowance the dry run always reverts, on the `transferFrom`
+    before any pool -- so a refusal says nothing about the route.  Holding
+    back on one left the tab with nowhere to go: no approve button, because
+    the wallet batches, and a swap reporting a revert it was always going to
+    report.  That is what a Safe over WalletConnect showed.
     """
     page = swap_page_with(Wallet(), two_coins())
     page._unapproved = True
     page._batches = True
     page.chain_id_now = 1
-    plan = Reverting()
-    plan.gas_estimated = False      # the estimate could not run it either
+    sent: list = []
 
-    assert await page._send_as_batch(Batching(), plan) is False
+    async def send(_provider, _account, _chain, calls, **_kw):
+        sent.append(calls)
+        return "0xbatch"
+
+    import curve.confirm as confirm_module
+    import ui.swap_page as page_module
+    original_send = page_module.batch.send
+    original_wait = confirm_module.wait_for_batch
+    page_module.batch.send = send
+    confirm_module.wait_for_batch = lambda *a, **k: _answer(7)
+    try:
+        assert await page._send_as_batch(Batching(), Reverting()) is True
+    finally:
+        page_module.batch.send = original_send
+        confirm_module.wait_for_batch = original_wait
+
+    assert len(sent) == 1 and len(sent[0]) == 2
+
+
+def test_a_batching_wallet_is_told_the_button_will_approve_too():
+    """The approval step simply disappearing was worse than either spelling:
+    the only way to learn one was still involved was to press Swap.
+    """
+    page = swap_page_with(Wallet(), two_coins())
+
+    page.view.show_approval(True, batched=True)
+
+    assert page.view.submit_button.content == "Approve & Swap"
+    assert not page.view.approve_button.visible
+    # The empty amount is what disables it here; the missing approval must not
+    # also, or the one button offered would be one that cannot be pressed.
+    assert page.view._unapproved is False
+
+
+def test_a_wallet_without_batching_still_gets_the_two_steps():
+    page = swap_page_with(Wallet(), two_coins())
+
+    page.view.show_approval(True)
+
+    assert page.view.submit_button.content == "2. Swap"
+    assert page.view.approve_button.visible
+    assert page.view.submit_button.disabled
 
 
 async def test_a_wallet_that_does_not_batch_is_left_alone():

@@ -31,6 +31,12 @@
     icon: ICON,
   };
 
+  // Whether this mock claims EIP-5792.  Opt-in, so the ordinary two-prompt
+  // path is what development sees unless batching is what is being tested.
+  const BATCHING =
+    new URLSearchParams(location.search).get("batch") === "1" ||
+    window.__batching === true;
+
   const word = (hex) => hex.replace(/^0x/, "").padStart(64, "0");
   const utf8Hex = (text) =>
     [...new TextEncoder().encode(text)].map((b) => b.toString(16).padStart(2, "0")).join("");
@@ -114,6 +120,62 @@
           window.__lastTx = params[0];
           console.log("[mock-wallet] would send:", JSON.stringify(params[0], null, 2));
           return "0x" + "ab".repeat(32);
+        // -- EIP-5792 ---------------------------------------------------
+        // Off unless asked for, so the two-prompt path stays the default
+        // one development exercises: `?mock=1&batch=1`, or set
+        // `window.__batching` from the console and reconnect.
+        case "wallet_getCapabilities": {
+          if (!BATCHING) throw { code: 4200, message: "no capabilities here" };
+          const wanted = (params && params[1]) || [CHAIN_ID];
+          const answer = {};
+          for (const chain of wanted) {
+            answer[chain] = { atomic: { status: "supported" } };
+          }
+          console.log("[mock-wallet] capabilities:", JSON.stringify(answer));
+          return answer;
+        }
+        case "wallet_sendCalls": {
+          if (!BATCHING) throw { code: 4200, message: "no batching here" };
+          const call = params[0] || {};
+          const calls = call.calls || [];
+          // Same bookkeeping a single send does, so whatever the batch
+          // approves counts as approved afterwards.
+          for (const one of calls) {
+            if ((one.data || "").startsWith("0x095ea7b3")) window.__approved = true;
+          }
+          this._polls = 0;
+          window.__lastBatch = call;
+          console.log(
+            "[mock-wallet] would send " + calls.length + " call(s) as one batch:",
+            JSON.stringify(call, null, 2),
+          );
+          return { id: "0x" + "ba".repeat(16) };
+        }
+        case "wallet_getCallsStatus": {
+          // Pending for the first couple of polls, like a receipt, so the
+          // waiting path is exercised rather than short-circuited.
+          this._polls = (this._polls || 0) + 1;
+          const calls = (window.__lastBatch || {}).calls || [];
+          if (this._polls < 3) {
+            return { version: "2.0.0", id: params[0], chainId: CHAIN_ID,
+                     status: 100, atomic: true, receipts: [] };
+          }
+          return {
+            version: "2.0.0",
+            id: params[0],
+            chainId: CHAIN_ID,
+            status: 200,
+            atomic: true,
+            // Atomic, so the whole batch is one transaction and one receipt,
+            // however many calls went into it.
+            receipts: [{
+              transactionHash: "0x" + "ba".repeat(32),
+              blockNumber: "0x" + MINED_BLOCK.toString(16),
+              status: "0x1",
+              gasUsed: "0x" + (21000 * Math.max(calls.length, 1)).toString(16),
+            }],
+          };
+        }
         case "wallet_switchEthereumChain": {
           const wanted = params[0] && params[0].chainId;
           if (!KNOWN_CHAINS.has(wanted)) {

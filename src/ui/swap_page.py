@@ -728,15 +728,24 @@ class SwapPage:
             self.view.busy(False)
 
     async def _swap(self) -> None:
-        contract, plan = self._contract(), self._plan
+        contract = self._contract()
         if contract is None or self._sending:
             return
+        # Priced again here, whatever is already on screen.  A plan is built
+        # when the typing stops; the press comes once somebody has read the
+        # numbers and decided, which is a minute later as often as not -- and
+        # the bounds in it were measured against a block that has since gone.
+        # Sent as it stands, the wallet says the transaction will fail before
+        # it is even signed, which is the honest answer to a stale bound.
+        #
+        # This is what `plan_call` is for: it re-reads the route's accounts at
+        # the newest block and re-prices every leg off that storage.  A round
+        # trip on the press is the cheapest thing here.
+        self.view.say("Pricing the route…", pending=True)
+        await self._plan_now()
+        plan = self._plan
         if plan is None:
-            # Someone reached the button before the plan landed; make one now
-            # rather than send a route priced at a block that has moved.
-            await self._plan_now()
-            plan = self._plan
-        if plan is None:
+            self.view.clear_status()
             return
         if plan.reverted:
             # Planned against a block that has since moved.  A pool moving

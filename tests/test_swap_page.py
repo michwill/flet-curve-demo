@@ -708,7 +708,11 @@ class Sending:
 
     can_send = True
 
-    async def execute(self, _plan) -> str:
+    def __init__(self) -> None:
+        self.sent: list = []
+
+    async def execute(self, plan) -> str:
+        self.sent.append(plan)
         return "0x" + "ef" * 32
 
     async def needs_approval(self, _plan) -> bool:
@@ -761,6 +765,8 @@ async def test_a_swap_re_reads_both_balances_and_the_picker_order():
     page._confirm = lambda *a, **k: asyncio.sleep(0, result=0)
 
     class Host:
+        session = None
+
         async def after_swap(self, not_before=0):
             return 0
 
@@ -1610,6 +1616,8 @@ async def test_a_revert_re_reads_the_state_and_tries_again():
     page._page.run_task = lambda fn, *a: None
 
     class Host:
+        session = None
+
         async def after_swap(self, not_before=0):
             return 0
 
@@ -1660,6 +1668,8 @@ class Failing(Sending):
 
 
 class WatchedHost:
+    session = None
+
     def __init__(self) -> None:
         self.refreshed = 0
         self.quoted: list = []
@@ -1980,7 +1990,9 @@ async def test_a_revert_re_sweeps_the_whole_state_not_just_the_route():
 
     async def replan():
         order.append("plan")
-        page._plan = Planned()
+        # The press prices afresh; that price is refused, and only the one
+        # taken after the sweep goes through.
+        page._plan = Reverting() if order.count("plan") == 1 else Planned()
 
     page._plan_now = replan
     page._read_balances = lambda: _answer(None)
@@ -1988,6 +2000,8 @@ async def test_a_revert_re_sweeps_the_whole_state_not_just_the_route():
     page._page.run_task = lambda fn, *a: None
 
     class Host:
+        session = None
+
         async def refresh(self):
             order.append("sweep")
             return 0
@@ -2001,7 +2015,7 @@ async def test_a_revert_re_sweeps_the_whole_state_not_just_the_route():
 
     await page._swap()
 
-    assert order == ["sweep", "plan"], "swept before re-pricing against it"
+    assert order == ["plan", "sweep", "plan"], "swept, then priced against it"
 
 
 async def test_a_refusal_that_outlives_its_block_is_taken_down_by_a_quote():
@@ -2042,7 +2056,9 @@ async def test_the_press_waits_for_the_quote_the_re_read_started():
 
     async def replan():
         order.append("plan")
-        page._plan = Planned()
+        # The press prices afresh; that price is refused, and only the one
+        # taken after the sweep goes through.
+        page._plan = Reverting() if order.count("plan") == 1 else Planned()
 
     page._plan_now = replan
     page._read_balances = lambda: _answer(None)
@@ -2050,6 +2066,8 @@ async def test_the_press_waits_for_the_quote_the_re_read_started():
     page._page.run_task = lambda fn, *a: None
 
     class Host:
+        session = None
+
         async def refresh(self):
             order.append("sweep")
             return 0
@@ -2066,7 +2084,7 @@ async def test_the_press_waits_for_the_quote_the_re_read_started():
 
     await page._swap()
 
-    assert order == ["sweep", "settle", "plan"], "planned on the new quote"
+    assert order == ["plan", "sweep", "settle", "plan"], "planned on the new quote"
 
 
 async def test_a_press_with_no_plan_left_says_nothing_and_leaves_a_quote():
@@ -2084,6 +2102,8 @@ async def test_a_press_with_no_plan_left_says_nothing_and_leaves_a_quote():
     page._contract = lambda: sent
 
     class Host:
+        session = None
+
         async def refresh(self):
             return 0
 
@@ -2189,6 +2209,8 @@ async def test_the_tab_is_usable_again_before_the_housekeeping_finishes():
     seen: list[bool] = []
 
     class Host:
+        session = None
+
         async def after_swap(self, not_before=0):
             seen.append(page.view.amount.disabled)
             return 0
@@ -2213,6 +2235,8 @@ async def test_a_reverted_send_re_reads_at_the_block_it_landed_in():
     floors: list[int] = []
 
     class Host:
+        session = None
+
         async def after_swap(self, not_before=0):
             floors.append(not_before)
             return not_before
@@ -2225,3 +2249,38 @@ async def test_a_reverted_send_re_reads_at_the_block_it_landed_in():
     await page._after_failed_send(TransactionFailed("reverted", 4242).block)
 
     assert floors == [4242]
+
+
+async def test_every_press_prices_the_route_again():
+    """A plan is built when the typing stops; the press comes once somebody
+    has read the numbers and decided, which is a minute later as often as not.
+    Sending what was priced then is what makes a wallet say the transaction
+    will fail before it is even signed.
+    """
+    page = swap_page_with(Wallet(), two_coins())
+    priced: list[int] = []
+    page._plan = Planned()          # already on screen, and already old
+
+    async def replan():
+        priced.append(1)
+        page._plan = Planned()
+
+    page._plan_now = replan
+    page._read_balances = lambda: _answer(None)
+    page._confirm = lambda *a, **k: _answer(0)
+    page._page.run_task = lambda fn, *a: None
+
+    class Host:
+        session = None
+
+        async def after_swap(self, not_before=0):
+            return 0
+
+    page.host = Host()
+    sent = Sending()
+    page._contract = lambda: sent
+
+    await page._swap()
+
+    assert priced == [1], "it sent the plan on screen rather than a fresh one"
+    assert sent.sent, "and it did go on to send"

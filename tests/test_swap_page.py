@@ -10,6 +10,7 @@ having gone wrong.  The quote itself is still the chain's own number.
 from __future__ import annotations
 
 from router import Stage
+from ui import swap
 from ui.responsive import layout_for
 from ui.status import FAILED
 from ui.swap import SwapView
@@ -2542,3 +2543,81 @@ async def test_a_finished_swap_leaves_the_output_box_empty():
 
     assert wanted == [0], "the host kept the amount and will re-quote it"
     assert page.view.receive.value == ""
+
+
+# -- the offer of source AGPL §13 asks for ----------------------------------
+
+
+def _texts(control) -> list[str]:
+    """Every string under a control, in order."""
+    found: list[str] = []
+    value = getattr(control, "value", None)
+    if isinstance(value, str) and value:
+        found.append(value)
+    for name in ("content", "controls"):
+        child = getattr(control, name, None)
+        if child is None:
+            continue
+        for one in (child if isinstance(child, list) else [child]):
+            found += _texts(one)
+    return found
+
+
+def _urls(control) -> list[str]:
+    found: list[str] = []
+    url = getattr(control, "url", None)
+    if url is not None:
+        found.append(getattr(url, "url", str(url)))
+    for name in ("content", "controls"):
+        child = getattr(control, name, None)
+        if child is None:
+            continue
+        for one in (child if isinstance(child, list) else [child]):
+            found += _urls(one)
+    return found
+
+
+def test_the_swap_page_offers_its_source():
+    """§13 asks for the offer to reach whoever uses the program remotely, and
+    a licence file in the repository does not reach them.  A build served off
+    IPFS is exactly the case it is about.
+    """
+    view = build_view()
+
+    words = " ".join(_texts(view._source))
+    assert "AGPL-3.0" in words
+    assert _urls(view._source) == [swap.SOURCE_URL, swap.ROUTER_URL]
+
+
+def test_the_offer_names_the_router_it_bundles_as_well():
+    """A build carries `src/erouter`, so the corresponding source is both.
+    The app's repository pins the router as a submodule, so the first link
+    reaches the second -- naming it saves anybody having to know that.
+    """
+    view = build_view()
+
+    assert "github.com" in swap.ROUTER_URL
+    assert swap.ROUTER_URL != swap.SOURCE_URL
+    assert len(_urls(view._source)) == 2
+
+
+def test_the_links_are_marked_as_links():
+    """In the caption colour at caption size these read as a label until
+    something says otherwise, and an offer nobody can see is not one."""
+    view = build_view()
+
+    underlined = [
+        control for control in _walk(view._source)
+        if getattr(getattr(control, "style", None), "decoration", None) is not None
+    ]
+    assert len(underlined) == 2, "the two links are not distinguishable"
+
+
+def _walk(control):
+    yield control
+    for name in ("content", "controls"):
+        child = getattr(control, name, None)
+        if child is None:
+            continue
+        for one in (child if isinstance(child, list) else [child]):
+            yield from _walk(one)

@@ -34,6 +34,13 @@ from .typography import BODY, LABEL, SMALL, TINY, TITLE
 
 #: How wide the widget is allowed to get.  Curve's own is about this, and a
 #: swap box that spans a desktop window reads as a form rather than a control.
+#: Where the corresponding source lives, for AGPL §13.  Both, because a
+#: build bundles `src/erouter` as well: the router is the submodule this
+#: repository pins, so the first link reaches the second, but naming it saves
+#: anybody having to know that.
+SOURCE_URL = "https://github.com/michwill/flet-curve-demo"
+ROUTER_URL = "https://github.com/michwill/electric-router"
+
 WIDGET_WIDTH = 480.0
 
 #: What the diagram is given when it is stacked under the widget rather than
@@ -1105,7 +1112,20 @@ class SwapView(ft.Container):
             spacing=24,
             wrap=False,
         )
-        super().__init__(self._body, padding=ft.Padding.symmetric(vertical=18))
+        # Under everything, in the empty space the page already has.  AGPL §13
+        # asks for an offer of source to whoever uses the program *remotely*,
+        # which a build served off IPFS is; a licence file in the repository
+        # does not reach the person using it.  So it goes where it is always
+        # available and never in the way, rather than behind a menu.
+        self._source = _source_offer()
+        super().__init__(
+            ft.Column(
+                [self._body, self._source],
+                spacing=0,
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+            padding=ft.Padding.symmetric(vertical=18),
+        )
 
     def before_update(self) -> None:
         # The same three the picture beside it takes, and for the reason
@@ -1964,6 +1984,47 @@ class _Elements:
             type("E", (), {"target": leg.target})()
             for leg in (getattr(route, "legs", ()) or ())
         ]
+
+
+def _source_offer() -> ft.Control:
+    """The offer of source AGPL §13 asks for, worn lightly.
+
+    Quiet on purpose: it has to be *there* rather than noticed, so it sits in
+    the space under the widget that the page was leaving empty anyway, at the
+    smallest size the type scale has and in the colour captions use.
+    """
+    def link(text: str, url: str) -> ft.Control:
+        # Underlined, because an offer nobody can tell is an offer is not one:
+        # in the caption colour and at caption size these read as a label
+        # until something says they are not.
+        return ft.Container(
+            ft.Text(text, size=SMALL, color=ft.Colors.ON_SURFACE_VARIANT,
+                    style=ft.TextStyle(
+                        decoration=ft.TextDecoration.UNDERLINE)),
+            url=ft.Url(url, target=ft.UrlTarget.BLANK),
+            tooltip=url,
+            border_radius=4,
+            ink=True,
+            padding=ft.Padding.symmetric(horizontal=5, vertical=2),
+        )
+
+    def label(text: str) -> ft.Control:
+        return ft.Text(text, size=SMALL, color=ft.Colors.ON_SURFACE_VARIANT)
+
+    return ft.Container(
+        ft.Row(
+            [
+                label("Source, under AGPL-3.0:"),
+                link("this app", SOURCE_URL),
+                label("·"),
+                link("the router it bundles", ROUTER_URL),
+            ],
+            alignment=ft.MainAxisAlignment.CENTER,
+            spacing=3,
+            tight=True,
+        ),
+        padding=ft.Padding.only(top=24),
+    )
 
 
 def _balance_line(coin: CoinEntry | None, balance: int | None) -> str:

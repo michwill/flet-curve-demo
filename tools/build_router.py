@@ -97,6 +97,13 @@ def copy_data() -> tuple[int, int]:
     for source_dir, target_dir, patterns in DATA:
         source = SOURCE / source_dir
         target = ASSETS / "data" / target_dir
+        # Cleared rather than copied over, as `copy_package` clears the
+        # package: a build that copies without clearing leaves whatever the
+        # last one put there, so a format retired upstream would go on
+        # shipping beside its replacement -- both cache formats, ten
+        # megabytes where three and a half were meant.
+        if target.exists():
+            shutil.rmtree(target)
         target.mkdir(parents=True, exist_ok=True)
         found: list[Path] = []
         for pattern in patterns:

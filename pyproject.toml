@@ -20,7 +20,20 @@ requires-python = ">=3.12"
 # that reason. A *range* rather than an exact pin, because the version that
 # gets installed is the one in Pyodide's lock (2.4.3 today) and pinning the
 # dev group's 2.5.2 here would make micropip fail to resolve it at boot.
-dependencies = ["flet==0.86.5", "flet-charts==0.86.5", "numpy>=2,<3"]
+dependencies = [
+    "flet==0.86.5",
+    "flet-charts==0.86.5",
+    "numpy>=2,<3",
+    # The router's state cache is msgpack under zstd: 1.5 MB against 5.1 as
+    # json.gz, and 32 ms to decode in Pyodide against 96.  Both specs match
+    # `vendor/electric-router`, which is what actually reads the file -- the
+    # app only hands it the bytes.
+    "msgpack>=1.1",
+    # `compression.zstd` is stdlib from 3.14 and compiled into Pyodide's wasm,
+    # so the marker keeps the wheel off the browser entirely: micropip reads
+    # these specs and Pyodide is 3.14.  Desktop is 3.13 and needs it.
+    "zstandard>=0.22; python_version < '3.14'",
+]
 
 # Everything needed to build the assets, run the tests and check the types.
 # None of it ships: `flet publish` reads `project.dependencies` above and

@@ -426,8 +426,11 @@ async def test_a_read_that_failed_everywhere_is_not_a_page_of_zeros() -> None:
 
 # -- one chain, two factories ------------------------------------------------
 
-OLD_FACTORY = "0xabc000d88f23bb45525e447528dbf656a9d55bf5"
-NEW_FACTORY = "0x988d1037e9608B21050A8EFba0c6C45e01A3Bce7"
+#: A different factory from the table's, to prove the split.
+OLD_FACTORY = "0xef672bd94913cb6f1d2812a6e18c1ffded8eff5c"
+#: What the table names for Arbitrum: the factory its gauges really use,
+#: since the audit found not one of them on the v2 factory.
+TABLE_FACTORY = "0xabC000d88f23Bb45525E447528DBF656A9D55bf5"
 
 
 def test_gauges_are_batched_by_the_factory_that_may_mint_them() -> None:
@@ -447,7 +450,7 @@ def test_gauges_are_batched_by_the_factory_that_may_mint_them() -> None:
     by_minter = dict(plan.crv)
     assert len(by_minter) == 2, "the two factories were mixed into one call"
     assert set(by_minter[OLD_FACTORY]) == {e.gauge for e in old}
-    assert set(by_minter[NEW_FACTORY]) == {e.gauge for e in new}
+    assert set(by_minter[TABLE_FACTORY]) == {e.gauge for e in new}
 
 
 def test_without_the_map_it_does_what_it_always_did() -> None:
@@ -458,7 +461,7 @@ def test_without_the_map_it_does_what_it_always_did() -> None:
 
     plan = claim_plan(42161, some)
 
-    assert [minter for minter, _ in plan.crv] == [NEW_FACTORY]
+    assert [minter for minter, _ in plan.crv] == [TABLE_FACTORY]
 
 
 def test_a_gauge_the_read_missed_falls_back_rather_than_being_dropped() -> None:

@@ -30,6 +30,10 @@ class FakeProvider(WalletProvider):
         self.sent: list[dict] = []
         self.default = word(0)
         self.raise_on_call: Exception | None = None
+        #: `{address: code}`, for `eth_getCode`.  Anything not named has code,
+        #: which is what a gauge that is really here looks like.
+        self.code_at: dict[str, str] = {}
+        self.codes_asked: list[str] = []
 
     async def request(self, method: str, params=None):
         params = params or []
@@ -39,6 +43,9 @@ class FakeProvider(WalletProvider):
             if self.raise_on_call is not None:
                 raise self.raise_on_call
             return self.answers.get(data[:10], self.default)
+        if method == "eth_getCode":
+            self.codes_asked.append(params[0])
+            return self.code_at.get(params[0].lower(), "0x60006000")
         if method == "eth_sendTransaction":
             self.sent.append(params[0])
             return "0x" + "ab" * 32
@@ -398,7 +405,9 @@ def test_collecting_twice_at_once_is_a_mistake():
 
 #: The gauge from the Arbitrum revert, and the two factories involved.
 OLD_FACTORY = "0xabC000d88f23Bb45525E447528DBF656A9D55bf5"
-NEW_FACTORY = "0x988d1037e9608B21050A8EFba0c6C45e01A3Bce7"
+#: What the table falls back to on Arbitrum now: the factory measured
+#: as the one its gauges actually name.
+TABLE_FACTORY = "0xabC000d88f23Bb45525E447528DBF656A9D55bf5"
 
 
 def arbitrum_pool() -> Pool:
@@ -440,7 +449,7 @@ async def test_a_gauge_that_will_not_say_falls_back_to_the_table():
 
     assert await pool.minter_for_gauge() == ""
     to, _data = pool.build_claim_crv("")
-    assert to == NEW_FACTORY, "the chain entry is what is left"
+    assert to == TABLE_FACTORY, "the chain entry is what is left"
 
 
 def test_a_zero_factory_is_not_an_answer():
@@ -450,3 +459,53 @@ def test_a_zero_factory_is_not_an_answer():
     assert minter_from_factory("") == ""
     assert minter_from_factory(None) == ""
     assert minter_from_factory(word(int(OLD_FACTORY, 16))).lower() == OLD_FACTORY.lower()
+
+
+# -- the gauge that is actually on this chain -------------------------------
+
+
+async def test_a_listed_gauge_with_no_code_is_resolved_from_the_lp_token():
+    """The pool list names the Ethereum *root* gauge for some sidechain
+    pools -- every gauge it lists for BSC and Sonic, 36 of 45 on Base.
+    Staking, unstaking and claiming all address the gauge, so none of them
+    can work against one that is not there.
+    """
+    real = "0x" + "dd" * 20
+    provider = FakeProvider({
+        abi.encode_gauge_from_lp_token(LP_TOKEN)[:10]: word(int(real, 16)),
+    })
+    provider.code_at = {GAUGE.lower(): "0x", real.lower(): "0x60006000"}
+    pool = contract(provider, arbitrum_pool())
+
+    assert (await pool.gauge_here()).lower() == real
+
+
+async def test_a_gauge_that_is_here_is_used_as_it_is():
+    provider = FakeProvider()
+    provider.code_at = {GAUGE.lower(): "0x60006000"}
+    pool = contract(provider, arbitrum_pool())
+
+    assert (await pool.gauge_here()).lower() == GAUGE.lower()
+
+
+async def test_no_factory_made_one_means_there_is_no_gauge_here():
+    """The honest answer, rather than an address nothing is deployed at."""
+    provider = FakeProvider({
+        abi.encode_gauge_from_lp_token(LP_TOKEN)[:10]: word(0),
+    })
+    provider.code_at = {GAUGE.lower(): "0x"}
+    pool = contract(provider, arbitrum_pool())
+
+    assert await pool.gauge_here() == ""
+
+
+async def test_the_resolution_is_asked_for_once():
+    provider = FakeProvider()
+    provider.code_at = {GAUGE.lower(): "0x60006000"}
+    pool = contract(provider, arbitrum_pool())
+
+    await pool.gauge_here()
+    before = len(provider.codes_asked)
+    await pool.gauge_here()
+
+    assert len(provider.codes_asked) == before, "it asked the chain twice"

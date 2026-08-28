@@ -493,6 +493,16 @@ def encode_claim_rewards_for(owner: str) -> str:
     return _call("claim_rewards(address)", _address(owner))
 
 
+def encode_gauge_from_lp_token(lp_token: str) -> str:
+    """`get_gauge_from_lp_token(address)` on a child gauge factory.
+
+    How the gauge that is really on this chain is found when the pool list
+    names one that is not: the API gives the Ethereum *root* gauge for some
+    sidechain pools, and for whole chains gives nothing else.
+    """
+    return _call("get_gauge_from_lp_token(address)", _address(lp_token))
+
+
 def encode_gauge_factory() -> str:
     """`factory()` on a child gauge: who is allowed to mint for it.
 

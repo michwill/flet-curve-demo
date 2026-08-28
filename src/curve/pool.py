@@ -106,6 +106,9 @@ class PoolContract:
         #: Set while `collecting` is open: sends are recorded here instead of
         #: being made, so a caller can turn a whole action into one batch.
         self._collected: list[batch.Call] | None = None
+        #: The gauge that is really on this chain, once resolved.  A pool is
+        #: one pool for the life of a panel, so this is asked once.
+        self._gauge_here: str | None = None
 
     @property
     def can_send(self) -> bool:
@@ -440,7 +443,7 @@ class PoolContract:
         """
         if not self.pool.has_any_gauge:
             return 0
-        return await self.balance_of(self.pool.any_gauge, owner)
+        return await self.balance_of(await self.gauge_here(), owner)
 
     async def allowance(self, token: str, spender: str) -> int:
         try:
@@ -629,21 +632,22 @@ class PoolContract:
             *self.build_deposit_and_stake(amounts, min_mint, underlying=underlying)
         )
 
-    def build_stake(self, amount: int) -> tuple[str, str]:
-        if not self.pool.has_gauge:
+    def build_stake(self, amount: int, gauge: str = "") -> tuple[str, str]:
+        if not (gauge or self.pool.has_gauge):
             raise PoolCallFailed("This pool has no gauge to stake in.")
-        return self.pool.gauge, abi.encode_gauge_deposit(amount)
+        return gauge or self.pool.gauge, abi.encode_gauge_deposit(amount)
 
     async def stake(self, amount: int) -> str:
-        return await self._send(*self.build_stake(amount))
+        return await self._send(*self.build_stake(amount, await self.gauge_here()))
 
-    def build_unstake(self, amount: int) -> tuple[str, str]:
-        if not self.pool.has_any_gauge:
+    def build_unstake(self, amount: int, gauge: str = "") -> tuple[str, str]:
+        if not (gauge or self.pool.has_any_gauge):
             raise PoolCallFailed("This pool has no gauge to unstake from.")
-        return self.pool.any_gauge, abi.encode_gauge_withdraw(amount)
+        return gauge or self.pool.any_gauge, abi.encode_gauge_withdraw(amount)
 
     async def unstake(self, amount: int) -> str:
-        return await self._send(*self.build_unstake(amount))
+        return await self._send(
+            *self.build_unstake(amount, await self.gauge_here()))
 
     # -- claiming ----------------------------------------------------------
     # Two halves that look alike on screen and are nothing alike on chain.
@@ -657,7 +661,7 @@ class PoolContract:
             return 0
         try:
             result = await self.provider.call(
-                self.pool.any_gauge, abi.encode_claimable_tokens(account)
+                await self.gauge_here(), abi.encode_claimable_tokens(account)
             )
         except RpcError as exc:
             raise PoolCallFailed(f"Could not read claimable CRV: {exc.message}") from exc
@@ -669,7 +673,7 @@ class PoolContract:
             return []
         try:
             raw = await self.provider.call(
-                self.pool.any_gauge, abi.encode_reward_count()
+                await self.gauge_here(), abi.encode_reward_count()
             )
         except RpcError:
             return []
@@ -678,7 +682,7 @@ class PoolContract:
         for index in range(min(count, MAX_REWARD_TOKENS)):
             try:
                 answer = await self.provider.call(
-                    self.pool.any_gauge, abi.encode_reward_tokens(index)
+                    await self.gauge_here(), abi.encode_reward_tokens(index)
                 )
             except RpcError:
                 break
@@ -694,7 +698,7 @@ class PoolContract:
             return 0
         try:
             result = await self.provider.call(
-                self.pool.any_gauge, abi.encode_claimable_reward(account, token)
+                await self.gauge_here(), abi.encode_claimable_reward(account, token)
             )
         except RpcError as exc:
             raise PoolCallFailed(
@@ -719,7 +723,7 @@ class PoolContract:
                     decimals = value
         return symbol, decimals
 
-    def build_claim_crv(self, minter: str = "") -> tuple[str, str]:
+    def build_claim_crv(self, minter: str = "", gauge: str = "") -> tuple[str, str]:
         """Mint the CRV. Goes to the minter, not to the gauge.
 
         `minter` is the gauge's own, where it has been read; without one this
@@ -733,7 +737,8 @@ class PoolContract:
             raise PoolCallFailed(
                 "CRV is not minted on this network, so there is nothing to claim."
             )
-        return minter or entry.minter, abi.encode_minter_mint(self.pool.any_gauge)
+        return (minter or entry.minter,
+                abi.encode_minter_mint(gauge or self.pool.any_gauge))
 
     async def minter_for_gauge(self) -> str:
         """Who may mint this gauge, asked of the gauge.
@@ -746,7 +751,7 @@ class PoolContract:
         Empty where the gauge will not say, which covers Ethereum, where the
         minter is the Minter contract and not a factory at all.
         """
-        gauge = self.pool.any_gauge
+        gauge = await self.gauge_here()
         if not gauge:
             return ""
         with contextlib.suppress(Exception):
@@ -754,14 +759,67 @@ class PoolContract:
                 await self.provider.call(gauge, abi.encode_gauge_factory()))
         return ""
 
-    async def claim_crv(self) -> str:
-        return await self._send(*self.build_claim_crv(await self.minter_for_gauge()))
+    async def has_code(self, address: str) -> bool:
+        """Whether anything is deployed there, on the chain this pool is on."""
+        if not address:
+            return False
+        with contextlib.suppress(Exception):
+            code = await self.provider.request("eth_getCode", [address, "latest"])
+            return bool(code) and code not in ("0x", "0x0")
+        return True     # unreadable is not the same as absent
 
-    def build_claim_rewards(self) -> tuple[str, str]:
+    async def gauge_here(self) -> str:
+        """The gauge that is actually on this chain, resolved if need be.
+
+        The pool list names a gauge that is sometimes not deployed on the
+        pool's own chain -- it is the Ethereum *root* gauge.  Measured: every
+        gauge listed for BSC and Sonic, 36 of 45 on Base, 28 of 75 on Fraxtal.
+        Staking, unstaking and claiming all address the gauge directly, so
+        none of them can work against one that is not there.
+
+        Where the listed address has no code, each child gauge factory this
+        chain is known to have is asked what gauge it made for the LP token.
+        Empty if none of them made one, which is the honest answer: this pool
+        has no gauge here, whatever the list says.
+        """
+        if self._gauge_here is not None:
+            return self._gauge_here
+        self._gauge_here = await self._resolve_gauge()
+        return self._gauge_here
+
+    async def _resolve_gauge(self) -> str:
+        listed = self.pool.any_gauge
+        if not listed:
+            return ""
+        if await self.has_code(listed):
+            return listed
+        entry = rewards_for(self.pool)
+        # The pool's own address where no LP token is named: the newer designs
+        # *are* their own LP token, and the list leaves the field empty for
+        # them -- `merge_detail` fills it in with the address for that reason,
+        # but the list this is built from has not been merged.
+        lp = self.pool.lp_token or self.pool.address
+        if entry is None or not lp:
+            return ""
+        for factory in entry.factories:
+            with contextlib.suppress(Exception):
+                answer = await self.provider.call(
+                    factory, abi.encode_gauge_from_lp_token(lp))
+                found = minter_from_factory(answer)
+                if found and await self.has_code(found):
+                    return found
+        return ""
+
+    async def claim_crv(self) -> str:
+        return await self._send(*self.build_claim_crv(
+            await self.minter_for_gauge(), await self.gauge_here()))
+
+    def build_claim_rewards(self, gauge: str = "") -> tuple[str, str]:
         """Claim every incentive token at once. Goes to the gauge."""
-        if not self.pool.has_any_gauge:
+        if not (gauge or self.pool.has_any_gauge):
             raise PoolCallFailed("This pool has no gauge, so nothing accrues.")
-        return self.pool.any_gauge, abi.encode_claim_rewards()
+        return gauge or self.pool.any_gauge, abi.encode_claim_rewards()
 
     async def claim_rewards(self) -> str:
-        return await self._send(*self.build_claim_rewards())
+        return await self._send(
+            *self.build_claim_rewards(await self.gauge_here()))

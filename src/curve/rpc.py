@@ -18,8 +18,28 @@ CHAINLIST = "https://chainlist.org/rpcs.json"
 #: How long to wait on one endpoint before trying the next.
 ENDPOINT_TIMEOUT = 8.0
 
-#: How many of a chain's endpoints to keep.
+#: How many of a chain's endpoints to ask at once.
 MAX_ENDPOINTS = 8
+
+#: How many to keep per chain, so a dead one can be replaced rather than
+#: merely walked past.  Measured across the fifteen chains this app serves:
+#: of the eight best-ranked, three to six answer, and on Fantom and Aurora
+#: only two -- while BSC has thirty-one working endpoints and the eight kept
+#: held three of them.  The ranking is by what an endpoint says it logs,
+#: which says nothing at all about whether it is up, so the window over it
+#: has to be able to move.
+ENDPOINT_POOL = 24
+
+#: How long an endpoint that could not be reached is left out of the window.
+#: Long enough to be worth replacing it, short enough that a blip does not
+#: cost the rest of the session.
+ENDPOINT_COOLDOWN = 120.0
+
+#: How long the directory is good for.  Slow on purpose: chainlist is 2.2MB
+#: of 2,890 chains and changes over days, so this is not about keeping up
+#: with it -- it is so an app left open for a week is not still reading the
+#: list it fetched when it started.
+REFRESH_AFTER = 6 * 3600.0
 
 #: How long one endpoint gets to itself before the next is asked as well.
 #: Walked strictly in turn, a sick endpoint costs its whole `timeout` before
@@ -106,8 +126,13 @@ class ChainlistDirectory:
         self._by_chain: dict[int, list[str]] = {}
         self._params: dict[int, dict[str, Any]] = {}
         self._loaded = False
+        self._loaded_at = 0.0
         self._failed_at: float | None = None
         self._lock = asyncio.Lock()
+        #: Bumped whenever the lists change, so anything holding a copy of
+        #: one knows to ask again.  A `PublicNode` lives as long as the app
+        #: does and reads its endpoints once.
+        self.generation = 0
 
     async def endpoints(self, chain_id: int) -> list[str]:
         """Public endpoints for a chain, or an empty list if unknown."""
@@ -129,26 +154,52 @@ class ChainlistDirectory:
             return True
         return time.monotonic() - self._failed_at >= RETRY_AFTER
 
+    async def refresh(self) -> bool:
+        """Fetch again if what is held has been held long enough.
+
+        True when a fetch was made -- not that it worked.  A fetch that
+        fails leaves the old lists up: they are stale, and stale beats none
+        for something every read goes through.
+        """
+        async with self._lock:
+            if not self._loaded or time.monotonic() - self._loaded_at < REFRESH_AFTER:
+                return False
+            await self._load()
+            return True
+
     async def _load(self) -> None:
-        """Fetch the directory, and record whether it worked."""
+        """Fetch the directory, and record whether it worked.
+
+        Parsed whole and swapped in at the end rather than written into as
+        it goes, so a refresh that comes back short cannot leave the app
+        holding half a directory.
+        """
         try:
             payload = await get_json(self.url, timeout=20.0)
         except ApiError:
             payload = None
+        by_chain: dict[int, list[str]] = {}
+        params: dict[int, dict[str, Any]] = {}
         for chain in payload if isinstance(payload, list) else ():
             if not isinstance(chain, dict) or chain.get("isTestnet"):
                 continue
             chain_id = chain.get("chainId")
             if chain_id is None:
                 continue
-            endpoints = usable_endpoints(chain)
+            # Deeper than the window a read uses: the extras are what a dead
+            # endpoint is replaced from.  What a *wallet* is offered still
+            # comes off the top -- see `MAX_OFFERED_ENDPOINTS`.
+            endpoints = usable_endpoints(chain, limit=ENDPOINT_POOL)
             if endpoints:
-                self._by_chain[int(chain_id)] = endpoints
-            if params := chain_params(chain, endpoints):
-                self._params[int(chain_id)] = params
-        if self._by_chain:
+                by_chain[int(chain_id)] = endpoints
+            if entry := chain_params(chain, endpoints):
+                params[int(chain_id)] = entry
+        if by_chain:
+            self._by_chain, self._params = by_chain, params
             self._loaded = True
+            self._loaded_at = time.monotonic()
             self._failed_at = None
+            self.generation += 1
             return
         self._failed_at = time.monotonic()
 
@@ -169,13 +220,48 @@ class PublicNode(WalletProvider):
         self.directory = directory
         self.timeout = timeout
         self._endpoints: list[str] = []
-        self._next = 0
+        self._generation = -1
+        #: When each endpoint last could not be reached. See `_window`.
+        self._down: dict[str, float] = {}
+        #: The one that answered last, asked first next time.
+        self._preferred = ""
         self._counter = 0
 
     async def _ensure_endpoints(self) -> list[str]:
-        if not self._endpoints:
-            self._endpoints = await self.directory.endpoints(self.network_id)
+        """The pool for this chain, re-read when the directory has changed.
+
+        A node lives as long as the app does, so without the generation
+        check a refreshed directory would never reach the thing doing the
+        reading.
+        """
+        generation = getattr(self.directory, "generation", 0)
+        if not self._endpoints or generation != self._generation:
+            found = await self.directory.endpoints(self.network_id)
+            if found or not self._endpoints:
+                self._endpoints = found
+            self._generation = generation
         return self._endpoints
+
+    def _window(self, pool: list[str]) -> list[str]:
+        """The endpoints to ask this time, best first.
+
+        One that could not be reached is left out for `ENDPOINT_COOLDOWN`
+        and its place goes to the next in the ranking -- which is the
+        difference between eight endpoints of which five are dead and eight
+        that answer.  Everything cooling down at once means the network is
+        gone rather than the endpoints, and then the plain order is what is
+        left to try.
+        """
+        now = time.monotonic()
+        fresh = [
+            url for url in pool
+            if now - self._down.get(url, -ENDPOINT_COOLDOWN) >= ENDPOINT_COOLDOWN
+        ]
+        if not fresh:
+            fresh = list(pool)
+        if self._preferred in fresh:
+            fresh = [self._preferred] + [u for u in fresh if u != self._preferred]
+        return fresh[:MAX_ENDPOINTS]
 
     async def request(self, method: str, params: list[Any] | None = None) -> Any:
         """Walk the endpoints until one answers."""
@@ -192,16 +278,14 @@ class PublicNode(WalletProvider):
             "method": method,
             "params": params or [],
         }
-        waiting = [(self._next + offset) % len(endpoints)
-                   for offset in range(len(endpoints))]
-        asked: dict[Any, int] = {}
+        waiting = self._window(endpoints)
+        asked: dict[Any, str] = {}
         last = ""
         try:
             while waiting or asked:
                 if waiting:
-                    index = waiting.pop(0)
-                    asked[asyncio.ensure_future(
-                        self._ask(endpoints[index], payload))] = index
+                    url = waiting.pop(0)
+                    asked[asyncio.ensure_future(self._ask(url, payload))] = url
                 # Only the last one in flight is waited on without end: while
                 # there are endpoints left to try, a pause here is what starts
                 # the next one alongside it.
@@ -211,17 +295,20 @@ class PublicNode(WalletProvider):
                     return_when=asyncio.FIRST_COMPLETED,
                 )
                 for task in done:
-                    index = asked.pop(task)
+                    url = asked.pop(task)
                     try:
                         answered, outcome = task.result()
                     except RpcError:
                         # The chain's own answer, not a broken endpoint: keep
                         # asking this one first, and let it through.
-                        self._next = index
+                        self._preferred = url
+                        self._down.pop(url, None)
                         raise
                     if answered:
-                        self._next = index
+                        self._preferred = url
+                        self._down.pop(url, None)
                         return outcome
+                    self._down[url] = time.monotonic()
                     last = str(outcome)
         finally:
             for task in asked:

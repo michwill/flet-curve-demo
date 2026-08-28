@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from types import SimpleNamespace
 
@@ -4444,3 +4445,58 @@ async def test_one_transaction_is_not_worth_a_batch(monkeypatch) -> None:
 
 async def _batch_mined(_provider, _batch_id, **_kw) -> int:
     return 16
+
+
+async def test_the_endpoint_directory_is_refreshed_while_the_app_is_open() -> None:
+    """A desktop session runs for days, and the endpoints it kept were
+    chosen from whatever chainlist said at launch."""
+    import main as app_module
+
+    app = app_module.CurveApp.__new__(app_module.CurveApp)
+    asked = 0
+
+    class Directory:
+        async def refresh(self) -> bool:
+            nonlocal asked
+            asked += 1
+            return True
+
+    app._chainlist = Directory()
+    ticks = 0
+
+    async def sleep(_seconds: float) -> None:
+        nonlocal ticks
+        ticks += 1
+        if ticks > 3:
+            raise asyncio.CancelledError
+
+    with contextlib.suppress(asyncio.CancelledError):
+        await app.refresh_chainlist(sleep)
+
+    assert asked == 3
+
+
+async def test_a_directory_that_will_not_answer_does_not_stop_the_loop() -> None:
+    """Nobody asked for this refresh, so nothing about it should reach the
+    page -- or end the ticking that would have got it next time."""
+    import main as app_module
+
+    app = app_module.CurveApp.__new__(app_module.CurveApp)
+
+    class Broken:
+        async def refresh(self) -> bool:
+            raise OSError("chainlist is unreachable")
+
+    app._chainlist = Broken()
+    ticks = 0
+
+    async def sleep(_seconds: float) -> None:
+        nonlocal ticks
+        ticks += 1
+        if ticks > 2:
+            raise asyncio.CancelledError
+
+    with contextlib.suppress(asyncio.CancelledError):
+        await app.refresh_chainlist(sleep)
+
+    assert ticks == 3, "one bad refresh ended the loop"

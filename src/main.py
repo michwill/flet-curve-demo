@@ -103,6 +103,11 @@ def startup_window() -> tuple[float, float] | None:
 #: shorter interval would spend that on numbers it already had.
 TOTALS_REFRESH = 600.0
 
+#: How often to ask the chainlist directory whether it is due a refetch.
+#: The directory decides -- it holds a list for `rpc.REFRESH_AFTER` -- so
+#: this only has to tick often enough not to miss the moment by much.
+CHAINLIST_TICK = 900.0
+
 #: Where the last portfolio scan is remembered, so the page has something to
 #: show while the next one runs.
 PORTFOLIO_KEY = "flet-curve.portfolio"
@@ -293,6 +298,7 @@ class CurveApp:
             page.run_task(self.dress_window)
         page.run_task(self.load_pools)
         page.run_task(self.refresh_totals)
+        page.run_task(self.refresh_chainlist)
         if autoconnect():
             self.connect_button.visible = False
             page.run_task(self.connect, None)
@@ -1051,6 +1057,25 @@ class CurveApp:
             if self._totals_age() < TOTALS_REFRESH:
                 continue  # something read them while this was waiting
             await self.read_totals()
+
+    async def refresh_chainlist(self, sleep=None) -> None:
+        """Keep the public endpoint list current for as long as the app is
+        open.
+
+        A desktop session runs for days and the list it started with goes
+        off: endpoints are dropped from chainlist and added to it, and the
+        ones this app then keeps are chosen from whatever was true at
+        launch.  The fetch is 2.2MB, so the directory only actually does it
+        every `rpc.REFRESH_AFTER` -- this is the tick that asks.
+
+        Quietly: nobody requested it, and a chainlist that will not answer
+        leaves the endpoints already held in place.
+        """
+        sleep = sleep or asyncio.sleep
+        while True:
+            await sleep(CHAINLIST_TICK)
+            with contextlib.suppress(Exception):
+                await self._chainlist.refresh()
 
     def _totals_age(self) -> float:
         """How long the figures on the bar have been the answer."""

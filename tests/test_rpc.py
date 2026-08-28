@@ -771,3 +771,165 @@ async def test_the_healthy_endpoint_is_asked_first_next_time(monkeypatch) -> Non
     transport.calls.clear()
     assert await node.request("eth_call") == "0x7"
     assert transport.calls == ["https://two.example"], "the sick one was asked again"
+
+
+# -- keeping the list current, and the window over it moving ----------------
+
+
+async def test_a_dead_endpoint_is_replaced_rather_than_only_walked_past(
+    monkeypatch,
+) -> None:
+    """Measured on the real list: of the eight best-ranked endpoints, three
+    to six answer, and the ranking is by what an endpoint says it logs --
+    which says nothing about whether it is up.  So one that failed steps
+    aside and the next in the ranking takes its place.
+    """
+    monkeypatch.setattr(rpc, "MAX_ENDPOINTS", 2)
+    transport = FakeTransport({
+        "https://a.example": ApiError("down"),
+        "https://b.example": ApiError("down"),
+        "https://c.example": {"result": "0x9"},
+    })
+    monkeypatch.setattr(rpc, "post_json", transport)
+
+    class Pool(ChainlistDirectory):
+        async def endpoints(self, _chain_id):
+            return ["https://a.example", "https://b.example", "https://c.example"]
+
+    node = PublicNode(100, Pool())
+
+    with pytest.raises(WalletError):
+        await node.request("eth_chainId")      # only a and b are in the window
+    transport.calls.clear()
+
+    assert await node.request("eth_chainId") == "0x9", (
+        "the two that failed should have made room for the third")
+    assert "https://c.example" in transport.calls
+
+
+async def test_an_endpoint_that_answers_is_not_held_against_later(
+    monkeypatch,
+) -> None:
+    """A blip must not cost an endpoint the rest of the session."""
+    answers: dict[str, object] = {"https://a.example": ApiError("blip"),
+                                  "https://b.example": {"result": "0x1"}}
+    transport = FakeTransport(answers)
+    monkeypatch.setattr(rpc, "post_json", transport)
+
+    class Two(ChainlistDirectory):
+        async def endpoints(self, _chain_id):
+            return ["https://a.example", "https://b.example"]
+
+    node = PublicNode(100, Two())
+    await node.request("eth_chainId")
+    assert node._down and "https://a.example" in node._down
+
+    answers["https://a.example"] = {"result": "0x2"}
+    node._down.clear()                      # as the cooldown would, later
+    node._preferred = "https://a.example"
+    transport.calls.clear()
+
+    assert await node.request("eth_chainId") == "0x2"
+
+
+async def test_everything_cooling_down_at_once_is_still_tried(monkeypatch) -> None:
+    """That is the network being gone, not the endpoints being bad, and
+    refusing to ask would turn a blip into a dead app."""
+    transport = FakeTransport({"https://a.example": {"result": "0x5"}})
+    monkeypatch.setattr(rpc, "post_json", transport)
+
+    class One(ChainlistDirectory):
+        async def endpoints(self, _chain_id):
+            return ["https://a.example"]
+
+    node = PublicNode(100, One())
+    node._down["https://a.example"] = 10**9   # far in the future, never cool
+
+    assert await node.request("eth_chainId") == "0x5"
+
+
+async def test_the_pool_is_deeper_than_the_window(monkeypatch) -> None:
+    """`chain_params` still offers a wallet the top of the ranking; the read
+    path keeps more so it has somewhere to fall back to."""
+    many = {"chainId": 100, "name": "Many", "nativeCurrency": {"symbol": "X"},
+            "rpc": [{"url": f"https://node{i}.example"} for i in range(40)]}
+
+    async def fake_get_json(_url, timeout=None):
+        return [many]
+
+    monkeypatch.setattr(rpc, "get_json", fake_get_json)
+    made = ChainlistDirectory()
+
+    kept = await made.endpoints(100)
+    assert len(kept) == rpc.ENDPOINT_POOL > rpc.MAX_ENDPOINTS
+    params = await made.chain_params(100)
+    assert params is not None
+    assert len(params["rpcUrls"]) == rpc.MAX_OFFERED_ENDPOINTS
+
+
+async def test_the_directory_is_refetched_once_it_is_old_enough(monkeypatch) -> None:
+    calls = 0
+
+    async def fake_get_json(_url, timeout=None):
+        nonlocal calls
+        calls += 1
+        return CHAINLIST_PAYLOAD
+
+    monkeypatch.setattr(rpc, "get_json", fake_get_json)
+    made = ChainlistDirectory()
+    await made.endpoints(100)
+    assert calls == 1
+
+    assert await made.refresh() is False, "not due yet"
+    assert calls == 1
+
+    made._loaded_at -= rpc.REFRESH_AFTER
+    assert await made.refresh() is True
+    assert calls == 2
+
+
+async def test_a_refresh_that_comes_back_empty_keeps_what_was_there(
+    monkeypatch,
+) -> None:
+    """Stale beats none for something every read goes through."""
+    payload: list = list(CHAINLIST_PAYLOAD)
+
+    async def fake_get_json(_url, timeout=None):
+        return payload
+
+    monkeypatch.setattr(rpc, "get_json", fake_get_json)
+    made = ChainlistDirectory()
+    before = await made.endpoints(100)
+    assert before
+
+    payload = []
+    made._loaded_at -= rpc.REFRESH_AFTER
+    await made.refresh()
+
+    assert await made.endpoints(100) == before
+
+
+async def test_a_node_re_reads_after_the_directory_changed(monkeypatch) -> None:
+    """A node lives as long as the app does and reads its endpoints once, so
+    without this a refresh would never reach the thing doing the reading."""
+    transport = FakeTransport({"https://old.example": ApiError("gone"),
+                               "https://new.example": {"result": "0x3"}})
+    monkeypatch.setattr(rpc, "post_json", transport)
+
+    class Changing(ChainlistDirectory):
+        def __init__(self) -> None:
+            super().__init__()
+            self.urls = ["https://old.example"]
+
+        async def endpoints(self, _chain_id):
+            return list(self.urls)
+
+    made = Changing()
+    node = PublicNode(100, made)
+    with pytest.raises(WalletError):
+        await node.request("eth_chainId")
+
+    made.urls = ["https://new.example"]
+    made.generation += 1
+
+    assert await node.request("eth_chainId") == "0x3"

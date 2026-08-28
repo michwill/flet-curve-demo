@@ -1018,6 +1018,59 @@ panel says which network to be on and offers the switch, with its estimate
 cleared and its buttons greyed, since nothing can be read or sent across that
 boundary.
 
+### The endpoint list goes off, and most of it was never up
+
+chainlist is ranked here by what an endpoint says it logs — `tracking: none`
+first — which is the only privacy signal on offer and says nothing whatever
+about whether the thing answers. Probing the eight this app used to keep, on
+every chain it serves:
+
+| chain | live of the 8 kept | live of all listed |
+|---|---|---|
+| fantom | 2 | 8 of 21 |
+| aurora | 2 | 2 of 7 |
+| polygon | 3 | 13 of 36 |
+| avalanche | 3 | 11 of 27 |
+| bsc | 4 | **31 of 56** |
+
+BSC is the one that makes the point: thirty-one endpoints answer and the eight
+kept held four of them. Nothing was broken — the first working endpoint was
+always in the top three, so reads went through — but Fantom was two endpoints
+away from a chain that could not be read at all, and the app had no way to
+reach the other six that worked.
+
+So the directory keeps a **pool** of `ENDPOINT_POOL = 24` and the reader asks
+at most `MAX_ENDPOINTS = 8` of them at a time. An endpoint that cannot be
+reached is left out for two minutes and its place goes to the next in the
+ranking, so the window moves onto whatever is up. Same concurrency as before,
+much more to fall back on:
+
+| | fantom | optimism | avalanche | bsc | base |
+|---|---|---|---|---|---|
+| reachable before | 2 | 3 | 3 | 4 | 6 |
+| reachable now | 9 | 11 | 9 | 11 | 13 |
+
+What a *wallet* is offered is untouched: `chain_params` still hands over the
+top `MAX_OFFERED_ENDPOINTS = 3`, because that is a list a person reads in an
+approval dialog, not one a fallback walks.
+
+**And it is refetched now.** The directory used to be fetched once, lazily, on
+first use, and `_loaded` latched true for the life of the process — a desktop
+session running for a week was still reading the list it started with. It is
+held for six hours and a background tick asks whether it is due; the fetch is
+2.2MB across 2,890 chains, so it is deliberately slow. A refresh that comes
+back empty keeps what was there, because stale beats none for something every
+read goes through, and the whole payload is parsed before any of it is swapped
+in so a short answer cannot leave half a directory behind. Nodes notice via a
+generation counter — one lives as long as the app does and reads its endpoints
+once, so without that a refresh would never reach the thing doing the reading.
+
+One thing that was *not* wrong: the 403s that made an earlier audit of this
+report every endpoint as dead came from `urllib`'s default `User-Agent`, which
+public nodes refuse. That was the audit script's problem. The app sends
+`flet-curve/0.1` from `curve/http.py`, and the browser build deliberately sends
+none — see "The header that broke iOS".
+
 ### Where a read actually goes
 
 `FallbackProvider` (`curve/rpc.py`) holds the wallet and the public endpoints in

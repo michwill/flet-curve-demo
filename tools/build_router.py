@@ -45,11 +45,18 @@ ASSETS = ROOT / "src" / "assets" / "router"
 #: The committed caches, and where a `DataSource` looks for each.  Names match
 #: `erouter.chain.session`'s `*_FILE` constants, so one layout serves a
 #: checkout and a web root.
+#: Several patterns means "the first of these that matches anything", so a
+#: format change upstream lands without this file needing to know the date it
+#: happened.  The state cache is msgpack under zstd now; a checkout from
+#: before that carries `.json.gz` and nothing else, and one from after may
+#: carry both while the old files are being retired -- taking only the first
+#: match keeps the retired format out of the bundle rather than shipping 7.5MB
+#: of it that nothing reads.
 DATA = (
-    ("data/evm-state", "evm-state", "*.json.gz"),
-    ("data/exact", "exact", "*.json"),
-    ("data/facts", "facts", "*.json"),
-    ("data/quoter", "quoter", "RouteQuoter.runtime.hex"),
+    ("data/evm-state", "evm-state", ("*.msgpack", "*.json.gz")),
+    ("data/exact", "exact", ("*.json",)),
+    ("data/facts", "facts", ("*.json",)),
+    ("data/quoter", "quoter", ("RouteQuoter.runtime.hex",)),
 )
 
 #: What `wasm-bindgen --target web` emits that the app actually loads.  The
@@ -87,11 +94,16 @@ def copy_package() -> int:
 def copy_data() -> tuple[int, int]:
     """The committed caches.  Returns (files, bytes)."""
     files = total = 0
-    for source_dir, target_dir, pattern in DATA:
+    for source_dir, target_dir, patterns in DATA:
         source = SOURCE / source_dir
         target = ASSETS / "data" / target_dir
         target.mkdir(parents=True, exist_ok=True)
-        for path in sorted(source.glob(pattern)):
+        found: list[Path] = []
+        for pattern in patterns:
+            found = sorted(source.glob(pattern))
+            if found:
+                break
+        for path in found:
             shutil.copy2(path, target / path.name)
             files += 1
             total += path.stat().st_size

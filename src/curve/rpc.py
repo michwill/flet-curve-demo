@@ -234,13 +234,19 @@ class PublicNode(WalletProvider):
         check a refreshed directory would never reach the thing doing the
         reading.
         """
-        generation = getattr(self.directory, "generation", 0)
-        if not self._endpoints or generation != self._generation:
+        if not self._endpoints or self._stale_generation():
             found = await self.directory.endpoints(self.network_id)
             if found or not self._endpoints:
                 self._endpoints = found
-            self._generation = generation
+            # Read *after* the fetch, not before: the first call is what
+            # loads the directory, so a generation taken beforehand is the
+            # one from before the load and every read until the next would
+            # think itself out of date.
+            self._generation = getattr(self.directory, "generation", 0)
         return self._endpoints
+
+    def _stale_generation(self) -> bool:
+        return getattr(self.directory, "generation", 0) != self._generation
 
     def _window(self, pool: list[str]) -> list[str]:
         """The endpoints to ask this time, best first.

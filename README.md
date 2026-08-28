@@ -2456,9 +2456,39 @@ transaction.  Its own `docs/theory.md` is what it is; this is how it got here.
 
 ### Three costs, paid at three rates
 
-    warm       once per chain, ~25 s     6,174 slots, 388 pools, 866 arcs
+    warm       once per chain, ~6.6 s    6,253 slots, 389 pools, 874 arcs
     set_pair   when a coin changes, ~60 ms
     quote      per keystroke, 100-400 ms
+
+Only the first is paid on opening the page, and only once per chain, which is
+why typing feels immediate while the first load does not.
+
+**Where the warm's 6.6 s goes**, measured on desktop with the cache read from
+disk -- the browser additionally fetches it from the gateway:
+
+    network, wall clock with a request in flight   4.52 s   69%
+    local compute                                  2.08 s   31%
+      native EVM (revm, via the extension)           0.78 s
+      ABI encode  (84,534 calls)                     0.63 s
+      ABI decode  (682 calls, 516 us each)           0.35 s
+      unattributed                                   0.32 s
+
+It is network-bound, and 98% of that network is `eth_getStorageAt`: 8,755 of
+8,961 sub-calls, 39 round trips, **1.79 MB of requests to fetch 1.46 MB of
+answers** -- each one naming an address, a slot and a block to retrieve one
+32-byte word. Which is what makes a server that already knows the slot list
+the whole prize: one frame of ~200 KB instead, and between blocks almost
+nothing, because only **26 of 6,253 slots change per block** and 113 over the
+two minutes between refreshes.
+
+The compute figures are what is left once that goes, and they are measured
+rather than guessed because two plausible fixes turned out to be worth
+nothing. Caching `is_dynamic`/`head_size` gets a 694,751-hit rate and changes
+the time not at all -- the dict lookup costs what the recursion did. And
+memoising the calldata, which *is* worth 0.58 s of CPU (99% of those 84,534
+encodes are repeats of just 659 distinct calls), leaves the wall clock exactly
+where it was, because the work happens while requests are in flight. Neither
+is worth doing until the network stops binding.
 
 Warming sweeps every storage slot the universe reads into an in-process EVM,
 after which a `get_dy` costs microseconds instead of a round trip -- which is

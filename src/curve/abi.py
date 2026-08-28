@@ -42,6 +42,11 @@ __all__ = [
 
 MAX_UINT256 = (1 << 256) - 1
 
+#: Padding for a fixed-size address array, where a zero slot ends the loop.
+#: `curve.stake_zaps` spells the same constant out again rather than
+#: importing it from here, because this module is the bottom of the stack.
+_ZERO_ADDRESS = "0x" + "0" * 40
+
 def selector(signature: str) -> str:
     """First 4 bytes of keccak256 of a canonical signature, as hex."""
     return keccak256(signature.encode()).hex()[:8]
@@ -472,31 +477,46 @@ def encode_working_balances(owner: str) -> str:
     return _call("working_balances(address)", _address(owner))
 
 
-def encode_mint_many(gauges: list[str], slots: int) -> str:
+def encode_mint_many(gauges: list[str], slots: int, *, stops_at_zero: bool) -> str:
     """Mint CRV across several gauges in one transaction.
 
-    The array is fixed-width and the spare slots repeat the last gauge rather
-    than holding the zero address, because **the two implementations disagree
-    about what a zero slot means**.  Ethereum's Minter breaks out of the loop
-    at the first one; the child gauge factory every other chain uses does not,
-    and calls `_psuedo_mint` on it anyway, where `assert gauge_data != 0`
-    fails.  A bare Vyper assert, so an empty revert with no reason string.
+    The array is fixed-width, and **the two implementations do different
+    things with the spare slots** -- verified against Curve's own source, not
+    inferred from behaviour:
 
-    Measured on a forked Arbitrum, one gauge with CRV waiting:
+    `Minter.vy`, Ethereum::
 
-        mint(gauge)                     ok
-        mint_many([gauge] + 31 zeros)   reverted, no message
-        mint_many([gauge] * 32)         ok
+        for i in range(8):
+            if gauge_addrs[i] == ZERO_ADDRESS:
+                break
 
-    A repeat is free: the second `_psuedo_mint` for a gauge finds nothing left
-    to mint and moves nothing.  So this claimed nothing on any chain but
-    Ethereum, whichever factory it was addressed to.
+    `ChildGaugeFactory.vy`, every other chain::
+
+        for i in range(32):
+            if _gauges[i] == empty(address):
+                pass                       # not `break`
+            self._psuedo_mint(_gauges[i], msg.sender)
+
+    So the Minter stops at a zero slot and the child factory walks into
+    `_psuedo_mint(0x0)`, where `assert gauge_data != 0  # dev: invalid gauge`
+    fails -- a bare assert with the reason in a comment, which is why it
+    reaches a wallet as an empty revert.
+
+    `stops_at_zero` says which one this is.  Where it breaks, pad with zeros
+    and it does only the work asked of it; where it does not, the spare slots
+    have to name a real gauge, and repeating one is the only way to fill them.
+    That repeat is *not* free -- every slot does its own
+    `user_checkpoint` and `integrate_fraction` on the gauge -- so a repeat is
+    a last resort and `encode_minter_mint` is what a single gauge should use.
+    Measured on Arbitrum: `mint` 264,620 gas against 2,160,629 for a
+    `mint_many` of one gauge repeated 32 times.
     """
     if not gauges:
         raise ValueError("mint_many with no gauges")
     if len(gauges) > slots:
         raise ValueError(f"{len(gauges)} gauges into {slots} slots")
-    padded = list(gauges) + [gauges[-1]] * (slots - len(gauges))
+    filler = _ZERO_ADDRESS if stops_at_zero else gauges[-1]
+    padded = list(gauges) + [filler] * (slots - len(gauges))
     return _call(
         f"mint_many(address[{slots}])", *(_address(gauge) for gauge in padded)
     )

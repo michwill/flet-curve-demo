@@ -1371,12 +1371,21 @@ its own minter and that is the answer; the table is only what is left when it
 will not say.
 
 **A zero slot is not an empty slot.** `mint_many` takes a fixed-width array,
-and the two implementations disagree about what to do with the spare entries.
-Ethereum's Minter breaks out of its loop at the first zero address; the child
-gauge factory every other chain uses does not, and calls `_psuedo_mint` on it
-anyway, where `assert gauge_data != 0` fails — the same bare assert, the same
-empty revert. Measured on a forked Arbitrum against one gauge with CRV
-waiting:
+and the two implementations disagree about the spare entries. From the
+contracts themselves — `Minter.vy` on Ethereum against `ChildGaugeFactory.vy`
+everywhere else:
+
+```vyper
+for i in range(8):                    for i in range(32):
+    if gauge_addrs[i] == ZERO_ADDRESS:    if _gauges[i] == empty(address):
+        break                                 pass          # not `break`
+    self._mint_for(...)                   self._psuedo_mint(...)
+```
+
+The child factory walks into `_psuedo_mint(0x0)` and dies on
+`assert gauge_data != 0  # dev: invalid gauge` — the reason lives in a
+comment, which is why it reaches a wallet as an empty revert. On a forked
+Arbitrum, against one gauge with CRV waiting:
 
 ```
 mint(gauge)                     ok
@@ -1386,8 +1395,31 @@ mint_many([gauge] * 32)         ok
 
 So the portfolio's CRV claim had never worked on any chain but Ethereum,
 whichever factory it was addressed to — the factory table was only the first
-of two reasons it reverted. The spare slots repeat the last gauge now, which
-is free: the second `_psuedo_mint` for a gauge finds nothing left to mint.
+of two reasons it reverted.
+
+**And a repeat is not free**, which is the part worth stating plainly because
+the first attempt at this claimed it was. Every slot does its own
+`user_checkpoint` and `integrate_fraction` on the gauge, so a repeated array
+does the work thirty-two times:
+
+| call | gas |
+|---|---|
+| `mint(gauge)`, Arbitrum | 264,620 |
+| `mint_many([gauge] * 32)`, Arbitrum | 2,160,629 |
+| `mint(gauge)`, Ethereum | 432,676 |
+| `mint_many([gauge] + 7 zeros)`, Ethereum | 434,640 |
+| `mint_many([gauge] * 8)`, Ethereum | 864,013 |
+
+Hence: one gauge is always `mint`. Above one it is `mint_many`, padded with
+zeros where the loop breaks on them and with a repeat only where it does not.
+On a child factory that batch is a flat ~2.16M gas whatever the count, so it
+is the cheaper *total* only past about eight gauges — below that it is buying
+fewer wallet confirmations, not less gas.
+
+Worth knowing that nobody else uses it: of the last 400 transactions to
+Arbitrum's child gauge factory, 399 are `mint` and one is `mint_many` — this
+app's. A fixed-width array with no early exit is unusable unless you happen
+to hold exactly thirty-two gauges, so in practice nothing ever called it.
 
 **And Ethereum does not mint through a factory at all.** A mainnet gauge does
 answer `factory()` — the RLUSD/USDC gauge says `0x6a8cbed7…` — but that is the

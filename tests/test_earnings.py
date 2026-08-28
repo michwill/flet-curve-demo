@@ -6,13 +6,19 @@ import dataclasses
 
 import pytest
 
-from curve.abi import encode_claim_rewards_for, encode_mint_many, selector
+from curve.abi import (
+    encode_claim_rewards_for,
+    encode_mint_many,
+    encode_minter_mint,
+    selector,
+)
 from curve.earnings import (
     MAX_BOOST,
     ClaimPlan,
     Earning,
     Reward,
     claim_plan,
+    mint_call,
     read_earnings,
     resolve_gauges,
     seed_from_detail,
@@ -20,10 +26,17 @@ from curve.earnings import (
 )
 from curve.models import Incentive
 from curve.multicall import MULTICALL3, encode_aggregate3
+from curve.rewards import REWARDS
 
 from .test_parameters import aggregate3_response
 
 CRV = Reward("", "CRV", 18, 5 * 10**18, 0.5, minted=True)
+
+
+def _words(data: str) -> list[str]:
+    """The argument words of a call, without its selector."""
+    body = data[10:]
+    return [body[i : i + 64] for i in range(0, len(body), 64)]
 ARB = Reward("0x" + "ab" * 20, "ARB", 18, 2 * 10**18, 1.5)
 USDC = Reward("0x" + "cd" * 20, "USDC", 6, 2_500_000, 1.0)
 
@@ -612,43 +625,88 @@ async def test_the_resolved_gauge_is_what_the_claim_is_grouped_by() -> None:
 # -- the array the mint goes in ---------------------------------------------
 
 
-def test_the_spare_slots_repeat_a_gauge_rather_than_holding_zero() -> None:
-    """The two implementations disagree about a zero slot.  Ethereum's Minter
-    breaks out of the loop at the first one; the child gauge factory every
-    other chain uses calls `_psuedo_mint` on it anyway, where `assert
-    gauge_data != 0` fails -- a bare assert, so an empty revert.  Measured on
-    a forked Arbitrum: one gauge and 31 zeros reverted, the same gauge 32
-    times went through.
+def test_a_child_factory_gets_repeats_because_a_zero_slot_reverts_it() -> None:
+    """`ChildGaugeFactory.vy` has `pass` where `Minter.vy` has `break`, so it
+    walks into `_psuedo_mint(0x0)` and dies on `assert gauge_data != 0` -- a
+    bare assert, hence an empty revert.  The spare slots have to name a real
+    gauge.
     """
     gauge = "0x" + "22" * 20
-    data = encode_mint_many([gauge], 8)
+    words = _words(encode_mint_many([gauge], 32, stops_at_zero=False))
 
-    words = [data[10:][i : i + 64] for i in range(0, len(data) - 10, 64)]
-    assert len(words) == 8
+    assert len(words) == 32
     assert all(int(word, 16) for word in words), "a zero slot reverts the mint"
-    assert all(word == words[0] for word in words)
+
+
+def test_the_minter_gets_zeros_because_it_stops_at_the_first_one() -> None:
+    """Padding it with repeats instead would make it mint eight times over
+    for one gauge: 864,013 gas against 434,640, measured on a mainnet fork."""
+    gauge = "0x" + "22" * 20
+    words = _words(encode_mint_many([gauge], 8, stops_at_zero=True))
+
+    assert len(words) == 8
+    assert words[0].endswith(gauge[2:])
+    assert not any(int(word, 16) for word in words[1:])
 
 
 def test_the_gauges_that_were_asked_for_come_first_and_in_order() -> None:
     first, second = "0x" + "22" * 20, "0x" + "33" * 20
-    data = encode_mint_many([first, second], 8)
+    words = _words(encode_mint_many([first, second], 8, stops_at_zero=False))
 
-    words = [data[10:][i : i + 64] for i in range(0, len(data) - 10, 64)]
     assert words[0].endswith(first[2:])
     assert words[1].endswith(second[2:])
     assert words[2] == words[1], "the padding repeats the last one asked for"
 
 
 def test_a_mint_of_nothing_is_refused() -> None:
-    """There is no gauge to repeat, and a full array of zeros is the revert
-    this padding exists to avoid."""
+    """There is no gauge to repeat, and a whole array of zeros is the revert
+    the padding exists to avoid."""
     with pytest.raises(ValueError):
-        encode_mint_many([], 8)
+        encode_mint_many([], 8, stops_at_zero=False)
 
 
 def test_more_gauges_than_slots_is_refused() -> None:
     with pytest.raises(ValueError):
-        encode_mint_many(["0x" + f"{i:040x}" for i in range(9)], 8)
+        encode_mint_many(["0x" + f"{i:040x}" for i in range(9)], 8,
+                         stops_at_zero=False)
+
+
+# -- and which call to make at all ------------------------------------------
+
+
+def test_one_gauge_is_minted_on_its_own() -> None:
+    """`mint_many` has no early exit on a child factory, so its 31 spare
+    slots each cost a `user_checkpoint` and an `integrate_fraction`.
+    Measured on Arbitrum: 264,620 gas against 2,160,629."""
+    gauge = "0x" + "22" * 20
+
+    data = mint_call([gauge], REWARDS[42161])
+
+    assert data == encode_minter_mint(gauge)
+
+
+def test_more_than_one_goes_in_a_batch() -> None:
+    gauges = ["0x" + "22" * 20, "0x" + "33" * 20]
+
+    data = mint_call(gauges, REWARDS[42161])
+
+    assert data.startswith("0x" + selector("mint_many(address[32])"))
+
+
+def test_the_batch_takes_the_width_the_chain_declares() -> None:
+    """Eight on Ethereum's Minter, thirty-two on a child gauge factory."""
+    gauges = ["0x" + "22" * 20, "0x" + "33" * 20]
+
+    assert mint_call(gauges, REWARDS[1]).startswith(
+        "0x" + selector("mint_many(address[8])"))
+
+
+def test_ethereums_batch_is_padded_with_zeros_not_repeats() -> None:
+    gauges = ["0x" + "22" * 20, "0x" + "33" * 20]
+
+    words = _words(mint_call(gauges, REWARDS[1]))
+
+    assert not any(int(word, 16) for word in words[2:])
 
 
 # -- Ethereum mints from the Minter, not from a factory ---------------------

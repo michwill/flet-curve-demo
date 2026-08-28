@@ -12,7 +12,13 @@ from wallet.erc20 import to_checksum_address
 from . import abi
 from .models import Incentive
 from .multicall import MULTICALL3, decode_uints, encode_aggregate3
-from .rewards import CRV_DECIMALS, REWARDS, gauge_lookup, gauges_from_batch
+from .rewards import (
+    CRV_DECIMALS,
+    REWARDS,
+    Rewards,
+    gauge_lookup,
+    gauges_from_batch,
+)
 
 #: The share of a balance that earns CRV with no veCRV at all.
 UNBOOSTED_SHARE = 0.4
@@ -161,6 +167,9 @@ class ClaimPlan:
     crv: tuple[tuple[str, tuple[str, ...]], ...] = field(default_factory=tuple)
     #: Every gauge owing an incentive token, claimed in one batch.
     extras: tuple[str, ...] = field(default_factory=tuple)
+    #: The chain it was made for, so sending it does not have to find that
+    #: out by searching the table for whoever owns a minter address.
+    chain_id: int = 0
 
     @property
     def transactions(self) -> int:
@@ -198,6 +207,7 @@ def claim_plan(chain_id: int, earnings: list[Earning],
     return ClaimPlan(
         crv=tuple(batches),
         extras=tuple(e.gauge for e in earnings if e.gauge and e.has_extras),
+        chain_id=chain_id,
     )
 
 
@@ -455,23 +465,44 @@ def seed_from_detail(earning: Earning, detail: dict) -> tuple[Earning, dict]:
     )
 
 
+def mint_call(gauges: list[str], entry: Rewards | None) -> str:
+    """The cheapest call that claims these gauges from their minter.
+
+    One gauge is `mint`, always.  `mint_many` walks its whole fixed-width
+    array on a child gauge factory -- there is no early exit, so the spare
+    slots repeat a gauge and each one still costs a `user_checkpoint` and an
+    `integrate_fraction` on it.  Measured on Arbitrum: 264,620 gas for `mint`
+    against 2,160,629 for `mint_many` of the same single gauge.
+
+    Above one it is `mint_many`, which is one wallet confirmation instead of
+    several.  On a child factory that is a constant ~2.16M gas whatever the
+    count, so it is only the cheaper *total* past about eight gauges -- below
+    that it buys fewer confirmations rather than less gas.
+    """
+    if len(gauges) == 1:
+        return abi.encode_minter_mint(gauges[0])
+    slots = entry.mint_many_size if entry is not None else 32
+    # Ethereum's Minter breaks at a zero slot; a child gauge factory does
+    # not, and reverts on one.  `factory_is_minter` is the same distinction.
+    stops = entry is None or not entry.factory_is_minter
+    return abi.encode_mint_many(gauges, slots, stops_at_zero=stops)
+
+
 async def send_claims(
     provider: WalletProvider, account: str, plan: ClaimPlan, *, crv: bool = True
 ) -> list[str]:
     """Send a plan, returning one hash per transaction, in order."""
     sent: list[str] = []
     if crv:
+        entry = REWARDS.get(plan.chain_id)
         for minter, gauges in plan.crv:
-            slots = next(
-                (r.mint_many_size for r in REWARDS.values() if r.minter == minter), 32
-            )
             sent.append(
                 await provider.send_transaction(
                     {
                         "from": account,
                         "to": minter,
                         "value": "0x0",
-                        "data": abi.encode_mint_many(list(gauges), slots),
+                        "data": mint_call(list(gauges), entry),
                     }
                 )
             )

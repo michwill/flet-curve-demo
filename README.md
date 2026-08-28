@@ -2523,6 +2523,51 @@ route, which used to be added to the column when the first quote arrived,
 turned "2000000" into "2" at the exact moment its first answer appeared.  The
 frame is in the tree from the start now and only its own `visible` changes.
 
+### Why the cache is msgpack under zstd
+
+The state cache is a per-chain file of bytecode and slot *keys* — 893 code
+blobs and 6,253 slot keys for Ethereum, 11.5 MB of bytecode before
+compression. It ships in the bundle and is read once per warm, so its cost is
+transfer plus decode, and the two pull in opposite directions.
+
+Measured in the browser, because that is the only place the answer is true —
+Pyodide 314.0.3, median of 3, each row verified to rebuild an object equal to
+the one the old format parsed to:
+
+```
+format              bytes      decompress  parse   total
+json.gz (was)       5,096,195      69 ms   28 ms   96 ms
+json + lzma         1,409,400     156 ms   26 ms  182 ms
+json + zstd-22      1,487,576      24 ms   27 ms   51 ms
+msgpack + lzma      1,376,156     120 ms   18 ms  138 ms
+msgpack + brotli    1,372,847      25 ms   18 ms   42 ms
+msgpack + zstd-22   1,476,624      14 ms   18 ms   32 ms   <- chosen
+```
+
+**lzma is the trap.** It wins on size, and in wasm it decompresses at 120–156
+ms against the 69 ms of the gzip it replaces — so the obvious choice ships a
+file that is 73% smaller and *slower to load than what it replaced*. Native
+timings do not show this: CPython does the same lzma in ~70 ms. The rule this
+leaves behind is to measure a codec in the runtime that will run it.
+
+zstd costs nothing to have: `compression.zstd` is stdlib from 3.14 and
+compiled into Pyodide's wasm, so the browser fetches no wheel for it — the
+marker `python_version < "3.14"` on `zstandard` in `[project].dependencies` is
+what keeps it that way, since micropip reads those specs and Pyodide is 3.14.
+Desktop is 3.13 and installs the wheel. msgpack is a 50 KB cp314 wasm wheel
+from Pyodide's own index, and buys 10 ms of parse rather than bytes: after
+zstd, msgpack against json is worth 11 KB.
+
+Brotli is 4 KB smaller still and costs a 291 KB wheel to save 104 KB, which
+only pays for a returning visitor.
+
+Two encoding details that are *not* worth the trouble. Slot keys as fixed
+32-byte words against minimal-width bytestrings differ by 13 bytes at
+zstd-19 — 7,294 keys, but only 1,162 distinct, so zstd collapses the
+repetition whichever way they are written. Binarising the dict keys —
+addresses and code hashes, which were `"0x…"` strings — *is* worth 34 KB, far
+more than the slot encoding, and is the one that was nearly missed.
+
 ### What is compiled, and where it comes from
 
 The solver and the EVM are Rust.  A desktop build loads them as two CPython

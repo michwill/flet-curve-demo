@@ -612,10 +612,19 @@ the final extension, from a deny-list**, and nothing else:
 ```
 refused:  .zip .tar .tgz .7z .rar .bz2 .xz .zst .jar
 served:   .bin .png .json .dat .pack .gz .tar.gz .whl
+          .msgpack .mpk .zstd .lzma
 ```
 
 Measured against eth.limo and eth.link, which agree exactly. `.tar.gz` serves
 because its final extension is `.gz`; `.tar.bz2` and `.bin.tar` do not.
+
+**This decides the state cache's filename**, which is why the second row was
+extended. The router's cache is msgpack under zstd, and the obvious name for
+it — `ethereum.msgpack.zst` — is refused outright, because the final
+extension is `.zst` and that is on the deny-list. `.zstd` and `.lzma` are
+*not*, which is the deny-list being a list rather than a rule about
+compression. The file ships as `ethereum.msgpack`; the bytes inside it are
+zstd either way, and are never sniffed.
 
 That question stood open for a long time, because every measurement moved
 more than one variable at once:

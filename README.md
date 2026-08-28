@@ -1023,32 +1023,30 @@ boundary.
 chainlist is ranked here by what an endpoint says it logs — `tracking: none`
 first — which is the only privacy signal on offer and says nothing whatever
 about whether the thing answers. Probing the eight this app used to keep, on
-every chain it serves:
+every chain it serves, with `eth_blockNumber` — a method the app actually
+sends, which matters: the first pass at this used `eth_chainId`, and some
+endpoints serve reads while refusing that one, so it wrote off endpoints that
+work. Six of them, as it turned out, which did not change the picture:
 
-| chain | live of the 8 kept | live of all listed |
+| chain | live of the 8 kept | live of the 24 kept now |
 |---|---|---|
-| fantom | 2 | 8 of 21 |
-| aurora | 2 | 2 of 7 |
-| polygon | 3 | 13 of 36 |
-| avalanche | 3 | 11 of 27 |
-| bsc | 4 | **31 of 56** |
+| fantom | 2 | 8 |
+| aurora | 2 | 2 |
+| bsc | 3 | 11 |
+| optimism | 3 | 10 |
+| polygon | 4 | 8 |
 
-BSC is the one that makes the point: thirty-one endpoints answer and the eight
-kept held four of them. Nothing was broken — the first working endpoint was
-always in the top three, so reads went through — but Fantom was two endpoints
-away from a chain that could not be read at all, and the app had no way to
-reach the other six that worked.
+Nothing was broken — the first working endpoint was always in the top three,
+so reads went through — but Fantom was two endpoints away from a chain that
+could not be read at all, and the app had no way to reach the other six that
+worked. Liveness moves about between runs by an endpoint or two; what does not
+move is that most of a privacy-ranked eight is down at any moment.
 
 So the directory keeps a **pool** of `ENDPOINT_POOL = 24` and the reader asks
 at most `MAX_ENDPOINTS = 8` of them at a time. An endpoint that cannot be
 reached is left out for two minutes and its place goes to the next in the
 ranking, so the window moves onto whatever is up. Same concurrency as before,
 much more to fall back on:
-
-| | fantom | optimism | avalanche | bsc | base |
-|---|---|---|---|---|---|
-| reachable before | 2 | 3 | 3 | 4 | 6 |
-| reachable now | 9 | 11 | 9 | 11 | 13 |
 
 What a *wallet* is offered is untouched: `chain_params` still hands over the
 top `MAX_OFFERED_ENDPOINTS = 3`, because that is a list a person reads in an

@@ -18,6 +18,7 @@ import pytest
 from curve import earnings, portfolio
 from curve.api import ApiError, CurveApi
 from curve.rewards import REWARDS
+from wallet.base import WalletError
 
 pytestmark = pytest.mark.fork
 
@@ -37,9 +38,16 @@ async def positions(fork, account: str) -> tuple[list, dict]:
         targets = await api.portfolio_targets("arbitrum", CHAIN_ID)
     except ApiError as exc:
         pytest.skip(f"the pool list is not available: {exc}")
+    # Only the pools with a gauge: about fifty of Arbitrum's five hundred.
+    # A claim cannot come from the rest, and every extra target is a cold
+    # storage read that anvil fetches from upstream one at a time.
+    targets = [target for target in targets if target.gauge]
     provider = fork.provider()
-    holdings = await portfolio.scan(
-        provider, targets, account, chain_id=CHAIN_ID)
+    try:
+        holdings = await portfolio.scan(
+            provider, targets, account, chain_id=CHAIN_ID)
+    except WalletError as exc:
+        pytest.skip(f"the fork could not answer the scan: {exc}")
     seeds = [
         earnings.Earning(pool=h.address, gauge=h.gauge, lp_token=h.lp_token,
                          staked=h.staked, wallet=h.wallet)
@@ -47,8 +55,11 @@ async def positions(fork, account: str) -> tuple[list, dict]:
     ]
     if not seeds:
         pytest.skip(f"{account[:10]} holds nothing staked on Arbitrum now")
-    resolved, minters = await earnings.resolve_gauges(provider, CHAIN_ID, seeds)
-    filled = await earnings.read_earnings(provider, account, resolved)
+    try:
+        resolved, minters = await earnings.resolve_gauges(provider, CHAIN_ID, seeds)
+        filled = await earnings.read_earnings(provider, account, resolved)
+    except WalletError as exc:
+        pytest.skip(f"the fork could not answer the gauges: {exc}")
     return filled, minters
 
 

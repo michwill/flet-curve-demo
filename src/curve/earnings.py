@@ -488,37 +488,33 @@ def mint_call(gauges: list[str], entry: Rewards | None) -> str:
     return abi.encode_mint_many(gauges, slots, stops_at_zero=stops)
 
 
+def claim_transactions(
+    account: str, plan: ClaimPlan, *, crv: bool = True
+) -> list[tuple[str, str]]:
+    """`(to, data)` per transaction, in the order they must be sent.
+
+    Separate from the sending so that both ways of sending them -- one
+    prompt each, or all of them in one EIP-5792 batch -- are asking the same
+    function what to send, and cannot come to different answers.
+    """
+    if crv:
+        entry = REWARDS.get(plan.chain_id)
+        return [
+            (minter, mint_call(list(gauges), entry)) for minter, gauges in plan.crv
+        ]
+    if not plan.extras:
+        return []
+    calls = [(gauge, abi.encode_claim_rewards_for(account)) for gauge in plan.extras]
+    return [(MULTICALL3, encode_aggregate3(calls, allow_failure=False))]
+
+
 async def send_claims(
     provider: WalletProvider, account: str, plan: ClaimPlan, *, crv: bool = True
 ) -> list[str]:
     """Send a plan, returning one hash per transaction, in order."""
-    sent: list[str] = []
-    if crv:
-        entry = REWARDS.get(plan.chain_id)
-        for minter, gauges in plan.crv:
-            sent.append(
-                await provider.send_transaction(
-                    {
-                        "from": account,
-                        "to": minter,
-                        "value": "0x0",
-                        "data": mint_call(list(gauges), entry),
-                    }
-                )
-            )
-        return sent
-    if plan.extras:
-        calls = [
-            (gauge, abi.encode_claim_rewards_for(account)) for gauge in plan.extras
-        ]
-        sent.append(
-            await provider.send_transaction(
-                {
-                    "from": account,
-                    "to": MULTICALL3,
-                    "value": "0x0",
-                    "data": encode_aggregate3(calls, allow_failure=False),
-                }
-            )
+    return [
+        await provider.send_transaction(
+            {"from": account, "to": to, "value": "0x0", "data": data}
         )
-    return sent
+        for to, data in claim_transactions(account, plan, crv=crv)
+    ]

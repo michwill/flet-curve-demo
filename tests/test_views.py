@@ -4326,3 +4326,121 @@ def test_the_depth_button_is_dressed_the_same_way() -> None:
 
     assert view._flip_left.content is not None
     assert view._flip_right.content is not None
+
+
+# -- claiming several batches in one prompt (EIP-5792) ----------------------
+
+
+class BatchingWallet:
+    """A wallet that speaks 5792, and records what it was handed."""
+
+    from wallet.base import RpcError as _RpcError
+
+    def __init__(self, *, supports: bool = True) -> None:
+        self.supports = supports
+        self.sent: list[dict] = []
+        self.batches: list[list[dict]] = []
+
+    async def request(self, method: str, params: list | None = None):
+        if method == "wallet_getCapabilities":
+            if not self.supports:
+                raise self._RpcError(-32601, "unknown method")
+            return {"0xa4b1": {"atomic": {"status": "supported"}}}
+        if method == "wallet_sendCalls":
+            assert params is not None
+            self.batches.append(params[0]["calls"])
+            return {"id": "0xbatch"}
+        if method == "wallet_getCallsStatus":
+            return {"status": 200, "atomic": True,
+                    "receipts": [{"transactionHash": "0x" + "cd" * 32,
+                                  "blockNumber": "0x10", "status": "0x1"}]}
+        raise AssertionError(f"unexpected {method}")
+
+    async def send_transaction(self, tx: dict) -> str:
+        self.sent.append(tx)
+        return "0x" + f"{len(self.sent):064x}"
+
+    async def chain_id(self) -> int:
+        return 42161
+
+
+def two_factory_app(wallet) -> object:
+    """An app owed CRV from gauges that two different factories deployed, so
+    the claim is two transactions and there is something to batch."""
+    import main as app_module
+    from curve.earnings import Earning, Reward
+
+    crv = Reward("", "CRV", 18, 5 * 10**18, 0.5, minted=True)
+    app = app_module.CurveApp.__new__(app_module.CurveApp)
+    app.page = StubPage()
+    app.chain = "arbitrum"
+    app.chains = {"arbitrum": 42161}
+    app.portfolio_view = portfolio_view(app.page)
+    app.wallet = SimpleNamespace(address="0x" + "11" * 20, provider=wallet)
+    old, new = "0x" + "22" * 20, "0x" + "33" * 20
+    app._earnings = [
+        Earning(pool="0x" + "aa" * 20, gauge=old, staked=1, rewards=(crv,)),
+        Earning(pool="0x" + "bb" * 20, gauge=new, staked=1, rewards=(crv,)),
+    ]
+    app._claim_minters = {old.lower(): "0x988d1037e9608B21050A8EFba0c6C45e01A3Bce7"}
+    app._earning_seeds = None        # the re-read after a claim has nothing to do
+    return app
+
+
+async def test_two_factories_are_claimed_in_one_prompt_when_the_wallet_batches(
+    monkeypatch,
+) -> None:
+    """A chain with two live gauge factories costs one transaction each --
+    each keeps its own `minted[user][gauge]`, so they cannot be merged into
+    one call.  They can still be merged into one confirmation, which on a
+    Safe is a round of cosigners rather than a click.
+    """
+    import main as app_module
+
+    monkeypatch.setattr(app_module, "wait_for_batch", _batch_mined)
+    wallet = BatchingWallet()
+    app = two_factory_app(wallet)
+
+    await app.claim_portfolio(True)
+
+    assert len(wallet.batches) == 1, "not sent as one batch"
+    assert len(wallet.batches[0]) == 2, "both factories should be in it"
+    assert not wallet.sent, "nothing should have gone one at a time"
+    assert app.portfolio_view.claim_status.value == "Claimed CRV."
+
+
+async def test_a_wallet_that_will_not_batch_still_claims_one_at_a_time(
+    monkeypatch,
+) -> None:
+    """The capability is asked for, not assumed: most wallets say no."""
+    import main as app_module
+
+    monkeypatch.setattr(app_module, "wait_for_confirmation", _mined)
+    wallet = BatchingWallet(supports=False)
+    app = two_factory_app(wallet)
+
+    await app.claim_portfolio(True)
+
+    assert not wallet.batches
+    assert len(wallet.sent) == 2, "one transaction per factory"
+    assert app.portfolio_view.claim_status.value == "Claimed CRV."
+
+
+async def test_one_transaction_is_not_worth_a_batch(monkeypatch) -> None:
+    """Nothing to save: one call is one prompt either way, and asking the
+    wallet about batching would only slow the press down."""
+    import main as app_module
+
+    monkeypatch.setattr(app_module, "wait_for_confirmation", _mined)
+    wallet = BatchingWallet()
+    app = two_factory_app(wallet)
+    app._claim_minters = {}          # both gauges under the one table minter
+
+    await app.claim_portfolio(True)
+
+    assert not wallet.batches
+    assert len(wallet.sent) == 1
+
+
+async def _batch_mined(_provider, _batch_id, **_kw) -> int:
+    return 16

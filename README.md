@@ -1416,6 +1416,16 @@ On a child factory that batch is a flat ~2.16M gas whatever the count, so it
 is the cheaper *total* only past about eight gauges — below that it is buying
 fewer wallet confirmations, not less gas.
 
+**Several batches, one confirmation.** A chain with two live gauge factories
+needs one transaction per factory — each keeps its own `minted[user][gauge]`,
+so they cannot be folded into one call. They can be folded into one *prompt*,
+which is what the EIP-5792 support the Swap tab uses is for, and the claim
+asks for it the same way: `wallet_getCapabilities` at the press, one
+`wallet_sendCalls` if the answer is yes, and the one-prompt-each path if it
+is not. Most wallets say no and that path stays; a Safe over WalletConnect
+says yes, and there the saving is a round of cosigners per factory rather
+than a click.
+
 Worth knowing that nobody else uses it: of the last 400 transactions to
 Arbitrum's child gauge factory, 399 are `mint` and one is `mint_many` — this
 app's. A fixed-width array with no early exit is unusable unless you happen

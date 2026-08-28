@@ -22,7 +22,7 @@ from curve import (
     rewards,
 )
 from curve.api import PoolFeed
-from curve.confirm import wait_for_confirmation
+from curve.confirm import wait_for_batch, wait_for_confirmation
 from curve.format import compact_usd
 from curve.lite import LiteChain
 from curve.rpc import (
@@ -47,6 +47,7 @@ from wallet import (
     WalletChoice,
     WalletError,
     autoconnect,
+    batch,
     is_browser,
 )
 from wallet.base import RpcError
@@ -1442,21 +1443,26 @@ class CurveApp:
         # dies on a bare assert -- empty revert, no message anywhere -- and
         # takes the gauges that would have paid down with it.
         plan = earnings.claim_plan(chain_id, self._earnings, self._claim_minters)
-        count = len(plan.crv) if crv else (1 if plan.extras else 0)
+        transactions = earnings.claim_transactions(wallet.address, plan, crv=crv)
+        count = len(transactions)
         if not count:
             view.claiming("Nothing to claim.", status.FAILED)
             return
         what = "CRV" if crv else "rewards"
-        view.claiming(
-            f"Confirm {count} transaction{'s' if count > 1 else ''} in your wallet…"
-        )
         try:
-            sent = await earnings.send_claims(
-                wallet.provider, wallet.address, plan, crv=crv
-            )
-            for index, tx in enumerate(sent, start=1):
-                view.claiming(f"Waiting for {index}/{len(sent)}: {tx[:14]}…")
-                await wait_for_confirmation(wallet.provider, tx)
+            if count > 1 and await self.wallet_batches(wallet, chain_id):
+                await self.claim_as_batch(wallet, chain_id, transactions, count)
+            else:
+                view.claiming(
+                    f"Confirm {count} transaction"
+                    f"{'s' if count > 1 else ''} in your wallet…"
+                )
+                sent = await earnings.send_claims(
+                    wallet.provider, wallet.address, plan, crv=crv
+                )
+                for index, tx in enumerate(sent, start=1):
+                    view.claiming(f"Waiting for {index}/{len(sent)}: {tx[:14]}…")
+                    await wait_for_confirmation(wallet.provider, tx)
         except WalletError as exc:
             view.claiming(
                 "" if exc.rejected_by_user else str(exc), status.FAILED
@@ -1464,6 +1470,39 @@ class CurveApp:
             return
         view.claiming(f"Claimed {what}.", status.DONE)
         await self.reread_earnings(wallet.address, wallet.provider)
+
+    async def wallet_batches(self, wallet, chain_id: int) -> bool:
+        """Whether this wallet takes several calls in one prompt (EIP-5792).
+
+        Asked at the press rather than remembered, unlike the Swap tab, which
+        asks on every keystroke's worth of approval state.  A claim is a rare
+        and deliberate thing, and one capability read costs less than a cache
+        that has to be dropped whenever the wallet or the chain changes.
+        """
+        with contextlib.suppress(Exception):
+            return await batch.supported(wallet.provider, wallet.address, chain_id)
+        return False
+
+    async def claim_as_batch(
+        self, wallet, chain_id: int, transactions: list[tuple[str, str]], count: int
+    ) -> None:
+        """Every claim in the plan, in one confirmation.
+
+        Which is what a chain with two live gauge factories costs otherwise:
+        one prompt per factory, because each keeps its own
+        `minted[user][gauge]` and a batch naming a gauge the other deployed
+        reverts.  A Safe over WalletConnect pays for each of those in rounds
+        of cosigners, which is the case this is for.
+        """
+        self.portfolio_view.claiming(
+            f"Confirm {count} claims in one prompt…"
+        )
+        batch_id = await batch.send(
+            wallet.provider, wallet.address, chain_id,
+            [batch.Call(to, data) for to, data in transactions],
+        )
+        self.portfolio_view.claiming(f"Waiting for {batch_id[:14]}…")
+        await wait_for_batch(wallet.provider, batch_id)
 
     def loading(self, fraction: float | None = None) -> None:
         """Show the strip under the top bar, at `fraction` or indefinite."""

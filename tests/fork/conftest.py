@@ -161,8 +161,15 @@ class Fork:
             assert time.monotonic() < deadline, f"{tx} not mined within {timeout}s"
             time.sleep(0.2)
 
-    def provider(self, timeout: float = 120.0) -> DesktopWalletProvider:
-        """The app's real transport, pointed at the fork."""
+    def provider(self) -> DesktopWalletProvider:
+        """The app's real transport, pointed at the fork.
+
+        It used to take a `timeout` that it then dropped on the floor --
+        `wallet.desktop` reads `READ_TIMEOUT` off the module, not the
+        instance -- so a caller asking for longer silently got thirty
+        seconds.  A test that needs a slow fork to behave has to ask for
+        less work, not more time.
+        """
         return DesktopWalletProvider(self.url)
 
     def give_eth(self, address: str, ether: int = 100) -> None:

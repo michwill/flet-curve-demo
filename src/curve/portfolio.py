@@ -9,10 +9,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from wallet.base import WalletProvider
-from wallet.erc20 import encode_balance_of
+from wallet.erc20 import encode_balance_of, to_checksum_address
 
 from . import abi
 from .multicall import MULTICALL3, decode_uints, encode_aggregate3
+from .rewards import REWARDS, gauge_lookup, gauges_from_batch
 
 #: Calls per batch. Both endpoints measured took all 1,713 at once, so this
 #: is deliberately conservative: a chunk this size is ~67KB of calldata,
@@ -138,6 +139,7 @@ async def scan(
     targets: Sequence[Target],
     account: str,
     *,
+    chain_id: int = 0,
     on_progress: Callable[[int, int], None] | None = None,
     chunk: int = CHUNK,
     concurrency: int = CONCURRENCY,
@@ -149,8 +151,84 @@ async def scan(
     balances = await _batched(
         provider, plan, encode_balance_of(account), chunk, concurrency, on_progress
     )
+    targets, balances = await resolve_absent_gauges(
+        provider, chain_id, targets, balances, account, chunk, concurrency
+    )
     holdings = holdings_from(targets, balances)
     return await with_supply(provider, holdings)
+
+
+async def resolve_absent_gauges(
+    provider: WalletProvider,
+    chain_id: int,
+    targets: Sequence[Target],
+    balances: list[int | None],
+    account: str,
+    chunk: int = CHUNK,
+    concurrency: int = CONCURRENCY,
+) -> tuple[list[Target], list[int | None]]:
+    """Read again at the gauge that is on this chain, where the listed one is not.
+
+    The pool list names the Ethereum *root* gauge for whole chains -- every
+    gauge it lists for BSC and for Sonic, 36 of 45 on Base.  A `balanceOf` on
+    an address with no code is not an error: the call succeeds and returns
+    nothing, which folds into a staked balance of zero, and the position
+    disappears from the portfolio rather than showing up as unreadable.
+
+    So an unread gauge is worth a second look: each of the chain's factories
+    is asked what gauge it made for the LP token, and the balance is read
+    again at that.  Two extra rounds, over the absent gauges only -- none at
+    all on a chain whose listed gauges are all really there.
+    """
+    entry = REWARDS.get(chain_id)
+    factories = entry.gauge_factories if entry is not None else ()
+    kept = list(targets)
+    answers = list(balances)
+    if not factories:
+        return kept, answers
+
+    #: Where each target's gauge balance sits in the flat answer list.
+    at: dict[int, int] = {}
+    position = 0
+    for index, target in enumerate(kept):
+        position += 1
+        if target.gauge:
+            at[index] = position
+            position += 1
+    absent = [
+        index
+        for index, slot in at.items()
+        if slot < len(answers) and answers[slot] is None
+    ]
+    if not absent:
+        return kept, answers
+
+    named = await _calls(provider, [
+        call
+        for index in absent
+        for call in gauge_lookup(
+            kept[index].lp_token or kept[index].address, factories)
+    ], chunk, concurrency, None)
+    found = {
+        absent[offset]: to_checksum_address(gauge)
+        for offset, (gauge, _minter) in gauges_from_batch(
+            factories, len(absent), named).items()
+    }
+    if not found:
+        return kept, answers
+
+    order = list(found)
+    staked = await _calls(
+        provider,
+        [(found[index], encode_balance_of(account)) for index in order],
+        chunk,
+        concurrency,
+        None,
+    )
+    for index, value in zip(order, staked, strict=True):
+        kept[index] = dataclasses.replace(kept[index], gauge=found[index])
+        answers[at[index]] = value
+    return kept, answers
 
 
 async def with_supply(
@@ -184,21 +262,36 @@ async def _batched(
     on_progress: Callable[[int, int], None] | None,
 ) -> list[int | None]:
     """The same call against many contracts, in batches, concurrently."""
-    batches = [contracts[i : i + chunk] for i in range(0, len(contracts), chunk)]
+    return await _calls(
+        provider,
+        [(target, data) for target in contracts],
+        chunk,
+        concurrency,
+        on_progress,
+    )
+
+
+async def _calls(
+    provider: WalletProvider,
+    calls: Sequence[tuple[str, str]],
+    chunk: int,
+    concurrency: int,
+    on_progress: Callable[[int, int], None] | None,
+) -> list[int | None]:
+    """Many calls, in batches, concurrently. `None` per call that said nothing."""
+    batches = [calls[i : i + chunk] for i in range(0, len(calls), chunk)]
     answers: list[list[int | None]] = [[] for _ in batches]
     done = 0
     gate = asyncio.Semaphore(max(1, concurrency))
 
-    async def run(number: int, batch: Sequence[str]) -> None:
+    async def run(number: int, batch: Sequence[tuple[str, str]]) -> None:
         nonlocal done
         async with gate:
-            result = await provider.call(
-                MULTICALL3, encode_aggregate3([(target, data) for target in batch])
-            )
+            result = await provider.call(MULTICALL3, encode_aggregate3(list(batch)))
         answers[number] = decode_uints(result, len(batch))
         done += len(batch)
         if on_progress is not None:
-            on_progress(done, len(contracts))
+            on_progress(done, len(calls))
 
     await asyncio.gather(*[run(n, batch) for n, batch in enumerate(batches)])
     return [value for group in answers for value in group]

@@ -509,3 +509,49 @@ async def test_the_resolution_is_asked_for_once():
     await pool.gauge_here()
 
     assert len(provider.codes_asked) == before, "it asked the chain twice"
+
+
+async def test_the_factory_that_resolved_a_gauge_is_the_one_that_mints_it():
+    """A gauge that will not answer `factory()` still has a minter: whichever
+    factory said it made this LP token's gauge, which is a better answer than
+    the chain table for a chain that has had more than one.
+    """
+    real = "0x" + "dd" * 20
+    provider = FakeProvider({
+        abi.encode_gauge_from_lp_token(LP_TOKEN)[:10]: word(int(real, 16)),
+        abi.encode_gauge_factory()[:10]: word(0),
+    })
+    provider.code_at = {GAUGE.lower(): "0x", real.lower(): "0x60006000"}
+    pool = contract(provider, arbitrum_pool())
+
+    assert (await pool.gauge_here()).lower() == real
+    assert (await pool.minter_for_gauge()).lower() == OLD_FACTORY.lower(), (
+        "the factory that named the gauge is the one that mints it")
+
+
+async def test_a_chain_with_no_measured_factories_still_asks_its_minter():
+    """Sonic names no factories in the table and every gauge the API lists
+    for it is the root gauge.  Its minter is the factory that resolves all
+    58 of them, so an empty `factories` must not mean no resolution."""
+    from curve.rewards import REWARDS
+
+    sonic = Pool.from_v2({
+        "address": POOL_ADDRESS,
+        "pool_type": "stable",
+        "chain_id": 146,
+        "lp_token_address": LP_TOKEN,
+        "gauges": [{"address": GAUGE, "is_killed": False}],
+        "coins": [
+            {"symbol": "USDC", "address": "0x" + "aa" * 20, "decimals": 6},
+            {"symbol": "scUSD", "address": "0x" + "bb" * 20, "decimals": 18},
+        ],
+    })
+    real = "0x" + "ee" * 20
+    provider = FakeProvider({
+        abi.encode_gauge_from_lp_token(LP_TOKEN)[:10]: word(int(real, 16)),
+    })
+    provider.code_at = {GAUGE.lower(): "0x", real.lower(): "0x60006000"}
+    pool = contract(provider, sonic)
+
+    assert (await pool.gauge_here()).lower() == real
+    assert REWARDS[146].gauge_factories == (REWARDS[146].minter,)

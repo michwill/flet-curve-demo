@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 
 from curve.abi import encode_claim_rewards_for, selector
@@ -12,6 +14,7 @@ from curve.earnings import (
     Reward,
     claim_plan,
     read_earnings,
+    resolve_gauges,
     seed_from_detail,
     send_claims,
 )
@@ -475,3 +478,132 @@ def test_a_gauge_the_read_missed_falls_back_rather_than_being_dropped() -> None:
 
     claimed = {g for _minter, gauges in plan.crv for g in gauges}
     assert claimed == {e.gauge for e in some}, "a gauge was dropped"
+
+
+# -- resolving the gauge that is actually on the chain -----------------------
+
+ARB_FACTORIES = ("0xabC000d88f23Bb45525E447528DBF656A9D55bf5",
+                 "0x988d1037e9608B21050A8EFba0c6C45e01A3Bce7")
+SONIC_FACTORY = "0xf3A431008396df8A8b2DF492C913706BDB0874ef"
+
+
+def staked_at(gauge: str, pool: str = "0x" + "11" * 20, lp: str = "") -> Earning:
+    return Earning(pool=pool, gauge=gauge, lp_token=lp, staked=10**18)
+
+
+async def test_a_gauge_that_is_here_is_left_alone() -> None:
+    """It answers `factory()`, which is both the proof it is here and the
+    minter to claim it through.  One round, and nothing to resolve."""
+    gauge = "0x" + "22" * 20
+    chain = Chain([[int(ARB_FACTORIES[0], 16)]])
+
+    got, minters = await resolve_gauges(chain, 42161, [staked_at(gauge)])
+
+    assert [e.gauge for e in got] == [gauge]
+    assert minters == {gauge.lower(): ARB_FACTORIES[0]}
+    assert len(chain.asked) == 1, "a gauge that is here needs no second round"
+
+
+async def test_a_root_gauge_is_replaced_by_the_child_gauge_here() -> None:
+    """What the API lists for every pool on BSC and Sonic: the Ethereum root
+    gauge, which has no code on the chain the pool is on.  Reading it returns
+    nothing and claiming through it claims nothing.
+    """
+    root, child = "0x" + "22" * 20, "0x" + "33" * 20
+    lp = "0x" + "44" * 20
+    chain = Chain([[None], [int(child, 16), 0]])
+
+    got, minters = await resolve_gauges(chain, 42161, [staked_at(root, lp=lp)])
+
+    assert [e.gauge for e in got] == [child]
+    assert minters == {child.lower(): ARB_FACTORIES[0]}, (
+        "the factory that named the gauge is the one that mints it")
+
+
+async def test_the_older_factory_answers_where_the_newer_one_does_not() -> None:
+    root, child = "0x" + "22" * 20, "0x" + "33" * 20
+    chain = Chain([[None], [0, int(child, 16)]])
+
+    got, minters = await resolve_gauges(
+        chain, 42161, [staked_at(root, lp="0x" + "44" * 20)])
+
+    assert [e.gauge for e in got] == [child]
+    assert minters == {child.lower(): ARB_FACTORIES[1]}
+
+
+async def test_a_chain_with_no_factories_measured_still_asks_its_minter() -> None:
+    """Sonic: every one of its 58 listed gauges is the root gauge, and its
+    minter is the factory that resolves all of them.  A chain table that
+    names no factories must not mean no resolution.
+    """
+    root, child = "0x" + "22" * 20, "0x" + "33" * 20
+    chain = Chain([[None], [int(child, 16)]])
+
+    got, minters = await resolve_gauges(
+        chain, 146, [staked_at(root, lp="0x" + "44" * 20)])
+
+    assert [e.gauge for e in got] == [child]
+    assert minters == {child.lower(): SONIC_FACTORY}
+
+
+async def test_a_gauge_nothing_resolves_keeps_the_address_it_was_given() -> None:
+    """Unresolvable is not the same as wrong.  Ethereum gauges answer no
+    `factory()` at all and are all deployed where they are listed."""
+    gauge = "0x" + "22" * 20
+    chain = Chain([[None], [0, 0]])
+
+    got, minters = await resolve_gauges(
+        chain, 42161, [staked_at(gauge, lp="0x" + "44" * 20)])
+
+    assert [e.gauge for e in got] == [gauge]
+    assert minters == {}
+
+
+async def test_the_pool_stands_in_for_a_pool_that_is_its_own_lp_token() -> None:
+    """The newer designs are their own LP token and the list leaves the field
+    empty for them."""
+    root, child = "0x" + "22" * 20, "0x" + "33" * 20
+    pool = "0x" + "55" * 20
+    chain = Chain([[None], [int(child, 16), 0]])
+
+    got, _minters = await resolve_gauges(chain, 42161, [staked_at(root, pool=pool)])
+
+    asked = chain.asked[1]
+    assert pool.removeprefix("0x").lower() in asked.lower()
+    assert [e.gauge for e in got] == [child]
+
+
+async def test_it_is_two_rounds_however_many_positions_there_are() -> None:
+    """A portfolio is resolved in a fixed number of round trips, not one per
+    pool: the second round is every factory for every unresolved gauge."""
+    positions = [
+        staked_at("0x" + f"{i:040x}", pool=f"0x{i + 200:040x}", lp=f"0x{i:040x}")
+        for i in range(20)
+    ]
+    chain = Chain([[None] * 20, [0] * 40])
+
+    got, minters = await resolve_gauges(chain, 42161, positions)
+
+    assert len(chain.asked) == 2
+    assert got == positions and minters == {}
+
+
+async def test_positions_with_no_gauge_are_not_asked_about() -> None:
+    chain = Chain([])
+
+    got, minters = await resolve_gauges(chain, 42161, [Earning(pool="p", staked=1)])
+
+    assert got and not minters and not chain.asked
+
+
+async def test_the_resolved_gauge_is_what_the_claim_is_grouped_by() -> None:
+    """The whole point: a plan built after resolution names the gauge that is
+    on the chain, through the factory that deployed it."""
+    root, child = "0x" + "22" * 20, "0x" + "33" * 20
+    chain = Chain([[None], [0, int(child, 16)]])
+
+    got, minters = await resolve_gauges(
+        chain, 42161, [staked_at(root, lp="0x" + "44" * 20)])
+    plan = claim_plan(42161, [dataclasses.replace(got[0], rewards=(CRV,))], minters)
+
+    assert plan.crv == ((ARB_FACTORIES[1], (child,)),)

@@ -16,7 +16,7 @@ from . import abi
 from .models import Pool
 from .multicall import MULTICALL3, decode_aggregate3, encode_aggregate3
 from .parameters import PARAMETERS, Readings
-from .rewards import minter_from_factory, rewards_for
+from .rewards import address_from, gauge_lookup, minter_from_factory, rewards_for
 from .stake_zaps import ZERO_ADDRESS, StakeZap, stake_zap_for
 from .zaps import Zap, zap_for
 
@@ -109,6 +109,8 @@ class PoolContract:
         #: The gauge that is really on this chain, once resolved.  A pool is
         #: one pool for the life of a panel, so this is asked once.
         self._gauge_here: str | None = None
+        #: The factory that resolved `_gauge_here`, where one did.
+        self._gauge_minter = ""
 
     @property
     def can_send(self) -> bool:
@@ -755,9 +757,14 @@ class PoolContract:
         if not gauge:
             return ""
         with contextlib.suppress(Exception):
-            return minter_from_factory(
+            found = minter_from_factory(
                 await self.provider.call(gauge, abi.encode_gauge_factory()))
-        return ""
+            if found:
+                return found
+        # A factory that named this gauge deployed it, so it is the one that
+        # mints it -- a better answer than the chain table for a gauge that
+        # will not say so itself.
+        return self._gauge_minter
 
     async def has_code(self, address: str) -> bool:
         """Whether anything is deployed there, on the chain this pool is on."""
@@ -801,12 +808,13 @@ class PoolContract:
         lp = self.pool.lp_token or self.pool.address
         if entry is None or not lp:
             return ""
-        for factory in entry.factories:
+        # One at a time rather than a Multicall3 round: there is one pool
+        # here, and the first factory usually answers.
+        for factory, call in gauge_lookup(lp, entry.gauge_factories):
             with contextlib.suppress(Exception):
-                answer = await self.provider.call(
-                    factory, abi.encode_gauge_from_lp_token(lp))
-                found = minter_from_factory(answer)
+                found = address_from(await self.provider.call(factory, call))
                 if found and await self.has_code(found):
+                    self._gauge_minter = factory
                     return found
         return ""
 

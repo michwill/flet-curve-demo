@@ -399,13 +399,19 @@ class PortfolioView(ft.Column):
         if self._on_claim is not None:
             self._page.run_task(self._on_claim, crv)
 
-    def show_earnings(self, earnings: list[Earning], chain_id: int = 0) -> None:
-        """Fill in the APR and rewards columns, and offer the claims."""
+    def show_earnings(self, earnings: list[Earning], chain_id: int = 0,
+                      minters: dict[str, str] | None = None) -> None:
+        """Fill in the APR and rewards columns, and offer the claims.
+
+        `minters` is what the claim itself will group by, so the count on
+        the button is the count that will be sent: a chain with two live
+        gauge factories takes one transaction per factory.
+        """
         was = self._earnings
         self._earnings = {e.pool.lower(): e for e in earnings}
         entry = REWARDS.get(chain_id)
         self._crv = entry.crv if entry else ""
-        self._plan = claim_plan(chain_id, earnings)
+        self._plan = claim_plan(chain_id, earnings, minters)
         owed = sum(e.claimable_value for e in earnings)
         crv = bool(self._plan.crv)
         extras = bool(self._plan.extras)

@@ -7,11 +7,12 @@ import dataclasses
 from dataclasses import dataclass, field
 
 from wallet.base import WalletError, WalletProvider
+from wallet.erc20 import to_checksum_address
 
 from . import abi
 from .models import Incentive
 from .multicall import MULTICALL3, decode_uints, encode_aggregate3
-from .rewards import CRV_DECIMALS, REWARDS
+from .rewards import CRV_DECIMALS, REWARDS, gauge_lookup, gauges_from_batch
 
 #: The share of a balance that earns CRV with no veCRV at all.
 UNBOOSTED_SHARE = 0.4
@@ -61,6 +62,9 @@ class Earning:
 
     pool: str
     gauge: str = ""
+    #: The pool's LP token, or empty where the pool is its own.  Carried
+    #: only so `resolve_gauges` can ask a factory what it made for it.
+    lp_token: str = ""
     #: Raw LP, as `Holding` carries it.
     staked: int = 0
     wallet: int = 0
@@ -223,7 +227,9 @@ async def _batch(
 
 
 def _word_to_address(value: int) -> str:
-    return "0x" + f"{value:040x}"
+    """Checksummed, because these addresses are compared against the chain
+    table -- `send_claims` finds a minter's `mint_many_size` that way."""
+    return to_checksum_address("0x" + f"{value:040x}")
 
 
 async def read_minters(
@@ -249,6 +255,66 @@ async def read_minters(
         if value:
             found[gauge] = _word_to_address(value)
     return found
+
+
+async def resolve_gauges(
+    provider: WalletProvider, chain_id: int, positions: list[Earning]
+) -> tuple[list[Earning], dict[str, str]]:
+    """Each position against the gauge on *this* chain, and who mints it.
+
+    The pool list names a gauge that is often the Ethereum *root* gauge and
+    not the child gauge on the pool's own chain.  Measured: every gauge
+    listed for BSC and for Sonic, 36 of 45 on Base, 28 of 75 on Fraxtal.
+    Reading one of those addresses returns nothing and claiming through it
+    claims nothing, so the portfolio has to resolve before it reads.
+
+    Two Multicall3 rounds, whatever the size of the portfolio:
+
+    1. `factory()` on every listed gauge.  One that is here answers with the
+       factory that deployed it -- which is also the minter to claim it
+       through.  One that is not here fails, and is a candidate for round 2.
+    2. `get_gauge_from_lp_token` on each of the chain's factories for each
+       candidate.  A factory that names a gauge both *is* the answer and is
+       that gauge's minter, so this needs no third round to confirm.
+
+    A candidate nothing resolves keeps its listed address: unresolvable is
+    not the same as wrong.  Ethereum gauges answer no `factory()` at all and
+    are all deployed where they are listed, so every one of them is a
+    candidate that resolves to itself.
+    """
+    entry = REWARDS.get(chain_id)
+    listed = [p.gauge for p in positions if p.gauge]
+    if not listed:
+        return positions, {}
+    minters = await read_minters(provider, listed)
+    factories = entry.gauge_factories if entry is not None else ()
+    missing = [
+        p for p in positions
+        if p.gauge and p.gauge.lower() not in minters and (p.lp_token or p.pool)
+    ]
+    if not missing or not factories:
+        return positions, minters
+
+    answers = await _batch(provider, [
+        call for p in missing for call in gauge_lookup(p.lp_token or p.pool, factories)
+    ])
+    found = {
+        missing[index].pool: (to_checksum_address(gauge), factory)
+        for index, (gauge, factory) in gauges_from_batch(
+            factories, len(missing), answers).items()
+    }
+    if not found:
+        return positions, minters
+    for gauge, factory in found.values():
+        minters[gauge.lower()] = factory
+    return (
+        [
+            dataclasses.replace(p, gauge=found[p.pool][0])
+            if p.pool in found else p
+            for p in positions
+        ],
+        minters,
+    )
 
 
 async def read_earnings(

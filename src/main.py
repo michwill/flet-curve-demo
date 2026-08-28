@@ -535,6 +535,10 @@ class CurveApp:
         #: it should never pay for it.
         self.swap_page: SwapPage | None = None
         self._earnings: list[earnings.Earning] = []
+        #: Each gauge's own minter, keyed lower-case, read once with the
+        #: seeds.  A chain can have several child gauge factories and each
+        #: keeps its own `minted[user][gauge]`.
+        self._claim_minters: dict[str, str] = {}
         #: What `reread_earnings` needs to ask the chain again, gathered
         #: once: the positions, their token metadata, CRV's price and the
         #: chain it was all read on.
@@ -1277,6 +1281,7 @@ class CurveApp:
         wallet = self.wallet
         self._earnings = []
         self._earning_seeds = None
+        self._claim_minters = {}
         view.forget_earnings()
         if wallet is None or not wallet.address:
             view.say("Connect a wallet to see what it holds.")
@@ -1293,7 +1298,8 @@ class CurveApp:
         try:
             if remembered:
                 view.show(await portfolio.scan(
-                    provider, portfolio.targets_for(remembered), account
+                    provider, portfolio.targets_for(remembered), account,
+                    chain_id=chain_id,
                 ))
             targets = await self.api.portfolio_targets(self.chain, chain_id)
             self.loading(PORTFOLIO_DISCOVERY_SHARE)
@@ -1301,6 +1307,7 @@ class CurveApp:
                 provider,
                 targets,
                 account,
+                chain_id=chain_id,
                 on_progress=lambda done, total: self.loading(
                     PORTFOLIO_DISCOVERY_SHARE
                     + (1 - PORTFOLIO_DISCOVERY_SHARE) * (done / max(total, 1))
@@ -1343,6 +1350,7 @@ class CurveApp:
             seed = earnings.Earning(
                 pool=holding.address,
                 gauge=holding.gauge,
+                lp_token=holding.lp_token,
                 staked=holding.staked,
                 wallet=holding.wallet,
             )
@@ -1357,6 +1365,16 @@ class CurveApp:
         if entry is not None:
             with contextlib.suppress(ApiError):
                 crv_price = await self.api.usd_price(self.chain, entry.crv)
+        # The pool list names the Ethereum root gauge for whole chains --
+        # every gauge on BSC and Sonic, most of Base.  Reading or claiming
+        # against one of those does nothing at all, so the addresses are
+        # resolved before anything is asked of them, and the factory that
+        # resolved each one is the minter to claim it through.
+        try:
+            seeds, self._claim_minters = await earnings.resolve_gauges(
+                provider, chain_id, seeds)
+        except Exception:
+            self._claim_minters = {}
         self._earning_seeds = (seeds, token_meta, crv_price, chain_id)
         await self.reread_earnings(account, provider)
 
@@ -1376,7 +1394,7 @@ class CurveApp:
             )
             return
         self._earnings = filled
-        self.portfolio_view.show_earnings(filled, chain_id)
+        self.portfolio_view.show_earnings(filled, chain_id, self._claim_minters)
 
     async def wallet_is_here(self, chain_id: int) -> bool:
         """Is the wallet on the network the page is showing?
@@ -1417,19 +1435,13 @@ class CurveApp:
                 status.FAILED,
             )
             return
-        # Asked of the gauges, not taken from the chain table.  A chain can
-        # have more than one child gauge factory, each with its own
+        # Each gauge's own minter, read with the seeds.  A chain can have
+        # more than one child gauge factory, each with its own
         # `minted[user][gauge]`, and a gauge is minted through the one that
         # deployed it.  A `mint_many` naming a gauge its factory does not know
         # dies on a bare assert -- empty revert, no message anywhere -- and
         # takes the gauges that would have paid down with it.
-        minters = {}
-        if crv:
-            with contextlib.suppress(Exception):
-                minters = await earnings.read_minters(
-                    wallet.provider,
-                    [e.gauge for e in self._earnings if e.gauge and e.has_crv])
-        plan = earnings.claim_plan(chain_id, self._earnings, minters)
+        plan = earnings.claim_plan(chain_id, self._earnings, self._claim_minters)
         count = len(plan.crv) if crv else (1 if plan.extras else 0)
         if not count:
             view.claiming("Nothing to claim.", status.FAILED)

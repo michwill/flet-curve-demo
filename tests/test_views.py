@@ -3122,6 +3122,7 @@ async def test_a_confirmed_claim_updates_the_numbers_it_was_made_against(
     app.wallet = SimpleNamespace(address="0x" + "11" * 20, provider=chain)
     seed = Earning(pool="0x" + "11" * 20, gauge=gauge, staked=1000)
     app._earning_seeds = ([seed], {token: ("ARB", 18, 1.5)}, 0.5, 1)
+    app._claim_minters = {}
     await app.reread_earnings(app.wallet.address, chain)
 
     assert app.portfolio_view.claim_rewards.content == "Claim rewards ($6.00)"
@@ -3370,6 +3371,7 @@ async def test_the_rates_are_asked_for_once_however_many_pools() -> None:
     app.api = Api()
     app._earnings = []
     app._earning_seeds = None
+    app._claim_minters = {}
     app.portfolio_view = portfolio_view(app.page)
 
     async def reread(_account, _provider) -> None:
@@ -3407,6 +3409,7 @@ async def test_rates_that_cannot_be_read_still_leave_the_claim_working() -> None
     app.api = Api()
     app._earnings = []
     app._earning_seeds = None
+    app._claim_minters = {}
     app.portfolio_view = portfolio_view(app.page)
     read = []
 
@@ -3446,6 +3449,7 @@ async def test_declining_a_claim_leaves_no_red_line_behind() -> None:
     app._earnings = [
         earning(rewards=(arb_reward(4.0),)),
     ]
+    app._claim_minters = {}
 
     await app.claim_portfolio(False)
 

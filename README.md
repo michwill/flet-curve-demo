@@ -1323,6 +1323,64 @@ milliseconds when it does run it. Enforcing that field correctly empties the
 feature. It is carried and not enforced; `campaignStart` *is* honoured, which
 costs nothing today and is right the first time somebody schedules one.
 
+### The gauge the list names is not always the gauge on the chain
+
+The pool list gives a gauge address per pool, and on a sidechain that address
+is sometimes the Ethereum **root gauge** rather than the child gauge the pool's
+own chain has. Not an edge case — measured across eleven chains:
+
+| chain | gauges listed | on the chain | root gauge, not here |
+|---|---|---|---|
+| BSC | 52 | 0 | **52** |
+| Sonic | 59 | 0 | **59** |
+| Fraxtal | 75 | 47 | 28 |
+| Base | 45 | 9 | 36 |
+| Optimism | 42 | 27 | 15 |
+| Arbitrum | 51 | 45 | 6 |
+| Polygon | 33 | 26 | 7 |
+| Fantom, Celo, Avalanche | 32 | 32 | 0 |
+
+What makes this quiet rather than loud is that **`balanceOf` on an address
+with no code is not an error**. Multicall3 calls it, the call succeeds, it
+returns nothing — which decodes to "no answer", folds into a staked balance of
+zero, and the position is dropped from the portfolio for having nothing in it.
+An account with everything staked on Sonic saw an empty portfolio, and nothing
+anywhere said why. Verified against a live account holding seven staked
+positions on Sonic: before, none of them appeared; after, all seven do.
+
+So a gauge that will not answer is asked about a second time. Each of the
+chain's child gauge factories is asked `get_gauge_from_lp_token`, and the one
+that answers gives both the gauge to read and — because it deployed it — the
+factory that mints it. Two extra Multicall3 rounds over the absent gauges
+only, and none at all on a chain whose listed gauges are all really there.
+
+**Which factory matters, and there is more than one.** A child gauge is minted
+through the factory that deployed it (`assert msg.sender in [addr, FACTORY]`,
+immutable), and each factory keeps its own `minted[user][gauge]`. Minting a
+pre-v2 gauge through the v2 factory fails on `gauge_data[gauge] == 0` — a bare
+Vyper assert, so an empty revert with no reason string anywhere, which is how
+this arrived: as a claim on Arbitrum that reverted with nothing to read. A
+`mint_many` naming one unknown gauge takes the whole batch down with it,
+including the gauges that would have paid, so claims are grouped by each
+gauge's own minter and not by the chain.
+
+The chain table is the fallback, and it was wrong. Measured, six chains named a
+factory that not one gauge on the chain uses — Optimism, Gnosis, Polygon,
+Base, Arbitrum and Fraxtal — so every claim through it reverted. A gauge names
+its own minter and that is the answer; the table is only what is left when it
+will not say.
+
+**One place for the knowledge, three for the transport.** The lookup itself
+(`gauge_lookup`, `gauges_from_batch` in `curve/rewards.py`) is shared: the
+calls to make, and the rule that the first factory to answer wins and is the
+minter. What differs is legitimately different — the pool page resolves one
+pool with a plain `eth_call` and `mint(gauge)`, the portfolio resolves a whole
+chain through Multicall3 and claims with `mint_many` chunked per factory
+(8 gauges on Ethereum's Minter, 32 on the child factories). Both were fixed
+because both read the addresses; only the fact of *which* address they are was
+ever duplicated, which is exactly how the pool page came to be fixed a
+commit before the portfolio was.
+
 ### Curve Lite, and showing less on purpose
 
 A **Curve Lite** deployment is the factory contracts and a gauge without the

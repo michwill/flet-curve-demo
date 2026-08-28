@@ -6,9 +6,10 @@ import json
 
 import pytest
 
-from curve import portfolio
+from curve import abi, portfolio
 from curve.multicall import MULTICALL3
 from curve.portfolio import LP_UNIT, Holding, Target, calls_for, holdings_from
+from wallet.erc20 import encode_balance_of
 
 UNIT = LP_UNIT
 
@@ -326,3 +327,120 @@ async def test_the_lite_chains_bring_their_own_totals(monkeypatch) -> None:
 
     assert tvls["etherlink"] == 9.2e6
     assert tvls["ethereum"] == 1.4e9
+
+
+# -- the gauge that is on the chain, not the one the list named --------------
+
+ARB_FACTORY = "0xabC000d88f23Bb45525E447528DBF656A9D55bf5"
+#: Taken from the encoders rather than written out: a selector typed by hand
+#: and got wrong makes the fake answer nothing, which reads as a chain that
+#: resolved nothing rather than as a broken test.
+BALANCE_OF = encode_balance_of("0x" + "9" * 40)[2:10]
+MADE_FOR = abi.encode_gauge_from_lp_token("0x" + "1" * 40)[2:10]
+
+
+class ResolvingProvider:
+    """A Multicall3 that answers by call as well as by contract.
+
+    `balances` is read for `balanceOf`, `made` for a factory's
+    `get_gauge_from_lp_token`, and an address in neither answers nothing --
+    which is what a call to an address with no code really does: it succeeds
+    and returns empty, and that is the whole reason a root gauge folds into a
+    staked balance of zero.
+    """
+
+    def __init__(self, balances: dict[str, int], made: dict[str, str] | None = None,
+                 supplies: dict[str, int] | None = None) -> None:
+        self.balances = balances
+        self.made = made or {}
+        self.supplies = supplies or {}
+        self.rounds: list[list[str]] = []
+
+    async def call(self, to: str, data: str) -> str:
+        from tests.test_parameters import aggregate3_response
+
+        assert to == MULTICALL3
+        body = data[10:]
+        count = int(body[64:128], 16)
+        answers: list[int | str | None] = []
+        selectors: list[str] = []
+        for index in range(count):
+            at = 128 + int(body[128 + index * 64 : 192 + index * 64], 16) * 2
+            target = ("0x" + body[at + 24 : at + 64]).lower()
+            length = int(body[at + 192 : at + 256], 16)
+            call = body[at + 256 : at + 256 + length * 2]
+            selectors.append(call[:8])
+            if call.startswith(MADE_FOR):
+                lp = "0x" + call[8 + 24 : 8 + 64]
+                found = self.made.get(f"{target}:{lp.lower()}")
+                answers.append(int(found, 16) if found else None)
+            elif call.startswith(BALANCE_OF):
+                answers.append(self.balances.get(target))
+            else:
+                answers.append(self.supplies.get(target))
+        self.rounds.append(selectors)
+        return aggregate3_response(answers)
+
+
+async def test_a_position_in_a_root_gauge_is_found_at_the_gauge_that_is_here():
+    """The bug this is here for: the pool list names the Ethereum root gauge
+    for every pool on BSC and Sonic and most of Base.  `balanceOf` on it
+    succeeds and returns nothing, folds into a staked balance of zero, and
+    the position vanishes from the portfolio altogether.
+    """
+    lp, root, child = "0x" + "1" * 40, "0x" + "2" * 40, "0x" + "d" * 40
+    targets = [Target(address="0x" + "a" * 40, name="A", chain="arbitrum",
+                      lp_token=lp, gauge=root, tvl=1_000.0)]
+    provider = ResolvingProvider(
+        balances={lp: 4 * UNIT, child: 6 * UNIT},
+        made={f"{ARB_FACTORY.lower()}:{lp}": child},
+        supplies={lp: 100 * UNIT},
+    )
+
+    holdings = await portfolio.scan(
+        provider, targets, "0x" + "9" * 40, chain_id=42161)
+
+    assert len(holdings) == 1, "the staked position was lost"
+    assert holdings[0].staked == 6 * UNIT
+    assert holdings[0].wallet == 4 * UNIT
+    assert holdings[0].gauge.lower() == child, (
+        "the resolved gauge has to be kept: it is what the claim addresses")
+
+
+async def test_a_chain_whose_gauges_are_all_here_asks_nothing_extra():
+    """The cost is over the absent gauges only, and there are none on most
+    chains."""
+    lp, gauge = "0x" + "1" * 40, "0x" + "2" * 40
+    targets = [Target(address="0x" + "a" * 40, name="A", chain="arbitrum",
+                      lp_token=lp, gauge=gauge)]
+    provider = ResolvingProvider(balances={lp: UNIT, gauge: UNIT})
+
+    await portfolio.scan(provider, targets, "0x" + "9" * 40, chain_id=42161)
+
+    assert not any(MADE_FOR in round for round in provider.rounds)
+
+
+async def test_a_gauge_no_factory_made_stays_as_it_was():
+    """Unreadable is not resolvable.  Nothing is claimed to be known here."""
+    lp, root = "0x" + "1" * 40, "0x" + "2" * 40
+    targets = [Target(address="0x" + "a" * 40, name="A", chain="arbitrum",
+                      lp_token=lp, gauge=root)]
+    provider = ResolvingProvider(balances={lp: 4 * UNIT})
+
+    holdings = await portfolio.scan(
+        provider, targets, "0x" + "9" * 40, chain_id=42161)
+
+    assert holdings[0].gauge == root and holdings[0].staked == 0
+
+
+async def test_without_a_chain_nothing_is_resolved():
+    """A scan that was not told which chain it is on cannot know the
+    factories, and guessing at them would be worse than leaving it."""
+    lp, root = "0x" + "1" * 40, "0x" + "2" * 40
+    targets = [Target(address="0x" + "a" * 40, name="A", chain="arbitrum",
+                      lp_token=lp, gauge=root)]
+    provider = ResolvingProvider(balances={lp: 4 * UNIT})
+
+    await portfolio.scan(provider, targets, "0x" + "9" * 40)
+
+    assert not any(MADE_FOR in round for round in provider.rounds)

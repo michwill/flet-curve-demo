@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
+from . import abi
 from .models import Pool
 
 
@@ -26,6 +28,17 @@ class Rewards:
     #: not deployed here -- which it does for whole chains: every gauge the
     #: API lists for BSC and Sonic is the Ethereum *root* gauge.
     factories: tuple[str, ...] = ()
+
+    @property
+    def gauge_factories(self) -> tuple[str, ...]:
+        """Every factory worth asking, newest last.
+
+        The minter where a chain's factories were never measured: it is one
+        of them on every chain but Ethereum, and asking it beats asking
+        nothing.  Only ever reached for a gauge that is not on the chain,
+        which on Ethereum does not happen.
+        """
+        return self.factories or ((self.minter,) if self.minter else ())
 
 
 #: Keyed by chain id. See the module docstring for provenance.
@@ -62,6 +75,7 @@ REWARDS: dict[int, Rewards] = {
     146: Rewards(
         "0x5af79133999f7908953e94b7a5cf367740ebee35",
         "0xf3A431008396df8A8b2DF492C913706BDB0874ef",
+        factories=("0xf3A431008396df8A8b2DF492C913706BDB0874ef",),
     ),  # Sonic
     250: Rewards(
         "0x1E4F97b9f9F913c46F1632781732927B9019C68b",
@@ -133,10 +147,59 @@ def minter_from_factory(answer: str | None) -> str:
     a bare assert with no reason string, which is why it reaches a wallet as
     an empty revert and an explorer shows nothing at all.
     """
+    return address_from(answer)
+
+
+def address_from(answer: str | int | None) -> str:
+    """One address word as an address, or "" where it said nothing.
+
+    Hex from a plain `eth_call`, an int from a decoded Multicall3 round: the
+    same answer either way, and the three places that resolve a gauge read it
+    through here rather than each pulling the last 40 characters off.
+    """
+    if isinstance(answer, int):
+        return "0x" + f"{answer:040x}" if answer else ""
     if not answer or len(answer) < 42:
         return ""
     found = "0x" + answer[-40:]
     return "" if int(found, 16) == 0 else found
+
+
+def gauge_lookup(lp_token: str, factories: Sequence[str]) -> list[tuple[str, str]]:
+    """The calls that ask each factory what gauge it made for this LP token.
+
+    In `factories` order, so the answers can be read back positionally by
+    `gauges_from_batch` -- or one at a time, where there is only one pool to
+    resolve and a second round trip is worth avoiding.
+    """
+    return [
+        (factory, abi.encode_gauge_from_lp_token(lp_token)) for factory in factories
+    ]
+
+
+def gauges_from_batch(
+    factories: Sequence[str], count: int, answers: Sequence[str | int | None]
+) -> dict[int, tuple[str, str]]:
+    """`{item: (gauge, minter)}` from `count` items' worth of `gauge_lookup`.
+
+    The first factory that names a gauge wins, and *is* that gauge's minter:
+    it deployed it, and the address is immutable in the gauge.  An item no
+    factory answers for is left out rather than given an empty gauge -- the
+    caller keeps whatever it already had, because unresolvable is not the
+    same as wrong.
+    """
+    width = len(factories)
+    if not width:
+        return {}
+    found: dict[int, tuple[str, str]] = {}
+    for index in range(count):
+        window = answers[index * width : (index + 1) * width]
+        for factory, answer in zip(factories, window, strict=False):
+            gauge = address_from(answer)
+            if gauge:
+                found[index] = (gauge, factory)
+                break
+    return found
 
 
 def rewards_for(pool: Pool) -> Rewards | None:

@@ -28,9 +28,12 @@ GAUGE = "0xfc3212bd9ad9a28da6b2bd50a2918969c126894f"
 USDC = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
 RLUSD = "0x8292Bb45bf1Ee4d140127049757C2E0fF06317eD"
 
-#: Found by scanning the gauge's transfer log for accounts with both kinds
-#: of reward outstanding -- see the finder in the commit message.
-STAKER = "0xd85f8f0ea94e27f94a0ab1e106c90724c31c1a03"
+#: Found by scanning the gauge's Deposit log for an account with both kinds
+#: of reward outstanding -- see the finder in the commit message.  A real
+#: position, so it does end: every test here skips rather than fails when
+#: this account no longer holds what it is asking about, and the finder is
+#: how the next one is chosen.
+STAKER = "0x3f0880c0f0af6446a0bc11c94f8827a1013d5a00"
 
 CRV = "0xD533a949740bb3306d119CC777fa900bA034cd52"
 MINTER = "0xd061D61a4d941c39E5453435B6345Dc261C2fcE0"

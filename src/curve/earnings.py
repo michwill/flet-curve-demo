@@ -232,10 +232,16 @@ def _word_to_address(value: int) -> str:
     return to_checksum_address("0x" + f"{value:040x}")
 
 
-async def read_minters(
+async def read_factories(
     provider: WalletProvider, gauges: list[str]
 ) -> dict[str, str]:
-    """Which factory may mint each gauge, asked of the gauges themselves.
+    """Which factory each gauge names, asked of the gauges themselves.
+
+    Not a minter map on its own: on Ethereum a gauge's `factory()` is the
+    LiquidityGaugeFactory that deployed it and the minter is the Minter, so
+    `resolve_gauges` reads this as a minter only where the chain says a
+    factory is one.  It doubles as the probe for whether a gauge is on this
+    chain at all -- an address with no code answers nothing.
 
     One Multicall3 round, keyed lower-case.  A gauge that does not answer is
     left out rather than guessed at, and `claim_plan` then falls back to the
@@ -270,27 +276,35 @@ async def resolve_gauges(
 
     Two Multicall3 rounds, whatever the size of the portfolio:
 
-    1. `factory()` on every listed gauge.  One that is here answers with the
-       factory that deployed it -- which is also the minter to claim it
-       through.  One that is not here fails, and is a candidate for round 2.
+    1. `factory()` on every listed gauge.  One that is here answers; one that
+       is not here fails, and is a candidate for round 2.
     2. `get_gauge_from_lp_token` on each of the chain's factories for each
-       candidate.  A factory that names a gauge both *is* the answer and is
-       that gauge's minter, so this needs no third round to confirm.
+       candidate.  A factory that names a gauge *is* the answer, and needs no
+       third round to confirm: it deployed it.
+
+    On a chain with child gauges the factory a gauge names is also its
+    minter, so round 1 doubles as the minter map and round 2 fills it in for
+    what it resolved.  Not on Ethereum, where a gauge names the
+    LiquidityGaugeFactory that deployed it and the minter is the Minter --
+    `factory_is_minter` is what says so, and there `gauge_factories` is empty
+    and nothing here resolves or claims to know a minter.
 
     A candidate nothing resolves keeps its listed address: unresolvable is
-    not the same as wrong.  Ethereum gauges answer no `factory()` at all and
-    are all deployed where they are listed, so every one of them is a
-    candidate that resolves to itself.
+    not the same as wrong.
     """
     entry = REWARDS.get(chain_id)
     listed = [p.gauge for p in positions if p.gauge]
     if not listed:
         return positions, {}
-    minters = await read_minters(provider, listed)
+    named = await read_factories(provider, listed)
+    #: The same read means two things, and only one of them holds everywhere:
+    #: a gauge that answered is on this chain, but the factory it named mints
+    #: it only where the chain mints through factories.
+    minters = dict(named) if entry is not None and entry.factory_is_minter else {}
     factories = entry.gauge_factories if entry is not None else ()
     missing = [
         p for p in positions
-        if p.gauge and p.gauge.lower() not in minters and (p.lp_token or p.pool)
+        if p.gauge and p.gauge.lower() not in named and (p.lp_token or p.pool)
     ]
     if not missing or not factories:
         return positions, minters

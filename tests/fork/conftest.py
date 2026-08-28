@@ -66,14 +66,41 @@ async def _fork_source() -> str:
 @pytest.fixture(scope="session")
 def anvil() -> str:
     """A forked mainnet on a free port. Yields its URL."""
+    yield from _forked(asyncio.run(_fork_source()), "mainnet", "FORK_BLOCK")
+
+
+@pytest.fixture(scope="session")
+def arbitrum_anvil() -> str:
+    """A forked Arbitrum, which is where CRV still reaches child gauges.
+
+    Measured on the current week: every Sonic, BSC and most Arbitrum gauges
+    have an inflation rate of zero, so a claim there mints nothing and proves
+    nothing.  `2BTC-ng` and its neighbours are still paid.
+
+    The endpoint is never in the repository -- it carries a key.  Set
+    `FORK_RPC_URL_42161` to run this; without it the tests that want it skip,
+    which is the right outcome for a test that needs something not everyone
+    has.
+    """
+    source = os.environ.get("FORK_RPC_URL_42161")
+    if not source:
+        pytest.skip("no Arbitrum endpoint to fork from; set FORK_RPC_URL_42161")
+    yield from _forked(source, "arbitrum", "FORK_BLOCK_42161")
+
+
+def _forked(source: str, label: str, pin: str):
+    """An anvil forking `source`, yielding its URL and cleaning up after.
+
+    `pin` names the variable that pins a block for this chain: one shared
+    name would pin an Arbitrum fork to a mainnet block number.
+    """
     binary = shutil.which("anvil") or str(Path.home() / ".config/.foundry/bin/anvil")
     if not Path(binary).exists():
         pytest.skip("anvil not installed (foundry)")
 
-    source = asyncio.run(_fork_source())
     port = _free_port()
     url = f"http://127.0.0.1:{port}"
-    pinned = os.environ.get("FORK_BLOCK")
+    pinned = os.environ.get(pin)
     process = subprocess.Popen(
         [
             binary,
@@ -101,7 +128,7 @@ def anvil() -> str:
         pytest.skip(f"anvil did not start within {STARTUP_TIMEOUT}s")
 
     at = int(_rpc(url, "eth_blockNumber"), 16)
-    print(f"\nforked mainnet at block {at} -- reproduce with FORK_BLOCK={at}")
+    print(f"\nforked {label} at block {at} -- reproduce with {pin}={at}")
 
     yield url
 
@@ -207,6 +234,15 @@ def router_api():
 def fork(anvil: str):
     """A fork, rolled back to its starting state after each test."""
     handle = Fork(anvil)
+    snapshot = handle.snapshot()
+    yield handle
+    handle.revert(snapshot)
+
+
+@pytest.fixture
+def arbitrum_fork(arbitrum_anvil: str):
+    """The same, on the chain the child gauge factories live on."""
+    handle = Fork(arbitrum_anvil)
     snapshot = handle.snapshot()
     yield handle
     handle.revert(snapshot)

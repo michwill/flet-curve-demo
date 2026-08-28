@@ -42,12 +42,6 @@ __all__ = [
 
 MAX_UINT256 = (1 << 256) - 1
 
-#: Padding for a fixed-size address array. `curve.stake_zaps` spells the
-#: same constant out again rather than importing it from here, because this
-#: module is the bottom of the stack and depends on nothing above it.
-_ZERO_ADDRESS = "0x" + "0" * 40
-
-
 def selector(signature: str) -> str:
     """First 4 bytes of keccak256 of a canonical signature, as hex."""
     return keccak256(signature.encode()).hex()[:8]
@@ -479,10 +473,30 @@ def encode_working_balances(owner: str) -> str:
 
 
 def encode_mint_many(gauges: list[str], slots: int) -> str:
-    """Mint CRV across several gauges in one transaction."""
+    """Mint CRV across several gauges in one transaction.
+
+    The array is fixed-width and the spare slots repeat the last gauge rather
+    than holding the zero address, because **the two implementations disagree
+    about what a zero slot means**.  Ethereum's Minter breaks out of the loop
+    at the first one; the child gauge factory every other chain uses does not,
+    and calls `_psuedo_mint` on it anyway, where `assert gauge_data != 0`
+    fails.  A bare Vyper assert, so an empty revert with no reason string.
+
+    Measured on a forked Arbitrum, one gauge with CRV waiting:
+
+        mint(gauge)                     ok
+        mint_many([gauge] + 31 zeros)   reverted, no message
+        mint_many([gauge] * 32)         ok
+
+    A repeat is free: the second `_psuedo_mint` for a gauge finds nothing left
+    to mint and moves nothing.  So this claimed nothing on any chain but
+    Ethereum, whichever factory it was addressed to.
+    """
+    if not gauges:
+        raise ValueError("mint_many with no gauges")
     if len(gauges) > slots:
         raise ValueError(f"{len(gauges)} gauges into {slots} slots")
-    padded = list(gauges) + [_ZERO_ADDRESS] * (slots - len(gauges))
+    padded = list(gauges) + [gauges[-1]] * (slots - len(gauges))
     return _call(
         f"mint_many(address[{slots}])", *(_address(gauge) for gauge in padded)
     )

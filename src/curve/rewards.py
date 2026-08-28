@@ -28,16 +28,25 @@ class Rewards:
     #: not deployed here -- which it does for whole chains: every gauge the
     #: API lists for BSC and Sonic is the Ethereum *root* gauge.
     factories: tuple[str, ...] = ()
+    #: Whether a gauge's own `factory()` is the contract that mints it.
+    #: True on every chain with child gauges, and **false on Ethereum**,
+    #: where CRV comes from the Minter and a gauge's `factory()` is the
+    #: LiquidityGaugeFactory that deployed it -- a different contract, which
+    #: reverts when it is asked to mint.  Measured: the RLUSD/USDC gauge
+    #: answers `0x6a8cbed7…`, and `mint` there is not a function.
+    factory_is_minter: bool = True
 
     @property
     def gauge_factories(self) -> tuple[str, ...]:
-        """Every factory worth asking, newest last.
+        """Every child gauge factory worth asking, newest last.
 
-        The minter where a chain's factories were never measured: it is one
-        of them on every chain but Ethereum, and asking it beats asking
-        nothing.  Only ever reached for a gauge that is not on the chain,
-        which on Ethereum does not happen.
+        The minter where a chain's factories were never measured: on a chain
+        with child gauges the minter is one of them, and asking it beats
+        asking nothing.  Empty on Ethereum, which has no child gauges to
+        resolve and whose minter would answer no such question.
         """
+        if not self.factory_is_minter:
+            return self.factories
         return self.factories or ((self.minter,) if self.minter else ())
 
 
@@ -47,6 +56,7 @@ REWARDS: dict[int, Rewards] = {
         "0xD533a949740bb3306d119CC777fa900bA034cd52",
         "0xd061D61a4d941c39E5453435B6345Dc261C2fcE0",
         mint_many_size=8,
+        factory_is_minter=False,
     ),  # Ethereum
     10: Rewards(
         "0x0994206dfE8De6Ec6920FF4D779B0d950605Fb53",

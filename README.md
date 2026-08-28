@@ -1370,6 +1370,33 @@ Base, Arbitrum and Fraxtal — so every claim through it reverted. A gauge names
 its own minter and that is the answer; the table is only what is left when it
 will not say.
 
+**A zero slot is not an empty slot.** `mint_many` takes a fixed-width array,
+and the two implementations disagree about what to do with the spare entries.
+Ethereum's Minter breaks out of its loop at the first zero address; the child
+gauge factory every other chain uses does not, and calls `_psuedo_mint` on it
+anyway, where `assert gauge_data != 0` fails — the same bare assert, the same
+empty revert. Measured on a forked Arbitrum against one gauge with CRV
+waiting:
+
+```
+mint(gauge)                     ok
+mint_many([gauge] + 31 zeros)   reverted, no message
+mint_many([gauge] * 32)         ok
+```
+
+So the portfolio's CRV claim had never worked on any chain but Ethereum,
+whichever factory it was addressed to — the factory table was only the first
+of two reasons it reverted. The spare slots repeat the last gauge now, which
+is free: the second `_psuedo_mint` for a gauge finds nothing left to mint.
+
+**And Ethereum does not mint through a factory at all.** A mainnet gauge does
+answer `factory()` — the RLUSD/USDC gauge says `0x6a8cbed7…` — but that is the
+LiquidityGaugeFactory that *deployed* it, and CRV comes from the Minter. The
+rule "a gauge names its own minter" is right on every chain with child gauges
+and wrong on the one without them, so the chain table carries
+`factory_is_minter` and Ethereum sets it false. Caught by the mainnet fork
+tests, which had been claiming through the deployer and reverting.
+
 **One place for the knowledge, three for the transport.** The lookup itself
 (`gauge_lookup`, `gauges_from_batch` in `curve/rewards.py`) is shared: the
 calls to make, and the rule that the first factory to answer wins and is the

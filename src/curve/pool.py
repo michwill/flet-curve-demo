@@ -754,7 +754,10 @@ class PoolContract:
         minter is the Minter contract and not a factory at all.
         """
         gauge = await self.gauge_here()
-        if not gauge:
+        entry = rewards_for(self.pool)
+        if not gauge or entry is None or not entry.factory_is_minter:
+            # Ethereum: the minter is the Minter, and the gauge's `factory()`
+            # is whoever deployed it.  Asking that to mint reverts.
             return ""
         with contextlib.suppress(Exception):
             found = minter_from_factory(

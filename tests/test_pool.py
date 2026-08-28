@@ -555,3 +555,32 @@ async def test_a_chain_with_no_measured_factories_still_asks_its_minter():
 
     assert (await pool.gauge_here()).lower() == real
     assert REWARDS[146].gauge_factories == (REWARDS[146].minter,)
+
+
+async def test_on_ethereum_the_gauges_factory_is_not_asked_to_mint():
+    """A mainnet gauge answers `factory()` with the LiquidityGaugeFactory that
+    deployed it, not with a minter -- CRV on Ethereum comes from the Minter.
+    Preferring the gauge's answer there sends `mint` to a contract with no
+    such function, which is how a claim that used to work started reverting.
+    """
+    deployer = "0x6a8cbed756804b16e05e741edabd5cb544ae21bf"
+    mainnet = Pool.from_v2({
+        "address": POOL_ADDRESS,
+        "pool_type": "stableswapng",
+        "chain_id": 1,
+        "lp_token_address": LP_TOKEN,
+        "gauges": [{"address": GAUGE, "is_killed": False}],
+        "coins": [
+            {"symbol": "USDC", "address": "0x" + "aa" * 20, "decimals": 6},
+            {"symbol": "RLUSD", "address": "0x" + "bb" * 20, "decimals": 18},
+        ],
+    })
+    provider = FakeProvider({
+        abi.encode_gauge_factory()[:10]: word(int(deployer, 16)),
+    })
+    provider.code_at = {GAUGE.lower(): "0x60006000"}
+    pool = contract(provider, mainnet)
+
+    assert await pool.minter_for_gauge() == ""
+    to, _data = pool.build_claim_crv(await pool.minter_for_gauge())
+    assert to == "0xd061D61a4d941c39E5453435B6345Dc261C2fcE0", "not the Minter"

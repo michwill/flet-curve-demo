@@ -6,7 +6,7 @@ import dataclasses
 
 import pytest
 
-from curve.abi import encode_claim_rewards_for, selector
+from curve.abi import encode_claim_rewards_for, encode_mint_many, selector
 from curve.earnings import (
     MAX_BOOST,
     ClaimPlan,
@@ -607,3 +607,74 @@ async def test_the_resolved_gauge_is_what_the_claim_is_grouped_by() -> None:
     plan = claim_plan(42161, [dataclasses.replace(got[0], rewards=(CRV,))], minters)
 
     assert plan.crv == ((ARB_FACTORIES[1], (child,)),)
+
+
+# -- the array the mint goes in ---------------------------------------------
+
+
+def test_the_spare_slots_repeat_a_gauge_rather_than_holding_zero() -> None:
+    """The two implementations disagree about a zero slot.  Ethereum's Minter
+    breaks out of the loop at the first one; the child gauge factory every
+    other chain uses calls `_psuedo_mint` on it anyway, where `assert
+    gauge_data != 0` fails -- a bare assert, so an empty revert.  Measured on
+    a forked Arbitrum: one gauge and 31 zeros reverted, the same gauge 32
+    times went through.
+    """
+    gauge = "0x" + "22" * 20
+    data = encode_mint_many([gauge], 8)
+
+    words = [data[10:][i : i + 64] for i in range(0, len(data) - 10, 64)]
+    assert len(words) == 8
+    assert all(int(word, 16) for word in words), "a zero slot reverts the mint"
+    assert all(word == words[0] for word in words)
+
+
+def test_the_gauges_that_were_asked_for_come_first_and_in_order() -> None:
+    first, second = "0x" + "22" * 20, "0x" + "33" * 20
+    data = encode_mint_many([first, second], 8)
+
+    words = [data[10:][i : i + 64] for i in range(0, len(data) - 10, 64)]
+    assert words[0].endswith(first[2:])
+    assert words[1].endswith(second[2:])
+    assert words[2] == words[1], "the padding repeats the last one asked for"
+
+
+def test_a_mint_of_nothing_is_refused() -> None:
+    """There is no gauge to repeat, and a full array of zeros is the revert
+    this padding exists to avoid."""
+    with pytest.raises(ValueError):
+        encode_mint_many([], 8)
+
+
+def test_more_gauges_than_slots_is_refused() -> None:
+    with pytest.raises(ValueError):
+        encode_mint_many(["0x" + f"{i:040x}" for i in range(9)], 8)
+
+
+# -- Ethereum mints from the Minter, not from a factory ---------------------
+
+
+async def test_on_ethereum_a_gauges_own_factory_is_not_its_minter() -> None:
+    """A mainnet gauge answers `factory()` with the LiquidityGaugeFactory that
+    deployed it -- measured, `0x6a8cbed7…` for RLUSD/USDC -- while CRV comes
+    from the Minter.  Reading that as a minter sends `mint` to a contract with
+    no such function, and the claim reverts.
+    """
+    gauge = "0x" + "22" * 20
+    deployer = int("0x6a8cbed756804b16e05e741edabd5cb544ae21bf", 16)
+    chain = Chain([[deployer]])
+
+    got, minters = await resolve_gauges(chain, 1, [staked_at(gauge)])
+
+    assert [e.gauge for e in got] == [gauge], "nothing to resolve on Ethereum"
+    assert minters == {}, "the deployer would be asked to mint and would revert"
+
+
+async def test_a_plan_on_ethereum_goes_to_the_minter() -> None:
+    gauge = "0x" + "22" * 20
+    chain = Chain([[int("0x6a8cbed756804b16e05e741edabd5cb544ae21bf", 16)]])
+
+    got, minters = await resolve_gauges(chain, 1, [staked_at(gauge)])
+    plan = claim_plan(1, [dataclasses.replace(got[0], rewards=(CRV,))], minters)
+
+    assert plan.crv == (("0xd061D61a4d941c39E5453435B6345Dc261C2fcE0", (gauge,)),)

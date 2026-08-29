@@ -189,8 +189,10 @@ def build_native() -> None:
         sys.exit(f"no venv at {venv}")
     env = dict(os.environ)
     env["VIRTUAL_ENV"] = str(venv)
-    env["PATH"] = (f"{Path.home()}/.cargo/bin:{Path.home()}/.local/bin:"
-                   + env.get("PATH", ""))
+    # The venv's bin leads: maturin is a dev dependency, and running this
+    # script as `.venv/bin/python` does not put that directory on PATH.
+    env["PATH"] = (f"{venv}/bin:{Path.home()}/.cargo/bin:"
+                   f"{Path.home()}/.local/bin:" + env.get("PATH", ""))
     for manifest in ("rust/Cargo.toml", "rust/evm/Cargo.toml"):
         done = subprocess.run(
             ["maturin", "develop", "--release", "-m", str(SOURCE / manifest)],

@@ -75,6 +75,10 @@ dev = [
     # collection time -- so without it a plain `pytest` cannot even collect,
     # though those tests are deselected by the `flet_ui` marker. Pulls scipy.
     "scikit-image==0.26.0",
+    # tools/build_router.py --native shells out to it for the desktop
+    # extensions. Not needed for the browser, whose wasm the router's own
+    # scripts/build_wasm.sh builds.
+    "maturin==1.15.0",
     # Both configured further down this file.
     "ruff==0.16.2",
     "mypy==2.3.0",

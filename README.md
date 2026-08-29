@@ -13,8 +13,10 @@ compiled to WebAssembly and run in the browser. See
 [The Swap tab](#the-swap-tab).
 
 ```bash
+git lfs install                      # once per user, before the submodules
 git submodule update --init          # curve-assets, and electric-router
 uv venv && uv pip install -r pyproject.toml --group dev
+sudo apt install cmake ninja-build clang libgtk-3-dev   # only for `pytest -m flet_ui`
 .venv/bin/python tools/build_assets.py   # compile the subset the app needs
 .venv/bin/python tools/build_router.py   # the router: package, caches, wasm
 .venv/bin/python tools/build_router.py --native   # and its desktop extensions
@@ -30,6 +32,20 @@ it — see [Routes live in the fragment](#routes-live-in-the-fragment). Without
 it the build works on `tools/serve.py` and 404s every deep link on a gateway.
 `tools/publish_ipfs.py` passes it for you and refuses to upload a build that
 came out otherwise.
+
+**`git lfs install` comes first**, because the router's state caches are LFS
+objects upstream -- the tree holds 132-byte pointers and the smudge filter
+materialises the 1.5 MB `ethereum.msgpack`. Without the filter configured,
+`git submodule update --init` writes the pointers themselves,
+`tools/build_router.py` copies them into the bundle, and the build reports
+`data: 46 files, 3.5 MB` success while every warm falls back to an empty cache
+and pays the round trips the cache exists to remove.
+
+The apt line is **only** for the UI suite. flet-cli hosts those tests in a
+Flutter *Linux desktop* app, so without a Linux toolchain `pytest -m flet_ui`
+spends six minutes building one and then errors with "CMake is required for
+Linux development" -- which reads as a harness bug and is not one. Nothing
+else in the project needs them, and the default `pytest` run does not.
 
 To offer **WalletConnect** in the browser build, give it a projectId (free,
 from [dashboard.reown.com](https://dashboard.reown.com)):

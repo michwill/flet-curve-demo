@@ -203,6 +203,35 @@ async def test_a_refresh_redoes_the_pair_and_the_showing_amount():
     host.close()
 
 
+async def test_a_pair_a_refresh_could_not_redo_is_tried_again():
+    """A refresh drops the preparation before redoing it. When the redo failed
+    there was nothing left to redo *next* time -- `held.pair` was None, so the
+    next refresh had no pair, `_pump` will not quote without one, and the tab
+    quoted nothing until the coins were changed.
+    """
+    host, session, _seen = build()
+    await host.open(1)
+    await host.set_pair("0xa", "0xb")
+
+    failed: list[int] = []
+    ok = session.set_pair
+
+    async def refuse(src, dst, progress=None):
+        failed.append(1)
+        raise RuntimeError("probes could not be fitted")
+
+    session.set_pair = refuse
+    await host.refresh()
+    assert failed == [1]
+    assert host.pair is None, "the preparation really was dropped"
+
+    session.set_pair = ok
+    await host.refresh()
+
+    assert host.pair == ("0xa", "0xb"), "the pair came back on the next refresh"
+    host.close()
+
+
 async def test_a_swap_of_ours_forces_a_refresh():
     """Our own swap moved the pools it went through."""
     ticks: list[float] = []

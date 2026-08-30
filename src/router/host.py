@@ -69,6 +69,8 @@ class _Chain:
     stage: Stage = Stage.COLD
     error: str = ""
     pair: tuple[str, str] | None = None
+    #: A pair whose re-preparation failed, to try again on the next refresh.
+    retry_pair: tuple[str, str] | None = None
     warmed_at: float = 0.0
     coins: list = field(default_factory=list)
 
@@ -322,7 +324,7 @@ class RouterHost:
         held = self._held
         if held.stage is not Stage.READY or held.session is None:
             return 0
-        pair = held.pair
+        pair = held.pair or held.retry_pair
         try:
             block = await held.session.refresh()
         except Exception as exc:
@@ -334,7 +336,10 @@ class RouterHost:
         # on the next keystroke, which is where it would be felt.
         held.pair = None
         if pair is not None:
-            await self.set_pair(*pair)
+            # A re-preparation that failed used to leave nothing behind: the
+            # next refresh had no pair to redo, `_pump` will not quote without
+            # one, and the tab quoted nothing until the coins were changed.
+            held.retry_pair = None if await self.set_pair(*pair) else pair
         elif self._wanted is not None:
             self._pump()
         return block

@@ -108,6 +108,8 @@ class SwapPage:
         #: Which chain is on screen, for the fee table.
         self.chain_id_now = 0
         self._sending = False
+        #: True while `open` is running, which prepares the pair itself.
+        self._opening = False
 
         self.host = RouterHost(
             make_session=self._make_session,
@@ -187,21 +189,29 @@ class SwapPage:
                 self._backend_error = str(exc)
                 self.view.say(str(exc), FAILED)
                 return
-        await self.host.open(chain_id)
-        if self.host.stage is not Stage.READY:
-            return
-        # Taken before the redraws behind the warm, not after: somebody who
-        # started typing while the bar was moving is mid-number now, and the
-        # vaults joining the picker, the first quote and the balances each
-        # rebuild the subtree that box lives in.  Whatever they have typed
-        # keeps working -- this is only about where the next keystroke goes.
-        caret = self.view.caret()
-        self._offer_unlisted(chain_id)
-        # The pair was chosen before there was anything to price it with, so
-        # this is where it actually gets prepared.
-        sell, buy = self.view.pair
-        if sell is not None and buy is not None:
-            await self._prepare(sell.address, buy.address)
+        # Held for the whole of it: the warm announces READY from inside
+        # `host.open`, and the pair is nulled just before it says so -- so the
+        # reconcile would see nothing prepared and race the preparation five
+        # lines below with a second one for the same pair.
+        self._opening = True
+        try:
+            await self.host.open(chain_id)
+            if self.host.stage is not Stage.READY:
+                return
+            # Taken before the redraws behind the warm, not after: somebody who
+            # started typing while the bar was moving is mid-number now, and the
+            # vaults joining the picker, the first quote and the balances each
+            # rebuild the subtree that box lives in.  Whatever they have typed
+            # keeps working -- this is only about where the next keystroke goes.
+            caret = self.view.caret()
+            self._offer_unlisted(chain_id)
+            # The pair was chosen before there was anything to price it with,
+            # so this is where it actually gets prepared.
+            sell, buy = self.view.pair
+            if sell is not None and buy is not None:
+                await self._prepare(sell.address, buy.address)
+        finally:
+            self._opening = False
         # A wrapping was answered while the warm was still going, and the warm
         # must not take that back: `_prepare` ends by redrawing from the
         # router's last quote, which for a pair the router never saw is
@@ -528,13 +538,19 @@ class SwapPage:
         A pair chosen while the router was not `READY` never reached it:
         `_prepare` and `set_pair` both return on that stage and neither
         leaves a note, so the widget showed one pair while every quote, route
-        and transaction came from the one before it.  Reconciled against the
-        widget rather than remembered, so a drop from any cause is caught.
+        and transaction came from the one before it.  A refresh whose
+        re-preparation failed leaves the router holding none at all, which
+        quotes nothing.  Reconciled against the widget rather than
+        remembered, so a drop from any cause is caught.
         """
+        if self._opening:
+            return          # `open` prepares the pair itself
         sell, buy = self.view.pair
         if sell is None or buy is None or sell.address == buy.address:
             return
-        if self._wrapping() or not self._pair_is_stale():
+        if self._wrapping():
+            return
+        if self.host.pair == (sell.address.lower(), buy.address.lower()):
             return
         self._page.run_task(self._prepare, sell.address, buy.address)
 

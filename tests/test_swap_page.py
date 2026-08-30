@@ -1009,6 +1009,72 @@ async def test_a_buy_chosen_while_the_router_is_busy_is_not_lost():
     )
 
 
+async def test_a_router_holding_nothing_is_given_the_pair_on_screen():
+    """A refresh whose re-preparation failed leaves the router with no pair at
+    all, and nothing quotes without one. Reaching READY hands it the widget's
+    rather than waiting for someone to change a coin."""
+    import asyncio
+
+    usdc, usdt = two_coins()
+    page = swap_page_with(Wallet(), [usdc, usdt])
+
+    running: list = []
+
+    class Page:
+        def run_task(self, fn, *a):
+            running.append(asyncio.ensure_future(fn(*a)))
+
+    page._page = Page()
+
+    class Host:
+        stage = Stage.READY
+        pair = None             # dropped, and never put back
+
+        def request(self, _amount):
+            pass
+
+        async def set_pair(self, src, dst):
+            self.pair = (src.lower(), dst.lower())
+            return True
+
+    page.host = Host()
+    page._on_loading = lambda *_a: None
+    page._on_loaded = lambda *_a: None
+    page._read_balances = lambda: _answer(None)
+
+    page.view.set_pair(usdc, usdt)
+    page._stage_changed(Stage.READY, "")
+    while running:
+        batch = running[:]
+        del running[:]
+        await asyncio.gather(*batch)
+
+    assert page.host.pair == (usdc.address, usdt.address)
+
+
+async def test_opening_a_chain_prepares_the_pair_once():
+    """The warm announces READY from inside `host.open`, with the pair nulled
+    just before it says so -- so the reconcile sees nothing prepared. `open`
+    prepares it itself a few lines later, and two preparations of the same pair
+    is one probe run wasted on every chain opened."""
+    usdc, usdt = two_coins()
+    page = swap_page_with(Wallet(), [usdc, usdt])
+    scheduled: list = []
+    page._page.run_task = lambda fn, *a: scheduled.append(a)
+
+    class Host:
+        stage = Stage.READY
+        pair = None
+
+    page.host = Host()
+    page.view.set_pair(usdc, usdt)
+
+    page._opening = True                    # what `open` holds while it runs
+    page._stage_changed(Stage.READY, "")
+
+    assert scheduled == [], "the reconcile raced `open`'s own preparation"
+
+
 async def test_a_plan_is_not_built_for_a_pair_that_is_not_on_screen():
     """The quote, the bounds and the calldata all come from the router's pair,
     so a plan built while it disagrees with the widget buys a coin nobody

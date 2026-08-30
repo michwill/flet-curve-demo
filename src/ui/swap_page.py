@@ -420,6 +420,7 @@ class SwapPage:
         elif stage is Stage.READY:
             self.view.clear_status()
             self._on_loaded()
+            self._reprepare_if_dropped()
         elif stage is Stage.FAILED:
             self.view.say(error or "The router could not read this network.", FAILED)
             self._on_loaded()
@@ -521,6 +522,34 @@ class SwapPage:
         await self._read_balances()
         self.view.show_quote(self._quote)
 
+    def _reprepare_if_dropped(self) -> None:
+        """Re-issue the pair on screen, when the router is not holding it.
+
+        A pair chosen while the router was not `READY` never reached it:
+        `_prepare` and `set_pair` both return on that stage and neither
+        leaves a note, so the widget showed one pair while every quote, route
+        and transaction came from the one before it.  Reconciled against the
+        widget rather than remembered, so a drop from any cause is caught.
+        """
+        sell, buy = self.view.pair
+        if sell is None or buy is None or sell.address == buy.address:
+            return
+        if self._wrapping() or not self._pair_is_stale():
+            return
+        self._page.run_task(self._prepare, sell.address, buy.address)
+
+    def _pair_is_stale(self) -> bool:
+        """Whether the router is prepared for coins other than the ones shown.
+
+        The route, the bounds and the calldata all come from the router's
+        pair, so a plan built while these disagree buys a coin nobody chose.
+        """
+        sell, buy = self.view.pair
+        held = self.host.pair
+        if sell is None or buy is None or held is None:
+            return False
+        return held != (sell.address.lower(), buy.address.lower())
+
     # ------------------------------------------------------------ the amount
 
     def _amount_changed(self, amount: int) -> None:
@@ -619,6 +648,12 @@ class SwapPage:
         quote, session = self._quote, self.host.session
         account = self._account()
         if quote is None or session is None or quote.result.route is None:
+            return
+        if self._pair_is_stale():
+            # The quote came from the router's pair, not the widget's.
+            self._plan = None
+            self.view.cannot_send("Re-pricing for the coins you chose.")
+            self._reprepare_if_dropped()
             return
         try:
             # A named budget buys an end-to-end bound as well as the per-leg
@@ -800,6 +835,12 @@ class SwapPage:
     async def _swap(self) -> None:
         contract = self._contract()
         if contract is None or self._sending:
+            return
+        if self._pair_is_stale():
+            # Nothing is signed while these disagree: the press would buy the
+            # coin the router is holding, not the one on screen.
+            self.view.say("Re-pricing for the coins you chose…", pending=True)
+            self._reprepare_if_dropped()
             return
         # Priced again here, whatever is already on screen.  A plan is built
         # when the typing stops; the press comes once somebody has read the

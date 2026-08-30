@@ -111,6 +111,11 @@ class RouterHost:
         return self._held.session
 
     @property
+    def pair(self) -> tuple[str, str] | None:
+        """The pair actually prepared, lowercased.  `None` while there is none."""
+        return self._held.pair
+
+    @property
     def coins(self) -> list:
         return self._held.coins
 

@@ -766,6 +766,7 @@ async def test_a_swap_re_reads_both_balances_and_the_picker_order():
     page._confirm = lambda *a, **k: asyncio.sleep(0, result=0)
 
     class Host:
+        pair = None
         session = None
 
         def request(self, _amount=0):
@@ -912,6 +913,7 @@ async def test_a_new_selling_coin_is_quoted_in_its_own_units():
     asked = []
 
     class Host:
+        pair = None
         stage = Stage.READY
 
         def request(self, amount):
@@ -935,6 +937,126 @@ async def test_a_new_selling_coin_is_quoted_in_its_own_units():
     assert asked[-1] == 1998432 * 10 ** 18 + 10 ** 17, (
         f"quoted at the wrong scale: {asked[-1]}"
     )
+
+
+async def test_a_buy_chosen_while_the_router_is_busy_is_not_lost():
+    """Reported from a live wallet: a swap set up as YB to USDC went out as YB
+    to USDT, and the route drawn beside it was YB to USDT as well.
+
+    A pair chosen while the router is not READY reaches neither `_prepare` nor
+    `set_pair` -- both return on that stage, and neither leaves a note. Nothing
+    re-issued it, so the widget said USDC while the quote, the route and the
+    calldata all came from `held.pair`, which was still the coin before it.
+    """
+    import asyncio
+
+    from router.universe import CoinEntry
+
+    yb = CoinEntry("0x" + "11" * 20, "YB", "YieldBasis", 18, 0.0, 0)
+    usdc, usdt = two_coins()
+    page = swap_page_with(Wallet(), [yb, usdc, usdt])
+
+    running: list = []
+
+    class Page:
+        def run_task(self, fn, *a):
+            running.append(asyncio.ensure_future(fn(*a)))
+
+    page._page = Page()
+
+    class Host:
+        stage = Stage.READY
+        pair = None
+
+        def request(self, _amount):
+            pass
+
+        async def set_pair(self, src, dst):
+            if self.stage is not Stage.READY:
+                return False            # exactly what `RouterHost` answers
+            self.pair = (src.lower(), dst.lower())
+            return True
+
+    page.host = Host()
+    page._on_loading = lambda *_a: None
+    page._on_loaded = lambda *_a: None
+    page._read_balances = lambda: _answer(None)
+    page._remember_pair = lambda: _answer(None)
+
+    async def settle():
+        while running:
+            batch = running[:]
+            del running[:]
+            await asyncio.gather(*batch)
+
+    page.view.set_pair(yb, usdt)
+    page._pair_changed()
+    await settle()
+    assert page.host.pair == (yb.address, usdt.address)
+
+    page.host.stage = Stage.WARMING     # a refresh, a re-warm, a wallet switch
+    page.view.set_pair(yb, usdc)        # and the widget now says USDC
+    page._pair_changed()
+    await settle()
+
+    page.host.stage = Stage.READY
+    page._stage_changed(Stage.READY, "")
+    await settle()
+
+    assert page.view.pair[1].symbol == "USDC"
+    assert page.host.pair == (yb.address, usdc.address), (
+        "the router was left holding the coin from before"
+    )
+
+
+async def test_a_plan_is_not_built_for_a_pair_that_is_not_on_screen():
+    """The quote, the bounds and the calldata all come from the router's pair,
+    so a plan built while it disagrees with the widget buys a coin nobody
+    chose. Refused rather than shipped."""
+    page, session = swap_page_with_session()
+    usdc, usdt = two_coins()
+    page.host._held.pair = (usdt.address, usdc.address)     # the other way round
+
+    await page._plan_now()
+
+    assert session.budgets == [], "priced a route for coins nobody chose"
+    assert page._plan is None
+
+
+async def test_a_swap_is_not_sent_for_a_pair_that_is_not_on_screen():
+    """The last gate before a signature: nothing goes to the wallet while the
+    router is holding a pair the widget is not showing."""
+    page = swap_page_with(Wallet(), two_coins())
+    usdc, usdt = two_coins()
+    sent = Sending()
+    page._contract = lambda: sent
+    page._plan = Planned()
+    priced: list[int] = []
+
+    async def replan():
+        priced.append(1)
+
+    page._plan_now = replan
+    page._page.run_task = lambda fn, *a: None
+    page._confirm = lambda *a, **k: _answer(0)      # so a send that got through
+    page._read_balances = lambda: _answer(None)     # would land, not raise
+
+    class Host:
+        pair = (usdt.address, usdc.address)     # the other way round
+        session = None
+
+        def request(self, _amount=0):
+            pass
+
+        async def after_swap(self, not_before=0):
+            return 0        # so a send that got through finishes, not raises
+
+    page.host = Host()
+
+    await page._swap()
+
+    assert priced == [], "it priced the route rather than refusing outright"
+    assert sent.sent == [], "a transaction went out for the wrong coins"
 
 
 # -- what waits in the frame before there is a route ------------------------
@@ -1620,6 +1742,7 @@ async def test_a_revert_re_reads_the_state_and_tries_again():
     page._page.run_task = lambda fn, *a: None
 
     class Host:
+        pair = None
         session = None
 
         def request(self, _amount=0):
@@ -1675,6 +1798,7 @@ class Failing(Sending):
 
 
 class WatchedHost:
+    pair = None
     session = None
 
     def __init__(self) -> None:
@@ -2010,6 +2134,7 @@ async def test_a_revert_re_sweeps_the_whole_state_not_just_the_route():
     page._page.run_task = lambda fn, *a: None
 
     class Host:
+        pair = None
         session = None
 
         def request(self, _amount=0):
@@ -2079,6 +2204,7 @@ async def test_the_press_waits_for_the_quote_the_re_read_started():
     page._page.run_task = lambda fn, *a: None
 
     class Host:
+        pair = None
         session = None
 
         def request(self, _amount=0):
@@ -2118,6 +2244,7 @@ async def test_a_press_with_no_plan_left_says_nothing_and_leaves_a_quote():
     page._contract = lambda: sent
 
     class Host:
+        pair = None
         session = None
 
         def request(self, _amount=0):
@@ -2228,6 +2355,7 @@ async def test_the_tab_is_usable_again_before_the_housekeeping_finishes():
     seen: list[bool] = []
 
     class Host:
+        pair = None
         session = None
 
         def request(self, _amount=0):
@@ -2257,6 +2385,7 @@ async def test_a_reverted_send_re_reads_at_the_block_it_landed_in():
     floors: list[int] = []
 
     class Host:
+        pair = None
         session = None
 
         def request(self, _amount=0):
@@ -2293,6 +2422,7 @@ async def test_every_press_prices_the_route_again():
     page._page.run_task = lambda fn, *a: None
 
     class Host:
+        pair = None
         session = None
 
         def request(self, _amount=0):
@@ -2346,6 +2476,7 @@ async def test_an_approval_and_the_swap_go_over_together():
         return "0xbatch"
 
     class Host:
+        pair = None
         session = None
 
         def request(self, _amount=0):
@@ -2470,6 +2601,7 @@ async def test_a_call_the_chain_refuses_is_not_offered():
     page._contract = lambda: contract
 
     class Host:
+        pair = None
         session = None
 
         def request(self, _amount=0):
@@ -2527,6 +2659,7 @@ async def test_a_finished_swap_leaves_the_output_box_empty():
     wanted: list = []
 
     class Host:
+        pair = None
         session = None
 
         def request(self, amount=0):

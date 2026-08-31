@@ -358,6 +358,11 @@ class PoolListView(ft.Column):
         self.feed: PoolFeed | None = None
         self._sort = DEFAULT_SORT
         self._search_token = 0
+        #: Held across an append. `feed.loading` is not enough on its own:
+        #: a sort the server cannot do has the whole chain in memory by the
+        #: second page, so `load_more` returns without ever going near the
+        #: network and never sets it. See `page_scrolled`.
+        self._appending = False
         self._layout = layout_for(2000.0)
 
         #: Shown only once there is something to clear: an empty box with
@@ -623,8 +628,18 @@ class PoolListView(ft.Column):
         await self.load_more()
 
     def page_scrolled(self, e: ft.OnScrollEvent) -> None:
-        """Pull the next page when the end comes into view."""
+        """Pull the next page when the end comes into view.
+
+        One at a time.  A gesture is many scroll events, and under a sort the
+        server cannot rank the whole chain is already in memory -- so each of
+        them took another fifty and none of them waited for anything.  The
+        pages arrived faster than the rows could be built, and a flick to the
+        bottom of Ethereum built all 387 in one burst, at a hundred percent
+        of a core, with the tab unusable until it finished.
+        """
         if self.feed is None or self.feed.loading or self.feed.exhausted:
+            return
+        if self._appending:
             return
         if e.max_scroll_extent - e.pixels > SCROLL_THRESHOLD:
             return
@@ -633,23 +648,32 @@ class PoolListView(ft.Column):
     async def load_more(self) -> None:
         """Fetch and append the next page, if there is one."""
         feed = self.feed
-        if feed is None or feed.loading or feed.exhausted:
+        if feed is None or feed.loading or feed.exhausted or self._appending:
             return
-        self.footer.visible = True
-        safe_update(self.footer)
+        self._appending = True
+        try:
+            self.footer.visible = True
+            safe_update(self.footer)
 
-        new_pools = await feed.load_more()
+            new_pools = await feed.load_more()
 
-        if feed is not self.feed:  # chain changed while we waited
-            return
-        start = len(self.rows.controls)
-        self.rows.controls.extend(
-            PoolRow(p, self._on_open, start + offset, self._layout)
-            for offset, p in enumerate(new_pools)
-        )
-        self.footer.visible = False
-        self._sync_count()
-        safe_update(self)
+            if feed is not self.feed:  # chain changed while we waited
+                return
+            start = len(self.rows.controls)
+            self.rows.controls.extend(
+                PoolRow(p, self._on_open, start + offset, self._layout)
+                for offset, p in enumerate(new_pools)
+            )
+            self.footer.visible = False
+            self._sync_count()
+            safe_update(self)
+            # Let the fifty just handed over be built before another scroll
+            # event can ask for fifty more.  Without it the guard is released
+            # in the same slice the rows were queued in, and the burst is
+            # back.
+            await asyncio.sleep(0)
+        finally:
+            self._appending = False
 
     def _sync_count(self) -> None:
         feed = self.feed

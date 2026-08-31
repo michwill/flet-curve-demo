@@ -215,6 +215,47 @@ async def test_scroll_near_the_end_is_what_triggers_a_page() -> None:
     assert len(view.rows.controls) == 6
 
 
+async def test_a_flick_takes_one_page_rather_than_the_whole_chain() -> None:
+    """Reported: sorting by incentives and scrolling down built every
+    remaining row at once, at a hundred percent of a core, with the tab
+    unusable until it finished.
+
+    A sort the server cannot rank has the whole chain in memory by the second
+    page, so `load_more` returns without going near the network and never
+    sets `feed.loading` -- which was the only thing stopping a second page.
+    A gesture is many scroll events, and each of them took another fifty.
+    """
+    view = PoolListView(StubPage(), on_open=lambda _p: None)
+    view.attach(FakeFeed([make_pool() for _ in range(300)], page_size=50))
+    await view.load_more()
+    assert len(view.rows.controls) == 50
+
+    near = SimpleNamespace(pixels=99_000.0, max_scroll_extent=99_100.0)
+    for _ in range(12):                 # one flick, twelve events
+        view.page_scrolled(near)
+    for _ in range(8):
+        await asyncio.sleep(0)
+
+    assert len(view.rows.controls) == 100, (
+        f"a flick built {len(view.rows.controls)} rows in one go"
+    )
+
+
+async def test_the_next_flick_still_takes_the_next_page() -> None:
+    """The guard is held across an append, not for good."""
+    view = PoolListView(StubPage(), on_open=lambda _p: None)
+    view.attach(FakeFeed([make_pool() for _ in range(300)], page_size=50))
+    await view.load_more()
+
+    near = SimpleNamespace(pixels=99_000.0, max_scroll_extent=99_100.0)
+    for _ in range(3):
+        view.page_scrolled(near)
+        for _ in range(8):
+            await asyncio.sleep(0)
+
+    assert len(view.rows.controls) == 200
+
+
 def test_sorting_resets_the_feed_rather_than_reordering_in_place() -> None:
     view = PoolListView(StubPage(), on_open=lambda _p: None)
     feed = FakeFeed([make_pool() for _ in range(4)], page_size=2)

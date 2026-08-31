@@ -8,7 +8,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from wallet.base import WalletProvider
+from wallet.base import WalletError, WalletProvider
 from wallet.erc20 import encode_balance_of, to_checksum_address
 
 from . import abi
@@ -28,6 +28,12 @@ CONCURRENCY = 6
 #: Wei-per-unit for an LP token. Every Curve LP token is 18 decimals -- it
 #: is minted by the pool, not by whoever made the coins.
 LP_UNIT = 10**18
+
+#: Tries per batch before it counts as refused, and the wait before each
+#: retry. A public endpoint rate-limits by request rather than erroring, and
+#: it lets go again within a second or two.
+ATTEMPTS = 3
+BACKOFF = 0.4
 
 
 @dataclass(frozen=True, slots=True)
@@ -212,7 +218,11 @@ async def sweep_unclaimed(
             (target.gauge, abi.encode_claimable_tokens(account)),
             (target.gauge, abi.encode_reward_count()),
         ]
-    answers = await _calls(provider, first, chunk, concurrency, on_progress)
+    # Strict: this round is what decides whether anything is owed anywhere,
+    # so an endpoint that would not answer it has to say so rather than come
+    # back as "nothing".
+    answers = await _calls(provider, first, chunk, concurrency, on_progress,
+                           strict=True)
     owed: dict[str, int] = {}
     counts: dict[str, int] = {}
     for index, target in enumerate(gauged):
@@ -389,23 +399,59 @@ async def _calls(
     chunk: int,
     concurrency: int,
     on_progress: Callable[[int, int], None] | None,
+    *,
+    strict: bool = False,
 ) -> list[int | None]:
-    """Many calls, in batches, concurrently. `None` per call that said nothing."""
+    """Many calls, in batches, concurrently. `None` per call that said nothing.
+
+    A batch that comes back saying nothing *at all* is retried rather than
+    believed.  `decode_uints` cannot tell a truncated response from one where
+    every call in it returned empty -- both are `None` the whole way down --
+    and a public endpoint refuses by answering short rather than by erroring.
+    Folded into the answers, that reads as "this address is owed nothing
+    anywhere", which is the worst way for a read to be wrong.
+
+    `strict` then refuses to pretend: a batch still unreadable after its
+    tries raises, so the caller can say the endpoint would not answer instead
+    of drawing an empty table.  Off by default, because `scan` reads gauges
+    that legitimately have no code and wants the `None`s --
+    `resolve_absent_gauges` is built on them.
+    """
     batches = [calls[i : i + chunk] for i in range(0, len(calls), chunk)]
     answers: list[list[int | None]] = [[] for _ in batches]
     done = 0
+    refused = 0
     gate = asyncio.Semaphore(max(1, concurrency))
 
     async def run(number: int, batch: Sequence[tuple[str, str]]) -> None:
-        nonlocal done
-        async with gate:
-            result = await provider.call(MULTICALL3, encode_aggregate3(list(batch)))
-        answers[number] = decode_uints(result, len(batch))
+        nonlocal done, refused
+        values: list[int | None] = [None] * len(batch)
+        for attempt in range(ATTEMPTS):
+            try:
+                async with gate:
+                    result = await provider.call(
+                        MULTICALL3, encode_aggregate3(list(batch))
+                    )
+                values = decode_uints(result, len(batch))
+            except Exception:
+                values = [None] * len(batch)
+            if any(value is not None for value in values):
+                break
+            if attempt + 1 < ATTEMPTS:
+                await asyncio.sleep(BACKOFF * 2**attempt)
+        else:
+            refused += len(batch)
+        answers[number] = values
         done += len(batch)
         if on_progress is not None:
             on_progress(done, len(calls))
 
     await asyncio.gather(*[run(n, batch) for n, batch in enumerate(batches)])
+    if strict and refused:
+        raise WalletError(
+            f"{refused} of {len(calls)} reads went unanswered -- the endpoint "
+            f"would not take them."
+        )
     return [value for group in answers for value in group]
 
 

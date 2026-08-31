@@ -505,6 +505,12 @@ class SwapPage:
         if self._wrapping():
             # Nothing to prepare: there is no pair to probe and no arcs to
             # calibrate, so the answer is available before the warm is.
+            #
+            # The host is told to stop first.  It goes on quoting whatever it
+            # is prepared for, and a wrapping never re-prepares it, so an
+            # answer for the pair just left lands on top of the wrap: 1 WETH
+            # = 2,419.64 ETH, over five pools.
+            self.host.request(0)
             self._page.run_task(self._wrap_quote, self.view.amount_in())
             return
         self._page.run_task(self._prepare, sell.address, buy.address)
@@ -559,7 +565,16 @@ class SwapPage:
 
         The route, the bounds and the calldata all come from the router's
         pair, so a plan built while these disagree buys a coin nobody chose.
+
+        A wrapping is never stale, because it never goes near the host: it is
+        answered by `wrapping` before the warm is, and `host.pair` is left
+        holding whichever routed pair came before.  Compared blindly, every
+        WETH/ETH pair looked stale for ever -- no plan, a dead Swap button, a
+        slippage change that did nothing, and "Re-pricing for the coins you
+        chose." under all of it.
         """
+        if self._wrapping():
+            return False
         sell, buy = self.view.pair
         held = self.host.pair
         if sell is None or buy is None or held is None:
@@ -615,6 +630,12 @@ class SwapPage:
         await self._show_gas(self._plan)
 
     def _quoted(self, quote) -> None:
+        # The host answers for the pair *it* is prepared for.  A pair changed
+        # while a quote was in flight, and a wrapping which the host knows
+        # nothing about, would otherwise have that answer drawn against the
+        # coins now on screen.
+        if quote is not None and (self._wrapping() or self._pair_is_stale()):
+            return
         self._quote = quote
         # A fresh answer overtakes whatever went wrong last time.  "This route
         # would not go through" is a statement about a block that has since

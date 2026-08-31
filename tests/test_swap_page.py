@@ -1340,6 +1340,83 @@ async def test_a_chain_does_not_open_on_a_wrapping():
     assert buy.symbol == "USDC.e", f"opened on a wrapping: XDAI -> {buy.symbol}"
 
 
+def wrapping_page():
+    """A page on Ethereum showing WETH -> ETH, with the host prepared for the
+    routed pair that came before it -- which is the state every wrapping is
+    reached from."""
+    from router.universe import NATIVE, CoinEntry
+
+    weth = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"
+    usdt = "0xdac17f958d2ee523a2206206994597c13d831ec7"
+    coins = [
+        CoinEntry(NATIVE, "ETH", "Ether", 18, 900.0, 3),
+        CoinEntry(weth, "WETH", "Wrapped Ether", 18, 900.0, 3),
+        CoinEntry(usdt, "USDT", "Tether", 6, 500.0, 2),
+    ]
+    page = swap_page_with(Wallet(), coins)
+    page.view.set_pair(coins[1], coins[0])          # WETH -> ETH
+
+    class Host:
+        stage = Stage.READY
+        pair = (usdt, weth)                          # what it last routed
+        session = None
+
+        def __init__(self) -> None:
+            self.asked: list[int] = []
+
+        def request(self, amount=0):
+            self.asked.append(amount)
+
+    page.host = Host()
+    return page, coins
+
+
+async def test_a_wrapping_is_never_a_stale_pair():
+    """Reported: WETH -> ETH drew 1 WETH = 2,419.64 ETH over five pools, with
+    a dead Swap button and "Re-pricing for the coins you chose." under it.
+
+    A wrapping never goes near the host -- `wrapping` answers it before the
+    warm is -- so `host.pair` keeps whichever routed pair came before, and
+    comparing the two blindly called every wrap stale for ever.  Nothing
+    could then be planned, sent, or re-priced when the slippage changed.
+    """
+    page, _coins = wrapping_page()
+
+    assert page._wrapping() is not None, "WETH -> ETH is a wrapping"
+    assert page._pair_is_stale() is False
+
+
+async def test_a_wrapping_stops_the_host_quoting_the_pair_it_left():
+    """The host goes on answering for what it is prepared for, and a wrapping
+    never re-prepares it -- so the answer for the pair just left arrives and
+    is drawn against the coins now on screen."""
+    page, _coins = wrapping_page()
+    page._remember_pair = lambda: _answer(None)
+
+    page._pair_changed()
+
+    assert page.host.asked == [0], "the host was left quoting the old pair"
+
+
+async def test_a_quote_for_another_pair_is_not_drawn_over_a_wrapping():
+    """The same answer arriving a moment later, after the pair has changed.
+    Drawn, it is 1 WETH = 2,419.64 ETH."""
+    page, _coins = wrapping_page()
+    drawn: list = []
+    page.view.show_quote = lambda quote, plan=None: drawn.append(quote)
+
+    class Result:
+        route = None
+        verified_out = 2419
+        amount_in = 1
+        price_impact_bp = 3.44
+
+    page._quoted(type("Quote", (), {"result": Result()})())
+
+    assert drawn == [], "an answer about other coins reached the screen"
+    assert page._quote is None
+
+
 async def test_a_remembered_wrapping_is_still_honoured():
     """Choosing one is fine; it is only a poor thing to *open* on."""
     from router.universe import NATIVE, CoinEntry

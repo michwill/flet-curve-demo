@@ -3,7 +3,15 @@
 (() => {
   "use strict";
 
-  const ACCOUNT = "0x1111111111111111111111111111111111111111";
+  // `?mock=0x…` points the mock at a real address instead of the default
+  // one, which is what makes the portfolio and the claim tabs testable at
+  // all: the default holds nothing anywhere, so every panel that appears
+  // only when there is something to show stays hidden. Read-only -- this
+  // mock signs nothing, it just answers `eth_accounts` with the address.
+  const ASKED = new URLSearchParams(location.search).get("mock") || "";
+  const ACCOUNT = /^0x[0-9a-fA-F]{40}$/.test(ASKED)
+    ? ASKED
+    : "0x1111111111111111111111111111111111111111";
   // Mutable, because the app now asks the wallet to follow the network
   // picker and a mock that always answers "Ethereum" would make that
   // impossible to see working.

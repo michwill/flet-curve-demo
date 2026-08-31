@@ -277,6 +277,13 @@ class PortfolioView(ft.Column):
             "Claim rewards", page=page, on_click=lambda _e: self._claim(False),
             visible=False,
         )
+        self.find_unclaimed = buttons.Themed(
+            "Look for unclaimed rewards", page=page,
+            on_click=lambda _e: self._sweep(),
+            visible=False,
+        )
+        self.sweep_note = ft.Text("", size=SMALL,
+                                  color=ft.Colors.ON_SURFACE_VARIANT)
         self.accrued_value = ft.Text("", size=BODY, weight=ft.FontWeight.BOLD)
         self.accrued_label = ft.Text(
             "", size=BODY, color=ft.Colors.ON_SURFACE_VARIANT
@@ -289,10 +296,13 @@ class PortfolioView(ft.Column):
         )
         self.status = StatusPanel(page)
         self.claim_status = self.status.text
+        # Beside the claim buttons, in the row that already wraps -- so on a
+        # phone it drops to its own line rather than off the edge.
         self._buttons = ft.Row(
             [
                 buttons.shadowed(self.claim_crv, page),
                 buttons.shadowed(self.claim_rewards, page),
+                buttons.shadowed(self.find_unclaimed, page),
             ],
             spacing=8,
             run_spacing=8,
@@ -319,25 +329,6 @@ class PortfolioView(ft.Column):
             visible=False,
         )
 
-        # Below the table rather than beside the claim buttons: it is a call
-        # per gauge on the chain, so it is asked for once by somebody who
-        # knows they left something behind, not offered as another claim.
-        self.find_unclaimed = buttons.Themed(
-            "Look for unclaimed rewards", page=page,
-            on_click=lambda _e: self._sweep(),
-        )
-        self.sweep_note = ft.Text("", size=SMALL,
-                                  color=ft.Colors.ON_SURFACE_VARIANT)
-        self._sweep_bar = ft.Container(
-            ft.Row(
-                [buttons.shadowed(self.find_unclaimed, page), self.sweep_note],
-                spacing=10,
-                wrap=True,
-                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-            ),
-            padding=ft.Padding.only(top=4),
-            visible=False,
-        )
 
         super().__init__(
             controls=[
@@ -356,7 +347,6 @@ class PortfolioView(ft.Column):
                 self.status,
                 self.empty,
                 self._table,
-                self._sweep_bar,
             ],
             spacing=10,
         )
@@ -399,11 +389,14 @@ class PortfolioView(ft.Column):
     def _lay_out_claim_bar(self) -> None:
         """Buttons and label side by side, or stacked on a phone."""
         self._buttons.expand = not self._narrow
+        beside = ft.Row([self.accrued, self.sweep_note], spacing=10, wrap=True,
+                        tight=True,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER)
         self._claim_bar.content = (
-            ft.Column([self._buttons, self.accrued], spacing=6)
+            ft.Column([self._buttons, beside], spacing=6)
             if self._narrow
             else ft.Row(
-                [self._buttons, self.accrued],
+                [self._buttons, beside],
                 spacing=8,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
             )
@@ -414,7 +407,7 @@ class PortfolioView(ft.Column):
         self._earnings = {}
         self._plan = ClaimPlan()
         self._crv = ""
-        self._claim_bar.visible = False
+        self._sync_claim_bar()
         self.status.say("")
 
     @property
@@ -424,10 +417,18 @@ class PortfolioView(ft.Column):
 
     def offer_sweep(self, offered: bool) -> None:
         """Show the sweep action, or take it away with the wallet."""
-        self._sweep_bar.visible = offered
+        self.find_unclaimed.visible = offered
         if not offered:
             self.sweep_note.value = ""
+        self._sync_claim_bar()
         safe_update(self)
+
+    def _sync_claim_bar(self) -> None:
+        """The bar is up for anything in it, not for a claim alone."""
+        self._claim_bar.visible = (
+            bool(self._plan.crv) or bool(self._plan.extras)
+            or self.find_unclaimed.visible
+        )
 
     def sweeping(self, message: str, *, busy: bool = False) -> None:
         """What the sweep is doing, beside its button."""
@@ -470,7 +471,7 @@ class PortfolioView(ft.Column):
             "Unclaimed rewards" if crv or extras else ""
         )
         self.accrued_value.value = compact_usd(owed) if owed > 0 else ""
-        self._claim_bar.visible = crv or extras
+        self._sync_claim_bar()
         if self._sort in EARNED_SORTS and self._earnings != was:
             self.show(self._holdings)
             return
@@ -505,7 +506,9 @@ class PortfolioView(ft.Column):
         """The page has nothing to show, and this is why."""
         self.rows.controls = []
         self.total.value = ""
-        self._claim_bar.visible = False
+        # Not hidden outright: with no deposits at all, looking for what a
+        # pool still owes is the one thing left to do here.
+        self._sync_claim_bar()
         self._table.visible = False
         self.empty.content = ft.Text(message, size=SMALL,
                                      color=ft.Colors.ON_SURFACE_VARIANT)

@@ -2989,13 +2989,58 @@ def test_the_claim_buttons_are_dressed_by_the_theme_they_end_up_in() -> None:
 
     page = ThemedPage("light")
     view = portfolio_view(page)
-    assert view.claim_crv.style is None
+    assert view.claim_crv.style is not None, "dressed from the start"
+    assert view.claim_crv.style.shape is None, "light is not Chad"
 
     page.theme, page.theme_mode = theme.theme_for("chad")
     view.claim_crv.before_update()
 
-    assert view.claim_crv.style is not None
     assert view.claim_crv.style.shape.radius == buttons.RADIUS
+
+
+def test_a_button_mounted_without_an_update_is_still_dressed() -> None:
+    """`before_update` is not enough on its own.  A tab hidden until its read
+    comes back -- Claim, whose `available` is false until the gauge answers --
+    puts its button on screen with nothing having updated it, and a button
+    with no style draws in Material's default in the middle of Chad.
+    """
+    from ui import buttons
+
+    page = ThemedPage("chad")
+    built = buttons.Themed("Claim", page=page)
+
+    # Not one update between construction and being shown.
+    assert built.style is not None
+    assert built.style.shape.radius == buttons.RADIUS, "Chad's corners"
+    assert built.style.bgcolor, "and Chad's fill, rather than Material's"
+
+
+def test_a_shadow_is_under_a_button_mounted_the_same_way() -> None:
+    """The shadow is the other half of the Chad button, and was set only on
+    update as well -- so the same late mount put one on screen flat."""
+    from ui import buttons
+
+    page = ThemedPage("chad")
+    box = buttons.shadowed(buttons.Themed("Claim", page=page), page)
+
+    assert box.shadow is not None
+
+
+def test_the_bar_stays_up_for_the_sweep_when_there_is_nothing_to_claim() -> None:
+    """The sweep button lives beside the claim buttons now, and those are
+    hidden with nothing to claim -- which is exactly when somebody wants to
+    look for what a pool they left still owes."""
+    view = portfolio_view()
+    view.say("No deposits in any Ethereum pool.")
+    assert view._claim_bar.visible is False
+
+    view.offer_sweep(True)
+
+    assert view.find_unclaimed.visible is True
+    assert view._claim_bar.visible is True, "hidden with the claim buttons"
+
+    view.offer_sweep(False)
+    assert view._claim_bar.visible is False
 
 
 def test_the_claim_buttons_say_what_they_would_claim() -> None:

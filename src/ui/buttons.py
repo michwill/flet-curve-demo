@@ -73,6 +73,12 @@ class Themed(ft.Button):
     def __init__(self, *args, page: ft.Page, **kwargs) -> None:
         self._page = page
         super().__init__(*args, **kwargs)
+        # Dressed here as well as on update, for the ones that are built with
+        # the page and mounted later: a tab hidden until its read comes back
+        # -- Claim, whose `available` is false until the gauge answers -- puts
+        # its button on screen without anything having updated it, and an
+        # unstyled button draws in Material's default in the middle of Chad.
+        self.style = style(page)
 
     def before_update(self) -> None:
         super().before_update()
@@ -93,6 +99,9 @@ class Shadowed(ft.Container):
         super().__init__(
             button, border_radius=RADIUS, clip_behavior=ft.ClipBehavior.NONE
         )
+        # The shadow too, and for the same reason: mounted without an update,
+        # a Chad button arrives with nothing under it.
+        self.shadow = theme.panel_shadow(page, inset=True)
 
     def before_update(self) -> None:
         super().before_update()

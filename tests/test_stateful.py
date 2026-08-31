@@ -224,7 +224,13 @@ class AppMachine(RuleBasedStateMachine):
     @rule()
     def scroll_to_end(self) -> None:
         view = self.app.list_view
-        view.page_scrolled(Event(pixels=99_000.0, max_scroll_extent=99_100.0))
+        # A taller list each time, as pages land: the view will not take
+        # another until the last one has actually added a screenful.
+        self._scrolled_to = getattr(self, "_scrolled_to", 10_000.0) + 5_000.0
+        view.page_scrolled(
+            Event(pixels=self._scrolled_to - 100.0,
+                  max_scroll_extent=self._scrolled_to)
+        )
         self.pump()
 
     @rule(chain=st.sampled_from(sorted(CHAINS)))

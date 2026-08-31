@@ -154,6 +154,8 @@ class Event:
         data: Any = None,
         pixels: float = 0.0,
         max_scroll_extent: float = 0.0,
+        min_scroll_extent: float = 0.0,
+        viewport_dimension: float = 800.0,
         width: float = 900.0,
         height: float = 400.0,
     ) -> None:
@@ -162,12 +164,29 @@ class Event:
         self.name = "event"
         self.pixels = pixels
         self.max_scroll_extent = max_scroll_extent
+        self.min_scroll_extent = min_scroll_extent
+        self.viewport_dimension = viewport_dimension
         self.width = width
         self.height = height
         self.local_position = Point(width / 2, height / 2)
         self.global_position = Point(width / 2, height / 2)
         self.local_delta = Point(1.0, 1.0)
         self.scroll_delta = Point(0.0, 1.0)
+
+    #: Worked out the way `ft.OnScrollEvent` works them out, rather than
+    #: passed in: a stub that lets these be set independently can describe a
+    #: list that does not exist, and `__getattr__` below would otherwise hand
+    #: back `None` for them and compare it against a float.
+    @property
+    def extent_after(self) -> float:
+        return max(self.max_scroll_extent - self.pixels, 0.0)
+
+    @property
+    def extent_total(self) -> float:
+        return (
+            self.max_scroll_extent - self.min_scroll_extent
+            + self.viewport_dimension
+        )
 
     def __getattr__(self, _name: str) -> None:
         return None

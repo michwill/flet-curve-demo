@@ -437,6 +437,13 @@ async def _calls(
                 values = [None] * len(batch)
             if any(value is not None for value in values):
                 break
+            # Only where the caller cannot live with `None`.  `scan` reads
+            # gauges that legitimately have no code and gets a batch of
+            # nothing back as the honest answer -- `resolve_absent_gauges`
+            # exists to chase exactly those -- so retrying there is 1.2
+            # seconds of sleeping for an answer already had.
+            if not strict:
+                break
             if attempt + 1 < ATTEMPTS:
                 await asyncio.sleep(BACKOFF * 2**attempt)
         else:

@@ -272,16 +272,36 @@ class Refusing:
 async def test_a_batch_that_answers_nothing_is_asked_again() -> None:
     """A public endpoint refuses by answering short rather than by erroring,
     and `decode_uints` cannot tell that from a batch where every call really
-    did return empty. Believed, it reads as "owed nothing anywhere"."""
+    did return empty. Believed, it reads as "owed nothing anywhere".
+
+    Under `strict` only: `scan` reads gauges that have no code and wants
+    those `None`s, so asking again there is a wait for an answer already
+    had.
+    """
     chain = Refusing(relent_after=1)
+
+    answers = await portfolio._calls(
+        chain, [("0x" + "aa" * 20, "0x1122")], chunk=10, concurrency=1,
+        on_progress=None, strict=True,
+    )
+
+    assert chain.tries == 2, "it took the first answer at face value"
+    assert answers == [5 * UNIT]
+
+
+async def test_a_scan_does_not_wait_on_a_gauge_that_has_no_code() -> None:
+    """Nothing back is the honest answer there, and
+    `resolve_absent_gauges` is built to chase it -- so retrying costs a
+    second and a bit for something already known."""
+    chain = Refusing(relent_after=99)
 
     answers = await portfolio._calls(
         chain, [("0x" + "aa" * 20, "0x1122")], chunk=10, concurrency=1,
         on_progress=None,
     )
 
-    assert chain.tries == 2, "it took the first answer at face value"
-    assert answers == [5 * UNIT]
+    assert chain.tries == 1, "it waited on an answer it already had"
+    assert answers == [None]
 
 
 async def test_reads_that_stay_unanswered_are_not_reported_as_zero() -> None:

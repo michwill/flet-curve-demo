@@ -174,6 +174,14 @@ def urls(control) -> list[str]:
 # -- list ------------------------------------------------------------------
 
 
+def list_scrolled(*, left: float, total: float, screen: float = 800.0):
+    """A scroll event as the pool list measures itself: how much is below the
+    viewport, how tall the whole thing is, and how big a screen is."""
+    return SimpleNamespace(
+        extent_after=left, extent_total=total, viewport_dimension=screen
+    )
+
+
 def test_pool_list_builds_and_attaches_a_feed() -> None:
     view = PoolListView(StubPage(), on_open=lambda _p: None)
     assert view.feed is None
@@ -205,12 +213,10 @@ async def test_scroll_near_the_end_is_what_triggers_a_page() -> None:
     await view.load_more()
     assert len(view.rows.controls) == 3
 
-    far = SimpleNamespace(pixels=0.0, max_scroll_extent=99_999.0)
-    view.page_scrolled(far)
-    assert len(view.rows.controls) == 3  # nowhere near the end; no fetch
+    view.page_scrolled(list_scrolled(left=9_000.0, total=10_000.0))
+    assert len(view.rows.controls) == 3  # a dozen screens below; no fetch
 
-    near = SimpleNamespace(pixels=99_000.0, max_scroll_extent=99_100.0)
-    view.page_scrolled(near)
+    view.page_scrolled(list_scrolled(left=100.0, total=10_000.0))
     await asyncio.sleep(0)
     assert len(view.rows.controls) == 6
 
@@ -230,11 +236,11 @@ async def test_pages_wait_for_the_rows_of_the_last_one_to_be_laid_out() -> None:
     await view.load_more()
     assert len(view.rows.controls) == 50
 
-    # Twelve events, each after the last one has been dealt with, and the
-    # list no taller than it was: the rows are still being built.
-    still = SimpleNamespace(pixels=99_000.0, max_scroll_extent=99_100.0)
-    for _ in range(12):
-        view.page_scrolled(still)
+    # Twelve events, each after the last has been dealt with, and the list
+    # barely taller: one row of the fifty has been laid out, which is what
+    # actually happens -- 2,601 to 2,654 before 5,868.
+    for offset in range(12):
+        view.page_scrolled(list_scrolled(left=100.0, total=10_000.0 + offset * 5.0))
         for _ in range(8):
             await asyncio.sleep(0)
 
@@ -250,13 +256,12 @@ async def test_a_taller_list_is_what_lets_the_next_page_through() -> None:
     view.attach(FakeFeed([make_pool() for _ in range(300)], page_size=50))
     await view.load_more()
 
-    height = 99_100.0
+    total = 10_000.0
     for _ in range(3):
-        event = SimpleNamespace(pixels=height - 100.0, max_scroll_extent=height)
-        view.page_scrolled(event)
+        view.page_scrolled(list_scrolled(left=100.0, total=total))
         for _ in range(8):
             await asyncio.sleep(0)
-        height += 5_000.0          # the fifty just added, laid out
+        total += 5_000.0           # the fifty just added, laid out
 
     assert len(view.rows.controls) == 200
 

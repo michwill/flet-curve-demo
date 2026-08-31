@@ -51,7 +51,6 @@ COLUMN_CONTENT = {
 }
 
 #: Start loading the next page this many pixels before the end.
-SCROLL_THRESHOLD = 1200
 
 #: How long to sit on a keystroke before asking the server.
 SEARCH_DEBOUNCE = 0.35
@@ -363,11 +362,10 @@ class PoolListView(ft.Column):
         #: second page, so `load_more` returns without ever going near the
         #: network and never sets it. See `page_scrolled`.
         self._appending = False
-        #: How tall the list was when the last page was taken. Until it has
-        #: grown, the rows that page added are not laid out yet -- and every
-        #: scroll event until then reads the same distance to the end and
-        #: asks for another. See `page_scrolled`.
-        self._paged_at = -1.0
+        #: How tall the list has to be before another page is worth asking
+        #: for: what it was when the last one was taken, plus a screenful.
+        #: See `page_scrolled`.
+        self._grown_to = float("-inf")
         self._layout = layout_for(2000.0)
 
         #: Shown only once there is something to clear: an empty box with
@@ -557,7 +555,7 @@ class PoolListView(ft.Column):
     def attach(self, feed: PoolFeed) -> None:
         """Point the view at a (new) feed, e.g. after a chain change."""
         self.feed = feed
-        self._paged_at = -1.0
+        self._grown_to = float("-inf")
         self._lite = feed.lite
         self._sort = feed.sort_by or DEFAULT_SORT
         self.sort_picker.value = self._sort
@@ -589,7 +587,7 @@ class PoolListView(ft.Column):
         # `list_pools`, which needs the column to sort a lite chain locally and
         # translates it for the wire itself.
         self.feed.reset(sort_by=key)
-        self._paged_at = -1.0
+        self._grown_to = float("-inf")
         self.rows.controls = []
         safe_update(self)
         self._run(self.load_more)
@@ -611,7 +609,7 @@ class PoolListView(ft.Column):
         self._claim_search()
         if self.feed is not None:
             self.feed.reset(search="")
-            self._paged_at = -1.0
+            self._grown_to = float("-inf")
             self.rows.controls = []
             safe_update(self)
             self._run(self.load_more)
@@ -631,39 +629,43 @@ class PoolListView(ft.Column):
         if token != self._search_token or self.feed is None:
             return
         self.feed.reset(search=query.strip())
-        self._paged_at = -1.0
+        self._grown_to = float("-inf")
         self.rows.controls = []
         safe_update(self)
         await self.load_more()
 
     def page_scrolled(self, e: ft.OnScrollEvent) -> None:
-        """Pull the next page when the end comes into view, and not again
-        until the last one is on screen.
+        """Pull the next page when less than a screen is left below, and not
+        again until that page has arrived.
 
-        A gesture is many scroll events, and under a sort the server cannot
-        rank the whole chain is already in memory -- so a page costs nothing
-        to fetch and there is nothing to pace it.  Worse, `max_scroll_extent`
-        does not grow until the client has laid the new rows out: until then
-        every event reads the same distance to the end, decides it is near it,
-        and asks for fifty more.  A flick down Ethereum took the lot, at a
-        hundred percent of a core, with the tab too busy to answer a click on
-        another column.
+        Both halves are the list's own measurements, which is the point.  A
+        page is asked for *because* there is little left below -- and until
+        the rows land that stays true, so every event asks again.  A gesture
+        is forty events, the pages come from memory under a sort the server
+        cannot rank, and a flick down Ethereum took the whole chain at a
+        hundred percent of a core.
 
-        So the height at which a page was taken is remembered, and the next
-        one waits for the list to actually be taller than that.  Not a guard
-        against overlapping appends -- `_appending` is that, and it is not
-        enough, because these events arrive one after another rather than at
-        once.
+        The page has arrived when the list has grown by a screenful.  A page
+        is fifty rows and a screen is a dozen, so it is satisfied when they
+        are really there and not before -- and it needs no clock, which would
+        only be a guess about how long a frame takes on someone else's
+        machine.  Growth in stages is what defeated measuring it as "taller
+        at all": laying out one row of the fifty was enough, and the extent
+        went 2,601 to 2,654 before it went to 5,868.
+
+        `viewport_dimension` for the trigger as well, rather than a fixed
+        1,200 px, so "nearly the end" means the same on a phone as on a
+        desktop.
         """
         if self.feed is None or self.feed.loading or self.feed.exhausted:
             return
         if self._appending:
             return
-        if e.max_scroll_extent <= self._paged_at:
+        if e.extent_total < self._grown_to:
             return
-        if e.max_scroll_extent - e.pixels > SCROLL_THRESHOLD:
+        if e.extent_after > e.viewport_dimension:
             return
-        self._paged_at = e.max_scroll_extent
+        self._grown_to = e.extent_total + e.viewport_dimension
         self._run(self.load_more)
 
     async def load_more(self) -> None:

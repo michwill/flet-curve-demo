@@ -21,6 +21,9 @@
   // the app : takes to offer `wallet_addEthereumChain`.
   const KNOWN_CHAINS = new Set(["0x1", "0x64", "0xa4b1", "0xa", "0x89", "0x2105"]);
   const NATIVE_BALANCE = 2000000000000000000n; // 2 ETH
+  //: A pool to quote against: 3,000,000 LP over reserves that taper.
+  const POOL_SUPPLY = 3000000000000000000000000n;
+  const POOL_RESERVE = 1500000000000000000000000n;
   const TOKEN_BALANCE = 1234560000n; // 1234.56 at 6 decimals
   const TOKEN_DECIMALS = 6n;
   const TOKEN_SYMBOL = "TEST";
@@ -89,6 +92,21 @@
             // mined, so the app's "wait, then re-read" path has
             // something to observe.
             return "0x" + word((window.__approved ? 2n ** 200n : 0n).toString(16));
+          }
+          // A pool with reserves and a supply, so the panels that work out
+          // what a withdrawal or a deposit would pay have something to work
+          // from. Answering "0x" to these -- which is what anything
+          // unrecognised gets -- makes every estimate come back empty, and
+          // the panel then looks broken for a reason that is only ever true
+          // of this mock.
+          if (selector === "18160ddd") return "0x" + word(POOL_SUPPLY.toString(16));
+          if (selector === "4903b0d1" || selector === "065a80d8") {
+            // balances(uint256) and balances(int128), both spellings being
+            // in the wild. The reserve of coin `i`, tapering so the coins
+            // are not identical.
+            const arg = (params[0]?.data || "").slice(10) || "0";
+            const i = BigInt("0x" + (arg || "0"));
+            return "0x" + word((POOL_RESERVE / (i + 1n)).toString(16));
           }
           if (selector === "313ce567") return "0x" + word(TOKEN_DECIMALS.toString(16)); // decimals()
           if (selector === "70a08231") return "0x" + word(TOKEN_BALANCE.toString(16)); // balanceOf()

@@ -363,6 +363,11 @@ class PoolListView(ft.Column):
         #: second page, so `load_more` returns without ever going near the
         #: network and never sets it. See `page_scrolled`.
         self._appending = False
+        #: How tall the list was when the last page was taken. Until it has
+        #: grown, the rows that page added are not laid out yet -- and every
+        #: scroll event until then reads the same distance to the end and
+        #: asks for another. See `page_scrolled`.
+        self._paged_at = -1.0
         self._layout = layout_for(2000.0)
 
         #: Shown only once there is something to clear: an empty box with
@@ -552,6 +557,7 @@ class PoolListView(ft.Column):
     def attach(self, feed: PoolFeed) -> None:
         """Point the view at a (new) feed, e.g. after a chain change."""
         self.feed = feed
+        self._paged_at = -1.0
         self._lite = feed.lite
         self._sort = feed.sort_by or DEFAULT_SORT
         self.sort_picker.value = self._sort
@@ -583,6 +589,7 @@ class PoolListView(ft.Column):
         # `list_pools`, which needs the column to sort a lite chain locally and
         # translates it for the wire itself.
         self.feed.reset(sort_by=key)
+        self._paged_at = -1.0
         self.rows.controls = []
         safe_update(self)
         self._run(self.load_more)
@@ -604,6 +611,7 @@ class PoolListView(ft.Column):
         self._claim_search()
         if self.feed is not None:
             self.feed.reset(search="")
+            self._paged_at = -1.0
             self.rows.controls = []
             safe_update(self)
             self._run(self.load_more)
@@ -623,26 +631,39 @@ class PoolListView(ft.Column):
         if token != self._search_token or self.feed is None:
             return
         self.feed.reset(search=query.strip())
+        self._paged_at = -1.0
         self.rows.controls = []
         safe_update(self)
         await self.load_more()
 
     def page_scrolled(self, e: ft.OnScrollEvent) -> None:
-        """Pull the next page when the end comes into view.
+        """Pull the next page when the end comes into view, and not again
+        until the last one is on screen.
 
-        One at a time.  A gesture is many scroll events, and under a sort the
-        server cannot rank the whole chain is already in memory -- so each of
-        them took another fifty and none of them waited for anything.  The
-        pages arrived faster than the rows could be built, and a flick to the
-        bottom of Ethereum built all 387 in one burst, at a hundred percent
-        of a core, with the tab unusable until it finished.
+        A gesture is many scroll events, and under a sort the server cannot
+        rank the whole chain is already in memory -- so a page costs nothing
+        to fetch and there is nothing to pace it.  Worse, `max_scroll_extent`
+        does not grow until the client has laid the new rows out: until then
+        every event reads the same distance to the end, decides it is near it,
+        and asks for fifty more.  A flick down Ethereum took the lot, at a
+        hundred percent of a core, with the tab too busy to answer a click on
+        another column.
+
+        So the height at which a page was taken is remembered, and the next
+        one waits for the list to actually be taller than that.  Not a guard
+        against overlapping appends -- `_appending` is that, and it is not
+        enough, because these events arrive one after another rather than at
+        once.
         """
         if self.feed is None or self.feed.loading or self.feed.exhausted:
             return
         if self._appending:
             return
+        if e.max_scroll_extent <= self._paged_at:
+            return
         if e.max_scroll_extent - e.pixels > SCROLL_THRESHOLD:
             return
+        self._paged_at = e.max_scroll_extent
         self._run(self.load_more)
 
     async def load_more(self) -> None:

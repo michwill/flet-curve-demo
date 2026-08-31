@@ -215,43 +215,48 @@ async def test_scroll_near_the_end_is_what_triggers_a_page() -> None:
     assert len(view.rows.controls) == 6
 
 
-async def test_a_flick_takes_one_page_rather_than_the_whole_chain() -> None:
-    """Reported: sorting by incentives and scrolling down built every
-    remaining row at once, at a hundred percent of a core, with the tab
-    unusable until it finished.
+async def test_pages_wait_for_the_rows_of_the_last_one_to_be_laid_out() -> None:
+    """Reported twice: sorting by incentives and scrolling built far more
+    than fifty, until the tab was too busy to answer a click on a column.
 
-    A sort the server cannot rank has the whole chain in memory by the second
-    page, so `load_more` returns without going near the network and never
-    sets `feed.loading` -- which was the only thing stopping a second page.
-    A gesture is many scroll events, and each of them took another fifty.
+    A gesture is many scroll events, arriving one after another rather than
+    at once -- so a guard against *overlapping* appends catches none of them.
+    And `max_scroll_extent` does not grow until the client has laid the new
+    rows out, so until then every event reads the same distance to the end,
+    decides it is near it, and asks for fifty more.
     """
     view = PoolListView(StubPage(), on_open=lambda _p: None)
     view.attach(FakeFeed([make_pool() for _ in range(300)], page_size=50))
     await view.load_more()
     assert len(view.rows.controls) == 50
 
-    near = SimpleNamespace(pixels=99_000.0, max_scroll_extent=99_100.0)
-    for _ in range(12):                 # one flick, twelve events
-        view.page_scrolled(near)
-    for _ in range(8):
-        await asyncio.sleep(0)
+    # Twelve events, each after the last one has been dealt with, and the
+    # list no taller than it was: the rows are still being built.
+    still = SimpleNamespace(pixels=99_000.0, max_scroll_extent=99_100.0)
+    for _ in range(12):
+        view.page_scrolled(still)
+        for _ in range(8):
+            await asyncio.sleep(0)
 
     assert len(view.rows.controls) == 100, (
-        f"a flick built {len(view.rows.controls)} rows in one go"
+        f"a flick built {len(view.rows.controls)} rows"
     )
 
 
-async def test_the_next_flick_still_takes_the_next_page() -> None:
-    """The guard is held across an append, not for good."""
+async def test_a_taller_list_is_what_lets_the_next_page_through() -> None:
+    """The rows landed, the list grew, and scrolling on takes the next page.
+    Without this the guard would be a full stop rather than a pace."""
     view = PoolListView(StubPage(), on_open=lambda _p: None)
     view.attach(FakeFeed([make_pool() for _ in range(300)], page_size=50))
     await view.load_more()
 
-    near = SimpleNamespace(pixels=99_000.0, max_scroll_extent=99_100.0)
+    height = 99_100.0
     for _ in range(3):
-        view.page_scrolled(near)
+        event = SimpleNamespace(pixels=height - 100.0, max_scroll_extent=height)
+        view.page_scrolled(event)
         for _ in range(8):
             await asyncio.sleep(0)
+        height += 5_000.0          # the fifty just added, laid out
 
     assert len(view.rows.controls) == 200
 

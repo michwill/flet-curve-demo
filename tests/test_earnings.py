@@ -347,6 +347,21 @@ async def test_a_chunk_that_fails_costs_only_its_own_calls() -> None:
     assert answers.count(7) == CHUNK
 
 
+async def test_a_gauge_is_asked_even_with_nothing_staked_in_it_now() -> None:
+    """Withdrawing does not claim.  A position emptied still has CRV sitting
+    in its gauge, and asking only about what is currently staked answered
+    zero for it -- which reads as "nothing owed" rather than "not asked"."""
+    me = "0x" + "11" * 20
+    position = Earning(pool="0xpool", gauge="0x" + "22" * 20, staked=0)
+    chain = Chain([[0, 9 * 10**18, 0]])   # working, CRV owed, no reward tokens
+
+    (filled,) = await read_earnings(chain, me, [position])
+
+    assert chain.asked, "the gauge was never asked"
+    assert filled.has_crv is True
+    assert filled.crv_owed == 9.0
+
+
 async def test_a_reward_token_owing_nothing_never_becomes_a_reward() -> None:
     paid = "0x" + "ab" * 20
     dry = "0x" + "cd" * 20

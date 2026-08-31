@@ -351,13 +351,13 @@ async def read_earnings(
 ) -> list[Earning]:
     """Fill in each position's boost and what it is owed."""
     meta = {key.lower(): value for key, value in (token_meta or {}).items()}
-    staked = [p for p in positions if p.gauge and p.staked > 0]
-    if not staked or not account:
+    gauged = [p for p in positions if p.gauge]
+    if not gauged or not account:
         return positions
-    earning_pools = {p.pool for p in staked}
+    earning_pools = {p.pool for p in gauged}
 
     first: list[tuple[str, str]] = []
-    for position in staked:
+    for position in gauged:
         first += [
             (position.gauge, abi.encode_working_balances(account)),
             (position.gauge, abi.encode_claimable_tokens(account)),
@@ -372,7 +372,7 @@ async def read_earnings(
     #: are indistinguishable once they reach the page: "unclaimed $0.00"
     #: is what a working read of nothing looks like.
     unread = 0
-    for index, position in enumerate(staked):
+    for index, position in enumerate(gauged):
         base = index * 3
         if answers[base + 1] is None and answers[base + 2] is None:
             unread += 1
@@ -380,26 +380,26 @@ async def read_earnings(
         crv_owed[position.pool] = answers[base + 1] or 0
         counts[position.pool] = min(answers[base + 2] or 0, MAX_REWARD_TOKENS)
 
-    if unread == len(staked):
+    if unread == len(gauged):
         # Every one of them: that is the transport, not the gauges. The
         # caller says so; showing a page of zeros would say the opposite.
         raise WalletError("Could not read what these gauges owe.")
 
     token_calls: list[tuple[str, str]] = []
     asked_for: list[str] = []
-    for position in staked:
+    for position in gauged:
         for slot in range(counts[position.pool]):
             token_calls.append((position.gauge, abi.encode_reward_tokens(slot)))
             asked_for.append(position.pool)
     token_answers = await _batch(provider, token_calls) if token_calls else []
-    tokens: dict[str, list[str]] = {position.pool: [] for position in staked}
+    tokens: dict[str, list[str]] = {position.pool: [] for position in gauged}
     for pool, answer in zip(asked_for, token_answers, strict=True):
         if answer:
             tokens[pool].append(_word_to_address(answer))
 
     owed_calls: list[tuple[str, str]] = []
     pairs: list[tuple[str, str]] = []
-    for position in staked:
+    for position in gauged:
         for token in tokens[position.pool]:
             owed_calls.append(
                 (position.gauge, abi.encode_claimable_reward(account, token))

@@ -3395,6 +3395,45 @@ def test_a_new_wallet_does_not_inherit_the_last_one_s_claim() -> None:
     assert view.rows.controls[0]._rewards.value == "\u2013"
 
 
+async def test_a_pool_withdrawn_from_is_still_asked_what_it_owes() -> None:
+    """What `sweep_unclaimed` puts on the table holds nothing at all -- no LP
+    in the wallet, none staked -- and it was gated out of `load_earnings`
+    before its gauge was ever asked.  So the sweep found the pool and the row
+    then reported no rewards, which is the opposite of why it is there.
+    """
+    import main as app_module
+
+    class Api:
+        async def pool_rates(self, _chain_id, addresses):
+            return {a.lower(): {"crv_apr": 1.0, "extra_rewards_apr": []}
+                    for a in addresses}
+
+        async def usd_price(self, _chain, _address):
+            return 0.5
+
+    app = app_module.CurveApp.__new__(app_module.CurveApp)
+    app.page = StubPage()
+    app.chain = "ethereum"
+    app.api = Api()
+    app._earnings = []
+    app._earning_seeds = None
+    app._claim_minters = {}
+    app.portfolio_view = portfolio_view(app.page)
+
+    async def reread(_account, _provider) -> None:
+        pass
+
+    app.reread_earnings = reread      # type: ignore[method-assign]
+    swept = make_holding(address="0x" + "aa" * 20, gauge="0x" + "bb" * 20,
+                         wallet=0, staked=0)
+
+    await app.load_earnings([swept], "0x" + "11" * 20, 1, object())
+
+    assert app._earning_seeds is not None, "the gauge was never asked"
+    seeds, _meta, _price, _chain = app._earning_seeds
+    assert [seed.gauge for seed in seeds] == [swept.gauge]
+
+
 async def test_the_rates_are_asked_for_once_however_many_pools() -> None:
     import main as app_module
 

@@ -1439,10 +1439,13 @@ class CurveApp:
 
     async def load_earnings(self, holdings, account: str, chain_id: int, provider) -> None:
         """What each position earns, and what it has earned but not taken."""
-        # `wallet > 0` as well as `staked`: a gauge goes on owing after
-        # the LP has been taken out of it, and a position that unstaked
-        # without claiming was reported as earning nothing.
-        staked = [h for h in holdings if h.gauge and (h.staked > 0 or h.wallet > 0)]
+        # Every holding with a gauge, whatever it holds.  A gauge goes on
+        # owing after the LP has been taken out of it: unstaking without
+        # claiming leaves rewards behind, and so does withdrawing outright --
+        # which is what `sweep_unclaimed` puts on the table, with nothing in
+        # the wallet and nothing staked.  Gated on a balance, those rows came
+        # back from the sweep and then reported no rewards at all.
+        staked = [h for h in holdings if h.gauge]
         if not staked:
             self._earning_seeds = None
             return

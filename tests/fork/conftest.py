@@ -209,8 +209,12 @@ class Fork:
             "eth_sendTransaction",
             [{"from": source, "to": token, "data": encode_transfer(to, amount)}],
         )
-        receipt = self.rpc("eth_getTransactionReceipt", [tx])
-        assert receipt and int(receipt["status"], 16) == 1, f"funding failed: {tx}"
+        # Through `wait`, not read straight back: anvil mines on its own and
+        # the receipt is not there the instant `eth_sendTransaction` returns.
+        # Read directly, a busy run funded nothing and the test read as a
+        # router regression -- `receipt is None` is "not mined yet", where a
+        # transfer that really failed would answer with status 0.
+        self.wait(tx)
 
 
 @pytest.fixture(scope="session")

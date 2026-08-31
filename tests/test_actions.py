@@ -173,6 +173,32 @@ async def test_a_balanced_withdrawal_previews_every_coin_it_pays() -> None:
     assert tab.estimate.value == "-> 100,000.00 USDT  +  200,000.00 crvUSD"
 
 
+async def test_a_withdrawal_is_previewed_before_there_is_any_lp_to_do_it_with() -> None:
+    """Michael: typing an amount should say what it would pay back, whether
+    or not the wallet holds any LP yet.
+
+    What a withdrawal gives back is a fact about the pool, not about the
+    wallet -- and it is exactly what somebody is asking before they have
+    any.  The shortfall was said with `show_estimate`, which replaces the
+    line the receipts had just been written to, so the answer was taken away
+    and "Only 0 LP available" put in its place.
+    """
+    provider = ReservedProvider(RESERVES)
+    provider.answers["0x70a08231"] = word(0)      # nothing held, nothing staked
+    tab = make_tab(provider)
+    tab.mode.value = "balanced"
+    tab.amount.value = "150000"
+
+    await tab.refresh()
+
+    assert tab.estimate.value.startswith("-> 100,000.00 USDT  +  200,000.00 crvUSD"), (
+        f"the estimate was replaced: {tab.estimate.value!r}"
+    )
+    said = " ".join(getattr(c, "value", "") or "" for c in tab.estimate_line.controls)
+    assert "Only 0 LP available" in said, "and the shortfall still says so"
+    assert tab.submit_button.disabled is True, "but it cannot be sent"
+
+
 async def test_the_preview_and_the_floor_are_the_same_numbers() -> None:
     provider = ReservedProvider(RESERVES)
     tab = make_tab(provider)

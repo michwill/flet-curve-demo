@@ -321,6 +321,31 @@ class ActionTab:
         self._estimate_problem = problem and bool(text)
         self._sync_alarm()
 
+    def say_beside(self, text: str, *, problem: bool = False) -> None:
+        """A second thing to say on the estimate line, keeping the first.
+
+        The shortfall was said with `show_estimate`, which replaces the line
+        -- so typing more than the balance took away the very figure being
+        asked for.  With no LP at all that left "Only 0 LP available" and
+        nothing else, which answers a question nobody asked: what somebody
+        wants to know before they have any is what a withdrawal would give
+        them.
+        """
+        if not text:
+            return
+        if not self.estimate.value:
+            self.show_estimate(text, problem=problem)
+            return
+        self.estimate_line.controls.append(
+            ft.Text(
+                text,
+                size=SMALL,
+                color=ft.Colors.ERROR if problem else ft.Colors.ON_SURFACE_VARIANT,
+            )
+        )
+        self._estimate_problem = problem
+        self._sync_alarm()
+
     def show_receipts(self, receipts: list[tuple[ft.Control, str]]) -> None:
         """The same line, with each amount behind the mark of its token."""
         if not receipts:
@@ -1472,7 +1497,11 @@ class WithdrawTab(ActionTab):
             contract is not None and contract.can_send and amount > self.spendable
         )
         if over:
-            self.show_estimate(
+            # Beside the estimate rather than over it.  What a withdrawal
+            # would give back does not depend on holding any LP, and it is
+            # the thing somebody is asking when they type an amount they do
+            # not have yet.
+            self.say_beside(
                 f"Only {format_units(self.spendable, 18)} LP available"
                 + (
                     "."

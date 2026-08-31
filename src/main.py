@@ -81,6 +81,32 @@ def startup_theme() -> str:
     return wanted if wanted in themes.NAMES else ""
 
 
+def remembered_theme() -> str:
+    """The theme this browser was last left in, before the first paint.
+
+    `SharedPreferences` answers over a round trip to the Flutter client, so
+    asking through it means painting a default and correcting when the reply
+    lands -- which is the flash, and it is seconds rather than milliseconds
+    because the reply queues behind the boot.  The value is already in
+    `localStorage` the whole time, synchronously, under the `flutter.` prefix
+    `shared_preferences_web` writes; read it there and the first frame is
+    already right.
+
+    Empty off the browser, where there is no `localStorage` and
+    `restore_theme` still answers.
+    """
+    if not is_browser():
+        return ""
+    try:
+        import js
+
+        raw = js.localStorage.getItem(WEB_THEME_KEY)
+        name = json.loads(raw) if raw else ""
+    except Exception:
+        return ""
+    return name if isinstance(name, str) and name in themes.NAMES else ""
+
+
 def startup_window() -> tuple[float, float] | None:
     """The window size to open at, or None for the default."""
     raw = os.environ.get(WINDOW_ENV, "").strip().lower()
@@ -114,6 +140,9 @@ PORTFOLIO_KEY = "flet-curve.portfolio"
 
 #: Where the chosen theme is remembered, per browser or per desktop install.
 THEME_KEY = "flet-curve.theme"
+#: The same value as `localStorage` holds it. `shared_preferences_web` writes
+#: every key under this prefix, and the value is JSON.
+WEB_THEME_KEY = "flutter." + THEME_KEY
 
 #: What a wallet answers when it has never heard of the network being asked
 #: for (EIP-3085).
@@ -284,8 +313,13 @@ class CurveApp:
 
         self.storage = ft.SharedPreferences()
 
+        # Resolved before `_build`, because `_build` is what the first frame
+        # is drawn from.  Setting it afterwards leaves that frame on
+        # `ThemeMode.SYSTEM`, which follows the OS -- invisible when the two
+        # agree and a flash of the wrong palette when they do not.
+        self._opening_theme = startup_theme() or remembered_theme()
         self._build()
-        forced = startup_theme()
+        forced = self._opening_theme
         if forced:
             self._set_theme(forced, remember=False)
         else:
@@ -323,9 +357,18 @@ class CurveApp:
         page = self.page
         page.title = APP_TITLE
         page.padding = 0
-        page.theme_mode = ft.ThemeMode.SYSTEM
-        page.theme = themes.material()
+        # `SYSTEM` only when nothing is remembered: a saved theme is a choice
+        # about the palette, and following the OS until it is applied is what
+        # the flash was.
+        opening = getattr(self, "_opening_theme", "")
+        theme, mode = (
+            themes.theme_for(opening) if opening
+            else (themes.material(), ft.ThemeMode.SYSTEM)
+        )
+        page.theme_mode = mode
+        page.theme = theme
         page.dark_theme = themes.material()
+        page.bgcolor = themes.PAGE if opening == "chad" else None
         page.window.width, page.window.height = startup_window() or (1280.0, 900.0)
 
         self._icons = False

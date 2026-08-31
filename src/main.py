@@ -578,8 +578,7 @@ class CurveApp:
 
         self.list_view = PoolListView(page, on_open=self.open_pool)
         self.portfolio_view = PortfolioView(
-            page, on_open=self.open_holding, on_claim=self.claim_portfolio,
-            on_sweep=self.sweep_unclaimed,
+            page, on_open=self.open_holding, on_claim=self.claim_portfolio
         )
         #: Built when the tab is first opened, not at start-up: warming the
         #: router is twenty seconds of reading, and someone who never opens
@@ -1353,7 +1352,6 @@ class CurveApp:
         self._earning_seeds = None
         self._claim_minters = {}
         view.forget_earnings()
-        view.offer_sweep(False)
         if wallet is None or not wallet.address:
             view.say("Connect a wallet to see what it holds.")
             return
@@ -1395,43 +1393,43 @@ class CurveApp:
             view.show(holdings)
         else:
             view.say(f"No deposits in any {chain_name(self.chain)} pool.")
-        view.offer_sweep(True)
         self.page.run_task(self._remember_portfolio, holdings, account)
         self.page.run_task(self.load_earnings, holdings, account, chain_id, provider)
+        # Behind the first answer, not in front of it: what this address is
+        # still in is the question it came with, and it is on screen above
+        # before the pools it has left are asked about at all.
+        self.page.run_task(
+            self.sweep_unclaimed, holdings, account, chain_id, provider, targets
+        )
 
-    async def sweep_unclaimed(self) -> None:
-        """Look for rewards in pools this address has already withdrawn from.
+    async def sweep_unclaimed(self, held, account: str, chain_id: int,
+                              provider, targets) -> None:
+        """Rewards left behind in pools this address has withdrawn from.
 
-        A call per gauge on the chain, which is why it waits to be asked.
-        What it finds joins the table as a row holding nothing, and
-        `load_earnings` fills in what each one owes exactly as it does for a
-        position still open.
+        Reads per gauge over the whole chain, so it runs after the holdings
+        are drawn rather than before -- somebody with nothing left behind has
+        their portfolio already, and the strip under the top bar says the
+        rest is still coming.  What it finds joins the table as a row holding
+        nothing, and `load_earnings` fills in what each one owes exactly as
+        it does for a position still open.
         """
         view = self.portfolio_view
-        wallet = self.wallet
-        if wallet is None or not wallet.address:
-            return
-        account = wallet.address
-        held = view.holdings
-        view.sweeping("Asking every gauge…", busy=True)
+        self.loading(0.0)
         try:
-            chain_id = await self.current_chain_id()
-            provider = self.reader(chain_id, wallet.provider)
-            targets = await self.api.portfolio_targets(self.chain, chain_id)
             found = await portfolio.sweep_unclaimed(
                 provider, targets, account, held=held,
-                on_progress=lambda done, total: view.sweeping(
-                    f"Asking every gauge… {done} of {total}", busy=True
+                on_progress=lambda done, total: self.loading(
+                    done / max(total, 1)
                 ),
             )
         except (WalletError, ApiError) as exc:
-            view.sweeping(f"Could not ask the gauges: {exc}")
+            self.loaded()
+            view.sweeping(f"Could not ask what the pools you left still owe: {exc}")
             return
+        self.loaded()
         if not found:
-            view.sweeping("Nothing unclaimed in a pool you have left.")
             return
-        view.sweeping(f"Found {len(found)} left with something owed.")
-        holdings = held + found
+        holdings = list(held) + found
         view.show(holdings)
         self.page.run_task(
             self.load_earnings, holdings, account, chain_id, provider

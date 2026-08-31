@@ -3026,21 +3026,47 @@ def test_a_shadow_is_under_a_button_mounted_the_same_way() -> None:
     assert box.shadow is not None
 
 
-def test_the_bar_stays_up_for_the_sweep_when_there_is_nothing_to_claim() -> None:
-    """The sweep button lives beside the claim buttons now, and those are
-    hidden with nothing to claim -- which is exactly when somebody wants to
-    look for what a pool they left still owes."""
-    view = portfolio_view()
-    view.say("No deposits in any Ethereum pool.")
-    assert view._claim_bar.visible is False
+async def test_the_sweep_puts_what_it_finds_on_the_table(monkeypatch) -> None:
+    """Nothing presses it any more -- it runs behind the first answer -- so
+    the rows it finds have to reach the table and be asked what they owe
+    without anyone clicking anything."""
+    import main as app_module
+    from curve import portfolio as portfolio_module
 
-    view.offer_sweep(True)
+    left = make_holding(address="0x" + "cc" * 20, gauge="0x" + "dd" * 20,
+                        wallet=0, staked=0)
 
-    assert view.find_unclaimed.visible is True
-    assert view._claim_bar.visible is True, "hidden with the claim buttons"
+    async def fake_sweep(_provider, _targets, _account, **kwargs):
+        return [left]
 
-    view.offer_sweep(False)
-    assert view._claim_bar.visible is False
+    monkeypatch.setattr(portfolio_module, "sweep_unclaimed", fake_sweep)
+
+    app = app_module.CurveApp.__new__(app_module.CurveApp)
+    app.page = StubPage()
+    app.portfolio_view = portfolio_view(app.page)
+    app.loading = lambda *_a: None      # type: ignore[method-assign]
+    app.loaded = lambda: None           # type: ignore[method-assign]
+
+    asked: list[list] = []
+
+    async def load_earnings(holdings, *_a) -> None:
+        asked.append(list(holdings))
+
+    app.load_earnings = load_earnings   # type: ignore[method-assign]
+
+    held = [make_holding(address="0x" + "aa" * 20, gauge="0x" + "bb" * 20,
+                         staked=10**18)]
+    app.portfolio_view.show(held)
+
+    await app.sweep_unclaimed(held, "0x" + "11" * 20, 1, object(), [])
+    for _ in range(4):
+        await asyncio.sleep(0)          # the follow-up read is a task
+
+    shown = [holding.address for holding in app.portfolio_view.holdings]
+    assert left.address in shown, "what it found never reached the table"
+    assert asked and left.address in [h.address for h in asked[-1]], (
+        "and was never asked what it owes"
+    )
 
 
 def test_the_claim_buttons_say_what_they_would_claim() -> None:

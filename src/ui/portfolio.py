@@ -253,7 +253,6 @@ class PortfolioView(ft.Column):
         on_open: Callable[[Holding], None],
         narrow: bool = False,
         on_claim: Callable[[bool], Awaitable[None]] | None = None,
-        on_sweep: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self._page = page
         self._on_open = on_open
@@ -265,7 +264,6 @@ class PortfolioView(ft.Column):
         self._plan = ClaimPlan()
         self._crv = ""
         self._on_claim = on_claim
-        self._on_sweep = on_sweep
 
         self.total = ft.Text("", size=METRIC, weight=ft.FontWeight.BOLD)
 
@@ -277,13 +275,6 @@ class PortfolioView(ft.Column):
             "Claim rewards", page=page, on_click=lambda _e: self._claim(False),
             visible=False,
         )
-        self.find_unclaimed = buttons.Themed(
-            "Look for unclaimed rewards", page=page,
-            on_click=lambda _e: self._sweep(),
-            visible=False,
-        )
-        self.sweep_note = ft.Text("", size=SMALL,
-                                  color=ft.Colors.ON_SURFACE_VARIANT)
         self.accrued_value = ft.Text("", size=BODY, weight=ft.FontWeight.BOLD)
         self.accrued_label = ft.Text(
             "", size=BODY, color=ft.Colors.ON_SURFACE_VARIANT
@@ -296,13 +287,10 @@ class PortfolioView(ft.Column):
         )
         self.status = StatusPanel(page)
         self.claim_status = self.status.text
-        # Beside the claim buttons, in the row that already wraps -- so on a
-        # phone it drops to its own line rather than off the edge.
         self._buttons = ft.Row(
             [
                 buttons.shadowed(self.claim_crv, page),
                 buttons.shadowed(self.claim_rewards, page),
-                buttons.shadowed(self.find_unclaimed, page),
             ],
             spacing=8,
             run_spacing=8,
@@ -389,14 +377,11 @@ class PortfolioView(ft.Column):
     def _lay_out_claim_bar(self) -> None:
         """Buttons and label side by side, or stacked on a phone."""
         self._buttons.expand = not self._narrow
-        beside = ft.Row([self.accrued, self.sweep_note], spacing=10, wrap=True,
-                        tight=True,
-                        vertical_alignment=ft.CrossAxisAlignment.CENTER)
         self._claim_bar.content = (
-            ft.Column([self._buttons, beside], spacing=6)
+            ft.Column([self._buttons, self.accrued], spacing=6)
             if self._narrow
             else ft.Row(
-                [self._buttons, beside],
+                [self._buttons, self.accrued],
                 spacing=8,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
             )
@@ -415,31 +400,16 @@ class PortfolioView(ft.Column):
         """What is on the table, for a sweep that must not re-ask about it."""
         return list(self._holdings)
 
-    def offer_sweep(self, offered: bool) -> None:
-        """Show the sweep action, or take it away with the wallet."""
-        self.find_unclaimed.visible = offered
-        if not offered:
-            self.sweep_note.value = ""
-        self._sync_claim_bar()
-        safe_update(self)
-
     def _sync_claim_bar(self) -> None:
-        """The bar is up for anything in it, not for a claim alone."""
-        self._claim_bar.visible = (
-            bool(self._plan.crv) or bool(self._plan.extras)
-            or self.find_unclaimed.visible
-        )
+        self._claim_bar.visible = bool(self._plan.crv) or bool(self._plan.extras)
 
-    def sweeping(self, message: str, *, busy: bool = False) -> None:
-        """What the sweep is doing, beside its button."""
-        self.sweep_note.value = message
-        self.find_unclaimed.disabled = busy
-        safe_update(self)
+    def sweeping(self, message: str) -> None:
+        """Why the pools this address has left could not be asked.
 
-    def _sweep(self) -> None:
-        """Hand the click to the app, as a task."""
-        if self._on_sweep is not None:
-            self._page.run_task(self._on_sweep)
+        Only ever a failure: the sweep runs behind the first answer now, so
+        finding nothing is the ordinary case and says nothing.
+        """
+        self.status.say(message)
 
     def _claim(self, crv: bool) -> None:
         """Hand the click to the app, as a task."""

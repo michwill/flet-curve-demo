@@ -253,6 +253,7 @@ class PortfolioView(ft.Column):
         on_open: Callable[[Holding], None],
         narrow: bool = False,
         on_claim: Callable[[bool], Awaitable[None]] | None = None,
+        on_sweep: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self._page = page
         self._on_open = on_open
@@ -264,6 +265,7 @@ class PortfolioView(ft.Column):
         self._plan = ClaimPlan()
         self._crv = ""
         self._on_claim = on_claim
+        self._on_sweep = on_sweep
 
         self.total = ft.Text("", size=METRIC, weight=ft.FontWeight.BOLD)
 
@@ -317,6 +319,26 @@ class PortfolioView(ft.Column):
             visible=False,
         )
 
+        # Below the table rather than beside the claim buttons: it is a call
+        # per gauge on the chain, so it is asked for once by somebody who
+        # knows they left something behind, not offered as another claim.
+        self.find_unclaimed = buttons.Themed(
+            "Look for unclaimed rewards", page=page,
+            on_click=lambda _e: self._sweep(),
+        )
+        self.sweep_note = ft.Text("", size=SMALL,
+                                  color=ft.Colors.ON_SURFACE_VARIANT)
+        self._sweep_bar = ft.Container(
+            ft.Row(
+                [buttons.shadowed(self.find_unclaimed, page), self.sweep_note],
+                spacing=10,
+                wrap=True,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+            padding=ft.Padding.only(top=4),
+            visible=False,
+        )
+
         super().__init__(
             controls=[
                 ft.Row(
@@ -334,6 +356,7 @@ class PortfolioView(ft.Column):
                 self.status,
                 self.empty,
                 self._table,
+                self._sweep_bar,
             ],
             spacing=10,
         )
@@ -393,6 +416,29 @@ class PortfolioView(ft.Column):
         self._crv = ""
         self._claim_bar.visible = False
         self.status.say("")
+
+    @property
+    def holdings(self) -> list[Holding]:
+        """What is on the table, for a sweep that must not re-ask about it."""
+        return list(self._holdings)
+
+    def offer_sweep(self, offered: bool) -> None:
+        """Show the sweep action, or take it away with the wallet."""
+        self._sweep_bar.visible = offered
+        if not offered:
+            self.sweep_note.value = ""
+        safe_update(self)
+
+    def sweeping(self, message: str, *, busy: bool = False) -> None:
+        """What the sweep is doing, beside its button."""
+        self.sweep_note.value = message
+        self.find_unclaimed.disabled = busy
+        safe_update(self)
+
+    def _sweep(self) -> None:
+        """Hand the click to the app, as a task."""
+        if self._on_sweep is not None:
+            self._page.run_task(self._on_sweep)
 
     def _claim(self, crv: bool) -> None:
         """Hand the click to the app, as a task."""

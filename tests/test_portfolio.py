@@ -173,6 +173,84 @@ async def test_a_scan_reads_wallets_and_gauges_and_prices_them() -> None:
     assert holdings[0].value == 100.0        # 10 of 100 LP in a $1,000 pool
 
 
+class Rounds:
+    """A Multicall3 answering each round in the order the sweep asks it."""
+
+    def __init__(self, rounds: list[list[int | None]]) -> None:
+        self.rounds = list(rounds)
+        self.rounds_asked = 0
+
+    async def call(self, _to: str, _data: str) -> str:
+        from tests.test_parameters import aggregate3_response
+
+        self.rounds_asked += 1
+        return aggregate3_response(self.rounds.pop(0))
+
+
+def gauged(tag: str) -> Target:
+    return Target(address=address("p" + tag), name=tag, chain="e",
+                  lp_token=address("l" + tag), gauge=address("g" + tag))
+
+
+async def test_a_sweep_finds_a_pool_left_with_crv_still_in_its_gauge() -> None:
+    """Withdrawing does not claim, and a scan keeps a pool only where there
+    is a balance -- so an emptied position takes the rewards still sitting in
+    its gauge off the page with it, and nothing says they are there."""
+    left, quiet = gauged("A"), gauged("B")
+    chain = Rounds([[5 * UNIT, 0, 0, 0]])   # A: 5 CRV, no extras. B: nothing.
+
+    found = await portfolio.sweep_unclaimed(chain, [left, quiet], address("me"))
+
+    assert [holding.address for holding in found] == [left.address]
+    assert found[0].wallet == 0 and found[0].staked == 0, "it holds nothing"
+    assert found[0].gauge == left.gauge, "and the gauge is kept, to claim from"
+    assert chain.rounds_asked == 1, "no token rounds when no gauge pays extras"
+
+
+async def test_a_sweep_finds_a_gauge_that_pays_no_crv_at_all() -> None:
+    """The case CRV alone walks past.  A gauge can pay incentive tokens and
+    no CRV -- the pool list marks those `hasNoCrv` -- and that position is
+    exactly the one somebody is hunting for."""
+    only_extras = gauged("A")
+    token = address("tok")
+    chain = Rounds([
+        [0, 1],                    # no CRV owed, one reward token
+        [int(token, 16)],          # which token
+        [3 * UNIT],                # what it owes
+    ])
+
+    found = await portfolio.sweep_unclaimed(chain, [only_extras], address("me"))
+
+    assert [holding.address for holding in found] == [only_extras.address]
+    assert chain.rounds_asked == 3
+
+
+async def test_a_sweep_keeps_out_a_gauge_that_owes_nothing_either_way() -> None:
+    """A gauge that pays a token and owes none of it is not a position."""
+    empty = gauged("A")
+    chain = Rounds([[0, 1], [int(address("tok"), 16)], [0]])
+
+    found = await portfolio.sweep_unclaimed(chain, [empty], address("me"))
+
+    assert found == []
+
+
+async def test_a_sweep_leaves_alone_what_is_already_on_the_table() -> None:
+    """Those are on the page and `read_earnings` covers what they owe. Asking
+    again is reads per gauge for an answer already had."""
+    open_position = gauged("A")
+    chain = Rounds([])
+    held = [Holding(address=open_position.address, name="A", chain="e",
+                    staked=3 * UNIT, gauge=open_position.gauge)]
+
+    found = await portfolio.sweep_unclaimed(
+        chain, [open_position], address("me"), held=held
+    )
+
+    assert found == []
+    assert chain.rounds_asked == 0, "it did not ask at all"
+
+
 async def test_progress_is_reported_in_calls() -> None:
     targets = [target(str(n)) for n in range(250)]
     seen: list[tuple[int, int]] = []

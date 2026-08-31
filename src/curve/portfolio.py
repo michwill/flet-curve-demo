@@ -12,6 +12,7 @@ from wallet.base import WalletProvider
 from wallet.erc20 import encode_balance_of, to_checksum_address
 
 from . import abi
+from .earnings import MAX_REWARD_TOKENS
 from .multicall import MULTICALL3, decode_uints, encode_aggregate3
 from .rewards import REWARDS, gauge_lookup, gauges_from_batch
 
@@ -156,6 +157,117 @@ async def scan(
     )
     holdings = holdings_from(targets, balances)
     return await with_supply(provider, holdings)
+
+
+async def sweep_unclaimed(
+    provider: WalletProvider,
+    targets: Sequence[Target],
+    account: str,
+    *,
+    held: Sequence[Holding] = (),
+    on_progress: Callable[[int, int], None] | None = None,
+    chunk: int = CHUNK,
+    concurrency: int = CONCURRENCY,
+) -> list[Holding]:
+    """Pools whose gauge still owes this address, after it withdrew.
+
+    Withdrawing does not claim, and `scan` keeps a pool only where the wallet
+    holds LP or has some staked -- so a position emptied and left unclaimed
+    goes off the portfolio taking the rewards in its gauge with it.  Nothing
+    on the page then says they are there, and the only route back is
+    remembering which pool it was.
+
+    Reads per gauge, which is why this is asked for rather than part of every
+    load: on Ethereum it is the same order of reads again as the whole
+    balance scan.
+
+    CRV is not enough on its own.  A gauge can pay incentive tokens and no
+    CRV at all -- the pool list marks those `hasNoCrv` -- so asking only
+    `claimable_tokens` would walk past exactly the position somebody is
+    looking for.  The token addresses are not in the API this app reads:
+    `prices.curve.finance` carries an `extra_rewards_apr` and no addresses,
+    and the endpoint that does carry them is a different one, per registry,
+    and only as good as what it has indexed.  So they come off the gauges,
+    the way `read_earnings` already gets them: how many, which, then what
+    each owes.
+
+    Three rounds rather than one, and the last two are over the minority of
+    gauges that pay anything beyond CRV.
+
+    Pools already held are skipped: they are on the page, and what they owe
+    is `read_earnings`' business.
+    """
+    already = {holding.address.lower() for holding in held}
+    gauged = [
+        target for target in targets
+        if target.gauge and target.address.lower() not in already
+    ]
+    if not gauged or not account:
+        return []
+
+    # What CRV is owed, and how many other tokens this gauge pays at all.
+    first: list[tuple[str, str]] = []
+    for target in gauged:
+        first += [
+            (target.gauge, abi.encode_claimable_tokens(account)),
+            (target.gauge, abi.encode_reward_count()),
+        ]
+    answers = await _calls(provider, first, chunk, concurrency, on_progress)
+    owed: dict[str, int] = {}
+    counts: dict[str, int] = {}
+    for index, target in enumerate(gauged):
+        owed[target.gauge] = answers[2 * index] or 0
+        counts[target.gauge] = min(answers[2 * index + 1] or 0, MAX_REWARD_TOKENS)
+
+    # Which tokens, for the gauges that pay any.
+    token_calls: list[tuple[str, str]] = []
+    asked: list[str] = []
+    for target in gauged:
+        for slot in range(counts[target.gauge]):
+            token_calls.append((target.gauge, abi.encode_reward_tokens(slot)))
+            asked.append(target.gauge)
+    token_answers = (
+        await _calls(provider, token_calls, chunk, concurrency, None)
+        if token_calls else []
+    )
+
+    # And what each of those is owed.
+    owed_calls: list[tuple[str, str]] = []
+    for gauge, answer in zip(asked, token_answers, strict=False):
+        if answer:
+            owed_calls.append(
+                (gauge, abi.encode_claimable_reward(account, _token_at(answer)))
+            )
+    extra_answers = (
+        await _calls(provider, owed_calls, chunk, concurrency, None)
+        if owed_calls else []
+    )
+    for (gauge, _data), amount in zip(owed_calls, extra_answers, strict=False):
+        owed[gauge] = owed.get(gauge, 0) + (amount or 0)
+
+    found = [
+        Holding(
+            address=target.address,
+            name=target.name,
+            chain=target.chain,
+            wallet=0,
+            staked=0,
+            tvl=target.tvl,
+            supply=target.supply,
+            coins=target.coins,
+            lp_token=target.lp_token,
+            gauge=target.gauge,
+        )
+        for target in gauged
+        if owed.get(target.gauge, 0) > 0
+    ]
+    found.sort(key=lambda holding: holding.name)
+    return found
+
+
+def _token_at(word: int) -> str:
+    """A reward token's address out of the 32-byte word a gauge answers with."""
+    return to_checksum_address("0x" + f"{word:040x}")
 
 
 async def resolve_absent_gauges(

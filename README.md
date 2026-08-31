@@ -2589,8 +2589,15 @@ more than the slot encoding, and is the one that was nearly missed.
 The solver and the EVM are Rust.  A desktop build loads them as two CPython
 extensions; a browser cannot -- a PyO3 wheel would have to match Pyodide's own
 Emscripten build *and* a pyo3 that targets its CPython -- so the browser loads
-one `wasm-bindgen` module (1.43 MB, 467 kB gzipped) and `erouter.wasm`
+one `wasm-bindgen` module (2.30 MB, 802 kB gzipped) and `erouter.wasm`
 registers it under the same two names before anything imports them.
+
+It was 1.43 MB before the pipeline was ported -- the graph, the pricing
+tables, the ballot, the calldata and the pool models all moved across, taking
+`candidates` and `pipeline` behind `EROUTER_ACCEL` beside the five stages that
+were already there.  Both builds get them: `_load_wasm` sets the same flag the
+desktop does.  What it bought is on the quote, 403 ms to 87, and what it cost
+is 335 kB more to fetch.
 
     python tools/build_router.py            # package + data + wasm
     python tools/build_router.py --native   # and the desktop extensions

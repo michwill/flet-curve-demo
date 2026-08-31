@@ -29,8 +29,14 @@ ASSET_DIR = "router"
 #: The Rust solver answers every quote when it is loaded.  It reproduces the
 #: Python active set byte for byte -- `test_wasm_differential.py` in the router
 #: holds it there, including the cycling and `maxit`-exhaustion paths a clean
-#: problem never reaches -- and a warm quote drops from ~600 ms to ~170 ms,
-#: which is the difference between quoting as someone types and not.
+#: problem never reaches -- and a warm quote drops from 403 ms to 87, which is
+#: the difference between quoting as someone types and not.
+#:
+#: Setting it makes the *warm* slower, which is not a regression: `prepare`
+#: builds the Rust pool models only when the flag is on, and every later quote
+#: reads them for free.  +465 ms once against -316 ms per quote, so it has
+#: paid for itself by the second one.  Read at import time, module by module,
+#: which is why this has to be set before `erouter.core` is first imported.
 ACCEL_ENV = "EROUTER_ACCEL"
 
 

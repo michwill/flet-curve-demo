@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
-from curve.api import MAX_PAGE_SIZE, PoolFeed
+from curve.api import DEFAULT_MIN_TVL, MAX_PAGE_SIZE, PoolFeed
 from curve.http import ApiError
 from curve.models import Pool
 
@@ -35,7 +35,10 @@ class FakeApi:
         sort_by="volume", direction="desc", search="", min_tvl=None,
     ):
         self.queries.append(
-            {"page": page, "sort_by": sort_by, "search": search, "chain_id": chain_id}
+            {
+                "page": page, "sort_by": sort_by, "search": search,
+                "chain_id": chain_id, "min_tvl": min_tvl,
+            }
         )
         if self.delay:
             await asyncio.sleep(self.delay)
@@ -221,3 +224,76 @@ async def test_a_local_sort_that_fails_says_so_rather_than_ordering_nothing() ->
     assert await f.load_more() == []
     assert "went away" in f.error
     assert f.loaded == 0
+
+
+# -- the TVL floor ---------------------------------------------------------
+
+
+async def test_a_browse_asks_the_server_for_a_floor() -> None:
+    api = FakeApi(total=7, page_size=3)
+    f = feed(api, sort_by="volume")
+
+    await f.load_more()
+
+    assert f.floor == DEFAULT_MIN_TVL
+    assert api.queries[0]["min_tvl"] == DEFAULT_MIN_TVL
+
+
+async def test_a_tvl_sort_asks_for_no_floor_at_all() -> None:
+    api = FakeApi(total=7, page_size=3)
+    f = feed(api, sort_by="tvl")
+
+    await f.load_more()
+
+    assert f.floor is None, "descending TVL reaches the dust last, if ever"
+    assert api.queries[0]["min_tvl"] is None
+
+
+async def test_an_ascending_tvl_sort_keeps_the_floor() -> None:
+    api = FakeApi(total=7, page_size=3)
+    f = feed(api, sort_by="tvl", direction="asc")
+
+    assert f.floor == DEFAULT_MIN_TVL, "smallest-first would open on the dust"
+
+
+async def test_a_search_drops_the_floor() -> None:
+    api = FakeApi(total=7, page_size=3)
+    f = feed(api, sort_by="volume")
+
+    f.reset(search="Pool 3")
+    await f.load_more()
+
+    assert f.floor is None
+    assert api.queries[-1]["min_tvl"] is None
+
+
+async def test_clearing_a_search_puts_the_floor_back() -> None:
+    api = FakeApi(total=7, page_size=3)
+    f = feed(api, sort_by="volume", search="Pool 3")
+    assert f.floor is None
+
+    f.reset(search="")
+    await f.load_more()
+
+    assert f.floor == DEFAULT_MIN_TVL
+    assert api.queries[-1]["min_tvl"] == DEFAULT_MIN_TVL
+
+
+async def test_sorting_by_tvl_and_back_moves_the_floor_with_it() -> None:
+    api = FakeApi(total=7, page_size=3)
+    f = feed(api, sort_by="volume")
+
+    f.reset(sort_by="tvl")
+    assert f.floor is None
+
+    f.reset(sort_by="incentives")
+    assert f.floor == DEFAULT_MIN_TVL
+
+
+async def test_a_local_sort_gathers_every_page_under_the_floor() -> None:
+    api = Incentivised(total=7, page_size=3)
+    f = feed(api, sort_by="incentives")
+
+    await f.load_more()
+
+    assert {q["min_tvl"] for q in api.queries} == {DEFAULT_MIN_TVL}

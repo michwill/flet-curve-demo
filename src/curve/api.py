@@ -59,8 +59,9 @@ DETAIL_REQUESTS = 8
 MAX_PAGES = 40
 
 #: Below this the list is mostly dust: thousands of abandoned factory pools
-#: with no liquidity.
-DEFAULT_MIN_TVL = 10_000.0
+#: with no liquidity.  Only a browse pays for it -- see `PoolFeed.floor`.
+#: On Ethereum it is the line between 580 pools and 2336.
+DEFAULT_MIN_TVL = 1_000.0
 
 #: Prices data is cached at the edge for ~5 minutes; match it.
 CACHE_TTL = 300.0
@@ -1243,6 +1244,22 @@ class PoolFeed:
         return len(self.pools) >= self.total
 
     @property
+    def floor(self) -> float | None:
+        """The TVL floor to ask this particular query for.
+
+        A search names the pool it wants, and a floor that hides it answers
+        the wrong question -- so searching drops it entirely.  A descending
+        TVL sort needs none either: it reaches the dust last by construction,
+        and paging stops long before.  Every other column says nothing about
+        size, and without a floor its first page is dead factory pools.
+        """
+        if self.search:
+            return None
+        if self.sort_by == "tvl" and self.direction != "asc":
+            return None
+        return self.min_tvl
+
+    @property
     def loaded(self) -> int:
         return len(self.pools)
 
@@ -1286,7 +1303,7 @@ class PoolFeed:
                 sort_by=self.sort_by,
                 direction=self.direction,
                 search=self.search,
-                min_tvl=self.min_tvl,
+                min_tvl=self.floor,
             )
         except ApiError as exc:
             if generation == self._generation:
@@ -1349,7 +1366,7 @@ class PoolFeed:
                     sort_by=self.sort_by,
                     direction=self.direction,
                     search=self.search,
-                    min_tvl=self.min_tvl,
+                    min_tvl=self.floor,
                 )
                 if generation != self._generation:
                     return []

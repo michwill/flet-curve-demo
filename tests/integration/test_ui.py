@@ -80,13 +80,24 @@ async def test_the_list_offers_a_way_to_sort(flet_app) -> None:
     assert headings or dropdown, "no way to change the sort"
 
 
-async def test_searching_asks_the_server_and_narrows_the_list(flet_app) -> None:
+#: 3pool, at this address since 2020.  A *pool* address matches exactly one
+#: pool where a coin address matches 713, which is what makes it a search that
+#: narrows below a page: `PoolFeed.floor` sends no TVL floor with a search, and
+#: "steth" -- which used to stand here -- now comes back with 84.
+THREE_POOL = "0xbEbc44782C7dB0a1A60Cb6fe97d0b483032FF1C7"
+
+
+async def test_searching_by_address_asks_the_server_and_narrows_the_list(
+    flet_app,
+) -> None:
     tester = flet_app.tester
     assert (await wait_for_a_full_page(tester)).count == 1
 
     search = await tester.find_by_key("pool-search")
     assert search.count == 1
-    await tester.enter_text(search, "steth")
+    # Pasted in the case a block explorer shows it in, which the search is
+    # expected to fold.
+    await tester.enter_text(search, THREE_POOL)
 
     # A full page's worth of rows going away is the search having reached the
     # server and come back with fewer: nothing local narrows a page of fifty.
@@ -96,6 +107,9 @@ async def test_searching_asks_the_server_and_narrows_the_list(flet_app) -> None:
     assert remaining.count == 0, "the search never reached the server"
 
     assert (await wait_for_pools(tester)).count == 1, "it narrowed to nothing"
+    assert (await tester.find_by_key("pool-row-1")).count == 0, (
+        "a pool address should match exactly one pool"
+    )
 
 
 async def test_sorting_by_tvl_reloads_the_list(flet_app) -> None:

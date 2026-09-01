@@ -269,3 +269,30 @@ def test_a_negative_smallness_is_still_shown() -> None:
 def test_short_address() -> None:
     assert short_address("0xbEbc44782C7dB0a1A60Cb6fe97d0b483032FF1C7") == "0xbEbc…F1C7"
     assert short_address("0x1234") == "0x1234"
+
+
+def test_the_base_column_ranks_by_the_window_it_draws() -> None:
+    """Mixing the two is what put 15.49% below 2.35% -- see `SORTS`."""
+    assert sort_field("base") == "base_weekly_apr"
+    assert sort_field("base", "7d") == "base_weekly_apr"
+    assert sort_field("base", "1d") == "base_daily_apr"
+
+
+def test_an_unknown_window_falls_back_to_the_week() -> None:
+    assert sort_field("base", "30d") == "base_weekly_apr"
+
+
+def test_other_columns_ignore_the_window() -> None:
+    assert sort_field("tvl", "1d") == "tvl"
+    assert sort_field("volume", "1d") == "volume"
+
+
+def test_a_pool_reads_either_window() -> None:
+    pool = Pool.from_v2(
+        {"address": "0x1", "name": "p", "pool_type": "main",
+         "base_weekly_apr": 11.495, "base_daily_apr": 113.743}
+    )
+    assert pool.base_for("7d") == 11.495
+    assert pool.base_for("1d") == 113.743
+    assert pool.base_for("30d") == 11.495, "unknown windows read as the default"
+    assert pool.base_apr == 11.495, "the plain attribute stays the weekly one"

@@ -33,11 +33,13 @@ class FakeApi:
     async def list_pools(
         self, chain_id, *, chain="", page=1, page_size=50,
         sort_by="volume", direction="desc", search="", min_tvl=None,
+        base_window="7d",
     ):
         self.queries.append(
             {
                 "page": page, "sort_by": sort_by, "search": search,
                 "chain_id": chain_id, "min_tvl": min_tvl,
+                "base_window": base_window,
             }
         )
         if self.delay:
@@ -299,3 +301,34 @@ async def test_a_local_sort_gathers_every_page_under_the_floor() -> None:
     await f.load_more()
 
     assert {q["min_tvl"] for q in api.queries} == {DEFAULT_MIN_TVL}
+
+
+# -- the Base APY window ---------------------------------------------------
+
+
+async def test_the_window_goes_to_the_server_with_the_sort() -> None:
+    api = FakeApi(total=7, page_size=3)
+    f = feed(api, sort_by="base", base_window="1d")
+
+    await f.load_more()
+
+    assert api.queries[0]["base_window"] == "1d", (
+        "the server has to rank by the window the column draws"
+    )
+
+
+async def test_resetting_the_window_reloads_under_the_new_one() -> None:
+    api = FakeApi(total=7, page_size=3)
+    f = feed(api, sort_by="base")
+    await f.load_more()
+
+    f.reset(base_window="1d")
+    await f.load_more()
+
+    assert f.base_window == "1d"
+    assert f.loaded == 3, "the pages loaded under the old window were dropped"
+    assert api.queries[-1]["base_window"] == "1d"
+
+
+async def test_the_window_defaults_to_the_week() -> None:
+    assert feed(FakeApi()).base_window == "7d"

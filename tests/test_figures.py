@@ -27,6 +27,7 @@ def chain_payload(tvl: float = 1e9, volume: float = 2e8) -> dict:
                 "tvl_usd": 500.0,
                 "trading_volume_24h": 40.0,
                 "base_weekly_apr": 1.25,
+                "base_daily_apr": 3.0,
                 "coins": [{"symbol": "USDC"}],    # everything else is dropped
             },
             {
@@ -34,6 +35,7 @@ def chain_payload(tvl: float = 1e9, volume: float = 2e8) -> dict:
                 "tvl_usd": 10.0,
                 "trading_volume_24h": 1.0,
                 "base_weekly_apr": 0.5,
+                "base_daily_apr": 0.75,
             },
         ],
     }
@@ -87,6 +89,7 @@ async def test_the_figures_come_off_the_fetch_the_totals_already_paid_for(api) -
         "tvl_usd": 500.0,
         "trading_volume_24h": 40.0,
         "base_weekly_apr": 125.0,          # a fraction here, a percent there
+        "base_daily_apr": 300.0,           # and the same for the other window
     }
 
 
@@ -189,6 +192,28 @@ def test_base_apr_is_brought_into_the_units_the_rest_of_the_app_uses() -> None:
         assert figures[address.lower()]["base_weekly_apr"] == pytest.approx(as_v2_says)
 
 
+def test_the_daily_window_is_scaled_the_same_way() -> None:
+    """The window the column can be switched to needs the same 100x.
+
+    Off MUSD/3Crv in one minute: v1 said 1.137426 daily and 0.114954 weekly
+    where v2 said 113.743 and 11.495. Taken raw the 1d reading would have
+    been 1.14%, which is a plausible-looking number and therefore the worst
+    kind of wrong.
+    """
+    from curve.api import _pool_figures
+
+    address = "0x8474DdbE98F5aA3179B3B3F5942D724aFcdec9f6"
+    figures = _pool_figures(
+        {"data": [{"address": address,
+                   "base_daily_apr": 1.137426002801278,
+                   "base_weekly_apr": 0.11495380561394564}]}
+    )
+
+    figure = figures[address.lower()]
+    assert figure["base_daily_apr"] == pytest.approx(113.7426002801278)
+    assert figure["base_weekly_apr"] == pytest.approx(11.495380561394564)
+
+
 # -- what a pool does with them --------------------------------------------
 
 
@@ -201,25 +226,39 @@ def make_pool() -> Pool:
             "tvl_usd": 100.0,
             "trading_volume_24h": 10.0,
             "base_weekly_apr": 1.0,
+            "base_daily_apr": 4.0,
         }
     )
 
 
-def test_a_pool_takes_the_three_that_move() -> None:
+def test_a_pool_takes_the_four_that_move() -> None:
     pool = make_pool()
 
     moved = pool.take_figures(
-        {"tvl_usd": 200.0, "trading_volume_24h": 20.0, "base_weekly_apr": 2.0}
+        {"tvl_usd": 200.0, "trading_volume_24h": 20.0,
+         "base_weekly_apr": 2.0, "base_daily_apr": 8.0}
     )
 
     assert moved
     assert (pool.tvl, pool.volume_24h, pool.base_apr) == (200.0, 20.0, 2.0)
+    assert pool.base_daily == 8.0
+
+
+def test_a_moved_daily_window_alone_is_still_a_change() -> None:
+    """The column may be drawing it, so a redraw has to follow it."""
+    pool = make_pool()
+
+    assert pool.take_figures(
+        {"tvl_usd": 100.0, "trading_volume_24h": 10.0,
+         "base_weekly_apr": 1.0, "base_daily_apr": 9.0}
+    )
 
 
 def test_the_same_figures_again_are_not_a_change() -> None:
     """What the list uses to decide whether redrawing is worth it."""
     pool = make_pool()
-    same = {"tvl_usd": 100.0, "trading_volume_24h": 10.0, "base_weekly_apr": 1.0}
+    same = {"tvl_usd": 100.0, "trading_volume_24h": 10.0,
+            "base_weekly_apr": 1.0, "base_daily_apr": 4.0}
 
     assert pool.take_figures(same) is False
 

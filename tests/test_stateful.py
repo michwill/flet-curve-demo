@@ -63,7 +63,7 @@ class FakeApi:
     async def list_pools(
         self, chain_id: int, *, chain: str = "", page: int = 1, page_size: int = 50,
         sort_by: str = "volume", direction: str = "desc", search: str = "",
-        min_tvl: float | None = None,
+        min_tvl: float | None = None, base_window: str = "7d",
     ) -> tuple[list[Pool], int]:
         self.calls.append(f"list_pools:{chain}:{page}:{sort_by}:{search}")
         pools = [make_pool(i, chain or "ethereum") for i in range(self.count)]

@@ -157,7 +157,15 @@ class Pool:
     lp_token: str = ""
     tvl: float = 0.0
     volume_24h: float = 0.0
+    #: Base APY over the last seven days, in percent.  The steadier of the
+    #: two windows the API serves, and what the list shows unless asked
+    #: otherwise; see `base_for`.
     base_apr: float = 0.0
+    #: The same figure over one day.  Both are compounded virtual-price
+    #: ratios -- `(vp_now / vp_then) ** periods - 1` -- so they disagree by
+    #: as much as the window does: a pool that took its whole week's fees
+    #: yesterday reads 113.74% daily against 11.50% weekly.
+    base_daily: float = 0.0
     gauge: str = ""
     #: A killed gauge, when the pool has no live one. Nothing new goes in;
     #: what is already there still has to come out. See `_first_dead_gauge`.
@@ -273,6 +281,10 @@ class Pool:
     def total_apr(self) -> float:
         return self.base_apr + self.incentives_apr
 
+    def base_for(self, window: str) -> float:
+        """Base APY over `window`, which is "1d" or "7d"."""
+        return self.base_daily if window == "1d" else self.base_apr
+
     @property
     def display_name(self) -> str:
         """Something short and identifying, whatever the API gave us."""
@@ -324,6 +336,7 @@ class Pool:
             tvl=_float(raw.get("tvl_usd")),
             volume_24h=_float(raw.get("trading_volume_24h")),
             base_apr=_float(raw.get("base_weekly_apr")),
+            base_daily=_float(raw.get("base_daily_apr")),
             gauge=_first_live_gauge(raw.get("gauges")),
             dead_gauge=_first_dead_gauge(raw.get("gauges")),
             crv_apr=(_float(raw.get("crv_apr")), _float(raw.get("crv_apr_boosted"))),
@@ -344,11 +357,12 @@ class Pool:
         Incentives are not among them: they are a v2 field and a chain
         payload does not carry them. True when something actually moved.
         """
-        before = (self.tvl, self.volume_24h, self.base_apr)
+        before = (self.tvl, self.volume_24h, self.base_apr, self.base_daily)
         self.tvl = _float(figures.get("tvl_usd"))
         self.volume_24h = _float(figures.get("trading_volume_24h"))
         self.base_apr = _float(figures.get("base_weekly_apr"))
-        return before != (self.tvl, self.volume_24h, self.base_apr)
+        self.base_daily = _float(figures.get("base_daily_apr"))
+        return before != (self.tvl, self.volume_24h, self.base_apr, self.base_daily)
 
     def merge_detail(self, raw: dict[str, Any]) -> Pool:
         """Fold in the extra fields only `/pools/{chain_id}/{address}` has."""

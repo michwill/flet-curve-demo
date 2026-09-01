@@ -53,6 +53,7 @@ class FakeFeed:
         self.lite = lite
         self.sort_by = "tvl" if lite else "volume"
         self.search = ""
+        self.base_window = "7d"
         self.resets = 0
 
     @property
@@ -63,11 +64,14 @@ class FakeFeed:
     def loaded(self) -> int:
         return len(self.pools)
 
-    def reset(self, *, sort_by=None, direction=None, search=None) -> None:
+    def reset(self, *, sort_by=None, direction=None, search=None,
+              base_window=None) -> None:
         if sort_by is not None:
             self.sort_by = sort_by
         if search is not None:
             self.search = search
+        if base_window is not None:
+            self.base_window = base_window
         self.pools = []
         self.total = None
         self.resets += 1
@@ -284,6 +288,93 @@ def test_sorting_by_the_active_column_is_a_no_op() -> None:
     view.attach(feed)
     view._sort_by("volume")  # already the default
     assert feed.resets == 0
+
+
+def test_the_window_redraws_in_place_when_the_sort_is_something_else() -> None:
+    """Both windows come down with every row, so nothing has to be fetched."""
+    view = PoolListView(StubPage(), on_open=lambda _p: None)
+    feed = FakeFeed([make_pool() for _ in range(4)], page_size=2)
+    view.attach(feed)
+    asyncio.run(view.load_more())
+    before = len(view.rows.controls)
+
+    view._base_window_to("1d")
+
+    assert feed.resets == 0, "the server's order by volume did not change"
+    assert feed.base_window == "1d", "later pages still have to match"
+    assert len(view.rows.controls) == before, "redrawn, not dropped"
+    assert all(row.base_window == "1d" for row in view.rows.controls)
+
+
+def test_the_window_reloads_when_it_is_the_column_being_sorted_by() -> None:
+    view = PoolListView(StubPage(), on_open=lambda _p: None)
+    feed = FakeFeed([make_pool() for _ in range(4)], page_size=2)
+    view.attach(feed)
+    view._sort_by("base")
+    asyncio.run(view.load_more())
+
+    view._base_window_to("1d")
+
+    assert feed.resets == 2, "ordering by 1d is a different order"
+    assert feed.base_window == "1d"
+    assert view.rows.controls == []
+
+
+def test_the_window_it_is_already_on_is_a_no_op() -> None:
+    view = PoolListView(StubPage(), on_open=lambda _p: None)
+    feed = FakeFeed([make_pool()])
+    view.attach(feed)
+
+    view._base_window_to("7d")
+
+    assert feed.resets == 0
+
+
+def test_the_toolbar_picker_stands_in_only_where_there_are_no_headings() -> None:
+    """The heading carries the menu; the cards have no heading to carry it."""
+    view = PoolListView(StubPage(), on_open=lambda _p: None)
+    view.attach(FakeFeed([make_pool()]))
+
+    view.set_layout(layout_for(1400.0))     # wide: the heading has the menu
+    assert not view.base_picker.visible
+    view.set_layout(layout_for(900.0))      # compact: the column is dropped
+    assert not view.base_picker.visible
+    view.set_layout(layout_for(500.0))      # cards: nothing else can carry it
+    assert view.base_picker.visible
+
+
+def test_the_heading_carries_the_window_where_it_is_drawn() -> None:
+    view = PoolListView(StubPage(), on_open=lambda _p: None)
+    view.attach(FakeFeed([make_pool()]))
+    view.set_layout(layout_for(1400.0))
+
+    assert "7d" in texts(view._sort_cells["base"])
+    view._base_window_to("1d")
+    assert "1d" in texts(view._sort_cells["base"])
+
+
+def test_a_lite_chain_is_not_offered_the_window() -> None:
+    """Nobody is counting the trades a base APY comes from."""
+    view = PoolListView(StubPage(), on_open=lambda _p: None)
+    view.attach(FakeFeed([make_lite_pool()], lite=True))
+
+    view.set_layout(layout_for(1400.0))
+
+    assert not view.base_picker.visible
+
+
+def test_the_row_draws_the_window_it_was_given() -> None:
+    pool = Pool.from_v2(
+        {"address": "0x" + "1" * 40, "name": "p", "pool_type": "main",
+         "base_weekly_apr": 11.5, "base_daily_apr": 113.7}
+    )
+    wide = layout_for(2000.0)
+
+    weekly = PoolRow(pool, lambda _p: None, 0, wide, "7d")
+    daily = PoolRow(pool, lambda _p: None, 0, wide, "1d")
+
+    assert "11.50%" in texts(weekly)
+    assert "113.70%" in texts(daily)
 
 
 def test_the_cross_only_appears_once_there_is_something_to_clear() -> None:

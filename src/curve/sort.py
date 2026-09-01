@@ -54,6 +54,14 @@ SORTS: tuple[SortOption, ...] = (
 
 DEFAULT_SORT = "volume"
 
+#: The windows the Base APY column can be read over, and the v2 field that
+#: ranks by each.  Both come down in every list row, so switching between
+#: them costs nothing; a month does not, and the server cannot rank by one
+#: at all, which is why there are two of these and not three.
+BASE_WINDOWS = ("1d", "7d")
+DEFAULT_BASE_WINDOW = "7d"
+_BASE_FIELD = {"1d": "base_daily_apr", "7d": "base_weekly_apr"}
+
 _BY_KEY = {option.key: option for option in SORTS}
 
 
@@ -62,8 +70,15 @@ def get_sort(key: str) -> SortOption:
     return _BY_KEY.get(key, _BY_KEY[DEFAULT_SORT])
 
 
-def sort_field(key: str) -> str:
-    """The v2 `sort_by` value for a UI sort key."""
+def sort_field(key: str, base_window: str = DEFAULT_BASE_WINDOW) -> str:
+    """The v2 `sort_by` value for a UI sort key.
+
+    The Base APY column ranks by whichever window it is drawing.  Letting the
+    two drift apart is what the note above `SORTS` measured: a page ordered by
+    one window and labelled with the other reads visibly out of order.
+    """
+    if key == "base":
+        return _BASE_FIELD.get(base_window, _BASE_FIELD[DEFAULT_BASE_WINDOW])
     return get_sort(key).field
 
 

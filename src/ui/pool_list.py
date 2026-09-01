@@ -11,7 +11,7 @@ from curve.api import PoolFeed
 from curve.format import apr_range, compact_usd, percent
 from curve.models import Coin, Pool
 from curve.rewards import crv_token
-from curve.sort import DEFAULT_SORT, SORTS
+from curve.sort import BASE_WINDOWS, DEFAULT_BASE_WINDOW, DEFAULT_SORT, SORTS
 
 from . import AnyEvent, safe_update, theme
 from .logos import MARK_SIZE, pool_stack, token_mark
@@ -19,7 +19,11 @@ from .responsive import Layout, layout_for
 from .typography import BODY, LABEL, ROW_TITLE, SMALL
 
 #: Column widths, shared by the header and every row so they line up.
-W_BASE = 110
+#: Base is the widest of the three figures because its heading carries the
+#: window picker beside it: "Base APY 7d v" with the sort arrow needs 150,
+#: and clips the arrow at 110.  The 40px comes out of the Pool column,
+#: which expands.
+W_BASE = 150
 W_REWARDS = 190
 W_VOLUME = 130
 W_TVL = 130
@@ -41,19 +45,29 @@ def visible_columns(columns, lite: bool) -> tuple[str, ...]:
     return tuple(c for c in columns if not (lite and c in UNMEASURED_ON_LITE))
 
 
+#: One cell each, given the pool and the window the Base APY column is
+#: being read over.  Only that column has a window; the rest take it and
+#: ignore it so `_row` can call them all the same way.
 COLUMN_CONTENT = {
-    "base": lambda p: ft.Text(percent(p.base_apr), size=BODY, text_align=ft.TextAlign.RIGHT),
-    "incentives": lambda p: ft.Column(
+    "base": lambda p, w: ft.Text(
+        percent(p.base_for(w)), size=BODY, text_align=ft.TextAlign.RIGHT
+    ),
+    "incentives": lambda p, _w: ft.Column(
         reward_lines(p), spacing=0, horizontal_alignment=ft.CrossAxisAlignment.END
     ),
-    "volume": lambda p: ft.Text(compact_usd(p.volume_24h), size=BODY),
-    "tvl": lambda p: ft.Text(compact_usd(p.tvl), size=BODY),
+    "volume": lambda p, _w: ft.Text(compact_usd(p.volume_24h), size=BODY),
+    "tvl": lambda p, _w: ft.Text(compact_usd(p.tvl), size=BODY),
 }
 
 #: Start loading the next page this many pixels before the end.
 
 #: How long to sit on a keystroke before asking the server.
 SEARCH_DEBOUNCE = 0.35
+
+#: A column heading's own padding.  The band used to get 2px of it from the
+#: row around every cell; it is all in here now, so that the Base APY
+#: window's block can span the band rather than stop 2px short of it.
+HEAD_PAD = ft.Padding.symmetric(horizontal=6, vertical=10)
 
 #: The corner on the two controls above the list.
 FIELD_RADIUS = 8
@@ -261,8 +275,10 @@ class PoolRow(ft.Container):
         on_open: Callable[[Pool], None],
         index: int = 0,
         layout: Layout | None = None,
+        base_window: str = DEFAULT_BASE_WINDOW,
     ) -> None:
         self.pool = pool
+        self.base_window = base_window
         layout = layout or layout_for(2000.0)
         content = self._card(pool) if layout.cards else self._row(pool, layout)
         super().__init__(
@@ -279,7 +295,7 @@ class PoolRow(ft.Container):
         for column in visible_columns(layout.columns, pool.lite):
             cells.append(
                 ft.Container(
-                    COLUMN_CONTENT[column](pool),
+                    COLUMN_CONTENT[column](pool, self.base_window),
                     width=COLUMN_WIDTH[column],
                     alignment=ft.Alignment.CENTER_RIGHT,
                 )
@@ -313,7 +329,15 @@ class PoolRow(ft.Container):
                 ),
                 ft.Row(
                     [
-                        *([] if pool.lite else [_metric("base", percent(pool.base_apr))]),
+                        *(
+                            []
+                            if pool.lite
+                            else [
+                                _metric(
+                                    "base", percent(pool.base_for(self.base_window))
+                                )
+                            ]
+                        ),
                         *(
                             [_metric("rewards", f"{apr_range(*pool.crv_apr)} CRV")]
                             if pool.crv_apr[1] > 0
@@ -356,6 +380,10 @@ class PoolListView(ft.Column):
         self._on_open = on_open
         self.feed: PoolFeed | None = None
         self._sort = DEFAULT_SORT
+        #: Which window the Base APY column draws.  A session's choice: the
+        #: feed has to know it too, because the server ranks by the field
+        #: that matches.
+        self._base_window = DEFAULT_BASE_WINDOW
         self._search_token = 0
         #: Held across an append. `feed.loading` is not enough on its own:
         #: a sort the server cannot do has the whole chain in memory by the
@@ -409,6 +437,22 @@ class PoolListView(ft.Column):
             visible=False,
             on_select=self._sort_picked,
         )
+        #: The cards layout's stand-in for the menu in the heading, which is
+        #: where this lives everywhere there are headings at all -- the same
+        #: arrangement as `sort_picker` beside it, for the same reason.
+        self.base_picker = ft.Dropdown(
+            key="pool-base-window",
+            options=[
+                ft.DropdownOption(key=w, text=f"Base {w}") for w in BASE_WINDOWS
+            ],
+            value=self._base_window,
+            # The sort picker's width. Narrower clips: 120 drew "Base 7".
+            width=140,
+            dense=True,
+            border_radius=FIELD_RADIUS,
+            visible=False,
+            on_select=self._base_window_picked,
+        )
         self.rows = ft.Column(key="pool-rows", spacing=0)
         self.footer = ft.Container(
             ft.Row(
@@ -436,6 +480,7 @@ class PoolListView(ft.Column):
                 ft.Row(
                     [
                         ft.Container(self.search, expand=True),
+                        self.base_picker,
                         self.sort_picker,
                         self.count_label,
                     ],
@@ -460,12 +505,15 @@ class PoolListView(ft.Column):
             )
         ]
         for key in ("base", "incentives", "volume", "tvl"):
+            # Base is two halves with a tap each, so the whole-cell tap and
+            # the padding that would sit above its divider both move inwards.
+            split = key == "base"
             cell = ft.Container(
                 width=widths[key],
                 alignment=ft.Alignment.CENTER_RIGHT,
-                padding=ft.Padding.symmetric(horizontal=6, vertical=8),
-                on_click=lambda _e, k=key: self._sort_by(k),
-                ink=True,
+                padding=None if split else HEAD_PAD,
+                on_click=None if split else (lambda _e, k=key: self._sort_by(k)),
+                ink=not split,
                 border_radius=6,
             )
             self._sort_cells[key] = cell
@@ -473,9 +521,53 @@ class PoolListView(ft.Column):
         self._sync_header()
         return ft.Container(
             ft.Row(cells, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-            padding=ft.Padding.symmetric(horizontal=16, vertical=2),
+            padding=ft.Padding.symmetric(horizontal=16, vertical=0),
             border=ft.Border(bottom=ft.BorderSide(1, ft.Colors.OUTLINE)),
             bgcolor=theme.header_bg(self._page),
+        )
+
+    def _window_menu(self) -> ft.Control:
+        """The right half of the Base APY heading: the window, and a menu.
+
+        A menu rather than a `ft.Dropdown` because a dropdown is a 48px
+        control: dropped into a header cell it fills the cell, leaving no
+        room for the heading, and adds 29px to the band.  Measured, both.
+        This block is the band's own height and adds nothing to it.
+        """
+        return ft.PopupMenuButton(
+            key="base-window",
+            content=ft.Container(
+                ft.Row(
+                    [
+                        ft.Text(
+                            self._base_window,
+                            size=LABEL,
+                            weight=ft.FontWeight.BOLD,
+                            color=ft.Colors.PRIMARY,
+                        ),
+                        ft.Icon(
+                            ft.Icons.ARROW_DROP_DOWN,
+                            size=BODY,
+                            color=ft.Colors.ON_SURFACE_VARIANT,
+                        ),
+                    ],
+                    spacing=0,
+                    tight=True,
+                ),
+                padding=ft.Padding.only(left=8, right=2, top=10, bottom=10),
+                bgcolor=ft.Colors.with_opacity(0.07, ft.Colors.ON_SURFACE),
+                border=ft.Border(left=ft.BorderSide(1, ft.Colors.OUTLINE_VARIANT)),
+            ),
+            items=[
+                ft.PopupMenuItem(
+                    content=ft.Text(window, size=SMALL),
+                    checked=window == self._base_window,
+                    on_click=lambda _e, w=window: self._base_window_to(w),
+                )
+                for window in BASE_WINDOWS
+            ],
+            padding=ft.Padding.all(0),
+            tooltip="Base APY over one day or seven",
         )
 
     def _sync_header(self) -> None:
@@ -491,18 +583,46 @@ class PoolListView(ft.Column):
                 weight=ft.FontWeight.BOLD if active else ft.FontWeight.NORMAL,
                 color=ft.Colors.PRIMARY if active else ft.Colors.ON_SURFACE_VARIANT,
             )
-            cell.content = (
-                ft.Row(
-                    [label, ft.Icon(ft.Icons.ARROW_DOWNWARD, size=BODY, color=ft.Colors.PRIMARY)],
-                    spacing=2,
-                    tight=True,
-                    alignment=ft.MainAxisAlignment.END,
+            named: list[ft.Control] = [label]
+            if active:
+                named.append(
+                    ft.Icon(ft.Icons.ARROW_DOWNWARD, size=BODY, color=ft.Colors.PRIMARY)
                 )
-                if active
-                else ft.Row([label], tight=True, alignment=ft.MainAxisAlignment.END)
+            heading = ft.Row(
+                named, spacing=2, tight=True, alignment=ft.MainAxisAlignment.END
+            )
+            if key != "base":
+                cell.content = heading
+                continue
+            # Two halves of one cell: the name sorts, the window opens a menu.
+            cell.content = ft.Row(
+                [
+                    ft.Container(
+                        heading,
+                        padding=HEAD_PAD,
+                        alignment=ft.Alignment.CENTER_RIGHT,
+                        expand=True,
+                        ink=True,
+                        on_click=lambda _e: self._sort_by("base"),
+                    ),
+                    *([] if self._lite else [self._window_menu()]),
+                ],
+                spacing=0,
+                tight=True,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
             )
 
     # -- feed -------------------------------------------------------------
+
+    def _sync_base_picker(self) -> None:
+        """The toolbar picker: only where the heading cannot carry the menu.
+
+        Which is the cards layout, and not on a lite chain -- nobody is
+        counting the trades a base APY comes from there, so there is no
+        column and no card metric to read either way.
+        """
+        self.base_picker.value = self._base_window
+        self.base_picker.visible = self._layout.cards and not self._lite
 
     def set_layout(self, layout: Layout) -> None:
         """Adopt a new layout, rebuilding the rows only if it changed."""
@@ -513,6 +633,7 @@ class PoolListView(ft.Column):
         self.sort_picker.visible = not layout.shows_column_headers
         self.count_label.visible = not layout.cards
         self.sort_picker.value = self._sort
+        self._sync_base_picker()
         self._sync_header()
         self._rebuild_rows()
         safe_update(self)
@@ -541,7 +662,8 @@ class PoolListView(ft.Column):
         """Re-render the rows already loaded, in the current layout."""
         pools = [row.pool for row in self.rows.controls if isinstance(row, PoolRow)]
         self.rows.controls = [
-            PoolRow(p, self._on_open, i, self._layout) for i, p in enumerate(pools)
+            PoolRow(p, self._on_open, i, self._layout, self._base_window)
+            for i, p in enumerate(pools)
         ]
 
     def rebuild(self) -> None:
@@ -558,12 +680,14 @@ class PoolListView(ft.Column):
         self._grown_to = float("-inf")
         self._lite = feed.lite
         self._sort = feed.sort_by or DEFAULT_SORT
+        self._base_window = feed.base_window
         self.sort_picker.value = self._sort
         self.sort_picker.options = [
             ft.DropdownOption(key=o.key, text=o.label)
             for o in SORTS
             if not (self._lite and o.key in UNMEASURED_ON_LITE)
         ]
+        self._sync_base_picker()
         self.search.value = ""
         self.clear_search.visible = False
         self._sync_header()
@@ -587,6 +711,34 @@ class PoolListView(ft.Column):
         # `list_pools`, which needs the column to sort a lite chain locally and
         # translates it for the wire itself.
         self.feed.reset(sort_by=key)
+        self._grown_to = float("-inf")
+        self.rows.controls = []
+        safe_update(self)
+        self._run(self.load_more)
+
+    def _base_window_picked(self, _e: AnyEvent) -> None:
+        """The toolbar dropdown. Named for the same reason `_sort_picked` is."""
+        self._base_window_to(self.base_picker.value or DEFAULT_BASE_WINDOW)
+
+    def _base_window_to(self, window: str) -> None:
+        """Read the Base APY column over `window`.
+
+        Both figures came down with every row, so when the list is ordered by
+        something else there is nothing to fetch: redraw and stop.  Ordered by
+        Base APY, the server's order is the one that changes, and only a reload
+        can produce it.
+        """
+        if self.feed is None or window == self._base_window:
+            return
+        self._base_window = window
+        self.base_picker.value = window
+        self.feed.base_window = window
+        self._sync_header()
+        if self._sort != "base":
+            self._rebuild_rows()
+            safe_update(self)
+            return
+        self.feed.reset(base_window=window)
         self._grown_to = float("-inf")
         self.rows.controls = []
         safe_update(self)
@@ -684,7 +836,7 @@ class PoolListView(ft.Column):
                 return
             start = len(self.rows.controls)
             self.rows.controls.extend(
-                PoolRow(p, self._on_open, start + offset, self._layout)
+                PoolRow(p, self._on_open, start + offset, self._layout, self._base_window)
                 for offset, p in enumerate(new_pools)
             )
             self.footer.visible = False

@@ -41,7 +41,7 @@ from .merkl import (
 )
 from .models import Pool, _first_dead_gauge, _first_live_gauge, _float
 from .portfolio import Target
-from .sort import get_sort, sort_field, sort_pools
+from .sort import DEFAULT_BASE_WINDOW, get_sort, sort_field, sort_pools
 
 PRICES_V2 = "https://prices.curve.finance/v2"
 PRICES_V1 = "https://prices.curve.finance/v1"
@@ -69,14 +69,21 @@ CACHE_TTL = 300.0
 #: The figures on a pool that move, and the only ones worth keeping off a
 #: chain payload. Named as the v2 pool payload names them, because that is
 #: what `Pool.from_v2` reads.
-FIGURE_FIELDS = ("tvl_usd", "trading_volume_24h", "base_weekly_apr")
+FIGURE_FIELDS = (
+    "tvl_usd",
+    "trading_volume_24h",
+    "base_weekly_apr",
+    "base_daily_apr",
+)
 
 #: The two payloads agree on TVL and volume to the cent, and disagree on
 #: base APR by exactly this: v1 reports the fraction where v2 reports the
 #: percentage. Measured across the eight biggest pools on Ethereum in the
 #: same minute -- 0.0073 against 0.7310, 0.0121 against 1.2105, and so on.
 #: `Pool.base_apr` is in v2's units, so this is what the chain payload's
-#: figure has to be multiplied by to mean the same thing.
+#: figure has to be multiplied by to mean the same thing.  Both windows:
+#: measured on MUSD/3Crv in one minute, v1 said 1.137426 and 0.114954 where
+#: v2 said 113.743 and 11.495.
 BASE_APR_SCALE = 100.0
 
 #: How long to wait on Merkl or on GitHub before doing without them.
@@ -234,6 +241,7 @@ def _pool_figures(payload: dict | None) -> dict[str, dict[str, float]]:
         if address:
             figure = {field: _float(row.get(field)) for field in FIGURE_FIELDS}
             figure["base_weekly_apr"] *= BASE_APR_SCALE
+            figure["base_daily_apr"] *= BASE_APR_SCALE
             figures[address] = figure
     return figures
 
@@ -481,6 +489,7 @@ class CurveApi:
         direction: str = "desc",
         search: str = "",
         min_tvl: float | None = DEFAULT_MIN_TVL,
+        base_window: str = DEFAULT_BASE_WINDOW,
     ) -> tuple[list[Pool], int]:
         """One page of pools, plus the total count matching the filters."""
         if await self.is_lite(chain_id):
@@ -508,7 +517,7 @@ class CurveApi:
             # Passing the column through worked only where the two spell it the
             # same -- volume and TVL -- and `get_sort` below, which needs the
             # column, then fell back to volume on every lite chain.
-            "sort_by": sort_field(sort_by),
+            "sort_by": sort_field(sort_by, base_window),
             "sort_direction": direction,
         }
         if min_tvl:
@@ -1213,6 +1222,7 @@ class PoolFeed:
         direction: str = "desc",
         search: str = "",
         min_tvl: float | None = DEFAULT_MIN_TVL,
+        base_window: str = DEFAULT_BASE_WINDOW,
         lite: bool = False,
     ) -> None:
         self.api = api
@@ -1223,6 +1233,9 @@ class PoolFeed:
         self.direction = direction
         self.search = search
         self.min_tvl = min_tvl
+        #: Which window the Base APY column is drawing, because the server
+        #: has to rank by the same one.  See `sort_field`.
+        self.base_window = base_window
 
         self.pools: list[Pool] = []
         #: The whole chain, ordered here, for a sort the server cannot do.
@@ -1270,6 +1283,7 @@ class PoolFeed:
         sort_by: str | None = None,
         direction: str | None = None,
         search: str | None = None,
+        base_window: str | None = None,
     ) -> None:
         """Change the query and drop everything loaded so far."""
         if sort_by is not None:
@@ -1278,6 +1292,8 @@ class PoolFeed:
             self.direction = direction
         if search is not None:
             self.search = search
+        if base_window is not None:
+            self.base_window = base_window
         self.pools = []
         self._ordered = None
         self.total = None
@@ -1305,6 +1321,7 @@ class PoolFeed:
                 direction=self.direction,
                 search=self.search,
                 min_tvl=self.floor,
+                base_window=self.base_window,
             )
         except ApiError as exc:
             if generation == self._generation:
@@ -1368,6 +1385,7 @@ class PoolFeed:
                     direction=self.direction,
                     search=self.search,
                     min_tvl=self.floor,
+                    base_window=self.base_window,
                 )
                 if generation != self._generation:
                     return []

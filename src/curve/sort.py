@@ -21,13 +21,19 @@ class SortOption:
     #: column would put at the top, so the whole chain has to come down before
     #: anything is ordered.  See `PoolFeed.load_more`.
     on_server: bool = True
+    #: Whether the column ranks by how big a pool is.  Where it does, a dead
+    #: factory pool sorts to the bottom on its own and no TVL floor is needed
+    #: to keep it off the first page; where it ranks by a *rate*, dust can
+    #: score arbitrarily high and a floor is the only thing holding it back.
+    #: See `PoolFeed.floor`.
+    by_size: bool = False
 
 
 #: Volume first: it is the default Curve's own UI opens on, and the closest
 #: single proxy for "which pools are actually being used".
 SORTS: tuple[SortOption, ...] = (
-    SortOption("volume", "Volume", "volume", lambda p: p.volume_24h),
-    SortOption("tvl", "TVL", "tvl", lambda p: p.tvl),
+    SortOption("volume", "Volume", "volume", lambda p: p.volume_24h, by_size=True),
+    SortOption("tvl", "TVL", "tvl", lambda p: p.tvl, by_size=True),
     # Both of these name the field the *column* draws, which is not the field
     # that reads most naturally.  `aggregate_apr` counts the base APY as well,
     # so a pool paying 221% base and no incentives at all led the Incentives

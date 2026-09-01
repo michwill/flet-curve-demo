@@ -229,27 +229,28 @@ async def test_a_local_sort_that_fails_says_so_rather_than_ordering_nothing() ->
 # -- the TVL floor ---------------------------------------------------------
 
 
-async def test_a_browse_asks_the_server_for_a_floor() -> None:
+async def test_a_rate_ranked_browse_asks_the_server_for_a_floor() -> None:
     api = FakeApi(total=7, page_size=3)
-    f = feed(api, sort_by="volume")
+    f = feed(api, sort_by="base")
 
     await f.load_more()
 
-    assert f.floor == DEFAULT_MIN_TVL
+    assert f.floor == DEFAULT_MIN_TVL, "a rate is a number dust can score high"
     assert api.queries[0]["min_tvl"] == DEFAULT_MIN_TVL
 
 
-async def test_a_tvl_sort_asks_for_no_floor_at_all() -> None:
-    api = FakeApi(total=7, page_size=3)
-    f = feed(api, sort_by="tvl")
+async def test_a_size_ranked_sort_asks_for_no_floor_at_all() -> None:
+    for sort_by in ("tvl", "volume"):
+        api = FakeApi(total=7, page_size=3)
+        f = feed(api, sort_by=sort_by)
 
-    await f.load_more()
+        await f.load_more()
 
-    assert f.floor is None, "descending TVL reaches the dust last, if ever"
-    assert api.queries[0]["min_tvl"] is None
+        assert f.floor is None, f"{sort_by} reaches the dust last, if ever"
+        assert api.queries[0]["min_tvl"] is None
 
 
-async def test_an_ascending_tvl_sort_keeps_the_floor() -> None:
+async def test_an_ascending_size_sort_keeps_the_floor() -> None:
     api = FakeApi(total=7, page_size=3)
     f = feed(api, sort_by="tvl", direction="asc")
 
@@ -258,7 +259,7 @@ async def test_an_ascending_tvl_sort_keeps_the_floor() -> None:
 
 async def test_a_search_drops_the_floor() -> None:
     api = FakeApi(total=7, page_size=3)
-    f = feed(api, sort_by="volume")
+    f = feed(api, sort_by="base")
 
     f.reset(search="Pool 3")
     await f.load_more()
@@ -269,7 +270,7 @@ async def test_a_search_drops_the_floor() -> None:
 
 async def test_clearing_a_search_puts_the_floor_back() -> None:
     api = FakeApi(total=7, page_size=3)
-    f = feed(api, sort_by="volume", search="Pool 3")
+    f = feed(api, sort_by="base", search="Pool 3")
     assert f.floor is None
 
     f.reset(search="")
@@ -279,14 +280,15 @@ async def test_clearing_a_search_puts_the_floor_back() -> None:
     assert api.queries[-1]["min_tvl"] == DEFAULT_MIN_TVL
 
 
-async def test_sorting_by_tvl_and_back_moves_the_floor_with_it() -> None:
+async def test_changing_the_sort_moves_the_floor_with_it() -> None:
     api = FakeApi(total=7, page_size=3)
-    f = feed(api, sort_by="volume")
+    f = feed(api, sort_by="incentives")
+    assert f.floor == DEFAULT_MIN_TVL
 
-    f.reset(sort_by="tvl")
+    f.reset(sort_by="volume")
     assert f.floor is None
 
-    f.reset(sort_by="incentives")
+    f.reset(sort_by="base")
     assert f.floor == DEFAULT_MIN_TVL
 
 

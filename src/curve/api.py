@@ -59,8 +59,8 @@ DETAIL_REQUESTS = 8
 MAX_PAGES = 40
 
 #: Below this the list is mostly dust: thousands of abandoned factory pools
-#: with no liquidity.  Only a browse pays for it -- see `PoolFeed.floor`.
-#: On Ethereum it is the line between 580 pools and 2336.
+#: with no liquidity.  Only a rate-ranked browse pays for it -- see
+#: `PoolFeed.floor`.  On Ethereum it is the line between 580 pools and 2336.
 DEFAULT_MIN_TVL = 1_000.0
 
 #: Prices data is cached at the edge for ~5 minutes; match it.
@@ -1248,14 +1248,15 @@ class PoolFeed:
         """The TVL floor to ask this particular query for.
 
         A search names the pool it wants, and a floor that hides it answers
-        the wrong question -- so searching drops it entirely.  A descending
-        TVL sort needs none either: it reaches the dust last by construction,
-        and paging stops long before.  Every other column says nothing about
-        size, and without a floor its first page is dead factory pools.
+        the wrong question -- so searching drops it entirely.  A column that
+        ranks by size needs none either: descending, it reaches the dust last
+        by construction, and paging stops long before.  What is left ranks by
+        a *rate*, which a pool of nothing can score arbitrarily high on, so
+        without a floor its first page is dead factory pools.
         """
         if self.search:
             return None
-        if self.sort_by == "tvl" and self.direction != "asc":
+        if get_sort(self.sort_by).by_size and self.direction != "asc":
             return None
         return self.min_tvl
 

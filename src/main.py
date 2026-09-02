@@ -1063,11 +1063,22 @@ class CurveApp:
             self.list_view.attach(self.feed)
             self.page.update()
             await marks
-            await self.list_view.load_more()
-            totals = await self.api.chain_totals(chain_id)
+            # A link straight to a pool -- or to Swap, or to Portfolio -- has
+            # no use for the fifty rows behind it, which were fetched, built,
+            # drawn and then covered over.  Open what the link asked for, and
+            # leave the list to whatever asks for it: `show_list` does, which
+            # is where Back and the Pools tab both go.
+            elsewhere = False
             if not self._route_applied:
                 self._route_applied = True
+                opening = routing.parse(self.page.route)
+                elsewhere = bool(
+                    opening.is_pool or opening.is_swap or opening.is_portfolio
+                )
                 self.page.run_task(self.apply_route, self.page.route)
+            if not elsewhere:
+                await self.list_view.load_more()
+            totals = await self.api.chain_totals(chain_id)
         except ApiError as exc:
             marks.cancel()
             if rest := getattr(self, "_marks_rest", None):
@@ -1261,6 +1272,12 @@ class CurveApp:
         self._sync_nav()
         self._show(self.list_view)
         self._go(routing.build(self.chain))
+        # An app opened on a link to somewhere else never took the first
+        # page; this is where it is paid for instead.  `load_more` is a no-op
+        # on a feed that is loading or has nothing left, so an empty chain
+        # does not re-ask on every visit.
+        if self.feed is not None and not self.feed.loaded:
+            self.page.run_task(self.list_view.load_more)
         self.page.update()
 
     # -- portfolio --------------------------------------------------------

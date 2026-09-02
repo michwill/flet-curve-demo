@@ -4752,3 +4752,51 @@ async def test_a_directory_that_will_not_answer_does_not_stop_the_loop() -> None
         await app.refresh_chainlist(sleep)
 
     assert ticks == 3, "one bad refresh ended the loop"
+
+
+# -- a link straight to a pool ---------------------------------------------
+
+
+def _deep_link_app(route: str):
+    """`switching_app`, with the route still to be applied."""
+    app = switching_app(SlowApi())
+    app.page.route = route
+    app._route_applied = False
+    app.__dict__["_pages_taken"] = []
+
+    async def load_more():
+        app.__dict__["_pages_taken"].append(1)
+
+    async def apply_route(_raw):
+        app.__dict__["_route_seen"] = _raw
+
+    app.list_view.load_more = load_more
+    app.apply_route = apply_route
+    return app
+
+
+async def test_a_link_to_a_pool_does_not_take_a_page_of_the_list_first() -> None:
+    """The fifty rows behind it were fetched, built, drawn and covered over."""
+    app = _deep_link_app("/ethereum/" + "0x" + "ab" * 20)
+
+    await app.load_pools()
+
+    assert app.__dict__["_pages_taken"] == []
+    assert app.__dict__["_route_seen"] == "/ethereum/" + "0x" + "ab" * 20
+    assert app.__dict__.get("_attached"), "the list is still wired for Back"
+
+
+async def test_nor_does_a_link_to_the_swap_page() -> None:
+    app = _deep_link_app("/ethereum/swap")
+
+    await app.load_pools()
+
+    assert app.__dict__["_pages_taken"] == []
+
+
+async def test_but_a_link_to_the_list_itself_takes_one() -> None:
+    app = _deep_link_app("/ethereum")
+
+    await app.load_pools()
+
+    assert app.__dict__["_pages_taken"] == [1]

@@ -141,7 +141,8 @@ async def _noop() -> None:
     pass
 
 
-def make_app(route: str = "/", *, pool=_DEFAULT, chain: str = "ethereum"):
+def make_app(route: str = "/", *, pool=_DEFAULT, chain: str = "ethereum",
+             feed=None):
     """`CurveApp` with its constructor skipped -- only the routing parts."""
     import main as app_module
 
@@ -151,6 +152,9 @@ def make_app(route: str = "/", *, pool=_DEFAULT, chain: str = "ethereum"):
     app.chains = {"ethereum": 1, "xdai": 100}
     app.chain = chain
     app._detail = None
+    #: None where the list has never been pointed at a chain, which is what
+    #: an app opened straight onto a pool looks like.
+    app.feed = feed
     app.swap_page = None
     app._page_name = "pools"
     app._route_applied = True
@@ -410,3 +414,51 @@ def test_nothing_asked_for_is_nothing_forced(monkeypatch) -> None:
     monkeypatch.delenv(app_module.THEME_ENV, raising=False)
     assert app_module.startup_route() == ""
     assert app_module.startup_theme() == ""
+
+
+# -- a link straight to a pool -------------------------------------------
+
+
+class _Feed:
+    """Enough of `PoolFeed` for the question `show_list` asks it."""
+
+    def __init__(self, loaded: int = 0) -> None:
+        self.loaded = loaded
+
+
+class _ListView(ft.Container):
+    async def load_more(self) -> None:  # pragma: no cover - never awaited here
+        pass
+
+
+def _queued(app) -> list[str]:
+    return [getattr(handler, "__name__", "") for handler, _args in app.page.tasks]
+
+
+def test_the_list_is_asked_for_its_first_page_when_it_has_none() -> None:
+    """Back off a deep-linked pool, where the first page was never taken."""
+    app = make_app(f"/ethereum/{WL}", feed=_Feed(loaded=0))
+    app.list_view = _ListView()
+
+    app.show_list()
+
+    assert "load_more" in _queued(app)
+
+
+def test_a_list_that_already_has_rows_is_left_alone() -> None:
+    app = make_app("/ethereum", feed=_Feed(loaded=50))
+    app.list_view = _ListView()
+
+    app.show_list()
+
+    assert "load_more" not in _queued(app)
+
+
+def test_no_feed_yet_asks_nothing() -> None:
+    """`load_pools` is still on its way; it will attach and load itself."""
+    app = make_app("/ethereum")
+    app.list_view = _ListView()
+
+    app.show_list()
+
+    assert "load_more" not in _queued(app)

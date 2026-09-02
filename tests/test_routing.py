@@ -462,3 +462,16 @@ def test_no_feed_yet_asks_nothing() -> None:
     app.show_list()
 
     assert "load_more" not in _queued(app)
+
+
+def test_a_link_elsewhere_is_recognised_before_anything_is_drawn() -> None:
+    """What `_build` asks to decide whether to put the list in the body."""
+    import main as app_module
+
+    assert app_module.elsewhere("/ethereum/" + WL)
+    assert app_module.elsewhere("/ethereum/swap")
+    assert app_module.elsewhere("/ethereum/portfolio")
+    assert not app_module.elsewhere("/ethereum")
+    assert not app_module.elsewhere("/")
+    assert not app_module.elsewhere("")
+    assert not app_module.elsewhere(None)

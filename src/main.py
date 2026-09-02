@@ -69,6 +69,17 @@ THEME_ENV = "CURVE_THEME"
 WINDOW_ENV = "CURVE_WINDOW"
 
 
+def elsewhere(route: str | None) -> bool:
+    """Does this route name a page other than the pool list?
+
+    Two things turn on it, and they are the same thing at different moments:
+    what the first frame draws, and whether `load_pools` takes a page of the
+    list before the route is applied over it.
+    """
+    opening = routing.parse(route)
+    return bool(opening.is_pool or opening.is_swap or opening.is_portfolio)
+
+
 def startup_route() -> str:
     """The route to open on, or empty for whatever the platform says."""
     route = os.environ.get(ROUTE_ENV, "").strip()
@@ -318,15 +329,17 @@ class CurveApp:
         # `ThemeMode.SYSTEM`, which follows the OS -- invisible when the two
         # agree and a flash of the wrong palette when they do not.
         self._opening_theme = startup_theme() or remembered_theme()
+        # And the route, for the same reason: `_build` puts the pool list in
+        # the body, and a link to another page then had that page's search box
+        # and column headings on screen until the route was applied over them.
+        if opening := startup_route():
+            page.route = opening
         self._build()
         forced = self._opening_theme
         if forced:
             self._set_theme(forced, remember=False)
         else:
             page.run_task(self.restore_theme)
-        opening = startup_route()
-        if opening:
-            page.route = opening
         page.on_route_change = self._route_changed
         if not is_browser():
             page.run_task(self.dress_window)
@@ -600,8 +613,12 @@ class CurveApp:
         ) = None
         self.progress = ft.ProgressBar(visible=False)
         self.error = ft.Text("", size=SMALL, color=ft.Colors.ERROR, visible=False)
-        self._showing: ft.Control = self.list_view
-        self._page_box = ft.Container(self.list_view, padding=BODY_PADDING, expand=True)
+        # Empty where the link named another page: the body is filled by
+        # `apply_route` a moment later, and the progress bar above it is
+        # already saying that something is on its way.
+        first = None if elsewhere(self.page.route) else self.list_view
+        self._showing: ft.Control | None = first
+        self._page_box = ft.Container(first, padding=BODY_PADDING, expand=True)
         self.body = ft.ListView(
             controls=[
                 ft.Row([self._page_box], alignment=ft.MainAxisAlignment.CENTER, spacing=0)
@@ -1068,15 +1085,12 @@ class CurveApp:
             # drawn and then covered over.  Open what the link asked for, and
             # leave the list to whatever asks for it: `show_list` does, which
             # is where Back and the Pools tab both go.
-            elsewhere = False
+            deep = False
             if not self._route_applied:
                 self._route_applied = True
-                opening = routing.parse(self.page.route)
-                elsewhere = bool(
-                    opening.is_pool or opening.is_swap or opening.is_portfolio
-                )
+                deep = elsewhere(self.page.route)
                 self.page.run_task(self.apply_route, self.page.route)
-            if not elsewhere:
+            if not deep:
                 await self.list_view.load_more()
             totals = await self.api.chain_totals(chain_id)
         except ApiError as exc:

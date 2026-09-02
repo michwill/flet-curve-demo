@@ -424,6 +424,37 @@ class PoolContract:
             raise PoolCallFailed(f"Could not read balance: {exc.message}") from exc
         return abi.decode_uint(result)
 
+    async def balances_of(self, tokens: list[str]) -> list[int]:
+        """Several ERC-20 balances, in one round trip where there is one.
+
+        A panel with three coins in it re-read them one await at a time, which
+        is three serial round trips for an answer the chain will give in one.
+        Zero where a token would not answer -- a balance is a number the caller
+        draws, not a quote it has to refuse.
+        """
+        from wallet.erc20 import encode_balance_of
+
+        if not tokens:
+            return []
+        data = encode_balance_of(self.account)
+        with contextlib.suppress(Exception):
+            result = await self.provider.call(
+                MULTICALL3, encode_aggregate3([(token, data) for token in tokens])
+            )
+            values = decode_aggregate3(result)
+            if len(values) == len(tokens):
+                return [
+                    abi.decode_uint(value) if value is not None else 0
+                    for value in values
+                ]
+        out = []
+        for token in tokens:
+            try:
+                out.append(await self.balance_of(token))
+            except WalletError:
+                out.append(0)
+        return out
+
     async def lp_balance(self, owner: str | None = None) -> int:
         return await self.balance_of(self.pool.lp_token, owner)
 
@@ -446,6 +477,36 @@ class PoolContract:
         if not self.pool.has_any_gauge:
             return 0
         return await self.balance_of(await self.gauge_here(), owner)
+
+    async def allowances_of(self, tokens: list[str], spender: str) -> list[int]:
+        """Several allowances against one spender, in one round trip.
+
+        The same shape as `balances_of` and for the same reason: a deposit
+        checks one per coin, and one per coin was one round trip each.
+        """
+        if not tokens:
+            return []
+        with contextlib.suppress(Exception):
+            result = await self.provider.call(
+                MULTICALL3,
+                encode_aggregate3([
+                    (token, abi.encode_allowance(self.account, spender))
+                    for token in tokens
+                ]),
+            )
+            values = decode_aggregate3(result)
+            if len(values) == len(tokens):
+                return [
+                    abi.decode_uint(value) if value is not None else 0
+                    for value in values
+                ]
+        out = []
+        for token in tokens:
+            try:
+                out.append(await self.allowance(token, spender))
+            except WalletError:
+                out.append(0)
+        return out
 
     async def allowance(self, token: str, spender: str) -> int:
         try:

@@ -220,6 +220,7 @@ async def test_a_coin_the_wallet_has_none_of_makes_it_nothing() -> None:
 
 async def test_a_pool_holding_none_of_a_coin_cannot_be_matched() -> None:
     tab = deposit_on(ReservedProvider([0, int(CRVUSD_RESERVE) * 10**18]))
+    tab.pool.coins[0].balance = 0.0        # as the detail payload reported it
     tab.proportional_box.value = True
 
     await tab._pool_reserves()
@@ -229,32 +230,107 @@ async def test_a_pool_holding_none_of_a_coin_cannot_be_matched() -> None:
     assert "no proportion" in (tab.proportional_box.tooltip or "")
 
 
-async def test_reserves_are_read_once_rather_than_per_keystroke() -> None:
-    """Every keystroke spreads; the ratio behind it is asked for once."""
+class CountingProvider(ReservedProvider):
+    """Counts the `eth_call`s a panel makes, by selector."""
 
-    class Counting(ReservedProvider):
-        asked = 0
+    def __init__(self, *a, **kw) -> None:
+        super().__init__(*a, **kw)
+        self.seen: list[str] = []
 
-        async def request(self, method: str, params=None):
-            if method == "eth_call" and (
-                (params or [{}])[0].get("data", "").startswith(self.selector)
-            ):
-                type(self).asked += 1
-            return await super().request(method, params)
+    async def request(self, method: str, params=None):
+        if method == "eth_call":
+            self.seen.append((params or [{}])[0].get("data", "")[:10])
+        return await super().request(method, params)
 
-    provider = Counting(RESERVES)
+    def count(self, selector: str) -> int:
+        return sum(1 for data in self.seen if data == "0x" + abi.selector(selector))
+
+
+async def test_typing_does_not_re_read_the_wallet() -> None:
+    """A balance moves when the wallet spends, not when somebody types."""
+    provider = CountingProvider(RESERVES)
+    tab = deposit_on(provider)
+    tab.fields[0].value = "1"
+    await tab.refresh()
+    first = provider.count("balanceOf(address)")
+    assert first > 0, "it never read the balances at all"
+
+    for text in ("12", "123", "1234"):
+        tab.fields[0].value = text
+        await tab.refresh()
+
+    assert provider.count("balanceOf(address)") == first
+
+
+async def test_nor_the_allowances() -> None:
+    provider = CountingProvider(RESERVES)
+    tab = deposit_on(provider)
+    tab.fields[0].value = "1"
+    await tab.refresh()
+    first = provider.count("allowance(address,address)")
+    assert first > 0
+
+    tab.fields[0].value = "1234"
+    await tab.refresh()
+
+    assert provider.count("allowance(address,address)") == first
+
+
+async def test_a_send_puts_both_back_on_the_wire() -> None:
+    """`clear_inputs` runs after every send, which is where they go stale."""
+    provider = CountingProvider(RESERVES)
+    tab = deposit_on(provider)
+    tab.fields[0].value = "1"
+    await tab.refresh()
+    before = provider.count("balanceOf(address)")
+
+    tab.clear_inputs()
+    tab.fields[0].value = "1"
+    await tab.refresh()
+
+    assert provider.count("balanceOf(address)") > before
+
+
+async def test_an_approval_is_enough_to_re_read_the_allowances() -> None:
+    provider = CountingProvider(RESERVES)
+    tab = deposit_on(provider)
+    tab.fields[0].value = "1"
+    await tab.refresh()
+    before = provider.count("allowance(address,address)")
+
+    tab.approvals_changed()
+    await tab.refresh()
+
+    assert provider.count("allowance(address,address)") > before
+
+
+async def test_the_ratio_costs_no_chain_read_at_all() -> None:
+    """The detail payload already carried it, and the page already draws it."""
+    provider = CountingProvider(RESERVES)
     tab = deposit_on(provider)
     tab.proportional_box.value = True
     tab.fields[0].value = "1"
 
     await tab._spread_from(0)
-    after_first = Counting.asked
-    assert after_first > 0, "it never read the reserves at all"
 
-    tab.fields[0].value = "2"
+    assert provider.count("balances(uint256)") == 0
+    assert provider.count("balances(int128)") == 0
+    assert tab.fields[1].value == "2", "and it is the published one"
+
+
+async def test_a_pool_with_no_published_balances_falls_back_to_the_chain() -> None:
+    """A pool opened without its detail still has somewhere to ask."""
+    provider = CountingProvider(RESERVES)
+    tab = deposit_on(provider)
+    for coin in tab.pool.coins:
+        coin.balance = 0.0
+    tab.proportional_box.value = True
+    tab.fields[0].value = "1"
+
     await tab._spread_from(0)
 
-    assert Counting.asked == after_first
+    assert provider.count("balances(uint256)") > 0
+    assert tab.fields[1].value == "2"
 
 
 @pytest.mark.parametrize("old", [False, True], ids=["uint256", "int128"])

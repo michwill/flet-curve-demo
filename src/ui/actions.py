@@ -667,7 +667,11 @@ class ActionTab:
             self._failed(exc)
         finally:
             self._busy(False)
+            self.approvals_changed()
             await self.refresh()
+
+    def approvals_changed(self) -> None:
+        """An approval was sent, so anything remembered about one is stale."""
 
     async def _submit_clicked(self, _e: AnyEvent) -> None:
         contract = self.get_contract()
@@ -816,6 +820,25 @@ def _amount_field(
     )
 
 
+#: How many digits of a proportional amount are worth keeping.  The pool's
+#: published balances are floats, so a ratio taken from them is honest to
+#: about fifteen digits and no further -- and an 18-decimal coin wants
+#: twenty-six.  Without this, two crvUSD arrived in the field as
+#: 1.999999999999999966.  Twelve is far more than anyone types.
+RATIO_DIGITS = 12
+
+
+def _to_digits(units: int, digits: int = RATIO_DIGITS) -> int:
+    """`units` rounded to `digits` significant figures."""
+    if units <= 0:
+        return 0
+    extra = len(str(units)) - digits
+    if extra <= 0:
+        return units
+    step = 10**extra
+    return (units + step // 2) // step * step
+
+
 class _AmountRows:
     """The amount fields for one deposit route, as a block that can hide."""
 
@@ -959,12 +982,24 @@ class DepositTab(ActionTab):
             self.routes["underlying"] = _AmountRows(
                 self.pool.display_coins, self.pool.chain, self._changed, self._max_for
             )
-        #: What the pool holds, once something has asked.  Read once rather
-        #: than per keystroke: the ratio moves slowly, and the number that
-        #: matters -- the LP a deposit mints -- is quoted on chain every time
-        #: regardless, so a slightly stale ratio costs a pre-fill and nothing
-        #: else.
+        #: What the pool holds, once something has asked.  Usually the
+        #: figures the detail payload already carried; see `_pool_reserves`.
+        #: A slightly stale ratio costs a pre-fill and nothing else -- the
+        #: number that matters, the LP a deposit mints, is quoted on chain
+        #: every time regardless.
         self._reserves: list[int] | None = None
+        #: Which wallet, chain and route the balances on screen were read
+        #: for.  A balance only moves when this wallet spends or is paid, so
+        #: re-reading it on every keystroke bought nothing and cost a serial
+        #: round trip per coin.  `clear_inputs` drops it, and that is what
+        #: runs after a send.
+        self._balances_read_for: object = None
+        #: The same, for what each coin has already allowed the spender.  An
+        #: allowance moves only when an approval is sent; what moves per
+        #: keystroke is the amount it is compared against, and that comparison
+        #: is local.  `_allowances_stale` is set wherever one is sent.
+        self._allowances: dict[str, int] | None = None
+        self._allowances_read_for: object = None
         self._apply_route()
         self._expected_lp = 0
         self._quote_ok = True
@@ -1088,16 +1123,33 @@ class DepositTab(ActionTab):
         self.page.run_task(self.refresh)
 
     async def _pool_reserves(self) -> list[int]:
-        """What the pool holds of each of its own coins."""
-        if self._reserves is None:
-            contract = self.get_contract()
-            if contract is None:
-                return []
-            try:
-                self._reserves = await contract.reserves(self.pool.n_coins)
-            except WalletError:
-                self._reserves = []
+        """What the pool holds of each of its own coins, for the ratio.
+
+        Off `Pool.coins`, which the detail payload filled and the composition
+        table on this very page already draws -- so the ratio is a number the
+        page has had all along and costs nothing to use.  Only the ratio
+        between two of them is ever taken, so a float's fifteen digits are
+        ample even where the units want twenty-six.
+
+        The chain is asked only where the payload carried no balances: a pool
+        opened without its detail, or one the API has nothing for.
+        """
+        if self._reserves is not None:
+            return self._reserves
+        coins = self.routes["pool"].coins
+        published = [int(coin.balance * 10**coin.decimals) for coin in coins]
+        if published and all(value > 0 for value in published):
+            self._reserves = published
             self._sync_proportional()
+            return self._reserves
+        contract = self.get_contract()
+        if contract is None:
+            return []
+        try:
+            self._reserves = await contract.reserves(self.pool.n_coins)
+        except WalletError:
+            self._reserves = []
+        self._sync_proportional()
         return self._reserves
 
     async def _spread_from(self, driver: int) -> None:
@@ -1119,7 +1171,10 @@ class DepositTab(ActionTab):
             return
         for index in range(len(rows.coins)):
             if index != driver:
-                rows.set(index, amounts[driver] * reserves[index] // anchor)
+                rows.set(
+                    index,
+                    _to_digits(amounts[driver] * reserves[index] // anchor),
+                )
         await self.refresh()
 
     async def _spread_to_fit(self) -> None:
@@ -1150,14 +1205,46 @@ class DepositTab(ActionTab):
             await self.refresh()
             return
         for index in range(len(rows.coins)):
-            rows.set(
-                index, rows.balances[binding] * reserves[index] // reserves[binding]
-            )
+            share = rows.balances[binding] * reserves[index] // reserves[binding]
+            # Clamped as well as rounded: rounding is to nearest, and on a tie
+            # for the binding coin that could name a unit more than is held.
+            rows.set(index, min(_to_digits(share), rows.balances[index]))
         await self.refresh()
+
+    async def _read_balances(self, contract: PoolContract | None) -> None:
+        """The wallet's balance of each coin on the live route, once.
+
+        In one round trip rather than one per coin, and only when the wallet,
+        the chain or the route has moved -- typing does not change what is in
+        somebody's wallet.
+        """
+        if contract is None or not contract.can_send:
+            return
+        key = (contract.account, self.pool.chain_id, self.route.value)
+        if key == self._balances_read_for:
+            return
+        rows = self.rows
+        try:
+            balances = await contract.balances_of(
+                [coin.address for coin in rows.coins]
+            )
+        except WalletError:
+            balances = [0] * len(rows.coins)
+        rows.balances = balances or [0] * len(rows.coins)
+        for index, coin in enumerate(rows.coins):
+            rows.labels[index].value = (
+                f"Balance: {format_units(rows.balances[index], coin.decimals)}"
+            )
+        self._balances_read_for = key
 
     def clear_inputs(self) -> None:
         for rows in self.routes.values():
             rows.clear()
+        # A send moved all of these: what the wallet holds, what it has
+        # allowed the spender, and by a little what the pool does.
+        self._balances_read_for = None
+        self._allowances = None
+        self._reserves = None
 
     def _amounts(self) -> list[int]:
         return self.rows.amounts()
@@ -1201,15 +1288,7 @@ class DepositTab(ActionTab):
             return
         await self.suggest_slippage(contract)
         rows = self.rows
-        if contract is not None and contract.can_send:
-            for index, coin in enumerate(rows.coins):
-                try:
-                    rows.balances[index] = await contract.balance_of(coin.address)
-                except WalletError:
-                    rows.balances[index] = 0
-                rows.labels[index].value = (
-                    f"Balance: {format_units(rows.balances[index], coin.decimals)}"
-                )
+        await self._read_balances(contract)
 
         amounts = rows.amounts()
         self._expected_lp = 0
@@ -1255,14 +1334,33 @@ class DepositTab(ActionTab):
         """
         if not self._quote_ok:
             return []
+        allowed = await self._read_allowances(contract)
         out: list[tuple[str, str, int]] = []
         for coin, amount in zip(self.rows.coins, self.rows.amounts()):
             if amount <= 0:
                 continue
-            allowance = await contract.allowance(coin.address, self.spender)
-            if allowance < amount:
+            if allowed.get(coin.address.lower(), 0) < amount:
                 out.append((coin.address, self.spender, amount))
         return out
+
+    def approvals_changed(self) -> None:
+        self._allowances = None
+
+    async def _read_allowances(self, contract: PoolContract) -> dict[str, int]:
+        """What each coin on the live route has allowed the spender, once."""
+        key = (contract.account, self.pool.chain_id, self.route.value, self.spender)
+        if self._allowances is not None and key == self._allowances_read_for:
+            return self._allowances
+        tokens = [coin.address for coin in self.rows.coins]
+        try:
+            values = await contract.allowances_of(tokens, self.spender)
+        except WalletError:
+            return {}
+        self._allowances = {
+            token.lower(): value for token, value in zip(tokens, values)
+        }
+        self._allowances_read_for = key
+        return self._allowances
 
     async def approval_needed(self, contract: PoolContract) -> tuple[str, str, int] | None:
         # One coin at a time: each ERC-20 needs its own approval, and the

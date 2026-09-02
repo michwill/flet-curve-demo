@@ -2589,7 +2589,7 @@ more than the slot encoding, and is the one that was nearly missed.
 The solver and the EVM are Rust.  A desktop build loads them as two CPython
 extensions; a browser cannot -- a PyO3 wheel would have to match Pyodide's own
 Emscripten build *and* a pyo3 that targets its CPython -- so the browser loads
-one `wasm-bindgen` module (2.30 MB, 802 kB gzipped) and `erouter.wasm`
+one `wasm-bindgen` module (2.31 MB, 806 kB gzipped) and `erouter.wasm`
 registers it under the same two names before anything imports them.
 
 It was 1.43 MB before the pipeline was ported -- the graph, the pricing

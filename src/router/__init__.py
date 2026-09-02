@@ -14,7 +14,7 @@ and neither of those imports back.
 from __future__ import annotations
 
 from .backend import Backend, BackendError, load_backend
-from .host import RouterHost, Stage
+from .host import RouterHost, Stage, declined_for_size
 from .rpc import RouterRpc
 from .session import RouterUnavailable, build_session, chain_for
 from .universe import CoinEntry, coins_by_volume, matching_coins, router_rows
@@ -30,6 +30,7 @@ __all__ = [
     "build_session",
     "chain_for",
     "coins_by_volume",
+    "declined_for_size",
     "load_backend",
     "matching_coins",
     "router_rows",

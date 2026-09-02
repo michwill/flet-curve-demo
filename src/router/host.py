@@ -75,6 +75,27 @@ class _Chain:
     coins: list = field(default_factory=list)
 
 
+def declined_for_size(exc: BaseException) -> bool:
+    """Is this the solver refusing a trade for want of something to fit?
+
+    It says `flow conservation is violated by ... at <node>`, which is true
+    and is not what the person typing wants told.  Below a certain size the
+    probes the refine pass fits with land under the resolution the pools'
+    own ladders already hold, and the circulation the solve is conditioned on
+    is sized by the graph rather than by the trade -- so a small enough trade
+    fails a gate that nothing is actually wrong with.  The router's
+    `probe.MIN_OUT_QUANTA` is the same fact from the other side.
+
+    By class *name* rather than by importing `RoutingError`: the pipeline is
+    the submodule's, this module is imported whether or not it built, and the
+    name is what a caller can check without reaching for either.
+    """
+    return (
+        type(exc).__name__ == "RoutingError"
+        and "flow conservation" in str(exc)
+    )
+
+
 class RouterHost:
     """The router, from the tab's point of view."""
 

@@ -1158,6 +1158,23 @@ class SwapView(ft.Container):
         self._prices = {a.lower(): p for a, p in (prices or {}).items()}
         self._sync_worth()
 
+    def sell_worth_usd(self) -> float | None:
+        """What the amount in the box is worth, or None if nothing says.
+
+        The same price the line under the box is drawn from, as a number:
+        a caller deciding whether a refusal is worth explaining or worth
+        quoting needs the figure, not the sentence.
+        """
+        coin = self.sell.picked
+        price = self._prices.get(coin.address.lower()) if coin else 0.0
+        if not price:
+            return None
+        try:
+            amount = float((self.amount.value or "").strip().replace(",", ""))
+        except ValueError:
+            return None
+        return amount * price if amount > 0 else None
+
     def _worth_of(self, coin: CoinEntry | None, text: str) -> str:
         """What that many of that coin is worth, as near as anyone can say.
 

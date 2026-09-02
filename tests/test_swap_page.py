@@ -2897,3 +2897,64 @@ def _walk(control):
             continue
         for one in (child if isinstance(child, list) else [child]):
             yield from _walk(one)
+
+
+# -- a trade too small to price --------------------------------------------
+
+
+class RoutingError(Exception):
+    """The pipeline's, by the name `declined_for_size` matches on."""
+
+
+FLOW = RoutingError(
+    "flow conservation is violated by 2.496e-03 of the routed value at frxUSD "
+    "(1 arc(s) in, 3 out) (achievable at this conditioning: 2.229e-04)"
+)
+
+
+def test_the_solver_declining_for_size_is_recognised() -> None:
+    from router import declined_for_size
+
+    assert declined_for_size(FLOW)
+    assert not declined_for_size(RoutingError("src not connected to dst"))
+    assert not declined_for_size(RuntimeError("flow conservation is violated"))
+
+
+def _priced_page(amount: str):
+    coins = two_coins()
+    page = swap_page_with(Wallet(), coins)
+    page.view.set_prices({coins[0].address: 1.0})
+    page.view.amount.value = amount
+    return page
+
+
+def test_a_sub_cent_trade_the_solver_declines_says_so_plainly() -> None:
+    page = _priced_page("0.001")           # a tenth of a cent of USDC
+
+    assert page._said(FLOW, 25_891_322) == "Swap size is too small to price."
+
+
+def test_the_same_refusal_on_a_real_trade_keeps_the_real_message() -> None:
+    """Naming the size there would be a guess, and a wrong one."""
+    page = _priced_page("1000")
+
+    said = page._said(FLOW, 25_891_322)
+    assert said.startswith("flow conservation is violated")
+    assert said.endswith("(block 25,891,322)")
+
+
+def test_another_failure_at_a_tiny_size_is_still_reported() -> None:
+    page = _priced_page("0.001")
+
+    said = page._said(RoutingError("src not connected to dst"), 4242)
+    assert said == "src not connected to dst (block 4,242)"
+
+
+def test_no_price_to_judge_by_means_the_message_stands() -> None:
+    """A coin the Prices API has nothing for: say what happened."""
+    coins = two_coins()
+    page = swap_page_with(Wallet(), coins)
+    page.view.amount.value = "0.001"
+
+    assert page.view.sell_worth_usd() is None
+    assert page._said(FLOW, 0).startswith("flow conservation")

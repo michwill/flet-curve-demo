@@ -32,6 +32,7 @@ from router import (
     Backend,
     RouterHost,
     Stage,
+    declined_for_size,
     holdings,
     incidents,
     load_backend,
@@ -60,6 +61,13 @@ PLAN_DELAY = 0.45
 #: what they were doing rather than on a guess.  Per chain, because the coins
 #: are: a pair remembered on Ethereum means nothing on Base.
 PAIR_KEY = "swap.pair.{chain_id}"
+
+#: Under this, a trade the solver declines is called small rather than
+#: reported.  A cent, which is generous: a tenth of a dollar routes, and the
+#: sizes this is about are 0.001 and below.  It is a floor on the *reason*
+#: given, not on what the app will quote -- anything the router prices is
+#: priced, however little it is worth.
+DUST_USD = 0.01
 
 
 class SwapPage:
@@ -453,7 +461,25 @@ class SwapPage:
         """
         block = self._block_now()
         self._write_down("quote", exc, block)
-        self.view.say(_with_block(exc, block), FAILED)
+        self.view.say(self._said(exc, block), FAILED)
+
+    def _said(self, exc: Exception, block: int) -> str:
+        """The line for this failure, in the words it deserves.
+
+        A trade worth less than a cent that the solver declined for want of
+        size is not an incident: there is nothing to reproduce and nothing
+        the reader can do about it except type a bigger number, so it says
+        that.  The block and the solver's own sentence still go to
+        `incidents`, which is where a report is made from.
+
+        Both halves have to hold.  The same refusal on a trade worth a
+        thousand dollars is a real failure and keeps the real message --
+        naming the size then would be a guess, and a wrong one.
+        """
+        worth = self.view.sell_worth_usd()
+        if declined_for_size(exc) and worth is not None and worth < DUST_USD:
+            return "Swap size is too small to price."
+        return _with_block(exc, block)
 
     def _block_now(self) -> int:
         session = self.host.session

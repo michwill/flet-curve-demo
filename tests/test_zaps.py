@@ -246,6 +246,35 @@ def test_the_underlying_route_is_the_default_where_there_is_one() -> None:
     ]
 
 
+def test_the_zap_route_cannot_be_matched_to_the_pool_balances() -> None:
+    """The pool holds its second coin as the base pool's LP token, so its own
+    balances say nothing about how much DAI, USDC and USDT that leg is.
+    """
+    tab, _ = deposit_tab()
+    assert tab.underlying is True
+    assert tab.proportional_box.disabled is True
+    assert tab.proportional is False
+    assert "base pool" in (tab.proportional_box.tooltip or "")
+
+
+def test_and_can_be_once_the_route_is_the_pools_own_coins() -> None:
+    tab, _ = deposit_tab()
+
+    tab.route.value = "pool"
+    tab._route_changed(None)
+
+    assert tab.proportional_box.disabled is False
+    tab.proportional_box.value = True
+    assert tab.proportional is True
+
+
+def test_a_one_coin_pool_is_not_offered_a_proportion_at_all() -> None:
+    plain = metapool(coins=1)
+    plain.base_pool = ""
+    tab, _ = deposit_tab(plain)
+    assert tab.proportional_box.visible is False
+
+
 def test_a_pool_without_a_zap_stays_on_its_own_coins() -> None:
     plain = metapool()
     plain.base_pool = ""

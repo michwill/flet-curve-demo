@@ -851,6 +851,20 @@ class _AmountRows:
                 out.append(0)
         return out
 
+    def set(self, index: int, units: int) -> None:
+        """Write one field from an amount in the coin's own units."""
+        coin = self.coins[index]
+        self.fields[index].value = format_units(
+            units, coin.decimals, precision=coin.decimals
+        )
+
+    def index_of(self, field: object) -> int | None:
+        """Which coin this field belongs to, or None if it is not ours."""
+        for index, mine in enumerate(self.fields):
+            if mine is field:
+                return index
+        return None
+
     def clear(self) -> None:
         for field in self.fields:
             field.value = ""
@@ -921,6 +935,17 @@ class DepositTab(ActionTab):
                 "this network has no deposit-and-stake zap."
             ),
         )
+        #: Type into one coin and the rest are filled to match what the pool
+        #: already holds.  Off by default: a deposit of one coin is a normal
+        #: thing to want, and a box that moves fields the moment it is ticked
+        #: would be a surprise.
+        self.proportional_box = ft.Checkbox(
+            label="Proportional",
+            value=False,
+            on_change=self._proportional_toggled,
+            visible=len(self.pool.pool_coins) > 1,
+            tooltip="Fill the other coins to match the pool's own balances.",
+        )
         self.route = _route_picker(
             self._route_changed, underlying=self.zap is not None
         )
@@ -934,6 +959,12 @@ class DepositTab(ActionTab):
             self.routes["underlying"] = _AmountRows(
                 self.pool.display_coins, self.pool.chain, self._changed, self._max_for
             )
+        #: What the pool holds, once something has asked.  Read once rather
+        #: than per keystroke: the ratio moves slowly, and the number that
+        #: matters -- the LP a deposit mints -- is quoted on chain every time
+        #: regardless, so a slightly stale ratio costs a pre-fill and nothing
+        #: else.
+        self._reserves: list[int] | None = None
         self._apply_route()
         self._expected_lp = 0
         self._quote_ok = True
@@ -987,6 +1018,7 @@ class DepositTab(ActionTab):
         return [
             self.route,
             *(rows.control for rows in self.routes.values()),
+            self.proportional_box,
             self.stake_box,
         ]
 
@@ -999,18 +1031,129 @@ class DepositTab(ActionTab):
         live = "underlying" if self.underlying else "pool"
         for name, rows in self.routes.items():
             rows.control.visible = name == live
+        self._sync_proportional()
+
+    def _sync_proportional(self) -> None:
+        """Whether the box can be ticked, and what to say when it cannot.
+
+        The underlying route is the one it cannot do.  Its coins are the base
+        pool's, and the pool's own balances are held in the base pool's *LP
+        token* -- so matching them means splitting that leg by a second pool's
+        composition, which is a different sum from this one.  Disabled with
+        the reason, the way `balanced_radio` handles the mirror of this on the
+        withdrawal side.
+        """
+        reserves = self._reserves
+        empty = reserves is not None and (not reserves or any(r <= 0 for r in reserves))
+        self.proportional_box.disabled = self.underlying or empty
+        self.proportional_box.tooltip = (
+            "A zap deposit is denominated in the base pool's coins, which the"
+            " pool's own balances do not give a proportion for."
+            if self.underlying
+            else "This pool holds none of one of its coins, so there is no"
+            " proportion to match."
+            if empty
+            else "Fill the other coins to match the pool's own balances."
+        )
+
+    @property
+    def proportional(self) -> bool:
+        """Is the box ticked, on a route that can honour it?"""
+        return bool(self.proportional_box.value) and not self.proportional_box.disabled
+
+    def _proportional_toggled(self, _e: AnyEvent) -> None:
+        """Ticking it spreads whatever is already typed, rather than waiting
+        for the next keystroke to make the fields agree."""
+        typed = [i for i, a in enumerate(self.rows.amounts()) if a > 0]
+        if self.proportional and len(typed) == 1:
+            self.page.run_task(self._spread_from, typed[0])
+        else:
+            self.page.run_task(self.refresh)
 
     def _route_changed(self, _e: AnyEvent | None) -> None:
         self._apply_route()
         self.page.run_task(self.refresh)
 
     def _max_for(self, rows: _AmountRows, index: int) -> None:
-        """Fill one coin's field with the whole wallet balance."""
-        coin = rows.coins[index]
-        rows.fields[index].value = format_units(
-            rows.balances[index], coin.decimals, precision=coin.decimals
-        )
+        """Fill one coin's field with the whole wallet balance.
+
+        Under the box it is the whole of whichever balance runs out first
+        instead: filling this one to the brim and scaling the rest up with it
+        would name amounts the wallet does not hold.
+        """
+        if self.proportional and rows is self.rows:
+            self.page.run_task(self._spread_to_fit)
+            return
+        rows.set(index, rows.balances[index])
         self.page.run_task(self.refresh)
+
+    async def _pool_reserves(self) -> list[int]:
+        """What the pool holds of each of its own coins."""
+        if self._reserves is None:
+            contract = self.get_contract()
+            if contract is None:
+                return []
+            try:
+                self._reserves = await contract.reserves(self.pool.n_coins)
+            except WalletError:
+                self._reserves = []
+            self._sync_proportional()
+        return self._reserves
+
+    async def _spread_from(self, driver: int) -> None:
+        """Fill every other field to the pool's ratio against `driver`.
+
+        Integer arithmetic on the reserves, which are already in each coin's
+        own units -- so the ratio between two of them is the ratio between two
+        amounts, with no decimals to reconcile.
+        """
+        rows = self.rows
+        reserves = await self._pool_reserves()
+        if not self.proportional or len(reserves) != len(rows.coins):
+            await self.refresh()
+            return
+        amounts = rows.amounts()
+        anchor = reserves[driver]
+        if anchor <= 0 or driver >= len(amounts):
+            await self.refresh()
+            return
+        for index in range(len(rows.coins)):
+            if index != driver:
+                rows.set(index, amounts[driver] * reserves[index] // anchor)
+        await self.refresh()
+
+    async def _spread_to_fit(self) -> None:
+        """The largest proportional deposit this wallet can cover.
+
+        Whichever coin runs out first sets the size, and it is spent to the
+        last unit; every other lands at or under its balance by construction.
+        A coin held at zero makes the whole thing zero, which is the truth
+        about a deposit that has to carry all of them.
+        """
+        rows = self.rows
+        reserves = await self._pool_reserves()
+        if not self.proportional or len(reserves) != len(rows.coins):
+            await self.refresh()
+            return
+        binding = None
+        for index, reserve in enumerate(reserves):
+            if reserve <= 0:
+                await self.refresh()
+                return
+            # `balance/reserve` compared without dividing.
+            if binding is None or (
+                rows.balances[index] * reserves[binding]
+                < rows.balances[binding] * reserve
+            ):
+                binding = index
+        if binding is None:
+            await self.refresh()
+            return
+        for index in range(len(rows.coins)):
+            rows.set(
+                index, rows.balances[binding] * reserves[index] // reserves[binding]
+            )
+        await self.refresh()
 
     def clear_inputs(self) -> None:
         for rows in self.routes.values():
@@ -1019,7 +1162,11 @@ class DepositTab(ActionTab):
     def _amounts(self) -> list[int]:
         return self.rows.amounts()
 
-    def _changed(self, _e: AnyEvent) -> None:
+    def _changed(self, e: AnyEvent) -> None:
+        driver = self.rows.index_of(getattr(e, "control", None))
+        if self.proportional and driver is not None:
+            self.page.run_task(self._spread_from, driver)
+            return
         self.page.run_task(self.refresh)
 
     def summary(self) -> str:

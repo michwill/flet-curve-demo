@@ -148,6 +148,115 @@ class ReservedProvider(FakeProvider):
 RESERVES = [int(USDT_RESERVE) * 10**6, int(CRVUSD_RESERVE) * 10**18]
 
 
+# -- a proportional deposit ------------------------------------------------
+
+
+def deposit_on(provider: FakeProvider):
+    from ui.actions import DepositTab
+
+    pool = make_pool()
+    contract = PoolContract(provider, pool, ACCOUNT)
+    tab = DepositTab(StubPage(), pool, lambda: contract, None)
+    tab.mount()
+    tab.slippage.value = "1"
+    return tab
+
+
+async def test_typing_one_coin_fills_the_rest_to_the_pool_ratio() -> None:
+    """The pool holds 1m USDT to 2m crvUSD, so a USDT wants twice its own."""
+    tab = deposit_on(ReservedProvider(RESERVES))
+    tab.proportional_box.value = True
+    tab.fields[0].value = "1"
+
+    await tab._spread_from(0)
+
+    assert tab.fields[1].value == "2"
+    assert tab._amounts() == [10**6, 2 * 10**18]
+
+
+async def test_it_works_from_whichever_coin_was_typed_in() -> None:
+    tab = deposit_on(ReservedProvider(RESERVES))
+    tab.proportional_box.value = True
+    tab.fields[1].value = "5"
+
+    await tab._spread_from(1)
+
+    assert tab.fields[0].value == "2.5"
+
+
+async def test_an_untouched_box_leaves_the_other_coins_alone() -> None:
+    tab = deposit_on(ReservedProvider(RESERVES))
+    tab.fields[0].value = "1"
+
+    await tab.refresh()
+
+    assert tab.fields[1].value in ("", None)
+
+
+async def test_max_under_the_box_stops_at_whichever_coin_runs_out_first() -> None:
+    """3 USDT and 2 crvUSD against a 1:2 pool: the crvUSD is the constraint,
+    so it goes in whole and the USDT follows it at 1, not at 3.
+    """
+    tab = deposit_on(ReservedProvider(RESERVES))
+    tab.proportional_box.value = True
+    tab.balances = [3 * 10**6, 2 * 10**18]
+
+    await tab._spread_to_fit()
+
+    assert tab.fields[0].value == "1"
+    assert tab.fields[1].value == "2"
+
+
+async def test_a_coin_the_wallet_has_none_of_makes_it_nothing() -> None:
+    """Which is the truth about a deposit that has to carry all of them."""
+    tab = deposit_on(ReservedProvider(RESERVES))
+    tab.proportional_box.value = True
+    tab.balances = [3 * 10**6, 0]
+
+    await tab._spread_to_fit()
+
+    assert tab._amounts() == [0, 0]
+
+
+async def test_a_pool_holding_none_of_a_coin_cannot_be_matched() -> None:
+    tab = deposit_on(ReservedProvider([0, int(CRVUSD_RESERVE) * 10**18]))
+    tab.proportional_box.value = True
+
+    await tab._pool_reserves()
+
+    assert tab.proportional_box.disabled
+    assert tab.proportional is False
+    assert "no proportion" in (tab.proportional_box.tooltip or "")
+
+
+async def test_reserves_are_read_once_rather_than_per_keystroke() -> None:
+    """Every keystroke spreads; the ratio behind it is asked for once."""
+
+    class Counting(ReservedProvider):
+        asked = 0
+
+        async def request(self, method: str, params=None):
+            if method == "eth_call" and (
+                (params or [{}])[0].get("data", "").startswith(self.selector)
+            ):
+                type(self).asked += 1
+            return await super().request(method, params)
+
+    provider = Counting(RESERVES)
+    tab = deposit_on(provider)
+    tab.proportional_box.value = True
+    tab.fields[0].value = "1"
+
+    await tab._spread_from(0)
+    after_first = Counting.asked
+    assert after_first > 0, "it never read the reserves at all"
+
+    tab.fields[0].value = "2"
+    await tab._spread_from(0)
+
+    assert Counting.asked == after_first
+
+
 @pytest.mark.parametrize("old", [False, True], ids=["uint256", "int128"])
 async def test_balanced_withdrawal_floors_each_coin_at_its_share(old: bool) -> None:
     provider = ReservedProvider(RESERVES, old=old)

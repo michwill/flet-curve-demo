@@ -37,6 +37,15 @@ from tools.publish_ipfs import (
 #: they carry a `{cid}` rather than being usable as they stand.
 GATEWAYS = ("https://curve.eth.limo", "https://curve.eth.link")
 
+#: The staging name, and the same two operators.  A separate build behind a
+#: separate contenthash, so a warm of one says nothing about the other: the
+#: gateway's node has to have seen *these* blocks.  `name_behind` reads the
+#: name off the host, so nothing else has to know this one exists.
+STAGING_GATEWAYS = (
+    "https://staging.curve.eth.limo",
+    "https://staging.curve.eth.link",
+)
+
 #: Filled in with the CID being warmed.  These serve any CID, so a name is no
 #: use to them.
 CID_GATEWAYS = (
@@ -318,7 +327,8 @@ def parse_tiers(raw: str) -> tuple[int, ...]:
     return tuple(int(part) for part in raw.replace(",", " ").split())
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
+    """The command line, apart from `main`, so it can be read without a warm."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--dist", type=Path, default=DIST, help="the build to warm from")
     parser.add_argument(
@@ -326,6 +336,11 @@ def main() -> int:
         action="append",
         dest="gateways",
         help="warm this host (repeatable). Defaults to eth.limo and eth.link.",
+    )
+    parser.add_argument(
+        "--staging",
+        action="store_true",
+        help="warm staging.curve.eth instead of curve.eth",
     )
     parser.add_argument(
         "--tiers",
@@ -386,7 +401,11 @@ def main() -> int:
         default=FLIP_DEADLINE,
         help=f"seconds to wait for a gateway to notice (default {FLIP_DEADLINE:.0f})",
     )
-    options = parser.parse_args()
+    return parser
+
+
+def main() -> int:
+    options = build_parser().parse_args()
 
     if options.boot_only:
         options.boot = True
@@ -395,7 +414,8 @@ def main() -> int:
 
     options.tiers = parse_tiers(options.tiers)
     options.chains = [c for c in options.chains.replace(",", " ").split() if c]
-    hosts = [h.rstrip("/") for h in (options.gateways or GATEWAYS)]
+    named = STAGING_GATEWAYS if options.staging else GATEWAYS
+    hosts = [h.rstrip("/") for h in (options.gateways or named)]
     if not options.gateways and not options.no_cid_gateways:
         # The public ones too, addressed by CID.  Each gateway fetches from the
         # network on its own, so the one nobody has asked is the one that

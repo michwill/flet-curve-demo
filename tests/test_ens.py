@@ -114,6 +114,8 @@ def test_every_endpoint_failing_says_so() -> None:
     [
         ("https://curve.eth.limo", "curve.eth"),
         ("https://curve.eth.link/", "curve.eth"),
+        ("https://staging.curve.eth.limo", "staging.curve.eth"),
+        ("https://staging.curve.eth.link/", "staging.curve.eth"),
         ("https://ipfs.io/ipfs/bafy", ""),
         ("https://example.com", ""),
     ],
@@ -220,3 +222,33 @@ def test_a_chain_that_cannot_be_read_does_not_stop_the_warm(monkeypatch) -> None
 
     assert warm.wanted_cid("https://curve.eth.limo", options(), say=said.append) == ""
     assert any("warming anyway" in line for line in said)
+
+
+# -- which name a run is warming -------------------------------------------
+
+
+def _hosts(argv: list[str]) -> list[str]:
+    """The named gateways `main` would warm, without warming anything."""
+    parsed = warm.build_parser().parse_args(argv)
+    named = warm.STAGING_GATEWAYS if parsed.staging else warm.GATEWAYS
+    return [h.rstrip("/") for h in (parsed.gateways or named)]
+
+
+def test_a_plain_run_warms_the_live_name() -> None:
+    assert _hosts([]) == list(warm.GATEWAYS)
+    assert [ens.name_behind(h) for h in _hosts([])] == ["curve.eth", "curve.eth"]
+
+
+def test_staging_warms_the_staging_name() -> None:
+    hosts = _hosts(["--staging"])
+    assert hosts == list(warm.STAGING_GATEWAYS)
+    assert [ens.name_behind(h) for h in hosts] == [
+        "staging.curve.eth", "staging.curve.eth"
+    ]
+
+
+def test_a_named_gateway_still_wins_over_both() -> None:
+    """`--gateway` is the escape hatch, and `--staging` does not override it."""
+    assert _hosts(["--staging", "--gateway", "https://example.invalid/"]) == [
+        "https://example.invalid"
+    ]

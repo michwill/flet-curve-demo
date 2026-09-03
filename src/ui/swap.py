@@ -1401,7 +1401,7 @@ class SwapView(ft.Container):
             keyboard_type=ft.KeyboardType.NUMBER,
         )
         note = ft.Text(
-            "Empty for auto: each leg bounded by its own pool's fee.",
+            "Auto: MEV-resistant slippage. Recommended for most users.",
             size=TINY, color=ft.Colors.ON_SURFACE_VARIANT,
         )
         # Dressed in whatever theme is on screen.  Built fresh each time it

@@ -815,7 +815,8 @@ async def test_swapping_stays_tight_because_its_quote_is_exact() -> None:
 
     tab, _ = tab_with_fee(SwapTab, 1_000_000, pair=2_000_000)
     await tab.refresh()
-    assert tab.slippage.value == "0.004"  # from the pair fee, not the flat one
+    # From the pair fee, not the flat one -- and padded to two figures.
+    assert tab.slippage.value == "0.0040"
 
 
 async def test_a_swap_pool_without_dynamic_fee_falls_back() -> None:

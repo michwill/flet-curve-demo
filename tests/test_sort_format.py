@@ -296,3 +296,51 @@ def test_a_pool_reads_either_window() -> None:
     assert pool.base_for("1d") == 113.743
     assert pool.base_for("30d") == 11.495, "unknown windows read as the default"
     assert pool.base_apr == 11.495, "the plain attribute stays the weekly one"
+
+
+# -- impact and slippage, in the units a reader uses ------------------------
+
+
+def test_a_price_impact_is_a_percentage_on_both_pages() -> None:
+    """The swap page said "0.15 bp" where the pool page said "0.01%" for the
+    same kind of number, which is a conversion the reader should not do."""
+    from curve.format import format_impact
+
+    assert format_impact(1.234) == "1.23%"
+    assert format_impact(0.15) == "0.15%"
+    assert format_impact(-9.0909) == "-9.09%"
+
+
+def test_an_impact_inside_the_probe_error_says_so_rather_than_zero() -> None:
+    from curve.format import format_impact
+
+    assert format_impact(0.0) == "under 0.01%"
+    assert format_impact(0.0015) == "under 0.01%"
+    assert format_impact(-0.0015) == "under 0.01%"
+
+
+def test_a_tolerance_carries_two_figures_even_where_one_would_do() -> None:
+    """"0.5" reads as a rounder number than it is."""
+    from curve.format import at_least
+
+    assert at_least(0.5) == "0.50"
+    assert at_least(1.0) == "1.0"
+    assert at_least(0.02) == "0.020"
+    assert at_least(0.004) == "0.0040"
+
+
+def test_and_never_loses_precision_it_already_had() -> None:
+    from curve.format import at_least
+
+    assert at_least(12.5) == "12.5"
+    assert at_least(0.125) == "0.125"
+    assert at_least(50.0) == "50"
+    assert at_least(0.0) == "0"
+
+
+def test_the_swap_row_says_the_same_thing() -> None:
+    from ui.swap import slippage_text
+
+    assert slippage_text(50.0) == "0.50%"      # basis points in, percent out
+    assert slippage_text(200.0) == "2.0%"
+    assert slippage_text(None) == "auto"

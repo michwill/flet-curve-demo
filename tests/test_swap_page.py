@@ -2058,7 +2058,7 @@ async def test_a_named_budget_reaches_the_router():
 
     assert page.view.slippage_bp == 50.0
     assert session.budgets[-1] == 50.0
-    assert page.view.rows.said("slippage") == "0.5%"
+    assert page.view.rows.said("slippage") == "0.50%"
 
 
 async def test_choosing_a_budget_re_plans_but_does_not_re_quote():

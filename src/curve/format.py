@@ -120,3 +120,38 @@ def price(value: float) -> str:
         return f"${value:,.2f}"
     text = f"{value:,.5f}".rstrip("0").rstrip(".")
     return f"${text}"
+
+
+#: Under this, in percent, a price impact is inside the probe's own error and
+#: the figure would be reading noise back.
+IMPACT_FLOOR = 0.01
+
+
+def format_impact(percent_value: float) -> str:
+    """A price impact, in percent, with a floor where precision runs out.
+
+    Percent rather than basis points on both surfaces.  The swap page said
+    "0.15 bp" where the pool page said "0.01%" for the same kind of number,
+    which is two units for one quantity and a conversion the reader should
+    not be doing.
+    """
+    if abs(percent_value) < IMPACT_FLOOR:
+        return f"under {IMPACT_FLOOR:.2f}%"
+    return f"{percent_value:.2f}%"
+
+
+def at_least(value: float, *, figures: int = 2) -> str:
+    """`value` with at least `figures` significant digits, and no fewer than
+    it already has.
+
+    "0.5" reads as a rounder number than it is where the thing being named is
+    a tolerance, so a slippage of half a percent says 0.50.  The value's own
+    precision is never cut to make the figure: 12.5 stays 12.5 rather than
+    becoming 13.
+    """
+    if value <= 0:
+        return "0"
+    natural = f"{value:g}"
+    have = len(natural.partition(".")[2])
+    exponent = math.floor(math.log10(value))
+    return f"{value:.{max(have, figures - 1 - exponent, 0)}f}"

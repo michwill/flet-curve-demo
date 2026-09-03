@@ -12,7 +12,13 @@ import flet as ft
 from curve.abi import FEE_DENOMINATOR, apply_slippage
 from curve.api import CurveApi
 from curve.confirm import POLL_INTERVAL, wait_for_batch, wait_for_confirmation
-from curve.format import is_dust, token_amount, units_to_float
+from curve.format import (
+    at_least,
+    format_impact,
+    is_dust,
+    token_amount,
+    units_to_float,
+)
 from curve.gas import (
     fee_in_native,
     format_fee,
@@ -90,9 +96,6 @@ async def _native_usd(chain: str, chain_id: int) -> float:
 #: The mark beside an amount on the estimate line.
 ESTIMATE_MARK = 16
 
-#: Under this, in percent, the impact is inside the probe's own error.
-IMPACT_FLOOR = 0.01
-
 #: Where the number stops being a detail and becomes a reason to type a
 #: smaller one.
 IMPACT_HIGH = 1.0
@@ -117,13 +120,6 @@ def price_impact(probe_out: int, out: int) -> float | None:
     return (probe_out * IMPACT_PROBE_DIVISOR - out) / out * 100
 
 
-def format_impact(percent: float) -> str:
-    """Two decimals, and a floor where the probe's precision runs out."""
-    if abs(percent) < IMPACT_FLOOR:
-        return f"under {IMPACT_FLOOR:.2f}%"
-    return f"{percent:.2f}%"
-
-
 def slippage_for(
     fee_units: int, multiple: float = SLIPPAGE_OF_FEE, constant: float = 0.0
 ) -> float:
@@ -132,14 +128,18 @@ def slippage_for(
 
 
 def format_slippage(percent: float) -> str:
-    """Three significant figures, rounded *up*."""
+    """Three significant figures, rounded *up*, and never fewer than two.
+
+    Rounded up because it is a tolerance: a budget quietly rounded down is
+    one the trade can exceed.  Padded because "0.5" reads as a rounder
+    number than it is -- see `at_least`.
+    """
     if percent <= 0:
         return "0"
     value = Decimal(repr(percent))
     step = Decimal(1).scaleb(value.adjusted() - 2)      # third significant digit
     rounded = value.quantize(step, rounding=ROUND_CEILING)
-    text = format(rounded, "f").rstrip("0").rstrip(".")
-    return text or "0"
+    return at_least(float(rounded))
 
 
 def _stacked(*controls: ft.Control) -> ft.Column:

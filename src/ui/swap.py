@@ -20,7 +20,7 @@ from itertools import pairwise
 import flet as ft
 import flet.canvas as cv
 
-from curve.format import compact_usd, token_amount
+from curve.format import at_least, compact_usd, format_impact, token_amount
 from curve.models import Coin
 from router.universe import CoinEntry, matching_coins
 from wallet.erc20 import format_units, parse_units
@@ -1804,7 +1804,7 @@ def slippage_text(budget: float | None) -> str:
     """
     if budget is None:
         return "auto"
-    return f"{budget / 100:g}%"
+    return f"{at_least(budget / 100)}%"
 
 
 def slippage_percent(budget: float | None) -> str:
@@ -1902,7 +1902,9 @@ class _InfoRows:
                            f"{legs} leg{'s' if legs != 1 else ''}")
         impact = float(getattr(result, "price_impact_bp", 0.0) or 0.0)
         high = impact >= IMPACT_HIGH_BP
-        self._set("impact", f"{impact:.2f} bp",
+        # Percent, the unit the pool page's own swap has always used.  The
+        # threshold stays in the router's units, which is what it hands over.
+        self._set("impact", format_impact(impact / 100.0),
                   ft.Colors.ERROR if high else None)
         self._set_high(high)
         self._tint_impact(True)

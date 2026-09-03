@@ -312,11 +312,37 @@ def test_a_price_impact_is_a_percentage_on_both_pages() -> None:
 
 
 def test_an_impact_inside_the_probe_error_says_so_rather_than_zero() -> None:
+    """0.01% is `1 / IMPACT_MIN_PROBE`, which is what the probe can resolve."""
     from curve.format import format_impact
 
     assert format_impact(0.0) == "under 0.01%"
     assert format_impact(0.0015) == "under 0.01%"
     assert format_impact(-0.0015) == "under 0.01%"
+
+
+def test_an_impact_the_router_computed_is_shown_a_hundred_times_finer() -> None:
+    """No probe, no probe error: 0.002% is a figure the router really has."""
+    from curve.format import EXACT_FLOOR, format_impact
+
+    assert format_impact(0.0024, floor=EXACT_FLOOR) == "0.002%"
+    assert format_impact(0.024, floor=EXACT_FLOOR) == "0.024%"
+    assert format_impact(-0.0024, floor=EXACT_FLOOR) == "-0.002%"
+    assert format_impact(1.234, floor=EXACT_FLOOR) == "1.23%"
+
+
+def test_and_still_says_under_where_even_that_runs_out() -> None:
+    from curve.format import EXACT_FLOOR, format_impact
+
+    assert format_impact(0.0005, floor=EXACT_FLOOR) == "under 0.001%"
+    assert format_impact(0.0, floor=EXACT_FLOOR) == "under 0.001%"
+
+
+def test_a_floor_never_prints_a_digit_finer_than_itself() -> None:
+    """The decimals come off the floor, so the two cannot disagree."""
+    from curve.format import EXACT_FLOOR, PROBE_FLOOR, format_impact
+
+    assert format_impact(0.024, floor=PROBE_FLOOR) == "0.02%"
+    assert format_impact(0.024, floor=EXACT_FLOOR) == "0.024%"
 
 
 def test_a_tolerance_carries_two_figures_even_where_one_would_do() -> None:

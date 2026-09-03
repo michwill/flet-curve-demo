@@ -122,22 +122,35 @@ def price(value: float) -> str:
     return f"${text}"
 
 
-#: Under this, in percent, a price impact is inside the probe's own error and
-#: the figure would be reading noise back.
-IMPACT_FLOOR = 0.01
+#: Under this, in percent, an impact measured with a probe trade is inside
+#: the probe's own error.  It is not a taste: the probe is a twentieth of the
+#: trade and `IMPACT_MIN_PROBE` is 10,000 units, so one unit of rounding at
+#: that size is 1e-4 of the answer, which is this.
+PROBE_FLOOR = 0.01
+
+#: The router hands over an impact it computed rather than probed, so the
+#: only floor it needs is one that stops the line reading noise back.
+EXACT_FLOOR = 0.001
 
 
-def format_impact(percent_value: float) -> str:
-    """A price impact, in percent, with a floor where precision runs out.
+def format_impact(percent_value: float, *, floor: float = PROBE_FLOOR) -> str:
+    """A price impact, in percent, to at least two significant figures.
 
     Percent rather than basis points on both surfaces.  The swap page said
     "0.15 bp" where the pool page said "0.01%" for the same kind of number,
     which is two units for one quantity and a conversion the reader should
     not be doing.
+
+    `floor` is what the measurement can actually resolve, and it sets both
+    the wording under it and how many decimals are worth printing above it:
+    a figure finer than the floor is a digit the number does not have.
     """
-    if abs(percent_value) < IMPACT_FLOOR:
-        return f"under {IMPACT_FLOOR:.2f}%"
-    return f"{percent_value:.2f}%"
+    if abs(percent_value) < floor:
+        return f"under {floor:g}%"
+    cap = len(f"{floor:f}".rstrip("0").partition(".")[2])
+    exponent = math.floor(math.log10(abs(percent_value)))
+    places = min(cap, max(2, 1 - exponent))
+    return f"{percent_value:.{places}f}%"
 
 
 def at_least(value: float, *, figures: int = 2) -> str:

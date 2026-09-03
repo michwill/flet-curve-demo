@@ -20,7 +20,13 @@ from itertools import pairwise
 import flet as ft
 import flet.canvas as cv
 
-from curve.format import at_least, compact_usd, format_impact, token_amount
+from curve.format import (
+    EXACT_FLOOR,
+    at_least,
+    compact_usd,
+    format_impact,
+    token_amount,
+)
 from curve.models import Coin
 from router.universe import CoinEntry, matching_coins
 from wallet.erc20 import format_units, parse_units
@@ -1902,9 +1908,11 @@ class _InfoRows:
                            f"{legs} leg{'s' if legs != 1 else ''}")
         impact = float(getattr(result, "price_impact_bp", 0.0) or 0.0)
         high = impact >= IMPACT_HIGH_BP
-        # Percent, the unit the pool page's own swap has always used.  The
-        # threshold stays in the router's units, which is what it hands over.
-        self._set("impact", format_impact(impact / 100.0),
+        # Percent, the unit the pool page's own swap has always used, and the
+        # finer floor: this number is the router's own, computed rather than
+        # probed, so 0.002% is a figure it really has.  The threshold stays in
+        # the router's units, which is what it hands over.
+        self._set("impact", format_impact(impact / 100.0, floor=EXACT_FLOOR),
                   ft.Colors.ERROR if high else None)
         self._set_high(high)
         self._tint_impact(True)

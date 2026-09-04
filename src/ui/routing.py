@@ -7,7 +7,8 @@ from dataclasses import dataclass
 #: The second segments that are a page rather than a pool.
 PORTFOLIO = "portfolio"
 SWAP = "swap"
-PAGES = (PORTFOLIO, SWAP)
+VECRV = "vecrv"
+PAGES = (PORTFOLIO, SWAP, VECRV)
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,6 +30,10 @@ class Route:
     @property
     def is_swap(self) -> bool:
         return self.page == SWAP
+
+    @property
+    def is_vecrv(self) -> bool:
+        return self.page == VECRV
 
 
 def parse(route: str | None) -> Route:

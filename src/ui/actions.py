@@ -142,7 +142,7 @@ def format_slippage(percent: float) -> str:
     return at_least(float(rounded))
 
 
-def _stacked(*controls: ft.Control) -> ft.Column:
+def stacked(*controls: ft.Control) -> ft.Column:
     """A field with its caption underneath, both as wide as the panel."""
     return ft.Column(
         list(controls),
@@ -778,7 +778,7 @@ class ActionTab:
             (pending is not None and not batched) or self._sending)
 
 
-def _max_button(on_click) -> ft.TextButton:
+def max_button(on_click) -> ft.TextButton:
     """The "MAX" affordance that lives inside an amount field."""
     return ft.TextButton(
         "MAX",
@@ -790,7 +790,7 @@ def _max_button(on_click) -> ft.TextButton:
     )
 
 
-def _amount_field(
+def amount_field(
     label: str, on_change, mark: ft.Control | None = None, on_max=None
 ) -> ft.TextField:
     """An amount input, with the token's mark in front of it."""
@@ -813,7 +813,7 @@ def _amount_field(
         on_change=on_change,
         prefix_icon=mark,
         prefix_icon_size_constraints=constraints,
-        suffix_icon=_max_button(on_max) if on_max is not None else None,
+        suffix_icon=max_button(on_max) if on_max is not None else None,
         suffix_icon_size_constraints=(
             ft.BoxConstraints(min_width=58, min_height=28) if on_max else None
         ),
@@ -853,13 +853,13 @@ class _AmountRows:
             def fill(_e: AnyEvent, index: int = index) -> None:
                 on_max(self, index)
 
-            field = _amount_field(
+            field = amount_field(
                 coin.symbol, on_change, token_mark(coin, chain, 20), on_max=fill
             )
             label = ft.Text("", size=LABEL, color=ft.Colors.ON_SURFACE_VARIANT)
             self.fields.append(field)
             self.labels.append(label)
-            rows.append(_stacked(field, label))
+            rows.append(stacked(field, label))
         self.control = ft.Column(
             rows, spacing=12, horizontal_alignment=ft.CrossAxisAlignment.STRETCH
         )
@@ -1451,7 +1451,7 @@ class WithdrawTab(ActionTab):
             tooltip="Unstake what this withdrawal needs, then withdraw.",
         )
         self._use_staked_is_theirs = False
-        self.amount = _amount_field(
+        self.amount = amount_field(
             "LP tokens",
             self._changed,
             pool_stack(self.pool, 18, limit=4),
@@ -1496,7 +1496,7 @@ class WithdrawTab(ActionTab):
 
     def build(self) -> list[ft.Control]:
         return [
-            _stacked(self.amount, self.lp_label),
+            stacked(self.amount, self.lp_label),
             self.use_staked,
             self.route,
             self.mode,
@@ -1850,7 +1850,7 @@ class SwapTab(ActionTab):
             tooltip="Swap the two coins over",
             on_click=self._flip,
         )
-        self.amount = _amount_field(
+        self.amount = amount_field(
             "Amount", self._changed, self._mark(0), on_max=self._max
         )
         self.balance_label = ft.Text("", size=LABEL, color=ft.Colors.ON_SURFACE_VARIANT)
@@ -1887,7 +1887,7 @@ class SwapTab(ActionTab):
                 spacing=4,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
             ),
-            _stacked(self.amount, self.balance_label),
+            stacked(self.amount, self.balance_label),
         ]
 
     def _indices(self) -> tuple[int, int]:
@@ -2276,7 +2276,7 @@ class StakeTab(ActionTab):
         super().__init__(*args, **kwargs)
         self.lp_balance = 0
         self.staked = 0
-        self.amount = _amount_field(
+        self.amount = amount_field(
             "LP tokens",
             self._changed,
             pool_stack(self.pool, 18, limit=4),
@@ -2330,11 +2330,11 @@ class StakeTab(ActionTab):
                     size=SMALL,
                     color=ft.Colors.ON_SURFACE_VARIANT,
                 ),
-                _stacked(self.amount, self.balances_label),
+                stacked(self.amount, self.balances_label),
             ]
         return [
             self.direction,
-            _stacked(self.amount, self.balances_label),
+            stacked(self.amount, self.balances_label),
         ]
 
     def _max(self, _e: AnyEvent) -> None:

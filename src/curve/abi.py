@@ -603,6 +603,54 @@ def encode_deposit_and_stake(
     )
 
 
+# -- veCRV -----------------------------------------------------------------
+# The voting escrow and the fee distributor beside it.  `locked` answers two
+# words; everything else here is one call and one word.
+
+
+def encode_locked(owner: str) -> str:
+    """`(int128 amount, uint256 end)` -- what this address has locked."""
+    return _call("locked(address)", _address(owner))
+
+
+def decode_locked(data: str) -> tuple[int, int]:
+    """That pair, with the amount read as signed: it is an `int128`."""
+    words = decode_uint_array(data)
+    if len(words) < 2:
+        return 0, 0
+    # `decode_uint_array` would read the pair as an array header where the
+    # amount happens to be 32 and the end 0; a lock of 32 wei that has never
+    # been set is not a thing, but be exact rather than nearly.
+    amount, end = int(data[2:66], 16), int(data[66:130], 16)
+    return (amount - (1 << 256) if amount >> 255 else amount), end
+
+
+def encode_create_lock(amount: int, unlock_time: int) -> str:
+    return _call("create_lock(uint256,uint256)", _uint(amount), _uint(unlock_time))
+
+
+def encode_increase_amount(amount: int) -> str:
+    return _call("increase_amount(uint256)", _uint(amount))
+
+
+def encode_increase_unlock_time(unlock_time: int) -> str:
+    return _call("increase_unlock_time(uint256)", _uint(unlock_time))
+
+
+def encode_ve_withdraw() -> str:
+    """`withdraw()` on the escrow -- takes an expired lock back, all of it."""
+    return _call("withdraw()")
+
+
+def encode_claim(owner: str) -> str:
+    """The distributor's `claim`, which is also how the amount is previewed.
+
+    Not a `view`, and answers the amount it would send -- so an `eth_call`
+    against it is both the estimate and a dry run of the real thing.
+    """
+    return _call("claim(address)", _address(owner))
+
+
 # -- slippage --------------------------------------------------------------
 
 

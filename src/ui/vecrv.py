@@ -1,0 +1,508 @@
+"""The veCRV page: locking CRV, and claiming what the lock earns.
+
+Two panels over one snapshot.  The escrow's own arithmetic decides what a
+lock is worth -- `amount * time_left / MAXTIME`, decaying to nothing at the
+end -- and that is worked out here rather than read, because it is a formula
+and not a state: the contract will not tell you what a lock you have not made
+yet would be worth.
+
+Everything is Ethereum's.  `CurveApp` keeps the page out of the nav on other
+chains, so this module never has to ask which one it is on.
+"""
+
+from __future__ import annotations
+
+import datetime as dt
+from collections.abc import Callable
+
+import flet as ft
+
+from curve.format import token_amount, units_to_float
+from curve.models import Coin
+from curve.vecrv import (
+    CRV,
+    CRVUSD,
+    MAXTIME,
+    WEEK,
+    Lock,
+    Snapshot,
+    VeCrvContract,
+    week_floor,
+)
+from wallet.base import WalletError
+from wallet.erc20 import parse_units
+
+from . import buttons, safe_update, theme
+from .actions import amount_field, stacked
+from .alarm import Band
+from .logos import token_mark
+from .responsive import Layout
+from .status import DONE, FAILED, StatusPanel
+from .typography import BODY, LABEL, METRIC, ROW_TITLE, SMALL, TITLE
+
+#: The durations the buttons offer, in the order they are drawn.  A month is
+#: four weeks rather than a calendar one: the escrow counts in weeks, and
+#: "one month" that lands on a different Thursday depending on the month is
+#: a worse promise than one that does not.
+PRESETS: tuple[tuple[str, int], ...] = (
+    ("1w", WEEK),
+    ("1mo", 4 * WEEK),
+    ("1y", 52 * WEEK),
+    ("4y", MAXTIME),
+)
+
+#: How the date is typed and shown.  ISO, because a date field that accepts
+#: 03/04 has to guess which is the month and will guess wrong for somebody.
+DATE_FORMAT = "%Y-%m-%d"
+
+#: The coins this page moves, as `token_mark` wants them.
+CRV_COIN = Coin(address=CRV, symbol="CRV", decimals=18)
+CRVUSD_COIN = Coin(address=CRVUSD, symbol="crvUSD", decimals=18)
+
+#: Mark size beside an amount field, matching the pool page's panels.
+MARK = 20
+
+
+def voting_power_for(amount: int, seconds: int) -> int:
+    """What the escrow would credit for `amount` locked for `seconds`.
+
+    Linear in the time left and zero once there is none, which is the whole
+    of `VotingEscrow`'s balance curve -- the contract stores the slope and
+    the bias, and this is what they come to.
+    """
+    if amount <= 0 or seconds <= 0:
+        return 0
+    return amount * min(seconds, MAXTIME) // MAXTIME
+
+
+def say_duration(seconds: int) -> str:
+    """A span in the units somebody would say it in."""
+    if seconds <= 0:
+        return "now"
+    years, rest = divmod(seconds, 365 * 24 * 3600)
+    months, rest = divmod(rest, 30 * 24 * 3600)
+    days = rest // (24 * 3600)
+    parts = [
+        f"{years} year{'s' if years != 1 else ''}" if years else "",
+        f"{months} month{'s' if months != 1 else ''}" if months else "",
+        f"{days} day{'s' if days != 1 else ''}" if days and not years else "",
+    ]
+    said = " ".join(p for p in parts if p)
+    return said or "less than a day"
+
+
+def say_date(when: int) -> str:
+    """The unlock date, as the escrow will actually have it."""
+    if when <= 0:
+        return "-"
+    return dt.datetime.fromtimestamp(week_floor(when), dt.UTC).strftime(
+        "%a %d %b %Y"
+    )
+
+
+class VeCrvView(ft.Column):
+    """Both panels, and the figures above them."""
+
+    def __init__(
+        self,
+        page: ft.Page,
+        *,
+        contract_for: Callable[[], VeCrvContract | None],
+        now: Callable[[], float] = lambda: dt.datetime.now(dt.UTC).timestamp(),
+    ) -> None:
+        self._page = page
+        self._contract_for = contract_for
+        self._now = now
+        self._snapshot = Snapshot(lock=Lock())
+        self._layout: Layout | None = None
+        #: The duration the buttons last set, so the date field and the
+        #: buttons agree about which one is chosen.
+        self._preset: int | None = None
+        self._busy = False
+
+        self.status = StatusPanel(page)
+        self.position = _Position(page)
+        self.amount = amount_field(
+            "CRV", self._changed, token_mark(CRV_COIN, "ethereum", MARK),
+            on_max=self._max_clicked,
+        )
+        self.balance_line = ft.Text("", size=LABEL,
+                                    color=ft.Colors.ON_SURFACE_VARIANT)
+        self.date = ft.TextField(
+            label="Unlock date",
+            hint_text=DATE_FORMAT.replace("%Y", "2030").replace("%m", "09")
+                                 .replace("%d", "05"),
+            dense=True,
+            on_change=self._changed,
+        )
+        self.date_line = ft.Text("", size=LABEL,
+                                 color=ft.Colors.ON_SURFACE_VARIANT)
+        self._preset_buttons = {
+            seconds: ft.OutlinedButton(
+                label,
+                on_click=lambda _e, s=seconds: self._preset_clicked(s),
+            )
+            for label, seconds in PRESETS
+        }
+        self.gain = Band(
+            ft.Text("", size=SMALL), page, kind="impact", visible=False
+        )
+        self.approve_button = buttons.Themed(
+            "Approve", page=page, on_click=self._approve, visible=False
+        )
+        self.lock_button = buttons.Themed(
+            "Create lock", page=page, on_click=self._lock, disabled=True
+        )
+        self.extend_button = buttons.Themed(
+            "Extend lock", page=page, on_click=self._extend, visible=False
+        )
+        self.withdraw_button = buttons.Themed(
+            "Withdraw", page=page, on_click=self._withdraw, visible=False
+        )
+
+        self.claimable = ft.Text("-", size=METRIC, weight=ft.FontWeight.BOLD)
+        self.claim_button = buttons.Themed(
+            "Claim", page=page, on_click=self._claim, disabled=True
+        )
+
+        super().__init__(
+            controls=[
+                ft.Text("veCRV", size=TITLE, weight=ft.FontWeight.BOLD),
+                self.position,
+                self.status,
+                ft.Row(
+                    [self._lock_panel(), self._claim_panel()],
+                    spacing=16,
+                    vertical_alignment=ft.CrossAxisAlignment.START,
+                    wrap=True,
+                ),
+            ],
+            spacing=14,
+        )
+
+    # -- the two panels ----------------------------------------------------
+
+    def _lock_panel(self) -> ft.Control:
+        self.lock_title = ft.Text("Lock CRV", size=ROW_TITLE,
+                                  weight=ft.FontWeight.BOLD)
+        return self._panel(
+            ft.Column(
+                [
+                    self.lock_title,
+                    stacked(self.amount, self.balance_line),
+                    ft.Row(list(self._preset_buttons.values()), spacing=8,
+                           wrap=True),
+                    stacked(self.date, self.date_line),
+                    self.gain,
+                    ft.Row([self.approve_button, self.lock_button,
+                            self.extend_button, self.withdraw_button],
+                           spacing=8, wrap=True),
+                ],
+                spacing=12,
+            )
+        )
+
+    def _claim_panel(self) -> ft.Control:
+        return self._panel(
+            ft.Column(
+                [
+                    ft.Text("Weekly distribution", size=ROW_TITLE,
+                            weight=ft.FontWeight.BOLD),
+                    ft.Row(
+                        [token_mark(CRVUSD_COIN, "ethereum", MARK), self.claimable],
+                        spacing=8,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                    ft.Text(
+                        "crvUSD from trading fees, paid to veCRV every Thursday.",
+                        size=LABEL, color=ft.Colors.ON_SURFACE_VARIANT,
+                    ),
+                    self.claim_button,
+                ],
+                spacing=12,
+            )
+        )
+
+    def _panel(self, content: ft.Control) -> ft.Control:
+        return ft.Container(
+            content,
+            padding=16,
+            width=380,
+            bgcolor=ft.Colors.SURFACE,
+            border=theme.panel_border(self._page),
+            border_radius=10,
+            shadow=theme.panel_shadow(self._page),
+        )
+
+    def set_layout(self, layout: Layout) -> None:
+        self._layout = layout
+
+
+    # -- what the figures say ----------------------------------------------
+
+    def show(self, snapshot: Snapshot) -> None:
+        """Draw a fresh reading, and re-decide what can be done with it."""
+        self._snapshot = snapshot
+        now = self._now()
+        lock, expired = snapshot.lock, snapshot.lock.expired(self._now())
+        self.position.show(snapshot, now)
+        self.balance_line.value = (
+            f"Balance: {token_amount(units_to_float(snapshot.crv, 18))} CRV"
+        )
+        self.claimable.value = (
+            f"{token_amount(units_to_float(snapshot.claimable, 18))} crvUSD"
+        )
+        self.claim_button.disabled = snapshot.claimable <= 0
+
+        self.lock_title.value = (
+            "Withdraw" if expired
+            else "Add to your lock" if lock.exists
+            else "Lock CRV"
+        )
+        # An expired lock is the only thing that can be done with it: the
+        # escrow refuses both `increase_amount` and `increase_unlock_time`
+        # once the end has passed, so offering either would be offering a
+        # revert.
+        for control in (self.amount, self.date, self.gain):
+            control.visible = not expired
+        for button in self._preset_buttons.values():
+            button.visible = not expired
+        self.withdraw_button.visible = expired
+        self.withdraw_button.content = (
+            f"Withdraw {token_amount(units_to_float(lock.amount, 18))} CRV"
+        )
+        self.lock_button.visible = not expired
+        self.lock_button.content = "Add CRV" if lock.exists else "Create lock"
+        self.extend_button.visible = lock.exists and not expired
+        self._sync()
+
+    def _sync(self) -> None:
+        """The parts that move with what has been typed."""
+        snapshot, now = self._snapshot, self._now()
+        lock = snapshot.lock
+        amount = self._amount()
+        until = self._until()
+        held = lock.seconds_left(now)
+        seconds = max(held, int(week_floor(until) - now)) if until else held
+
+        self.date_line.value = (
+            f"{say_date(until)} · {say_duration(int(week_floor(until) - now))}"
+            if until else
+            f"Locked until {say_date(lock.end)}" if lock.exists else ""
+        )
+        gain = voting_power_for(lock.amount + amount, seconds)
+        self.gain.visible = bool(amount or (until and lock.exists))
+        self.gain.content = ft.Text(
+            f"You would hold ~{token_amount(units_to_float(gain, 18))} veCRV, "
+            f"decaying to zero by {say_date(max(until, lock.end))}",
+            size=SMALL,
+        )
+
+        needs = max(0, amount - snapshot.allowance)
+        self.approve_button.visible = needs > 0 and not lock.expired(now)
+        self.approve_button.content = (
+            f"Approve {token_amount(units_to_float(amount, 18))} CRV"
+        )
+        self.lock_button.disabled = self._why_not_lock() is not None
+        self.extend_button.disabled = self._why_not_extend() is not None
+        safe_update(self)
+
+    def _why_not_lock(self) -> str | None:
+        """Why the lock button is dead, or None if it is not."""
+        snapshot, now = self._snapshot, self._now()
+        amount = self._amount()
+        if self._busy or not amount:
+            return "no amount"
+        if amount > snapshot.crv:
+            return "more than the wallet holds"
+        if amount > snapshot.allowance:
+            return "not approved yet"
+        if snapshot.lock.exists:
+            return None if not snapshot.lock.expired(now) else "the lock has ended"
+        until = self._until()
+        if not until or week_floor(until) <= now:
+            return "no unlock date"
+        return None
+
+    def _why_not_extend(self) -> str | None:
+        snapshot, now = self._snapshot, self._now()
+        until = self._until()
+        if self._busy or not snapshot.lock.exists or snapshot.lock.expired(now):
+            return "no lock to extend"
+        if not until or week_floor(until) <= snapshot.lock.end:
+            return "not later than it already is"
+        if week_floor(until) > now + MAXTIME:
+            return "further out than four years"
+        return None
+
+    # -- reading the fields ------------------------------------------------
+
+    def _amount(self) -> int:
+        try:
+            return parse_units((self.amount.value or "").strip(), 18)
+        except ValueError:
+            return 0
+
+    def _until(self) -> int:
+        """The typed date as a timestamp, or 0 where there is not one yet."""
+        text = (self.date.value or "").strip()
+        if not text:
+            return 0
+        try:
+            when = dt.datetime.strptime(text, DATE_FORMAT).replace(tzinfo=dt.UTC)
+        except ValueError:
+            return 0
+        return int(when.timestamp())
+
+    # -- what the reader does ----------------------------------------------
+
+    def _changed(self, _e) -> None:
+        self._preset = None
+        self._sync()
+
+    def _preset_clicked(self, seconds: int) -> None:
+        """Set the date from a button, measured from now or from the lock."""
+        base = max(self._now(), float(self._snapshot.lock.end))
+        if not self._snapshot.lock.exists:
+            base = self._now()
+        when = dt.datetime.fromtimestamp(
+            week_floor(int(self._now() + seconds)), dt.UTC
+        )
+        # An extension is measured from the end that is already there, so
+        # "+1y" on a lock with two years left means three, not one.
+        if self._snapshot.lock.exists:
+            when = dt.datetime.fromtimestamp(
+                week_floor(int(base + seconds)), dt.UTC
+            )
+        capped = min(when.timestamp(), self._now() + MAXTIME)
+        self._preset = seconds
+        self.date.value = dt.datetime.fromtimestamp(
+            week_floor(int(capped)), dt.UTC
+        ).strftime(DATE_FORMAT)
+        self._sync()
+
+    def _max_clicked(self, _e) -> None:
+        self.amount.value = token_amount(
+            units_to_float(self._snapshot.crv, 18), places=18, figures=30
+        )
+        self._sync()
+
+    async def _approve(self, _e) -> None:
+        await self._step(
+            "Approving…",
+            lambda c: c.approve(self._amount()),
+            f"Approved {token_amount(units_to_float(self._amount(), 18))} CRV.",
+        )
+
+    async def _lock(self, _e) -> None:
+        amount = self._amount()
+        if self._snapshot.lock.exists:
+            await self._step("Adding to the lock…",
+                             lambda c: c.increase_amount(amount),
+                             "Added to your lock.")
+            return
+        until = self._until()
+        await self._step("Creating the lock…",
+                         lambda c: c.create_lock(amount, until),
+                         f"Locked until {say_date(until)}.")
+
+    async def _extend(self, _e) -> None:
+        until = self._until()
+        await self._step("Extending the lock…",
+                         lambda c: c.increase_unlock_time(until),
+                         f"Locked until {say_date(until)}.")
+
+    async def _withdraw(self, _e) -> None:
+        await self._step("Withdrawing…",
+                         lambda c: c.withdraw(),
+                         "Withdrawn.")
+
+    async def _claim(self, _e) -> None:
+        amount = self._snapshot.claimable
+        await self._step(
+            "Claiming…",
+            lambda c: c.claim(),
+            f"Claimed {token_amount(units_to_float(amount, 18))} crvUSD.",
+        )
+
+    async def _step(self, saying: str, send, done: str) -> None:
+        """One transaction, with the panel held still while it is in flight."""
+        contract = self._contract_for()
+        if contract is None or not contract.can_send:
+            self.status.say("Connect a wallet first.", FAILED)
+            return
+        self._busy = True
+        self._sync()
+        self.status.say(saying, pending=True)
+        try:
+            await send(contract)
+        except WalletError as exc:
+            self.status.say(str(exc), FAILED, sticky=True)
+            return
+        finally:
+            self._busy = False
+        self.status.say(done, DONE, sticky=True)
+        await self.reload()
+
+    async def reload(self) -> None:
+        """Read everything again, which is one request."""
+        contract = self._contract_for()
+        if contract is None:
+            return
+        try:
+            self.show(await contract.snapshot())
+        except WalletError as exc:
+            self.status.say(str(exc), FAILED)
+            return
+        if not contract.can_send:
+            # An empty snapshot is what a wallet-less page has to draw, and
+            # zeroes on their own read as "you have none of this" rather
+            # than "nobody has said who you are".
+            self.status.say("Connect a wallet to lock CRV or claim.")
+
+
+class _Position(ft.Container):
+    """What this address already holds, above the panels."""
+
+    def __init__(self, page: ft.Page) -> None:
+        self.power = ft.Text("-", size=METRIC, weight=ft.FontWeight.BOLD)
+        self.share = ft.Text("", size=LABEL, color=ft.Colors.ON_SURFACE_VARIANT)
+        self.locked = ft.Text("-", size=BODY)
+        self.until = ft.Text("", size=LABEL, color=ft.Colors.ON_SURFACE_VARIANT)
+        super().__init__(
+            ft.Row(
+                [
+                    ft.Column([ft.Text("Voting power", size=LABEL,
+                                       color=ft.Colors.ON_SURFACE_VARIANT),
+                               self.power, self.share], spacing=2),
+                    ft.Column([ft.Text("Locked", size=LABEL,
+                                       color=ft.Colors.ON_SURFACE_VARIANT),
+                               self.locked, self.until], spacing=2),
+                ],
+                spacing=48,
+                vertical_alignment=ft.CrossAxisAlignment.START,
+            ),
+            padding=ft.Padding.symmetric(horizontal=16, vertical=12),
+            bgcolor=ft.Colors.SURFACE,
+            border=theme.panel_border(page),
+            border_radius=10,
+        )
+
+    def show(self, snapshot: Snapshot, now: float) -> None:
+        lock = snapshot.lock
+        self.power.value = (
+            f"{token_amount(units_to_float(snapshot.voting_power, 18))} veCRV"
+        )
+        self.share.value = (
+            f"{snapshot.share:.4f}% of all voting power"
+            if snapshot.voting_power else "none yet"
+        )
+        self.locked.value = (
+            f"{token_amount(units_to_float(lock.amount, 18))} CRV"
+            if lock.exists else "nothing"
+        )
+        self.until.value = (
+            "ended, ready to withdraw" if lock.expired(now)
+            else f"until {say_date(lock.end)} · {say_duration(lock.seconds_left(now))}"
+            if lock.exists else ""
+        )

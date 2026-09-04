@@ -32,6 +32,7 @@ from curve.rpc import (
     prefers_public_reads,
 )
 from curve.sort import DEFAULT_SORT
+from curve.vecrv import VeCrvContract
 from ui import AnyEvent, buttons, logos, routing, safe_update, status
 from ui import theme as themes
 from ui.assets import chad_mark, chain_name, curve_logo
@@ -42,6 +43,7 @@ from ui.portfolio import PortfolioView
 from ui.responsive import content_width, layout_for
 from ui.swap_page import SwapPage
 from ui.typography import BODY, LABEL, ROW_TITLE, SMALL, TITLE
+from ui.vecrv import VeCrvView
 from wallet import (
     Wallet,
     WalletChoice,
@@ -174,6 +176,12 @@ ADDRESS_EXPAND_MIN_PAGE = 1100
 PAGE_POOLS = "pools"
 PAGE_PORTFOLIO = "portfolio"
 PAGE_SWAP = "swap"
+PAGE_VECRV = "vecrv"
+
+#: The one chain veCRV is on.  The page is kept out of the nav everywhere
+#: else rather than shown and explained: the escrow is not deployed there,
+#: so there is nothing the page could say that is not "go to Ethereum".
+VECRV_CHAIN_ID = 1
 
 #: The glyph beside each page's name, in the nav and in the menu the nav
 #: becomes on a phone -- where the three theme rows already carry a mark,
@@ -182,10 +190,16 @@ PAGE_MARKS = {
     PAGE_POOLS: ft.Icons.POOL,
     PAGE_PORTFOLIO: ft.Icons.SAVINGS,
     PAGE_SWAP: ft.Icons.SWAP_HORIZ,
+    PAGE_VECRV: ft.Icons.HOW_TO_VOTE,
 }
 
 #: The pages, in nav order, with the label each is drawn under.
-PAGES = ((PAGE_SWAP, "Swap"), (PAGE_POOLS, "Pools"), (PAGE_PORTFOLIO, "Portfolio"))
+PAGES = (
+    (PAGE_SWAP, "Swap"),
+    (PAGE_POOLS, "Pools"),
+    (PAGE_PORTFOLIO, "Portfolio"),
+    (PAGE_VECRV, "veCRV"),
+)
 
 #: Room around a page, inside the scroller rather than around it: the
 #: scrollbar is drawn at the edge of the thing that scrolls, so padding the
@@ -210,12 +224,29 @@ NAV_MARK_GAP = 6
 #: How wide the nav slides open: the gap, the space between the links, and
 #: each link's own name plus its glyph and the air beside it.  Measured from
 #: the labels rather than a single number, so adding a page widens it.
-NAV_LABEL_WIDTH = {PAGE_SWAP: 58, PAGE_POOLS: 62, PAGE_PORTFOLIO: 96}
-NAV_WIDTH = (
-    NAV_GAP
-    + NAV_SPACING * (len(PAGES) - 1)
-    + sum(NAV_LABEL_WIDTH[name] + NAV_MARK + NAV_MARK_GAP for name, _ in PAGES)
-)
+NAV_LABEL_WIDTH = {
+    PAGE_SWAP: 58, PAGE_POOLS: 62, PAGE_PORTFOLIO: 96, PAGE_VECRV: 66,
+}
+
+
+def nav_width(pages: tuple[tuple[str, str], ...]) -> int:
+    """How wide the nav has to be to hold exactly these pages.
+
+    Taken from what is shown rather than from `PAGES`, because they differ:
+    veCRV is Ethereum's only, and a nav sized for four links holding three
+    slides an empty stretch of itself over the totals.
+    """
+    if not pages:
+        return 0
+    return (
+        NAV_GAP
+        + NAV_SPACING * (len(pages) - 1)
+        + sum(NAV_LABEL_WIDTH[name] + NAV_MARK + NAV_MARK_GAP for name, _ in pages)
+    )
+
+
+#: Every page, for the chain that has every page.
+NAV_WIDTH = nav_width(PAGES)
 
 #: Below this the header has no room to slide anything open, so the mark
 #: becomes a menu button instead.
@@ -598,6 +629,9 @@ class CurveApp:
         #: router is twenty seconds of reading, and someone who never opens
         #: it should never pay for it.
         self.swap_page: SwapPage | None = None
+        #: The same arrangement for veCRV, and for the same reason -- though
+        #: what this one saves is smaller: one snapshot rather than a warm.
+        self.vecrv_view: VeCrvView | None = None
         self._earnings: list[earnings.Earning] = []
         #: Each gauge's own minter, keyed lower-case, read once with the
         #: seeds.  A chain can have several child gauge factories and each
@@ -653,6 +687,17 @@ class CurveApp:
         if self._showing is self.list_view:
             self.list_view.page_scrolled(e)
 
+    def _pages_here(self) -> tuple[tuple[str, str], ...]:
+        """The pages this chain has, in nav order.
+
+        veCRV is Ethereum's escrow and is deployed nowhere else, so on any
+        other chain the link is not shown -- there is nothing behind it and
+        nothing it could say beyond "go to Ethereum".
+        """
+        if self.chains.get(self.chain) == VECRV_CHAIN_ID:
+            return PAGES
+        return tuple(page for page in PAGES if page[0] != PAGE_VECRV)
+
     def _menu_items(self) -> list[ft.PopupMenuItem]:
         """What the mark opens."""
         pages = [
@@ -660,7 +705,7 @@ class CurveApp:
                              content=ft.Text(label),
                              checked=self._page_name == name,
                              on_click=lambda _e, target=name: self.go_page(target))
-            for name, label in PAGES
+            for name, label in self._pages_here()
         ]
         if not self._icons:
             return pages
@@ -1059,6 +1104,11 @@ class CurveApp:
             if not self.chains:
                 self.chains = await self.api.chains()
                 self._sync_chain_options()
+                # Which pages this chain has is a question about `chains`,
+                # and `_build` drew the nav before there was one to ask --
+                # so veCRV was missing from it until something else happened
+                # to redraw it, which on a first load is nothing.
+                self._sync_nav()
                 self._offer_chains_to_wallet()
                 chain = self.chain  # `_sync_chain_options` may have moved it
                 # The order the picker ends up in, fetched behind the page.
@@ -1695,6 +1745,17 @@ class CurveApp:
                 self.show_swap()
             return
 
+        if route.is_vecrv:
+            # A link to it on another chain has nothing behind it, so it goes
+            # where the nav would have sent someone: the list.
+            if self.chains.get(self.chain) != VECRV_CHAIN_ID:
+                self.show_list()
+                return
+            already = self._page_name == PAGE_VECRV
+            if self._detail is not None or not already:
+                self.show_vecrv(reload=not already)
+            return
+
         if route.is_portfolio:
             # `_page_name` still says "portfolio" while a pool opened from
             # it is on screen -- a pool is not a page and does not claim
@@ -1737,6 +1798,37 @@ class CurveApp:
             self.progress.visible = False
             self.page.update()
         self.open_pool(pool)
+
+    def vecrv_contract(self) -> VeCrvContract | None:
+        """The escrow, bound to the wallet, or to a node for reading.
+
+        Ethereum's whatever the picker says: the page is only reachable
+        there, and a contract pointed anywhere else would read zeroes off an
+        address that holds no escrow.
+        """
+        if self.wallet is not None:
+            return VeCrvContract(
+                self.reader(VECRV_CHAIN_ID, self.wallet.provider),
+                self.wallet.address,
+            )
+        return VeCrvContract(self.public_node(VECRV_CHAIN_ID), "")
+
+    def show_vecrv(self, *, reload: bool = True) -> None:
+        """Open the veCRV page, building it the first time it is asked for."""
+        self._detail = None
+        self._page_name = PAGE_VECRV
+        self._sync_nav()
+        if self.vecrv_view is None:
+            self.vecrv_view = VeCrvView(
+                self.page, contract_for=self.vecrv_contract
+            )
+        self._show(self.vecrv_view)
+        if self.page.width:
+            self.vecrv_view.set_layout(layout_for(self.page.width))
+        self._go(routing.build(self.chain, page=PAGE_VECRV))
+        self.page.update()
+        if reload:
+            self.page.run_task(self.vecrv_view.reload)
 
     def contract_for(self) -> PoolContract | None:
         """The open pool, bound to the best provider available."""
@@ -1801,7 +1893,7 @@ class CurveApp:
         """Redraw the links -- and the menu, which is the links on a phone."""
         self.menu.items = self._menu_items()
         self.nav.content = ft.Row(
-            [self._nav_link(label, name) for name, label in PAGES],
+            [self._nav_link(label, name) for name, label in self._pages_here()],
             spacing=NAV_SPACING,
             tight=True,
         )
@@ -1814,7 +1906,7 @@ class CurveApp:
 
     def _open_nav(self, open_it: bool) -> None:
         """Slide the pages over the totals, or put them back."""
-        self.nav.width = NAV_WIDTH if open_it else 0
+        self.nav.width = nav_width(self._pages_here()) if open_it else 0
         self.totals.opacity = 0.0 if open_it else 1.0
         self.page.update()
 
@@ -1858,6 +1950,8 @@ class CurveApp:
             self.show_portfolio()
         elif page == PAGE_SWAP:
             self.show_swap()
+        elif page == PAGE_VECRV:
+            self.show_vecrv()
         else:
             self.show_list()
 

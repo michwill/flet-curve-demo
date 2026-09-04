@@ -2293,6 +2293,8 @@ def nav_app(page=None, on: str = "pools"):
     app = app_module.CurveApp.__new__(app_module.CurveApp)
     app.page = page or StubPage()
     app._page_name = on
+    app.chain = "ethereum"
+    app.chains = {"ethereum": 1, "arbitrum": 42161}
     app.nav = ft.Container(width=0)                # closed, as the app starts
     app.menu = ft.PopupMenuButton(visible=False)   # wide, as the app starts
     app.totals = ft.Text("")
@@ -2457,7 +2459,9 @@ def header_app(width: float):
     app = app_module.CurveApp.__new__(app_module.CurveApp)
     app.page = Session(width=width)
     app.chain = "ethereum"
-    app.chains = {}
+    #: Filled in, because the header now asks which chain this is: veCRV is
+    #: Ethereum's and the nav leaves it out everywhere else.
+    app.chains = {"ethereum": 1, "arbitrum": 42161}
     app.wallet = None
     app._page_name = "pools"
     app._detail = None
@@ -3024,6 +3028,36 @@ def test_a_laptop_menu_is_pages_only() -> None:
         item.content.value for item in app.menu.items if item.content is not None
     ]
     assert labels == [label for _name, label in PAGES]
+
+
+def test_vecrv_is_offered_on_ethereum_and_nowhere_else() -> None:
+    """The escrow is deployed on one chain, so the link is shown on one."""
+    app = header_app(LAPTOP)
+
+    assert "veCRV" in [label for _name, label in app._pages_here()]
+
+    app.chain = "arbitrum"
+
+    assert "veCRV" not in [label for _name, label in app._pages_here()]
+    assert [label for _name, label in app._pages_here()] == [
+        "Swap", "Pools", "Portfolio"
+    ]
+
+
+def test_the_nav_is_only_as_wide_as_the_pages_it_holds() -> None:
+    """Sized for four and holding three, it slides empty space over the
+    totals."""
+    from main import PAGES, nav_width
+
+    app = header_app(LAPTOP)
+    everything = nav_width(app._pages_here())
+
+    app.chain = "arbitrum"
+    fewer = nav_width(app._pages_here())
+
+    assert everything == nav_width(PAGES)
+    assert fewer < everything
+    assert nav_width(()) == 0
 
 
 def test_crossing_the_breakpoint_repaints_the_header(monkeypatch) -> None:
@@ -3928,6 +3962,10 @@ def switching_app(api):
     app._load_marks = _nothing
     app._sync_chain_options = lambda: None
     app._sync_chain_picker = lambda: None
+    #: `load_pools` redraws the nav once it knows the chains, and this stub
+    #: has no header to redraw.  Without it the run dies there, before the
+    #: gate this test waits on is ever reached -- which reads as a hang.
+    app._sync_nav = lambda: None
     app._show_totals = lambda totals: None
     return app
 

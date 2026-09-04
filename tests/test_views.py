@@ -2364,6 +2364,77 @@ def test_hovering_opens_the_nav_and_fades_the_totals() -> None:
     assert app.totals.opacity == 1.0
 
 
+def test_a_tap_on_the_bar_opens_the_nav_where_a_pointer_cannot() -> None:
+    """A wide touchscreen gets the wide layout and so no menu button, and
+    `on_hover` never fires for it -- which left every page but the one it
+    arrived on unreachable."""
+    from main import NAV_WIDTH
+
+    app = nav_app()
+
+    app._brand_tapped(SimpleNamespace(data=None))
+    assert app.nav.width == NAV_WIDTH
+    assert app.totals.opacity == 0.0
+
+    app._brand_tapped(SimpleNamespace(data=None))
+    assert app.nav.width == 0, "and taps again to put it away"
+    assert app.totals.opacity == 1.0
+
+
+def test_choosing_a_page_closes_what_the_tap_opened() -> None:
+    """No pointer is going to leave the bar and close them."""
+    from main import NAV_WIDTH
+
+    app = nav_app()
+    app.show_list = lambda: None
+    app.show_swap = lambda: None
+    app.show_portfolio = lambda: None
+    app._brand_tapped(SimpleNamespace(data=None))
+    assert app.nav.width == NAV_WIDTH
+
+    app.go_page("swap")
+
+    assert app.nav.width == 0
+    assert app.totals.opacity == 1.0
+
+
+def test_the_mark_opens_the_pages_like_the_rest_of_the_bar() -> None:
+    """It used to go to Pools -- a page the pages themselves offer."""
+    from main import NAV_WIDTH
+
+    app = nav_app()
+    app.show_list = lambda: None
+
+    app._mark_tapped(SimpleNamespace(data=None))
+
+    assert app.nav.width == NAV_WIDTH
+    assert app.totals.opacity == 0.0
+
+
+def test_but_on_a_narrow_page_it_still_goes_home() -> None:
+    """There is nowhere for the pages to slide to; the menu button has them."""
+    app = nav_app(on="portfolio")
+    app.menu.visible = True
+    went = []
+    app.show_list = lambda: went.append("pools")
+    app.show_swap = lambda: went.append("swap")
+    app.show_portfolio = lambda: went.append("portfolio")
+
+    app._mark_tapped(SimpleNamespace(data=None))
+
+    assert went == ["pools"]
+    assert app.nav.width == 0
+
+
+def test_a_narrow_page_ignores_the_tap_as_well() -> None:
+    app = nav_app()
+    app.menu.visible = True
+
+    app._brand_tapped(SimpleNamespace(data=None))
+
+    assert app.nav.width == 0, "the menu button is the way in"
+
+
 def test_a_narrow_page_uses_the_menu_button_instead() -> None:
     app = nav_app()
     app.menu.visible = True

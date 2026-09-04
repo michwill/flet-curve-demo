@@ -547,7 +547,7 @@ class CurveApp:
 
         brand = ft.Container(
             ft.Row([self.brand, self.build_label], spacing=8, tight=True),
-            on_click=lambda _e: self.go_page(PAGE_POOLS),
+            on_click=self._mark_tapped,
             ink=True,
             border_radius=8,
             padding=ft.Padding.symmetric(horizontal=4, vertical=2),
@@ -564,6 +564,7 @@ class CurveApp:
                 spacing=0,
             ),
             on_hover=self._brand_hovered,
+            on_click=self._brand_tapped,
             expand=True,
             height=HEADER_HEIGHT,
         )
@@ -1809,12 +1810,50 @@ class CurveApp:
         """Slide the pages out from under the mark, over the totals."""
         if self.menu.visible:
             return  # narrow: the menu button is the way in
-        self.nav.width = NAV_WIDTH if e.data else 0
-        self.totals.opacity = 0.0 if e.data else 1.0
+        self._open_nav(bool(e.data))
+
+    def _open_nav(self, open_it: bool) -> None:
+        """Slide the pages over the totals, or put them back."""
+        self.nav.width = NAV_WIDTH if open_it else 0
+        self.totals.opacity = 0.0 if open_it else 1.0
         self.page.update()
+
+    def _brand_tapped(self, _e: ft.Event[ft.Container]) -> None:
+        """The same pages, for a screen that cannot hover.
+
+        A wide touchscreen -- an iPad -- is given the wide layout, and the
+        wide layout has no menu button because the mark is meant to be
+        hovered instead.  `on_hover` never fires without a pointer, so those
+        readers had no way to any page but the one they arrived on.  A tap
+        does what arriving does, and taps again to put it away.
+
+        The mark itself and every link keep their own `on_click`, so this
+        only ever fires on the rest of the bar.
+        """
+        if self.menu.visible:
+            return  # narrow: the menu button is the way in
+        self._open_nav(not self.nav.width)
+
+    def _mark_tapped(self, e: ft.Event[ft.Container]) -> None:
+        """The mark opens the pages, the same as the bar it sits in.
+
+        It used to go to Pools, which is a page the pages themselves offer --
+        so the mark was the one part of the bar that did something else, and
+        the thing it did was already one tap away once the bar was open.
+
+        Except on a narrow page, where there is nowhere for the pages to
+        slide to: the menu button holds them there, and the mark keeps its
+        older job of going home.
+        """
+        if self.menu.visible:
+            self.go_page(PAGE_POOLS)
+            return
+        self._brand_tapped(e)
 
     def go_page(self, page: str) -> None:
         """Switch pages, through the URL so that Back works."""
+        # A tap opened these, and no pointer is going to leave and close them.
+        self._open_nav(False)
         if page == PAGE_PORTFOLIO:
             self.show_portfolio()
         elif page == PAGE_SWAP:

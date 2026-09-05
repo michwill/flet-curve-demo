@@ -513,3 +513,84 @@ def test_the_note_takes_its_paper_from_the_theme_on_screen() -> None:
     assert papers["chad"] == theme.STICKY_CHAD
     assert len(set(papers.values())) == len(theme.NAMES)
     assert ft.ThemeMode.DARK is theme.theme_for("dark")[1]
+
+
+class Recorder:
+    """A contract whose chain only moves once the transaction is mined.
+
+    Which is the whole of the bug: asked before that, it truthfully answers
+    with the figures that are already on screen.
+    """
+
+    can_send = True
+    provider = object()
+
+    def __init__(self, log: list[str], before, after) -> None:
+        self._log, self._before, self._after = log, before, after
+
+    def is_collecting(self) -> bool:
+        return False
+
+    async def claim(self) -> str:
+        self._log.append("send")
+        return "0x" + "ab" * 32
+
+    async def snapshot(self):
+        self._log.append("read")
+        return self._after if "wait" in self._log else self._before
+
+
+def run_claim(monkeypatch, waiter) -> tuple[list[str], object]:
+    """Click Claim on a view holding 7 crvUSD, with `waiter` as the wait."""
+    import asyncio
+
+    from curve.vecrv import Snapshot
+    from ui import vecrv as ui_vecrv
+
+    log: list[str] = []
+    before = Snapshot(lock=Lock(), claimable=7 * 10**18)
+    after = Snapshot(lock=Lock(amount=10**18, end=int(NOW) + 90 * 86400),
+                     claimable=0)
+    contract = Recorder(log, before, after)
+
+    async def waited(provider, tx, **kw):
+        log.append("wait")
+        return await waiter(provider, tx)
+
+    monkeypatch.setattr(ui_vecrv, "wait_for_confirmation", waited)
+    v = ui_vecrv.VeCrvView(_StubPage(), contract_for=lambda: contract,
+                           now=lambda: NOW)
+    v.show(before)
+    asyncio.run(v._claim(None))
+    return log, v
+
+
+class _StubPage:
+    def update(self) -> None: ...
+    def run_task(self, *_a, **_k) -> None: ...
+
+
+def test_the_figures_are_read_back_only_once_the_claim_is_mined(monkeypatch)\
+        -> None:
+    """Read before the receipt and the page redraws what was already on it."""
+    async def mined(_provider, _tx):
+        return 777
+
+    log, v = run_claim(monkeypatch, mined)
+
+    assert log == ["send", "wait", "read"]
+    assert v.claimable.value == "0 crvUSD"
+
+
+def test_and_not_at_all_when_it_never_lands(monkeypatch) -> None:
+    """A pending transaction has moved nothing, so nothing is re-read."""
+    from curve.confirm import StillPending
+
+    async def never(_provider, _tx):
+        raise StillPending("0xabab… has not been mined yet.")
+
+    log, v = run_claim(monkeypatch, never)
+
+    assert log == ["send", "wait"]
+    assert "has not been mined" in v.status.text.value
+    assert not v.claim_button.disabled  # and the panel is usable again

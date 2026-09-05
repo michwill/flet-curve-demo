@@ -17,6 +17,7 @@ from collections.abc import Callable
 
 import flet as ft
 
+from curve.confirm import wait_for_confirmation
 from curve.format import token_amount, units_to_float
 from curve.models import Coin
 from curve.vecrv import (
@@ -502,7 +503,16 @@ class VeCrvView(ft.Column):
         )
 
     async def _step(self, saying: str, send, done: str) -> None:
-        """One transaction, with the panel held still while it is in flight."""
+        """One transaction, from the prompt to the figures it moves.
+
+        The wait is the point.  `send` is finished the moment the wallet
+        hands back a hash, and until that hash is mined every figure here is
+        read from a chain that has not run it: re-reading there redraws what
+        was already on screen, which is what a claim leaving its own
+        claimable amount standing looked like.  `wait_for_confirmation` also
+        waits for the endpoint to reach the block, so the read afterwards
+        cannot land on a node that is still behind it.
+        """
         contract = self._contract_for()
         if contract is None or not contract.can_send:
             self.status.say("Connect a wallet first.", FAILED)
@@ -511,12 +521,22 @@ class VeCrvView(ft.Column):
         self._sync()
         self.status.say(saying, pending=True)
         try:
-            await send(contract)
+            tx = await send(contract)
+            # Empty while a batch is being collected: nothing has been sent,
+            # so there is nothing to wait for and nothing has moved.
+            if tx:
+                self.status.say(f"Waiting for {tx[:14]}… to confirm.",
+                                pending=True)
+                await wait_for_confirmation(contract.provider, tx)
         except WalletError as exc:
             self.status.say(str(exc), FAILED, sticky=True)
             return
         finally:
             self._busy = False
+            # Synced here rather than left to `reload`, which a failure
+            # never reaches -- and which is what kept the buttons disabled
+            # after one.
+            self._sync()
         self.status.say(done, DONE, sticky=True)
         await self.reload()
 

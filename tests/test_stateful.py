@@ -124,6 +124,7 @@ def build_app(session: Session):
     app.feed = None
     app._detail = None
     app.swap_page = None
+    app.vecrv_view = None
     app._page_name = "pools"
     app._address_expanded = False
     app.storage = session.shared_preferences

@@ -156,6 +156,7 @@ def make_app(route: str = "/", *, pool=_DEFAULT, chain: str = "ethereum",
     #: an app opened straight onto a pool looks like.
     app.feed = feed
     app.swap_page = None
+    app.vecrv_view = None
     app._page_name = "pools"
     app._route_applied = True
     app.body = ft.Container()

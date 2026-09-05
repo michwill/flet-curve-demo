@@ -38,7 +38,7 @@ from .alarm import Band
 from .logos import token_mark
 from .responsive import Layout
 from .status import DONE, FAILED, StatusPanel
-from .typography import BODY, LABEL, METRIC, ROW_TITLE, SMALL, TITLE
+from .typography import BODY, LABEL, METRIC, ROW_TITLE, SMALL
 
 #: The durations the buttons offer, in the order they are drawn.  A month is
 #: four weeks rather than a calendar one: the escrow counts in weeks, and
@@ -61,6 +61,11 @@ CRVUSD_COIN = Coin(address=CRVUSD, symbol="crvUSD", decimals=18)
 
 #: Mark size beside an amount field, matching the pool page's panels.
 MARK = 20
+
+#: How wide each panel is drawn.  Fixed, so the two sit side by side at any
+#: width that has room for both and stack when it does not -- the row wraps
+#: rather than squeezing them.
+PANEL_WIDTH = 380
 
 
 def voting_power_for(amount: int, seconds: int) -> int:
@@ -130,16 +135,28 @@ class VeCrvView(ft.Column):
                                     color=ft.Colors.ON_SURFACE_VARIANT)
         self.date = ft.TextField(
             label="Unlock date",
-            hint_text=DATE_FORMAT.replace("%Y", "2030").replace("%m", "09")
-                                 .replace("%d", "05"),
+            hint_text="2030-09-05",
             dense=True,
             on_change=self._changed,
+            # Typing still works -- somebody who knows the date they want
+            # should not have to walk a calendar to it -- but the calendar
+            # is what a date field is expected to open, and it is the only
+            # way to find "the Thursday after next" without counting.
+            suffix_icon=ft.IconButton(
+                ft.Icons.CALENDAR_MONTH,
+                icon_size=18,
+                tooltip="Pick a date",
+                on_click=self._open_calendar,
+            ),
         )
         self.date_line = ft.Text("", size=LABEL,
                                  color=ft.Colors.ON_SURFACE_VARIANT)
+        # `buttons.Themed` rather than an `OutlinedButton`: it re-reads the
+        # scheme on every update, which is how every other button in the app
+        # follows a theme change instead of keeping the one it was built in.
         self._preset_buttons = {
-            seconds: ft.OutlinedButton(
-                label,
+            seconds: buttons.Themed(
+                label, page=page,
                 on_click=lambda _e, s=seconds: self._preset_clicked(s),
             )
             for label, seconds in PRESETS
@@ -167,17 +184,22 @@ class VeCrvView(ft.Column):
 
         super().__init__(
             controls=[
-                ft.Text("veCRV", size=TITLE, weight=ft.FontWeight.BOLD),
                 self.position,
-                self.status,
+                # As wide as the panels under it and no wider: left to
+                # itself the band stretches the window while everything
+                # around it is centred.
+                ft.Container(self.status, width=PANEL_WIDTH * 2 + 16),
                 ft.Row(
                     [self._lock_panel(), self._claim_panel()],
                     spacing=16,
+                    alignment=ft.MainAxisAlignment.CENTER,
                     vertical_alignment=ft.CrossAxisAlignment.START,
                     wrap=True,
+                    run_spacing=16,
                 ),
             ],
             spacing=14,
+            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
         )
 
     # -- the two panels ----------------------------------------------------
@@ -227,7 +249,7 @@ class VeCrvView(ft.Column):
         return ft.Container(
             content,
             padding=16,
-            width=380,
+            width=PANEL_WIDTH,
             bgcolor=ft.Colors.SURFACE,
             border=theme.panel_border(self._page),
             border_radius=10,
@@ -356,6 +378,31 @@ class VeCrvView(ft.Column):
 
     # -- what the reader does ----------------------------------------------
 
+    def _open_calendar(self, _e) -> None:
+        """A calendar between now and the four years the escrow allows."""
+        now = self._now()
+        floor = max(now + WEEK, float(self._snapshot.lock.end))
+        picker = ft.DatePicker(
+            value=dt.datetime.fromtimestamp(self._until() or floor, dt.UTC),
+            first_date=dt.datetime.fromtimestamp(floor, dt.UTC),
+            last_date=dt.datetime.fromtimestamp(now + MAXTIME, dt.UTC),
+            help_text="Unlock date",
+            on_change=self._calendar_picked,
+        )
+        self._page.show_dialog(picker)
+
+    def _calendar_picked(self, e) -> None:
+        chosen = getattr(e.control, "value", None)
+        if chosen is None:
+            return
+        # Shown as the escrow will have it, not as it was clicked: the
+        # calendar offers every day and the escrow keeps Thursdays.
+        self.date.value = dt.datetime.fromtimestamp(
+            week_floor(int(chosen.timestamp())), dt.UTC
+        ).strftime(DATE_FORMAT)
+        self._preset = None
+        self._sync()
+
     def _changed(self, _e) -> None:
         self._preset = None
         self._sync()
@@ -454,11 +501,12 @@ class VeCrvView(ft.Column):
         except WalletError as exc:
             self.status.say(str(exc), FAILED)
             return
-        if not contract.can_send:
-            # An empty snapshot is what a wallet-less page has to draw, and
-            # zeroes on their own read as "you have none of this" rather
-            # than "nobody has said who you are".
-            self.status.say("Connect a wallet to lock CRV or claim.")
+        # An empty snapshot on its own reads as "you have none of this"
+        # rather than "nobody has said who you are" -- and the moment a
+        # wallet arrives, saying so is worse than saying nothing.
+        self.status.say(
+            "" if contract.can_send else "Connect a wallet to lock CRV or claim."
+        )
 
 
 class _Position(ft.Container):
@@ -474,12 +522,18 @@ class _Position(ft.Container):
                 [
                     ft.Column([ft.Text("Voting power", size=LABEL,
                                        color=ft.Colors.ON_SURFACE_VARIANT),
-                               self.power, self.share], spacing=2),
+                               self.power, self.share], spacing=2, tight=True),
                     ft.Column([ft.Text("Locked", size=LABEL,
                                        color=ft.Colors.ON_SURFACE_VARIANT),
-                               self.locked, self.until], spacing=2),
+                               self.locked, self.until], spacing=2, tight=True),
                 ],
                 spacing=48,
+                run_spacing=12,
+                # Wrapped rather than clipped: the two figures are long --
+                # nine digits of veCRV and a date -- and a narrow window was
+                # cutting the second one off the end of the row.
+                wrap=True,
+                tight=True,
                 vertical_alignment=ft.CrossAxisAlignment.START,
             ),
             padding=ft.Padding.symmetric(horizontal=16, vertical=12),
@@ -495,8 +549,9 @@ class _Position(ft.Container):
         )
         self.share.value = (
             f"{snapshot.share:.4f}% of all voting power"
-            if snapshot.voting_power else "none yet"
+            if snapshot.voting_power else ""
         )
+        self.share.visible = bool(self.share.value)
         self.locked.value = (
             f"{token_amount(units_to_float(lock.amount, 18))} CRV"
             if lock.exists else "nothing"

@@ -2004,12 +2004,7 @@ class CurveApp:
         await self.align_wallet_chain()
         self.wallet.on_change(lambda: self.page.run_task(self._wallet_changed))
         self.wallet.on_disconnect(lambda: self.page.run_task(self._wallet_gone))
-        if self._detail is not None:
-            await self._detail.refresh_actions()
-        if self.swap_page is not None:
-            await self.swap_page.wallet_changed()
-        if self._page_name == PAGE_PORTFOLIO:
-            await self.load_portfolio()
+        await self._tell_the_pages()
 
     async def restore(self) -> None:
         """Pick up the previous session, silently, or leave things as they are."""
@@ -2026,10 +2021,27 @@ class CurveApp:
         await self.align_wallet_chain()
         self.wallet.on_change(lambda: self.page.run_task(self._wallet_changed))
         self.wallet.on_disconnect(lambda: self.page.run_task(self._wallet_gone))
+        await self._tell_the_pages()
+
+    async def _tell_the_pages(self) -> None:
+        """Every page holding wallet-shaped state, told the wallet moved.
+
+        One method rather than the same four lines in `connect`, `restore`,
+        `_wallet_changed` and `_wallet_gone`, because a page added later gets
+        told by being added here once -- veCRV was not, and so showed the
+        figures of whoever had been connected when it was last drawn, or
+        none at all if that was nobody.
+
+        Pages not on screen are told too: they keep their state between
+        visits, and coming back to a balance read for somebody else is worse
+        than coming back to none.
+        """
         if self._detail is not None:
             await self._detail.refresh_actions()
         if self.swap_page is not None:
             await self.swap_page.wallet_changed()
+        if self.vecrv_view is not None:
+            await self.vecrv_view.reload()
         if self._page_name == PAGE_PORTFOLIO:
             await self.load_portfolio()
 
@@ -2047,12 +2059,7 @@ class CurveApp:
         self.page.update()
         if await self._follow_wallet_chain():
             return
-        if self._detail is not None:
-            await self._detail.refresh_actions()
-        if self.swap_page is not None:
-            await self.swap_page.wallet_changed()
-        if self._page_name == PAGE_PORTFOLIO:
-            await self.load_portfolio()
+        await self._tell_the_pages()
 
     async def _follow_wallet_chain(self) -> bool:
         """Point the app at the network the wallet moved to."""
@@ -2084,12 +2091,9 @@ class CurveApp:
         self.connect_button.visible = True
         self.connect_button.disabled = False
         self.page.update()
-        if self.swap_page is not None:
-            # Going the other way matters as much: a balance left on screen
-            # after the wallet has gone is a figure for nobody.
-            await self.swap_page.wallet_changed()
-        if self._page_name == PAGE_PORTFOLIO:
-            await self.load_portfolio()
+        # Going the other way matters as much: a balance left on screen
+        # after the wallet has gone is a figure for nobody.
+        await self._tell_the_pages()
 
     # -- the wallet panel -------------------------------------------------
 

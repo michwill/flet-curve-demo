@@ -2466,6 +2466,7 @@ def header_app(width: float):
     app._page_name = "pools"
     app._detail = None
     app.swap_page = None
+    app.vecrv_view = None
     app._address_expanded = False
     app._route_applied = True
     app.storage = None
@@ -3823,7 +3824,12 @@ async def test_losing_the_wallet_reloads_the_portfolio() -> None:
     app.wallet = object()
     app._page_name = "portfolio"
     app.connect_button = ft.Button("Connect")
+    #: Losing the wallet now refreshes an open pool panel as well, for the
+    #: reason `_wallet_gone` already gave about the swap tab: a balance left
+    #: on screen after the wallet has gone is a figure for nobody.
+    app._detail = None
     app.swap_page = None
+    app.vecrv_view = None
     app._show_account = lambda **_kw: None      # type: ignore[method-assign]
     reloaded = []
 
@@ -3871,6 +3877,7 @@ def test_a_theme_change_reaches_both_tables() -> None:
     app.connect_button = ft.Button("Connect")
     app._detail = None
     app.swap_page = None
+    app.vecrv_view = None
     app.chain_picker = ft.SearchBar(view_bgcolor=None)
     app.list_view = PoolListView(app.page, on_open=lambda _p: None)
     app.portfolio_view = portfolio_view(app.page)
@@ -3946,6 +3953,7 @@ def switching_app(api):
     app._route_applied = True
     app._detail = None
     app.swap_page = None
+    app.vecrv_view = None
     app.progress = ft.ProgressBar()
     app.error = ft.Text()
     app.totals = ft.Text()
@@ -4909,3 +4917,42 @@ async def test_but_a_link_to_the_list_itself_takes_one() -> None:
     await app.load_pools()
 
     assert app.__dict__["_pages_taken"] == [1]
+
+
+async def test_every_wallet_aware_page_is_told_when_the_wallet_moves() -> None:
+    """veCRV was not, so it showed the figures of whoever was connected when
+    it was last drawn -- or none, if that was nobody.  A page added later is
+    told by being added to `_tell_the_pages` once."""
+    import main as app_module
+
+    app = app_module.CurveApp.__new__(app_module.CurveApp)
+    told: list[str] = []
+    app._page_name = "portfolio"
+    app._detail = SimpleNamespace(
+        refresh_actions=lambda: _record(told, "pool")
+    )
+    app.swap_page = SimpleNamespace(
+        wallet_changed=lambda: _record(told, "swap")
+    )
+    app.vecrv_view = SimpleNamespace(reload=lambda: _record(told, "vecrv"))
+    app.load_portfolio = lambda: _record(told, "portfolio")
+
+    await app._tell_the_pages()
+
+    assert told == ["pool", "swap", "vecrv", "portfolio"]
+
+
+async def _record(into: list, name: str) -> None:
+    into.append(name)
+
+
+async def test_a_page_never_opened_is_not_woken_to_be_told() -> None:
+    import main as app_module
+
+    app = app_module.CurveApp.__new__(app_module.CurveApp)
+    app._page_name = "pools"
+    app._detail = None
+    app.swap_page = None
+    app.vecrv_view = None
+
+    await app._tell_the_pages()      # nothing to tell, and nothing raised

@@ -404,3 +404,67 @@ def test_the_estimate_is_the_escrows_own_arithmetic() -> None:
     assert voting_power_for(10**18, 0) == 0
     assert voting_power_for(0, MAXTIME) == 0
     assert voting_power_for(10**18, MAXTIME * 2) == 10**18, "capped at four years"
+
+
+def test_a_lock_that_runs_longer_than_a_preset_disables_it() -> None:
+    """A lock only ever moves outwards: with three years left, "1y" names a
+    date the escrow would refuse, so the button is dead rather than there to
+    be pressed and told no."""
+    from ui.vecrv import MAXTIME, WEEK
+
+    three_years = int(NOW) + 3 * 365 * 86400
+    v = view(lock=Lock(amount=10**18, end=three_years))
+
+    assert not v.preset_reachable(WEEK)
+    assert not v.preset_reachable(52 * WEEK)
+    assert v.preset_reachable(MAXTIME), "four years is still further out"
+    assert v._preset_buttons[WEEK].disabled
+    assert not v._preset_buttons[MAXTIME].disabled
+
+
+def test_with_no_lock_every_preset_is_available() -> None:
+    from ui.vecrv import MAXTIME, WEEK
+
+    v = view()
+
+    assert all(v.preset_reachable(s) for s in (WEEK, 4 * WEEK, 52 * WEEK, MAXTIME))
+    assert not any(b.disabled for b in v._preset_buttons.values())
+
+
+def test_a_lock_already_at_the_maximum_can_be_extended_by_nothing() -> None:
+    from ui.vecrv import MAXTIME
+
+    v = view(lock=Lock(amount=10**18, end=int(NOW) + MAXTIME))
+
+    assert all(b.disabled for b in v._preset_buttons.values())
+
+
+def test_a_preset_names_a_date_measured_from_now() -> None:
+    """Not from the end already there: the button says "1y", and a lock that
+    ends in a year is what that means whether or not one exists."""
+    from curve.vecrv import week_floor
+    from ui.vecrv import WEEK
+
+    fresh = view()
+    held = view(lock=Lock(amount=10**18, end=int(NOW) + 30 * 86400))
+
+    assert fresh.preset_date(52 * WEEK) == week_floor(int(NOW) + 52 * WEEK)
+    assert held.preset_date(52 * WEEK) == fresh.preset_date(52 * WEEK)
+
+
+def test_and_never_past_the_four_years_the_escrow_allows() -> None:
+    from ui.vecrv import MAXTIME
+
+    v = view()
+
+    assert v.preset_date(MAXTIME * 2) <= int(NOW) + MAXTIME
+
+
+def test_pressing_an_unreachable_preset_does_nothing() -> None:
+    from ui.vecrv import WEEK
+
+    v = view(lock=Lock(amount=10**18, end=int(NOW) + 3 * 365 * 86400))
+
+    v._preset_clicked(WEEK)
+
+    assert not v.date.value

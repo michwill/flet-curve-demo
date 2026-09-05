@@ -320,6 +320,9 @@ class VeCrvView(ft.Column):
             size=SMALL,
         )
 
+        for seconds, button in self._preset_buttons.items():
+            button.disabled = self._busy or not self.preset_reachable(seconds)
+
         needs = max(0, amount - snapshot.allowance)
         self.approve_button.visible = needs > 0 and not lock.expired(now)
         self.approve_button.content = (
@@ -407,24 +410,37 @@ class VeCrvView(ft.Column):
         self._preset = None
         self._sync()
 
+    def preset_date(self, seconds: int) -> int:
+        """The unlock date "1y" and the rest stand for.
+
+        Measured from now, not from the end already there: the buttons say
+        "1y", and a lock that ends in a year is what that means whether or
+        not one exists.  Reading them as extensions made "1y" on a
+        three-year lock mean four, which is not what the label says and is
+        why the shorter ones looked available when they are not.
+        """
+        return week_floor(int(min(self._now() + seconds, self._now() + MAXTIME)))
+
+    def preset_reachable(self, seconds: int) -> bool:
+        """Whether that date is one the escrow would accept.
+
+        A lock only ever moves outwards.  With three years left, "1y" names a
+        date in the past as far as the escrow is concerned and
+        `increase_unlock_time` refuses it -- so the button is dead rather
+        than there to be pressed and told no.
+        """
+        when = self.preset_date(seconds)
+        if when <= self._now():
+            return False
+        return when > self._snapshot.lock.end if self._snapshot.lock.exists else True
+
     def _preset_clicked(self, seconds: int) -> None:
-        """Set the date from a button, measured from now or from the lock."""
-        base = max(self._now(), float(self._snapshot.lock.end))
-        if not self._snapshot.lock.exists:
-            base = self._now()
-        when = dt.datetime.fromtimestamp(
-            week_floor(int(self._now() + seconds)), dt.UTC
-        )
-        # An extension is measured from the end that is already there, so
-        # "+1y" on a lock with two years left means three, not one.
-        if self._snapshot.lock.exists:
-            when = dt.datetime.fromtimestamp(
-                week_floor(int(base + seconds)), dt.UTC
-            )
-        capped = min(when.timestamp(), self._now() + MAXTIME)
+        """Set the date from a button."""
+        if not self.preset_reachable(seconds):
+            return
         self._preset = seconds
         self.date.value = dt.datetime.fromtimestamp(
-            week_floor(int(capped)), dt.UTC
+            self.preset_date(seconds), dt.UTC
         ).strftime(DATE_FORMAT)
         self._sync()
 
@@ -527,7 +543,7 @@ class _Position(ft.Container):
                                        color=ft.Colors.ON_SURFACE_VARIANT),
                                self.locked, self.until], spacing=2, tight=True),
                 ],
-                spacing=48,
+                spacing=72,
                 run_spacing=12,
                 # Wrapped rather than clipped: the two figures are long --
                 # nine digits of veCRV and a date -- and a narrow window was

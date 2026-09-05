@@ -342,6 +342,7 @@ def test_an_expired_lock_offers_only_to_take_it_back() -> None:
     assert "5" in v.withdraw_button.content
     assert not v.lock_button.visible
     assert not v.extend_button.visible
+    assert not v.sequence.visible  # the pair goes together, arrow and all
     assert not v.amount.visible and not v.date.visible
 
 
@@ -359,19 +360,24 @@ def test_the_amount_has_to_be_approved_before_it_can_be_locked() -> None:
     v.amount.value = "2"
     v._sync()
 
-    assert v.approve_button.visible
+    assert not v.approve_button.disabled
     assert v.approve_button.content == "Approve 2 CRV"
     assert v.lock_button.disabled, "not approved yet"
 
 
-def test_and_once_it_is_the_approval_goes_away() -> None:
+def test_and_once_it_is_the_approval_goes_dead_rather_than_away() -> None:
+    """The two are drawn as the sequence they are, so the step that has been
+    taken stays where it was instead of dropping out and sliding the next
+    one under the reader's aim."""
     v = view(crv=10 * 10**18, allowance=2 * 10**18)
     v.amount.value = "2"
     v.date.value = "2030-08-29"
     v._sync()
 
-    assert not v.approve_button.visible
+    assert v.approve_button.disabled
     assert not v.lock_button.disabled
+    assert v.sequence.controls == [v.approve_button, v.step_arrow,
+                                   v.lock_button]
 
 
 def test_more_than_the_wallet_holds_is_not_offered() -> None:
@@ -635,7 +641,7 @@ def test_and_offers_the_approval_when_the_escrow_has_no_allowance() -> None:
     c, _ = contract()
     _, data = c.build_approve(v._amount())
 
-    assert v.approve_button.visible
+    assert not v.approve_button.disabled
     assert v.lock_button.disabled
     assert data.endswith(f"{DUST:064x}")  # the whole balance, to the wei
 
@@ -680,6 +686,90 @@ def test_no_approval_is_offered_for_more_than_the_wallet_holds() -> None:
     v.amount.value = "9"
     v._sync()
 
-    assert not v.approve_button.visible
+    assert v.approve_button.disabled
     assert v.lock_button.disabled
     assert v.amount.error == "More than the wallet holds"
+
+
+class Adder(Recorder):
+    """A contract that takes CRV into a lock that already exists."""
+
+    async def increase_amount(self, _amount: int) -> str:
+        self._log.append("send")
+        return "0x" + "cd" * 32
+
+
+def run_add(monkeypatch) -> object:
+    """Type the whole balance, press Add CRV, let it confirm."""
+    import asyncio
+
+    from curve.vecrv import Snapshot
+    from ui import vecrv as ui_vecrv
+
+    log: list[str] = []
+    lock = Lock(amount=10**18, end=int(NOW) + 90 * 86400)
+    before = Snapshot(lock=lock, crv=DUST, allowance=DUST)
+    after = Snapshot(lock=Lock(amount=10**18 + DUST, end=lock.end), crv=0)
+
+    async def waited(_provider, _tx, **_kw):
+        log.append("wait")
+        return 777
+
+    monkeypatch.setattr(ui_vecrv, "wait_for_confirmation", waited)
+    contract = Adder(log, before, after)
+    v = ui_vecrv.VeCrvView(_StubPage(), contract_for=lambda: contract,
+                           now=lambda: NOW)
+    v.show(before)
+    v._max_clicked(None)
+    asyncio.run(v._lock(None))
+    return v
+
+
+def test_the_amount_field_empties_once_the_chain_has_taken_it(monkeypatch)\
+        -> None:
+    """Left standing it names coins the wallet no longer has, so the field
+    turns red on the balance it was just measured against."""
+    v = run_add(monkeypatch)
+
+    assert v.amount.value == ""
+    assert v.amount.error is None
+
+
+def holds(control, wanted) -> bool:
+    """Is `wanted` this control or anywhere inside it?"""
+    if control is wanted:
+        return True
+    inner = getattr(control, "controls", None) or []
+    content = getattr(control, "content", None)
+    return any(holds(c, wanted) for c in [*inner, *([content] if content else [])])
+
+
+def lock_panel_rows(view_) -> list:
+    """The column the lock panel stacks its rows in, whatever wraps it."""
+    def walk(control) -> list | None:
+        rows = getattr(control, "controls", None) or []
+        if view_.sequence in rows:
+            return rows
+        content = getattr(control, "content", None)
+        for c in [*rows, *([content] if content else [])]:
+            found = walk(c)
+            if found is not None:
+                return found
+        return None
+
+    rows = walk(view_)
+    assert rows is not None, "the sequence is not on the panel at all"
+    return rows
+
+
+def test_and_each_action_sits_under_the_field_it_acts_on() -> None:
+    """A button appearing at the foot of the panel shifted every other one
+    sideways, and the reader was aiming at a target that had moved."""
+    v = view(crv=DUST, lock=Lock(amount=10**18, end=int(NOW) + 90 * 86400))
+    rows = lock_panel_rows(v)
+    at = {name: next(i for i, r in enumerate(rows) if holds(r, control))
+          for name, control in (("amount", v.amount), ("sequence", v.sequence),
+                                ("date", v.date), ("extend", v.extend_button))}
+
+    assert at["sequence"] == at["amount"] + 1
+    assert at["extend"] == at["date"] + 1

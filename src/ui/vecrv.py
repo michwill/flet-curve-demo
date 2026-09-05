@@ -174,7 +174,7 @@ class VeCrvView(ft.Column):
             ft.Text("", size=SMALL), page, kind="impact", visible=False
         )
         self.approve_button = buttons.Themed(
-            "Approve", page=page, on_click=self._approve, visible=False
+            "Approve", page=page, on_click=self._approve, disabled=True
         )
         self.lock_button = buttons.Themed(
             "Create lock", page=page, on_click=self._lock, disabled=True
@@ -184,6 +184,18 @@ class VeCrvView(ft.Column):
         )
         self.withdraw_button = buttons.Themed(
             "Withdraw", page=page, on_click=self._withdraw, visible=False
+        )
+
+        # Approve *then* lock, drawn as the two steps it is: whichever one
+        # is the reader's next move is the live one, and the other is dead
+        # rather than missing.  Both stay on screen the whole way through,
+        # so neither step moves when the other becomes possible.
+        self.step_arrow = ft.Icon(ft.Icons.ARROW_RIGHT_ALT,
+                                  color=ft.Colors.ON_SURFACE_VARIANT)
+        self.sequence = ft.Row(
+            [self.approve_button, self.step_arrow, self.lock_button],
+            spacing=8, wrap=True,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
         )
 
         self.claimable = ft.Text("-", size=METRIC, weight=ft.FontWeight.BOLD)
@@ -222,13 +234,17 @@ class VeCrvView(ft.Column):
                 [
                     self.lock_title,
                     stacked(self.amount, self.balance_line),
+                    # Under the field each acts on, rather than gathered at
+                    # the foot of the panel: down there a button appearing
+                    # shifted every other one sideways, and the reader was
+                    # aiming at a target that had moved.
+                    self.sequence,
                     ft.Row(list(self._preset_buttons.values()), spacing=8,
                            wrap=True),
                     stacked(self.date, self.date_line),
+                    self.extend_button,
                     self.gain,
-                    ft.Row([self.approve_button, self.lock_button,
-                            self.extend_button, self.withdraw_button],
-                           spacing=8, wrap=True),
+                    self.withdraw_button,
                 ],
                 spacing=12,
             )
@@ -307,6 +323,8 @@ class VeCrvView(ft.Column):
         self.withdraw_button.content = (
             f"Withdraw {token_amount(units_to_float(lock.amount, 18))} CRV"
         )
+        # The pair goes together: an expired lock takes neither step.
+        self.sequence.visible = not expired
         self.lock_button.visible = not expired
         self.lock_button.content = "Add CRV" if lock.exists else "Create lock"
         self.extend_button.visible = lock.exists and not expired
@@ -340,12 +358,13 @@ class VeCrvView(ft.Column):
         # Never for more than the wallet holds: that allowance could not be
         # spent on a lock anyway, and it would stand afterwards -- which on
         # this escrow is an amount anybody may lock on your behalf.
-        needs = max(0, amount - snapshot.allowance)
-        self.approve_button.visible = (
-            needs > 0 and amount <= snapshot.crv and not lock.expired(now)
+        spendable = 0 < amount <= snapshot.crv
+        self.approve_button.disabled = (
+            self._busy or not spendable or amount <= snapshot.allowance
         )
         self.approve_button.content = (
             f"Approve {token_amount(units_to_float(amount, 18))} CRV"
+            if spendable else "Approve"
         )
         self.amount.error = self._amount_error()
         self.lock_button.disabled = self._why_not_lock() is not None
@@ -502,14 +521,16 @@ class VeCrvView(ft.Column):
     async def _lock(self, _e) -> None:
         amount = self._amount()
         if self._snapshot.lock.exists:
-            await self._step("Adding to the lock…",
-                             lambda c: c.increase_amount(amount),
-                             "Added to your lock.")
+            if await self._step("Adding to the lock…",
+                                lambda c: c.increase_amount(amount),
+                                "Added to your lock."):
+                self._spent()
             return
         until = self._until()
-        await self._step("Creating the lock…",
-                         lambda c: c.create_lock(amount, until),
-                         f"Locked until {say_date(until)}.")
+        if await self._step("Creating the lock…",
+                            lambda c: c.create_lock(amount, until),
+                            f"Locked until {say_date(until)}."):
+            self._spent()
 
     async def _extend(self, _e) -> None:
         until = self._until()
@@ -518,9 +539,18 @@ class VeCrvView(ft.Column):
                          f"Locked until {say_date(until)}.")
 
     async def _withdraw(self, _e) -> None:
-        await self._step("Withdrawing…",
-                         lambda c: c.withdraw(),
-                         "Withdrawn.")
+        if await self._step("Withdrawing…", lambda c: c.withdraw(),
+                            "Withdrawn."):
+            self._spent()
+
+    def _spent(self) -> None:
+        """Empty the amount field, once the chain has taken what was in it.
+
+        Left standing it names coins the wallet no longer has, so the field
+        turns red on the balance it was just measured against.
+        """
+        self.amount.value = ""
+        self._sync()
 
     async def _claim(self, _e) -> None:
         amount = self._snapshot.claimable
@@ -530,7 +560,7 @@ class VeCrvView(ft.Column):
             f"Claimed {token_amount(units_to_float(amount, 18))} crvUSD.",
         )
 
-    async def _step(self, saying: str, send, done: str) -> None:
+    async def _step(self, saying: str, send, done: str) -> bool:
         """One transaction, from the prompt to the figures it moves.
 
         The wait is the point.  `send` is finished the moment the wallet
@@ -544,7 +574,7 @@ class VeCrvView(ft.Column):
         contract = self._contract_for()
         if contract is None or not contract.can_send:
             self.status.say("Connect a wallet first.", FAILED)
-            return
+            return False
         self._busy = True
         self._sync()
         self.status.say(saying, pending=True)
@@ -558,7 +588,7 @@ class VeCrvView(ft.Column):
                 await wait_for_confirmation(contract.provider, tx)
         except WalletError as exc:
             self.status.say(str(exc), FAILED, sticky=True)
-            return
+            return False
         finally:
             self._busy = False
             # Synced here rather than left to `reload`, which a failure
@@ -567,6 +597,7 @@ class VeCrvView(ft.Column):
             self._sync()
         self.status.say(done, DONE, sticky=True)
         await self.reload()
+        return True
 
     async def reload(self) -> None:
         """Read everything again, which is one request."""

@@ -175,6 +175,28 @@ def note_tint(page: ft.Page, kind: str) -> str | None:
     )
 
 
+#: A sticky note's paper, per theme.  Opaque rather than a tint over the
+#: surface: the point is a slip of paper laid on the page, and a translucent
+#: wash reads as a highlighted band instead.
+#:
+#: Warm and barely saturated, all three.  A band this size is most of what
+#: the eye lands on, and Tango's Butter 1 across it -- the palette's own
+#: answer to "sticky note" -- was unreadably bright.  Each is picked against
+#: its own page: cool near-white wants warmth to separate from, Tango's
+#: greenish grey wants cream, and the dark page wants paper *lighter* than
+#: the ground or it stops reading as something laid on it.
+STICKY_LIGHT = "#FDF0D5"
+STICKY_DARK = "#3D3529"
+STICKY_CHAD = "#FFE9C0"
+
+
+def sticky_bg(page: ft.Page) -> str:
+    """The paper a sticky note is written on, in whichever theme is drawn."""
+    if is_chad(page):
+        return STICKY_CHAD
+    return STICKY_DARK if is_dark(page) else STICKY_LIGHT
+
+
 def panel_shadow(page: ft.Page, *, inset: bool = False) -> ft.BoxShadow | None:
     """The hard shadow, under Chad only. None elsewhere."""
     if not is_chad(page):

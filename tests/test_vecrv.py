@@ -468,3 +468,48 @@ def test_pressing_an_unreachable_preset_does_nothing() -> None:
     v._preset_clicked(WEEK)
 
     assert not v.date.value
+
+
+def test_the_note_is_as_wide_as_the_two_panels_it_sits_over() -> None:
+    """Its edges are the point: they have to land on the panels' edges."""
+    from ui.responsive import layout_for
+    from ui.vecrv import PANEL_WIDTH, SPAN
+
+    v = view()
+    v.set_layout(layout_for(1400.0))
+
+    assert SPAN == PANEL_WIDTH * 2 + 16
+    assert v.position.width == v.band.width == SPAN
+
+
+def test_and_as_wide_as_the_one_panel_once_they_stop_fitting_side_by_side()\
+        -> None:
+    """The row wraps rather than squeezes, so under it there is one panel."""
+    from ui.responsive import BODY_PADDING, layout_for
+    from ui.vecrv import PANEL_WIDTH, SPAN
+
+    v = view()
+    v.set_layout(layout_for(SPAN + 2 * BODY_PADDING))
+    both = v.position.width
+    v.set_layout(layout_for(SPAN + 2 * BODY_PADDING - 1))
+
+    assert both == SPAN
+    assert v.position.width == v.band.width == PANEL_WIDTH
+
+
+def test_the_note_takes_its_paper_from_the_theme_on_screen() -> None:
+    import flet as ft
+
+    from ui import theme
+
+    class Page:
+        def __init__(self, name: str) -> None:
+            self.theme, self.theme_mode = theme.theme_for(name)
+
+    papers = {name: theme.sticky_bg(Page(name)) for name in theme.NAMES}
+
+    assert papers["light"] == theme.STICKY_LIGHT
+    assert papers["dark"] == theme.STICKY_DARK
+    assert papers["chad"] == theme.STICKY_CHAD
+    assert len(set(papers.values())) == len(theme.NAMES)
+    assert ft.ThemeMode.DARK is theme.theme_for("dark")[1]

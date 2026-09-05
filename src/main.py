@@ -40,7 +40,7 @@ from ui.logos import chain_mark
 from ui.pool_detail import PoolDetailView
 from ui.pool_list import PoolListView
 from ui.portfolio import PortfolioView
-from ui.responsive import content_width, layout_for
+from ui.responsive import BODY_PADDING, content_width, layout_for
 from ui.swap_page import SwapPage
 from ui.typography import BODY, LABEL, ROW_TITLE, SMALL, TITLE
 from ui.vecrv import VeCrvView
@@ -207,11 +207,6 @@ PAGES = (
     (PAGE_PORTFOLIO, "Portfolio"),
     (PAGE_VECRV, "veCRV"),
 )
-
-#: Room around a page, inside the scroller rather than around it: the
-#: scrollbar is drawn at the edge of the thing that scrolls, so padding the
-#: scroller itself would move the bar in off the window's edge.
-BODY_PADDING = 20
 
 #: Space between the wordmark and the chain totals.
 TOTALS_GAP = 22
@@ -855,6 +850,8 @@ class CurveApp:
             self.swap_page.set_layout(layout)
         if self._detail is not None:
             self._detail.set_layout(layout)
+        if self.vecrv_view is not None:
+            self.vecrv_view.set_layout(layout)
 
     def _chain_row(self, chain: str) -> ft.Control:
         """One network in the open view: its mark, its name, its size."""

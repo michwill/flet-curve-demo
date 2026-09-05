@@ -67,6 +67,14 @@ MARK = 20
 #: rather than squeezing them.
 PANEL_WIDTH = 380
 
+#: The two panels side by side, gap included.  What spans them -- the sticky
+#: note and the status band -- is drawn to this, so its edges land on theirs.
+SPAN = PANEL_WIDTH * 2 + 16
+
+#: How far off square the note sits, in radians.  Enough to read as paper
+#: somebody stuck on rather than a box the layout drew.
+TILT = -0.006
+
 
 def voting_power_for(amount: int, seconds: int) -> int:
     """What the escrow would credit for `amount` locked for `seconds`.
@@ -182,13 +190,14 @@ class VeCrvView(ft.Column):
             "Claim", page=page, on_click=self._claim, disabled=True
         )
 
+        self.band = ft.Container(self.status, width=SPAN)
         super().__init__(
             controls=[
                 self.position,
                 # As wide as the panels under it and no wider: left to
                 # itself the band stretches the window while everything
                 # around it is centred.
-                ft.Container(self.status, width=PANEL_WIDTH * 2 + 16),
+                self.band,
                 ft.Row(
                     [self._lock_panel(), self._claim_panel()],
                     spacing=16,
@@ -258,6 +267,10 @@ class VeCrvView(ft.Column):
 
     def set_layout(self, layout: Layout) -> None:
         self._layout = layout
+        # The panel row wraps rather than squeezes, so below the width of
+        # two there is one panel for these to line up with, not two.
+        span = SPAN if layout.room >= SPAN else PANEL_WIDTH
+        self.position.width = self.band.width = span
 
 
     # -- what the figures say ----------------------------------------------
@@ -552,12 +565,23 @@ class _Position(ft.Container):
                 tight=True,
                 vertical_alignment=ft.CrossAxisAlignment.START,
             ),
-            # On the page rather than in a panel: these are what is already
-            # true, and the panels below are what can be done about it.  A
-            # second bordered box above them made the two look like a pair
-            # of controls, one of which happened to have no buttons.
-            padding=ft.Padding.only(top=4, bottom=8),
+            # A note, not a panel: these are what is already true, and the
+            # panels below are what can be done about it.  Bordered like one
+            # of them, the two read as a pair of controls, one of which
+            # happened to have no buttons.
+            width=SPAN,
+            padding=ft.Padding.symmetric(horizontal=18, vertical=14),
+            border_radius=2,
+            margin=ft.Margin.only(bottom=6),
+            rotate=ft.Rotate(TILT, alignment=ft.Alignment.CENTER),
         )
+        self._page = page
+
+    def before_update(self) -> None:
+        """Take the paper and the lift from whichever theme is on screen."""
+        super().before_update()
+        self.bgcolor = theme.sticky_bg(self._page)
+        self.shadow = theme.paper_shadow(self._page)
 
     def show(self, snapshot: Snapshot, now: float) -> None:
         lock = snapshot.lock

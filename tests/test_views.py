@@ -330,17 +330,35 @@ def test_the_window_it_is_already_on_is_a_no_op() -> None:
     assert feed.resets == 0
 
 
-def test_the_toolbar_picker_stands_in_only_where_there_are_no_headings() -> None:
+def menu_labels(view) -> list[str]:
+    """The page menu this view would contribute, flattened to its text."""
+    return [t for item in view.menu_items() for t in texts(item)]
+
+
+def test_the_page_menu_stands_in_only_where_there_are_no_headings() -> None:
     """The heading carries the menu; the cards have no heading to carry it."""
     view = PoolListView(StubPage(), on_open=lambda _p: None)
     view.attach(FakeFeed([make_pool()]))
 
     view.set_layout(layout_for(1400.0))     # wide: the heading has the menu
-    assert not view.base_picker.visible
+    assert view.menu_items() == []
     view.set_layout(layout_for(900.0))      # compact: the column is dropped
-    assert not view.base_picker.visible
+    assert view.menu_items() == []
     view.set_layout(layout_for(500.0))      # cards: nothing else can carry it
-    assert view.base_picker.visible
+    assert "Base APY over" in menu_labels(view)
+    assert "Sort by" in menu_labels(view)
+
+
+def test_the_menu_ticks_what_is_on_screen() -> None:
+    view = PoolListView(StubPage(), on_open=lambda _p: None)
+    view.attach(FakeFeed([make_pool()]))
+    view.set_layout(layout_for(500.0))
+
+    view._base_window_to("1d")
+    ticked = [t for item in view.menu_items() if item.checked
+              for t in texts(item)]
+
+    assert "1d" in ticked and "7d" not in ticked
 
 
 def test_the_heading_carries_the_window_where_it_is_drawn() -> None:
@@ -359,8 +377,11 @@ def test_a_lite_chain_is_not_offered_the_window() -> None:
     view.attach(FakeFeed([make_lite_pool()], lite=True))
 
     view.set_layout(layout_for(1400.0))
+    assert view.menu_items() == []
 
-    assert not view.base_picker.visible
+    view.set_layout(layout_for(500.0))  # where the menu carries the rest
+    assert "Base APY over" not in menu_labels(view)
+    assert "Sort by" in menu_labels(view)
 
 
 def test_the_row_draws_the_window_it_was_given() -> None:
@@ -436,14 +457,19 @@ def test_a_new_chain_takes_the_cross_away_with_the_query() -> None:
 PHONE, TABLET, LAPTOP = 390.0, 820.0, 1280.0
 
 
-def test_the_search_box_and_the_sort_picker_are_cut_the_same() -> None:
+def test_the_search_box_keeps_the_toolbar_to_itself() -> None:
+    """Beside two 140px dropdowns it came out under one character wide on a
+    phone, which is the control a reader reaches for first."""
     from ui.pool_list import FIELD_INSET, FIELD_RADIUS
 
     view = PoolListView(StubPage(), on_open=lambda _p: None)
+    bar = view.controls[0].controls
 
-    assert view.search.border_radius == view.sort_picker.border_radius == FIELD_RADIUS
+    assert view.search.border_radius == FIELD_RADIUS
     assert view.search.content_padding.top == FIELD_INSET
     assert view.search.content_padding.bottom == FIELD_INSET
+    assert bar[0].content is view.search and bar[0].expand
+    assert not [c for c in bar if isinstance(c, ft.Dropdown)]
 
 
 async def test_the_count_is_not_shown_on_a_phone() -> None:
@@ -458,13 +484,14 @@ async def test_the_count_is_not_shown_on_a_phone() -> None:
     assert not view.count_label.visible
 
 
-def test_the_list_swaps_headers_for_a_sort_dropdown_on_a_phone() -> None:
+def test_the_list_swaps_headers_for_the_page_menu_on_a_phone() -> None:
     view = PoolListView(StubPage(), on_open=lambda _p: None)
+    view.attach(FakeFeed([make_pool()]))
     view.set_layout(layout_for(LAPTOP))
-    assert view._header.visible and not view.sort_picker.visible
+    assert view._header.visible and view.menu_items() == []
 
     view.set_layout(layout_for(PHONE))
-    assert view.sort_picker.visible and not view._header.visible
+    assert not view._header.visible and view.menu_items()
 
 
 def test_the_table_hides_its_least_decisive_column_on_a_tablet() -> None:
@@ -1163,25 +1190,33 @@ def test_a_lite_row_is_narrower_than_a_full_one() -> None:
 def test_a_lite_header_hides_those_sorts() -> None:
     view = PoolListView(StubPage(), on_open=lambda _p: None)
     view.attach(FakeFeed([make_lite_pool()], lite=True))
+    view.set_layout(layout_for(PHONE))
     hidden = [key for key, cell in view._sort_cells.items() if not cell.visible]
+
     assert "volume" in hidden and "base" in hidden
-    assert {o.key for o in view.sort_picker.options} == {"tvl", "incentives"}
+    assert set(menu_labels(view)) == {"Sort by", "TVL", "Incentives"}
 
 
 def test_a_lite_list_opens_on_tvl() -> None:
     view = PoolListView(StubPage(), on_open=lambda _p: None)
     view.attach(FakeFeed([make_lite_pool()], lite=True))
+    view.set_layout(layout_for(PHONE))
+    ticked = [t for item in view.menu_items() if item.checked for t in texts(item)]
+
     assert view._sort == "tvl"
-    assert view.sort_picker.value == "tvl"
+    assert ticked == ["TVL"]
 
 
 def test_a_full_list_still_opens_on_volume() -> None:
     view = PoolListView(StubPage(), on_open=lambda _p: None)
     view.attach(FakeFeed([make_pool()]))
+    view.set_layout(layout_for(PHONE))
+    labels = menu_labels(view)
+
     assert view._sort == "volume"
-    assert {o.key for o in view.sort_picker.options} == {
-        "volume", "tvl", "incentives", "base"
-    }
+    assert labels[:labels.index("Base APY over")] == [
+        "Sort by", "Volume", "TVL", "Incentives", "Base APY"
+    ]
 
 
 def test_a_lite_card_leads_with_tvl() -> None:
@@ -3965,6 +4000,7 @@ def switching_app(api):
     app.list_view = SimpleNamespace(
         attach=lambda feed: app.__dict__.setdefault("_attached", []).append(feed),
         load_more=_nothing,
+        menu_items=list,
     )
     app._apply_layout = lambda *_a, **_k: None
     app._load_marks = _nothing

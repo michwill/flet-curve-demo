@@ -161,7 +161,7 @@ def make_app(route: str = "/", *, pool=_DEFAULT, chain: str = "ethereum",
     app._route_applied = True
     app.body = ft.Container()
     app._page_box = ft.Container()
-    app.list_view = ft.Container()
+    app.list_view = _ListView()
     app.progress = ft.ProgressBar(visible=False)
     app.error = ft.Text("", visible=False)
     app.chain_picker = ft.SearchBar(value=chain)
@@ -430,6 +430,10 @@ class _Feed:
 class _ListView(ft.Container):
     async def load_more(self) -> None:  # pragma: no cover - never awaited here
         pass
+
+    def menu_items(self) -> list:
+        """Nothing to add to the page menu; the real one adds its sort."""
+        return []
 
 
 def _queued(app) -> list[str]:

@@ -369,13 +369,25 @@ class PoolRow(ft.Container):
         )
 
 
+def _menu_heading(text: str) -> ft.PopupMenuItem:
+    """A section label in the page menu: a disabled item, as the totals are."""
+    return ft.PopupMenuItem(
+        content=ft.Text(text, size=SMALL, color=ft.Colors.ON_SURFACE_VARIANT),
+        disabled=True,
+    )
+
+
 class PoolListView(ft.Column):
     """Search box, sortable header, and a lazily-paged list of rows."""
 
-    def __init__(self, page: ft.Page, on_open: Callable[[Pool], None]) -> None:
+    def __init__(self, page: ft.Page, on_open: Callable[[Pool], None],
+                 on_menu_change: Callable[[], None] | None = None) -> None:
         #: Whether the attached feed is a Curve Lite chain, which
         #: decides what there is to show.
         self._lite = False
+        #: Called when what `menu_items` would return has changed: the page
+        #: menu is drawn by whoever owns the header, not by this view.
+        self._on_menu_change = on_menu_change
         self._page = page
         self._on_open = on_open
         self.feed: PoolFeed | None = None
@@ -427,32 +439,6 @@ class PoolListView(ft.Column):
         self.count_label = ft.Text(
             "", size=SMALL, color=ft.Colors.ON_SURFACE_VARIANT, key="pool-count"
         )
-        self.sort_picker = ft.Dropdown(
-            key="pool-sort",
-            options=[ft.DropdownOption(key=o.key, text=o.label) for o in SORTS],
-            value=self._sort,
-            width=140,
-            dense=True,
-            border_radius=FIELD_RADIUS,
-            visible=False,
-            on_select=self._sort_picked,
-        )
-        #: The cards layout's stand-in for the menu in the heading, which is
-        #: where this lives everywhere there are headings at all -- the same
-        #: arrangement as `sort_picker` beside it, for the same reason.
-        self.base_picker = ft.Dropdown(
-            key="pool-base-window",
-            options=[
-                ft.DropdownOption(key=w, text=f"Base {w}") for w in BASE_WINDOWS
-            ],
-            value=self._base_window,
-            # The sort picker's width. Narrower clips: 120 drew "Base 7".
-            width=140,
-            dense=True,
-            border_radius=FIELD_RADIUS,
-            visible=False,
-            on_select=self._base_window_picked,
-        )
         self.rows = ft.Column(key="pool-rows", spacing=0)
         self.footer = ft.Container(
             ft.Row(
@@ -480,8 +466,6 @@ class PoolListView(ft.Column):
                 ft.Row(
                     [
                         ft.Container(self.search, expand=True),
-                        self.base_picker,
-                        self.sort_picker,
                         self.count_label,
                     ],
                     vertical_alignment=ft.CrossAxisAlignment.CENTER,
@@ -614,15 +598,50 @@ class PoolListView(ft.Column):
 
     # -- feed -------------------------------------------------------------
 
-    def _sync_base_picker(self) -> None:
-        """The toolbar picker: only where the heading cannot carry the menu.
+    def menu_items(self) -> list[ft.PopupMenuItem]:
+        """What this list hands the page menu, where it has no headings.
 
-        Which is the cards layout, and not on a lite chain -- nobody is
-        counting the trades a base APY comes from there, so there is no
-        column and no card metric to read either way.
+        Which is the cards layout.  Drawn in the toolbar these were two
+        140-pixel dropdowns beside the search box, and on a phone that left
+        the box narrower than one character -- unusable, and the search is
+        the control a reader reaches for first.  Everywhere wider the
+        headings carry both: the column names sort, and the Base APY cell
+        holds the window menu.
+
+        The base window is left out on a lite chain, where nobody counts the
+        trades a base APY would come from, so there is no column and no card
+        metric to read either way.
         """
-        self.base_picker.value = self._base_window
-        self.base_picker.visible = self._layout.cards and not self._lite
+        if not self._layout.cards or self.feed is None:
+            return []
+        items = [_menu_heading("Sort by")]
+        items += [
+            ft.PopupMenuItem(
+                content=ft.Text(option.label),
+                checked=option.key == self._sort,
+                on_click=lambda _e, key=option.key: self._sort_by(key),
+            )
+            for option in SORTS
+            if not (self._lite and option.key in UNMEASURED_ON_LITE)
+        ]
+        if self._lite:
+            return items
+        items.append(ft.PopupMenuItem())
+        items.append(_menu_heading("Base APY over"))
+        items += [
+            ft.PopupMenuItem(
+                content=ft.Text(window),
+                checked=window == self._base_window,
+                on_click=lambda _e, chosen=window: self._base_window_to(chosen),
+            )
+            for window in BASE_WINDOWS
+        ]
+        return items
+
+    def _menu_changed(self) -> None:
+        """Tell whoever draws the menu that its ticks have moved."""
+        if self._on_menu_change is not None:
+            self._on_menu_change()
 
     def set_layout(self, layout: Layout) -> None:
         """Adopt a new layout, rebuilding the rows only if it changed."""
@@ -630,13 +649,13 @@ class PoolListView(ft.Column):
             return
         self._layout = layout
         self._header.visible = layout.shows_column_headers
-        self.sort_picker.visible = not layout.shows_column_headers
         self.count_label.visible = not layout.cards
-        self.sort_picker.value = self._sort
-        self._sync_base_picker()
         self._sync_header()
         self._rebuild_rows()
         safe_update(self)
+        # The menu carries the sort and the window exactly where the headings
+        # do not, so crossing that breakpoint changes what is in it.
+        self._menu_changed()
 
     def refresh_figures(self, figures: dict[str, dict[str, float]]) -> int:
         """Take fresher TVL, volume and base APR onto the rows on screen.
@@ -681,32 +700,20 @@ class PoolListView(ft.Column):
         self._lite = feed.lite
         self._sort = feed.sort_by or DEFAULT_SORT
         self._base_window = feed.base_window
-        self.sort_picker.value = self._sort
-        self.sort_picker.options = [
-            ft.DropdownOption(key=o.key, text=o.label)
-            for o in SORTS
-            if not (self._lite and o.key in UNMEASURED_ON_LITE)
-        ]
-        self._sync_base_picker()
         self.search.value = ""
         self.clear_search.visible = False
         self._sync_header()
         self.rows.controls = []
         self._sync_count()
-
-    def _sort_picked(self, _e: AnyEvent) -> None:
-        """The phone's dropdown. A named method rather than a lambda: the
-        lambda read `self.sort_picker` from inside the statement
-        defining it, which works but leaves its own type unknowable.
-        """
-        self._sort_by(self.sort_picker.value or DEFAULT_SORT)
+        # A lite chain offers fewer sorts and no window at all.
+        self._menu_changed()
 
     def _sort_by(self, key: str) -> None:
         if self.feed is None or key == self._sort:
             return
         self._sort = key
-        self.sort_picker.value = key
         self._sync_header()
+        self._menu_changed()
         # The column, not the server's field for it: the feed hands this to
         # `list_pools`, which needs the column to sort a lite chain locally and
         # translates it for the wire itself.
@@ -715,10 +722,6 @@ class PoolListView(ft.Column):
         self.rows.controls = []
         safe_update(self)
         self._run(self.load_more)
-
-    def _base_window_picked(self, _e: AnyEvent) -> None:
-        """The toolbar dropdown. Named for the same reason `_sort_picked` is."""
-        self._base_window_to(self.base_picker.value or DEFAULT_BASE_WINDOW)
 
     def _base_window_to(self, window: str) -> None:
         """Read the Base APY column over `window`.
@@ -731,9 +734,9 @@ class PoolListView(ft.Column):
         if self.feed is None or window == self._base_window:
             return
         self._base_window = window
-        self.base_picker.value = window
         self.feed.base_window = window
         self._sync_header()
+        self._menu_changed()
         if self._sort != "base":
             self._rebuild_rows()
             safe_update(self)

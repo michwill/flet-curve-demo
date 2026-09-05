@@ -623,7 +623,8 @@ class CurveApp:
             shadow=themes.bar_shadow(page),
         )
 
-        self.list_view = PoolListView(page, on_open=self.open_pool)
+        self.list_view = PoolListView(page, on_open=self.open_pool,
+                                      on_menu_change=self._sync_menu)
         self.portfolio_view = PortfolioView(
             page, on_open=self.open_holding, on_claim=self.claim_portfolio
         )
@@ -700,6 +701,11 @@ class CurveApp:
             return PAGES
         return tuple(page for page in PAGES if page[0] != PAGE_VECRV)
 
+    def _sync_menu(self) -> None:
+        """Redraw the mark's menu, for a page whose own has changed."""
+        self.menu.items = self._menu_items()
+        safe_update(self.menu)
+
     def _menu_items(self) -> list[ft.PopupMenuItem]:
         """What the mark opens."""
         pages = [
@@ -709,6 +715,16 @@ class CurveApp:
                              on_click=lambda _e, target=name: self.go_page(target))
             for name, label in self._pages_here()
         ]
+        # Whatever the open page cannot fit on itself. On a phone the pool
+        # list has no headings to sort by and no room beside the search box
+        # for two dropdowns, so its sort and its Base APY window come here.
+        # `getattr`, because the first nav sync runs inside `_build`, before
+        # the views it would ask exist.
+        listing = getattr(self, "list_view", None)
+        own = (listing.menu_items()
+               if listing is not None and self._page_name == PAGE_POOLS else [])
+        if own:
+            pages += [ft.PopupMenuItem(), *own]
         if not self._icons:
             return pages
         current = self._theme_name()

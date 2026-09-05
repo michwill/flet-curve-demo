@@ -63,6 +63,12 @@ CRVUSD_COIN = Coin(address=CRVUSD, symbol="crvUSD", decimals=18)
 #: Mark size beside an amount field, matching the pool page's panels.
 MARK = 20
 
+#: Extra air above the duration presets.  They set the date field under
+#: them, so they belong with it rather than with the amount and its two
+#: buttons above -- and at the column's own spacing the four rows read as
+#: one undifferentiated stack.
+GROUP_GAP = 14
+
 #: How wide each panel is drawn.  Fixed, so the two sit side by side at any
 #: width that has room for both and stack when it does not -- the row wraps
 #: rather than squeezing them.
@@ -239,8 +245,11 @@ class VeCrvView(ft.Column):
                     # shifted every other one sideways, and the reader was
                     # aiming at a target that had moved.
                     self.sequence,
-                    ft.Row(list(self._preset_buttons.values()), spacing=8,
-                           wrap=True),
+                    ft.Container(
+                        ft.Row(list(self._preset_buttons.values()),
+                               spacing=8, wrap=True),
+                        margin=ft.Margin.only(top=GROUP_GAP),
+                    ),
                     stacked(self.date, self.date_line),
                     self.extend_button,
                     self.gain,

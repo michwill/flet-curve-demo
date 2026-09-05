@@ -536,10 +536,11 @@ class _Position(ft.Container):
                 tight=True,
                 vertical_alignment=ft.CrossAxisAlignment.START,
             ),
-            padding=ft.Padding.symmetric(horizontal=16, vertical=12),
-            bgcolor=ft.Colors.SURFACE,
-            border=theme.panel_border(page),
-            border_radius=10,
+            # On the page rather than in a panel: these are what is already
+            # true, and the panels below are what can be done about it.  A
+            # second bordered box above them made the two look like a pair
+            # of controls, one of which happened to have no buttons.
+            padding=ft.Padding.only(top=4, bottom=8),
         )
 
     def show(self, snapshot: Snapshot, now: float) -> None:

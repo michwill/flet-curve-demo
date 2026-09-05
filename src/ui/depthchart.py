@@ -346,21 +346,28 @@ class DepthChart(ft.Container):
         for tick in price_ticks(low, high):
             x = plot.pixel_x(math.log(tick), view)
             shapes.append(cv.Line(x, plot.top, x, plot.bottom, paint=faint))
-            shapes.append(cv.Text(x - 28, plot.bottom + 4, price_text(tick),
-                                  label))
+            # Centred on the tick by the canvas, not by an offset guessed at
+            # one label's width: nudging every label left by 28 centred the
+            # six-character ones and left "1" a whole character clear of the
+            # line it names, which on a stableswap is the one price a reader
+            # is looking for.
+            shapes.append(cv.Text(x, plot.bottom + 4, price_text(tick), label,
+                                  alignment=ft.Alignment.TOP_CENTER))
 
         depth_step = _nice_step(view.y_max, DEPTH_LABELS)
         value = 0.0
         while value <= view.y_max and depth_step > 0:
             y = plot.pixel_y(value, view)
             shapes.append(cv.Line(plot.left, y, plot.right, y, paint=faint))
-            shapes.append(cv.Text(2, y - 6, self._amount(value), label))
+            shapes.append(cv.Text(2, y, self._amount(value), label,
+                                  alignment=ft.Alignment.CENTER_LEFT))
             value += depth_step
         if self._unit:
             # Top right, not top left: the highest tick sits in the corner the
             # other way and the two were drawn over each other.
-            shapes.append(cv.Text(plot.right - 78, plot.top + 2,
-                                  f"per 1% · {self._unit}", label))
+            shapes.append(cv.Text(plot.right, plot.top + 2,
+                                  f"per 1% · {self._unit}", label,
+                                  alignment=ft.Alignment.TOP_RIGHT))
         return shapes
 
     def _amount(self, value: float) -> str:

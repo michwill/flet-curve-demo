@@ -31,7 +31,7 @@ from curve.vecrv import (
     week_floor,
 )
 from wallet.base import WalletError
-from wallet.erc20 import parse_units
+from wallet.erc20 import format_units, parse_units
 
 from . import buttons, safe_update, theme
 from .actions import amount_field, stacked
@@ -337,14 +337,38 @@ class VeCrvView(ft.Column):
         for seconds, button in self._preset_buttons.items():
             button.disabled = self._busy or not self.preset_reachable(seconds)
 
+        # Never for more than the wallet holds: that allowance could not be
+        # spent on a lock anyway, and it would stand afterwards -- which on
+        # this escrow is an amount anybody may lock on your behalf.
         needs = max(0, amount - snapshot.allowance)
-        self.approve_button.visible = needs > 0 and not lock.expired(now)
+        self.approve_button.visible = (
+            needs > 0 and amount <= snapshot.crv and not lock.expired(now)
+        )
         self.approve_button.content = (
             f"Approve {token_amount(units_to_float(amount, 18))} CRV"
         )
+        self.amount.error = self._amount_error()
         self.lock_button.disabled = self._why_not_lock() is not None
         self.extend_button.disabled = self._why_not_extend() is not None
         safe_update(self)
+
+    def _amount_error(self) -> str | None:
+        """What is wrong with what is typed, for the field to say itself.
+
+        A number the field cannot read is read as nothing, and nothing
+        disables every button on the panel -- which from the outside looks
+        like the page is broken rather than like the amount is.
+        """
+        text = (self.amount.value or "").strip()
+        if not text:
+            return None
+        try:
+            amount = parse_units(text, 18)
+        except ValueError as exc:
+            return str(exc)
+        if amount > self._snapshot.crv:
+            return "More than the wallet holds"
+        return None
 
     def _why_not_lock(self) -> str | None:
         """Why the lock button is dead, or None if it is not."""
@@ -459,9 +483,13 @@ class VeCrvView(ft.Column):
         self._sync()
 
     def _max_clicked(self, _e) -> None:
-        self.amount.value = token_amount(
-            units_to_float(self._snapshot.crv, 18), places=18, figures=30
-        )
+        # `format_units`, as every other MAX in the app does it: exact, and
+        # never through a float.  `token_amount` is for *reading* -- it
+        # rounds, groups the thousands and can run past 18 decimals, and the
+        # field it was filling is read back with `parse_units`, which refuses
+        # all three.  That refusal is swallowed as "no amount", which is why
+        # pressing MAX disabled every button on the panel.
+        self.amount.value = format_units(self._snapshot.crv, 18, precision=18)
         self._sync()
 
     async def _approve(self, _e) -> None:

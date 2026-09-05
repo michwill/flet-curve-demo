@@ -594,3 +594,92 @@ def test_and_not_at_all_when_it_never_lands(monkeypatch) -> None:
     assert log == ["send", "wait"]
     assert "has not been mined" in v.status.text.value
     assert not v.claim_button.disabled  # and the panel is usable again
+
+
+#: A balance that uses all 18 decimals, which is what a real one looks like.
+DUST = 1_234_567_890_123_456_789
+
+
+def test_max_fills_the_field_with_something_it_can_be_read_back_from() -> None:
+    """To the wei.  MAX is what a reader presses to lock everything, and the
+    field is read back with `parse_units`, which refuses a rounded, grouped
+    or over-long number -- silently, as "no amount"."""
+    v = view(crv=DUST, allowance=DUST,
+             lock=Lock(amount=10**18, end=int(NOW) + 90 * 86400))
+
+    v._max_clicked(None)
+
+    assert v._amount() == DUST
+
+
+def test_and_adding_the_whole_balance_to_a_lock_asks_for_no_date() -> None:
+    """The lock already has one, and `increase_amount` never takes one."""
+    v = view(crv=DUST, allowance=DUST,
+             lock=Lock(amount=10**18, end=int(NOW) + 90 * 86400))
+
+    v._max_clicked(None)
+
+    assert not v.date.value
+    assert v.lock_button.content == "Add CRV"
+    assert not v.lock_button.disabled
+
+
+def test_and_offers_the_approval_when_the_escrow_has_no_allowance() -> None:
+    """For that exact amount, never for more: an infinite allowance lets
+    anyone lock the coins on this address's behalf."""
+    v = view(crv=DUST, allowance=0,
+             lock=Lock(amount=10**18, end=int(NOW) + 90 * 86400))
+
+    v._max_clicked(None)
+
+    c, _ = contract()
+    _, data = c.build_approve(v._amount())
+
+    assert v.approve_button.visible
+    assert v.lock_button.disabled
+    assert data.endswith(f"{DUST:064x}")  # the whole balance, to the wei
+
+
+def test_an_amount_the_field_cannot_read_says_so_rather_than_going_quiet()\
+        -> None:
+    """Unreadable is read as nothing, and nothing disables every button."""
+    v = view(crv=DUST, lock=Lock(amount=10**18, end=int(NOW) + 90 * 86400))
+
+    v.amount.value = "1.0000000000000000001"   # 19 decimals
+    v._sync()
+
+    assert v.lock_button.disabled
+    assert "18" in (v.amount.error or "")
+
+
+def test_and_so_does_an_amount_larger_than_the_wallet_holds() -> None:
+    v = view(crv=10**18, lock=Lock(amount=10**18, end=int(NOW) + 90 * 86400))
+
+    v.amount.value = "2"
+    v._sync()
+
+    assert v.lock_button.disabled
+    assert v.amount.error == "More than the wallet holds"
+
+
+def test_and_a_readable_one_says_nothing_at_all() -> None:
+    v = view(crv=DUST, allowance=DUST,
+             lock=Lock(amount=10**18, end=int(NOW) + 90 * 86400))
+
+    v._max_clicked(None)
+
+    assert v.amount.error is None
+
+
+def test_no_approval_is_offered_for_more_than_the_wallet_holds() -> None:
+    """It could not be spent on a lock, and it would stand afterwards --
+    which on this escrow is an amount anybody may lock on your behalf."""
+    v = view(crv=10**18, allowance=0,
+             lock=Lock(amount=10**18, end=int(NOW) + 90 * 86400))
+
+    v.amount.value = "9"
+    v._sync()
+
+    assert not v.approve_button.visible
+    assert v.lock_button.disabled
+    assert v.amount.error == "More than the wallet holds"

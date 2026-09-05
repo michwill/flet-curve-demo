@@ -472,7 +472,17 @@ def test_a_link_elsewhere_is_recognised_before_anything_is_drawn() -> None:
     assert app_module.elsewhere("/ethereum/" + WL)
     assert app_module.elsewhere("/ethereum/swap")
     assert app_module.elsewhere("/ethereum/portfolio")
+    assert app_module.elsewhere("/ethereum/vecrv")
     assert not app_module.elsewhere("/ethereum")
     assert not app_module.elsewhere("/")
     assert not app_module.elsewhere("")
     assert not app_module.elsewhere(None)
+
+
+def test_every_page_but_the_list_counts_as_elsewhere() -> None:
+    """Asked of the route's shape, not of a list of names -- veCRV was added
+    to `PAGES` and not to that list, and drew the pool list on the way in."""
+    import main as app_module
+
+    for page in routing.PAGES:
+        assert app_module.elsewhere(f"/ethereum/{page}"), page

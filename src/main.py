@@ -77,9 +77,16 @@ def elsewhere(route: str | None) -> bool:
     Two things turn on it, and they are the same thing at different moments:
     what the first frame draws, and whether `load_pools` takes a page of the
     list before the route is applied over it.
+
+    Asked of the route's own shape rather than of a list of pages, because a
+    list of pages is a list somebody has to remember: veCRV was added to
+    `routing.PAGES` and to `Route.is_vecrv` and not to the three names that
+    used to be spelled out here, so a link to it drew the pool list's search
+    box and headings on the way.  Every page but the list has a `page`; only
+    a pool has a `pool`; the list has neither.
     """
     opening = routing.parse(route)
-    return bool(opening.is_pool or opening.is_swap or opening.is_portfolio)
+    return bool(opening.page or opening.is_pool)
 
 
 def startup_route() -> str:

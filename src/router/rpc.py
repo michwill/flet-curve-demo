@@ -35,13 +35,21 @@ BATCH_LADDER = (2000, 1000, 500, 200, BATCH_LIMIT)
 #: than `batch_size * max_streams` and most of these sit idle.
 MAX_STREAMS = 8
 
-#: A sweep is thousands of reads and the endpoint is a load balancer, so a
-#: dropped chunk is usually a bad backend rather than a bad request.
-RETRIES = 1
+#: How long to let a chunk go unanswered before posting it a second time.
+#: Measured over 615 chunks of one mainnet warm: 78 ms median, 169 ms at the
+#: 95th, 1.4 s the worst of them.  Two seconds is past all of that, so a
+#: healthy endpoint never hedges and a silent one is caught quickly.
+HEDGE_AFTER = 2.0
 
-#: Long, because a hundred storage reads in one request is a real amount of
-#: work for a node and this is not on any interactive path.
-TIMEOUT = 60.0
+#: Posts of the same chunk before giving up, the first included.  The endpoint
+#: is a load balancer, so a second post is a second backend.
+ATTEMPTS = 3
+
+#: The last-resort bound, not the working one -- `HEDGE_AFTER` is what a
+#: stalled backend actually costs.  Generous enough that a slow connection
+#: carrying two thousand reads is not cut off, where 60 s meant a page that
+#: waited two minutes on one dead backend and then gave up.
+TIMEOUT = 20.0
 
 
 class RouterRpc:
@@ -59,6 +67,9 @@ class RouterRpc:
         self._streams = asyncio.Semaphore(max_streams)
         self.calls = 0
         self.batches = 0
+        #: How many chunks needed a second post. Zero on a healthy endpoint,
+        #: and the number worth watching when one starts misbehaving.
+        self.hedged = 0
 
     async def probe(self) -> int:
         """Ask this endpoint how much it will take in one request.
@@ -105,18 +116,56 @@ class RouterRpc:
     async def _chunk(self, requests: list) -> list:
         payload = [{"jsonrpc": "2.0", "id": k, "method": method, "params": params}
                    for k, (method, params) in enumerate(requests)]
-        last: Exception | None = None
-        for _ in range(RETRIES + 1):
-            async with self._streams:
+        async with self._streams:
+            self.calls += len(requests)
+            try:
+                answer = await self._raced(payload)
+            except ApiError as exc:
+                return [exc] * len(requests)
+        return _unpack(answer, len(requests), payload)
+
+    async def _raced(self, payload: list):
+        """Post it, and post it again if the first has not answered in time.
+
+        A chunk still silent after `HEDGE_AFTER` is not slow, it is on a
+        backend that is never going to answer -- the median chunk comes back
+        in 78 ms.  Retrying only once the timeout expires meant sitting on a
+        dead backend for a minute and then starting over, which is a swap page
+        that does not load.
+
+        So the attempts overlap: whichever backend speaks first wins and the
+        rest are dropped.  Safe to send twice because every request the router
+        makes is a read, and the endpoint's own key allows nothing else.
+        """
+        running: set[asyncio.Task] = set()
+        last: BaseException | None = None
+        try:
+            for attempt in range(ATTEMPTS):
+                if attempt:
+                    self.hedged += 1
                 self.batches += 1
-                self.calls += len(requests)
-                try:
-                    answer = await post_json(self.url, payload, timeout=self._timeout)
-                except ApiError as exc:
-                    last = exc
-                    continue
-            return _unpack(answer, len(requests), payload)
-        return [last or ApiError("the batch was never answered")] * len(requests)
+                running.add(asyncio.create_task(
+                    post_json(self.url, payload, timeout=self._timeout)))
+                # The last attempt has nothing left to hedge with, so it waits
+                # on the timeout rather than on the hedge interval.
+                patience = HEDGE_AFTER if attempt < ATTEMPTS - 1 else None
+                while running:
+                    done, running = await asyncio.wait(
+                        running, timeout=patience,
+                        return_when=asyncio.FIRST_COMPLETED)
+                    if not done:
+                        break            # still silent: send another
+                    for task in done:
+                        failed = task.exception()
+                        if failed is None:
+                            return task.result()
+                        last = failed
+                    if not running:
+                        break            # every one so far refused: send another
+        finally:
+            for task in running:
+                task.cancel()
+        raise last or ApiError("the batch was never answered")
 
 
 #: The zero account, for asking an endpoint what size of batch it will take.

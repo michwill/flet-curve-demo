@@ -618,8 +618,18 @@ BY_HASH_URL = "https://api.pinata.cloud/pinning/pinByHash"
 
 
 def node_id(binary: str = IPFS_BINARY) -> str:
-    """The local node's peer id, or "" if there is no daemon to ask."""
+    """The local node's peer id, or "" if no *daemon* is running.
+
+    Asked with `swarm peers` and not `id`, because `id` reads the repo off
+    the disk and answers perfectly well with nothing running -- which would
+    let the publish get as far as adding the build and then announce it to
+    nobody, which is the failure this whole route exists to avoid.
+    """
     try:
+        online = subprocess.run([binary, "swarm", "peers"], capture_output=True,
+                                text=True, timeout=30, check=False)
+        if online.returncode != 0:
+            return ""
         done = subprocess.run([binary, "id", "-f", "<id>"], capture_output=True,
                               text=True, timeout=30, check=False)
     except (OSError, subprocess.SubprocessError):

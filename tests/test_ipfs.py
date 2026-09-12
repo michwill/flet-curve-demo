@@ -1588,3 +1588,31 @@ def test_pinata_refusing_it_by_hash_stops_the_run() -> None:
         ipfs.pin_by_hash("bafyROOT", "jwt", "name", client=client)
 
     assert "by hash" in str(refused.value)
+
+
+def fake_ipfs(monkeypatch, *, online: bool, peer: str = "12D3KooWPEER"):
+    """An `ipfs` that is installed, with or without a daemon behind it."""
+    def run(cmd, **kwargs):
+        if cmd[1:3] == ["swarm", "peers"]:
+            return SimpleNamespace(returncode=0 if online else 1,
+                                   stdout="", stderr="not online")
+        if cmd[1] == "id":
+            return SimpleNamespace(returncode=0, stdout=f"{peer}\n", stderr="")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(ipfs.subprocess, "run", run)
+
+
+def test_a_repo_without_a_daemon_is_not_a_node(monkeypatch) -> None:
+    """`ipfs id` reads the repo off the disk and answers with nothing running.
+    Trusting it would add the build and then announce it to nobody, which is
+    the one failure this route exists to avoid."""
+    fake_ipfs(monkeypatch, online=False)
+
+    assert ipfs.node_id() == ""
+
+
+def test_and_a_running_one_is(monkeypatch) -> None:
+    fake_ipfs(monkeypatch, online=True)
+
+    assert ipfs.node_id() == "12D3KooWPEER"

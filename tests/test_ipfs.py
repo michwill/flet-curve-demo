@@ -1321,3 +1321,45 @@ def test_the_ens_names_are_still_all_warmed(monkeypatch) -> None:
 
     for named in warm.STAGING_GATEWAYS:
         assert named.rstrip("/") in hosts
+
+
+def origin_serving(answers: dict[str, int]) -> httpx.Client:
+    """An origin gateway that answers `answers` by path, 200 otherwise."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path.split("/ipfs/CID/", 1)[-1]
+        return httpx.Response(answers.get(path, 200), content=b"x")
+
+    return httpx.Client(transport=httpx.MockTransport(handler))
+
+
+def test_a_complete_pin_has_nothing_the_origin_will_not_serve() -> None:
+    client = origin_serving({})
+    missing = ipfs.origin_missing(
+        "CID", ["index.html", "flutter.js"], "https://mine.mypinata.cloud",
+        client=client)
+
+    assert missing == []
+
+
+def test_what_the_origin_will_not_serve_is_not_in_the_pin() -> None:
+    """The origin holds every block, so a 404 there is the pin missing it --
+    and no amount of warming conjures a block nobody has.  Exactly this cost
+    an afternoon of warming a staging build that could never have loaded.
+    """
+    client = origin_serving({"flutter.js": 404, "assets/AssetManifest.bin": 404})
+    missing = ipfs.origin_missing(
+        "CID", ["index.html", "flutter.js", "assets/AssetManifest.bin"],
+        "https://mine.mypinata.cloud", client=client)
+
+    assert missing == ["assets/AssetManifest.bin", "flutter.js"]
+
+
+def test_html_the_origin_refuses_to_serve_is_not_missing() -> None:
+    """A `*.mypinata.cloud` subdomain will not serve HTML at all, which says
+    nothing about whether the block is there."""
+    client = origin_serving({"index.html": 403})
+    missing = ipfs.origin_missing(
+        "CID", ["index.html", "flutter.js"], "https://mine.mypinata.cloud",
+        client=client)
+
+    assert missing == []

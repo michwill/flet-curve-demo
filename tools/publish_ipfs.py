@@ -1104,6 +1104,26 @@ def main() -> int:
     if options.no_verify:
         return 0
     paths = boot_files(dist)
+
+    # Before asking the world, ask the one that already has it.  An
+    # incomplete pin and a cold one both look like 504s from outside, and
+    # only one of them is fixed by waiting.
+    if gateway := str(config().get("gateway", "")).strip():
+        print(f"\nchecking the pin against {gateway.rstrip('/')} -- it holds "
+              f"the blocks, so what it will not serve is not in the pin")
+        if absent := origin_missing(cid, paths, gateway):
+            raise SystemExit(
+                f"  {len(absent)} of {len(paths)} boot file(s) are not in this "
+                "pin:\n      "
+                + "\n      ".join(absent[:12])
+                + (f"\n      ... and {len(absent) - 12} more"
+                   if len(absent) > 12 else "")
+                + "\n\n  The name has not been moved. Warming cannot fix this: "
+                "the origin\n  itself does not have them, so no gateway can. "
+                "Publish again."
+            )
+        print(f"  all {len(paths)} boot files are in the pin")
+
     if code := wait_until_findable(cid, paths, options):
         return code
     if options.no_warm:
@@ -1125,6 +1145,42 @@ def show_pin(cid: str, *, duplicate: bool = False) -> None:
     for candidate in VERIFY_GATEWAYS:
         print(f"       {candidate.format(cid=cid)}/")
     print(f"       ipfs://{cid}/")
+
+
+def origin_missing(cid: str, paths: list[str], gateway: str, *,
+                   workers: int = 8, timeout: float = 45.0,
+                   client=None) -> list[str]:
+    """Which of `paths` the account's own gateway will not serve.
+
+    A different question from the one `verify` asks, and worth asking first.
+    `verify` goes to third parties, rightly: a pin only the origin can serve
+    is a pin nobody can visit.  But that makes an incomplete pin and a merely
+    cold one look identical from outside -- both are a wall of 504s -- and the
+    two want opposite things done about them.  The origin already holds every
+    block, so anything it will not serve is missing from the pin, and no
+    amount of warming will conjure it.
+    """
+    import httpx
+
+    base = f"{gateway.rstrip('/')}/ipfs/{cid}"
+    owned = client is None
+    client = client or httpx.Client(timeout=timeout, follow_redirects=True)
+
+    def fetch(path: str) -> tuple[str, int]:
+        try:
+            return path, client.get(f"{base}/{path}").status_code
+        except Exception:
+            return path, 0
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(workers) as pool:
+            answers = list(pool.map(fetch, paths))
+    finally:
+        if owned:
+            client.close()
+    # 403 is the origin refusing to serve HTML from a `*.mypinata.cloud`
+    # subdomain, which says nothing about whether the block is there.
+    return sorted(path for path, code in answers if code not in (200, 403))
 
 
 def chosen_gateway(cid: str, options) -> str:

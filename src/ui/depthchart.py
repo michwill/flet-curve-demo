@@ -18,6 +18,7 @@ shapes -- a polygon, its outline, and one dashed line at the spot price.
 from __future__ import annotations
 
 import asyncio
+import bisect
 import math
 import time
 from collections.abc import Callable
@@ -78,11 +79,6 @@ READOUT_PADDING = 8.0
 #: How long to wait for the client to say it took a frame.  Past this the
 #: chart stops asking rather than stall a second a frame.
 ACK_TIMEOUT = 1.0
-
-#: How long the pointer has to hold still before the band is worth drawing.
-#: While it is moving only the cursor line follows it, which is two numbers
-#: on the wire; the band and the readout are the part that costs.
-SETTLE = 0.08
 
 #: How often the client may send a hover, in milliseconds.  It sends at this
 #: rate however slow the frames are, so on a slow client the events pile up
@@ -181,15 +177,30 @@ class DepthChart(ft.Container):
         self._painter: asyncio.Task | None = None
         #: What a frame has been costing, smoothed, in seconds.
         self._cost = HOVER_FAST / 1000.0
-        #: Whether the pointer has settled somewhere worth drawing in full,
-        #: when it last moved, and the task waiting for it to stop.
-        self._settled = False
-        self._moved = 0.0
-        self._settler: asyncio.Task | None = None
-        #: The line that follows the pointer. One object, moved rather than
-        #: rebuilt: Flet re-sends a shape it has not seen and skips one it has.
+        #: `log(price)` per sample, for finding the one under the pointer.
+        self._logs: list[float] = []
+        #: Which sample the overlay is drawn for, and for which window.
+        self._shown: tuple[int, tuple | None] | None = None
+        #: The overlay, built once and moved.  Flet re-sends a shape it has
+        #: not seen and skips one it has, so a frame that only moves these is
+        #: a handful of numbers rather than seven controls torn down and put
+        #: back up.
+        band = ft.Paint(color=ft.Colors.with_opacity(
+            SPREAD_FILL, ft.Colors.TERTIARY))
+        rim = ft.Paint(color=ft.Colors.with_opacity(
+            SPREAD_EDGE, ft.Colors.TERTIARY), stroke_width=1,
+            style=ft.PaintingStyle.STROKE)
         self._cursor = cv.Line(0.0, 0.0, 0.0, 0.0, paint=ft.Paint(
             color=ft.Colors.ON_SURFACE_VARIANT, stroke_width=1))
+        self._band = cv.Rect(0.0, 0.0, 1.0, 1.0, paint=band)
+        self._edges = (cv.Line(0.0, 0.0, 0.0, 0.0, paint=rim),
+                       cv.Line(0.0, 0.0, 0.0, 0.0, paint=rim))
+        self._dot = cv.Circle(0.0, 0.0, 3, paint=ft.Paint(
+            color=ft.Colors.PRIMARY))
+        self._card = cv.Rect(0.0, 0.0, 1.0, 18.0, paint=ft.Paint(
+            color=ft.Colors.with_opacity(0.93, ft.Colors.SURFACE)))
+        self._label = cv.Text(0.0, 0.0, "", ft.TextStyle(
+            size=TINY, color=ft.Colors.ON_SURFACE))
         #: Whether the client answers. Switched off by the first one that
         #: does not, so a silent client draws ungated instead of freezing.
         self._acks = True
@@ -238,6 +249,9 @@ class DepthChart(ft.Container):
         self._profile = profile if profile and profile.samples else None
         self._unit = unit
         self._static_key = None
+        self._shown = None
+        self._logs = ([math.log(s.price) for s in self._profile.samples]
+                      if self._profile else [])
         self._empty.value = "" if self._profile else "No curve for this pair."
         self._empty.visible = self._profile is None
         if self._profile is not None and not keep_view:
@@ -305,35 +319,7 @@ class DepthChart(ft.Container):
 
     def _hovered(self, e: ft.HoverEvent) -> None:
         self._at = (e.local_position.x, e.local_position.y)
-        self._moved = time.monotonic()
-        # A finger does not hover: it arrives where it means to, so there is
-        # no travel to draw cheaply and the band is wanted at once.
-        self._settled = e.kind is ft.PointerDeviceType.TOUCH
         self._paint()
-        if not self._settled:
-            self._await_stop()
-
-    def _await_stop(self) -> None:
-        """Draw the band once the pointer holds still."""
-        if self._settler is not None:
-            return                      # already waiting; it re-reads `_moved`
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            return
-        self._settler = loop.create_task(self._settling())
-
-    async def _settling(self) -> None:
-        try:
-            while True:
-                left = SETTLE - (time.monotonic() - self._moved)
-                if left <= 0.0:
-                    break
-                await asyncio.sleep(left)
-            self._settled = True
-            self._paint()
-        finally:
-            self._settler = None
 
     def _pace(self) -> None:
         """Ask the client for hovers no faster than frames are coming out.
@@ -350,7 +336,6 @@ class DepthChart(ft.Container):
 
     def _left(self, _e: ft.HoverEvent) -> None:
         self._at = None
-        self._settled = False
         self._paint()
 
     def _settle(self) -> None:
@@ -432,24 +417,48 @@ class DepthChart(ft.Container):
         if base is not self._canvas.shapes:
             self._canvas.shapes = base
             safe_update(self._canvas)
-        self._overlay.shapes = self._over(found, self._at)
-        safe_update(self._overlay)
+        over = self._over(found, self._at)
+        if over is not None:
+            self._overlay.shapes = over
+            safe_update(self._overlay)
         safe_update(self._empty)
 
     def _over(self, found: Profile | None,
-              hover: tuple[float, float] | None) -> list[cv.Shape]:
-        """What is drawn over the curve: the pointer, and where it came to rest."""
+              hover: tuple[float, float] | None) -> list[cv.Shape] | None:
+        """What is drawn over the curve, or `None` if it would not change.
+
+        Everything here sits on the sample under the pointer, so between two
+        samples there is no new picture to send -- and at 160 samples across
+        the width most of what a mouse reports falls between them.  Skipping
+        those is what makes the band affordable to carry continuously.
+        """
         plot = self._plot
         if found is None or not (hover and plot.contains(*hover)):
+            if self._shown is None:
+                return None
+            self._shown = None
             return []
-        # One object moved, never a new one: while the pointer is going
-        # somewhere this is the whole frame, and two numbers is as small as a
-        # frame gets.
-        self._cursor.x1 = self._cursor.x2 = hover[0]
-        self._cursor.y1, self._cursor.y2 = plot.top, plot.bottom
-        if not self._settled:
-            return [self._cursor]
-        return [*self._readout(found, *hover), self._cursor]  # which snaps it
+        k = self._nearest(hover[0])
+        here = (k, self._static_key)
+        if here == self._shown:
+            return None
+        self._shown = here
+        return [*self._readout(found, found.samples[k]), self._cursor]
+
+    def _nearest(self, px: float) -> int:
+        """Which sample sits under `px`.
+
+        Bisect over the prices, which are already in order, rather than a
+        scan: this runs on every pointer move, and the scan it replaces
+        measured `log` on all 160 of them each time.
+        """
+        want = self._plot.data_x(px, self._view)
+        k = bisect.bisect_left(self._logs, want)
+        if k <= 0:
+            return 0
+        if k >= len(self._logs):
+            return len(self._logs) - 1
+        return k if self._logs[k] - want < want - self._logs[k - 1] else k - 1
 
     def _backdrop(self, found: Profile) -> list[cv.Shape]:
         """The grid, the curve and the spot line, held between frames.
@@ -553,32 +562,28 @@ class DepthChart(ft.Container):
         """A depth, short enough for an axis. `1,000,000.00` is not."""
         return compact_usd(value, sign="$" if self._unit == "USD" else "")
 
-    def _readout(self, found: Profile, px: float, py: float) -> list[cv.Shape]:
-        """What the curve says at the pointer."""
+    def _readout(self, found: Profile, at: Sample) -> list[cv.Shape]:
+        """What the curve says at `at`, by moving the overlay onto it."""
         plot, view = self._plot, self._view
-        price = math.exp(plot.data_x(px, view))
-        nearest = min(found.samples,
-                      key=lambda s: abs(math.log(s.price / price)))
-        x = plot.pixel_x(math.log(nearest.price), view)
-        y = plot.pixel_y(nearest.depth, view)
-        # Onto the sample, so the line, the dot and the band agree.
+        x = plot.pixel_x(math.log(at.price), view)
+        # The line, the dot and the card all sit on the sample, so a pointer
+        # that has not crossed into the next one leaves the picture alone.
         self._cursor.x1 = self._cursor.x2 = x
-        away = 1e2 * (nearest.price / found.spot - 1.0)
-        text = (f"{price_text(nearest.price)}  ({away:+.2f}%)   "
-                f"{self._amount(nearest.depth)}"
+        self._cursor.y1, self._cursor.y2 = plot.top, plot.bottom
+        self._dot.x, self._dot.y = x, plot.pixel_y(at.depth, view)
+        away = 1e2 * (at.price / found.spot - 1.0)
+        text = (f"{price_text(at.price)}  ({away:+.2f}%)   "
+                f"{self._amount(at.depth)}"
                 f"{'' if self._unit == 'USD' else ' ' + self._unit}")
-        if nearest.fee > 0:
-            text += f"   fee {percent(nearest.fee * 1e2, places=4)}"
+        if at.fee > 0:
+            text += f"   fee {percent(at.fee * 1e2, places=4)}"
         width = text_width(text, TINY) + READOUT_PADDING
-        left = min(max(px + 8, plot.left), max(plot.right - width, plot.left))
-        return [
-            *self._spread(nearest),
-            cv.Circle(x, y, 3, paint=ft.Paint(color=ft.Colors.PRIMARY)),
-            cv.Rect(left - 4, plot.top + 16, width, 18, paint=ft.Paint(
-                color=ft.Colors.with_opacity(0.93, ft.Colors.SURFACE))),
-            cv.Text(left, plot.top + 18, text,
-                    ft.TextStyle(size=TINY, color=ft.Colors.ON_SURFACE)),
-        ]
+        left = min(max(x + 8, plot.left), max(plot.right - width, plot.left))
+        self._card.x, self._card.y = left - 4, plot.top + 16
+        self._card.width = width
+        self._label.x, self._label.y = left, plot.top + 18
+        self._label.value = text
+        return [*self._spread(at), self._dot, self._card, self._label]
 
     def _spread(self, at: Sample) -> list[cv.Shape]:
         """The fee either side of the pointer, as the band it opens.
@@ -596,18 +601,17 @@ class DepthChart(ft.Container):
         left, right = max(low, plot.left), min(high, plot.right)
         if right < left:
             return []
-        height = plot.bottom - plot.top
-        shapes: list[cv.Shape] = [cv.Rect(
-            left, plot.top, max(right - left, MIN_SPREAD), height,
-            paint=ft.Paint(color=ft.Colors.with_opacity(
-                SPREAD_FILL, ft.Colors.TERTIARY)))]
-        edge = ft.Paint(
-            color=ft.Colors.with_opacity(SPREAD_EDGE, ft.Colors.TERTIARY),
-            stroke_width=1, style=ft.PaintingStyle.STROKE)
-        for side in (low, high):
+        self._band.x, self._band.y = left, plot.top
+        self._band.width = max(right - left, MIN_SPREAD)
+        self._band.height = plot.bottom - plot.top
+        shapes: list[cv.Shape] = [self._band]
+        # The edges join the list only while they are on screen, so the one
+        # that is off it costs nothing rather than being hidden by a trick.
+        for line, side in zip(self._edges, (low, high), strict=True):
             if plot.left <= side <= plot.right:
-                shapes.append(cv.Line(side, plot.top, side, plot.bottom,
-                                      paint=edge))
+                line.x1 = line.x2 = side
+                line.y1, line.y2 = plot.top, plot.bottom
+                shapes.append(line)
         return shapes
 
 

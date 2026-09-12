@@ -15,7 +15,6 @@ from ui.depthchart import (
     HOVER_SLOW,
     MIN_SPREAD,
     PRICE_LABELS,
-    SETTLE,
     DepthChart,
     price_text,
     price_ticks,
@@ -189,8 +188,8 @@ def test_the_readout_says_what_the_fee_is_there() -> None:
     import flet.canvas as cv
 
     chart = fee_chart(0.004)
-    x = chart._plot.pixel_x(math.log(1.0), chart._view)
-    texts = [s.value for s in chart._readout(chart._profile, x, 50.0)
+    at = chart._profile.samples[10]
+    texts = [s.value for s in chart._readout(chart._profile, at)
              if isinstance(s, cv.Text)]
 
     assert texts and "fee 0.4000%" in texts[0]
@@ -200,8 +199,8 @@ def test_and_leaves_it_out_where_there_is_none() -> None:
     import flet.canvas as cv
 
     chart = fee_chart(0.0)
-    x = chart._plot.pixel_x(math.log(1.0), chart._view)
-    texts = [s.value for s in chart._readout(chart._profile, x, 50.0)
+    at = chart._profile.samples[10]
+    texts = [s.value for s in chart._readout(chart._profile, at)
              if isinstance(s, cv.Text)]
 
     assert texts and "fee" not in texts[0]
@@ -400,31 +399,23 @@ async def test_the_pace_follows_what_frames_actually_cost() -> None:
     assert chart._cost > 0.004
 
 
-def test_a_travelling_pointer_draws_the_line_and_nothing_else() -> None:
-    """While it is going somewhere, the band is not what is wanted and it is
-    the whole cost of the frame."""
+def test_the_overlay_is_moved_rather_than_made_again() -> None:
+    """Flet re-sends a shape it has not seen and skips one it has, so a frame
+    that only moves these is a few numbers rather than seven controls."""
     chart = fee_chart()
-    chart._settled = False
+    first = chart._over(chart._profile, (500.0, 120.0))
+    second = chart._over(chart._profile, (700.0, 120.0))
 
-    assert chart._over(chart._profile, (500.0, 120.0)) == [chart._cursor]
-
-
-def test_the_line_is_moved_rather_than_made_again() -> None:
-    """Flet re-sends a shape it has not seen and skips one it has, so the
-    travelling frame is two numbers on the wire."""
-    chart = fee_chart()
-    chart._settled = False
-    first = chart._over(chart._profile, (500.0, 120.0))[-1]
-    second = chart._over(chart._profile, (600.0, 120.0))[-1]
-
-    assert first is second is chart._cursor
-    assert chart._cursor.x1 == chart._cursor.x2 == 600.0
+    assert first is not None and second is not None
+    assert [id(s) for s in first] == [id(s) for s in second]
+    assert second[-1] is chart._cursor
 
 
 def test_the_curve_is_not_resent_while_only_the_pointer_moves() -> None:
     """The whole point of the second canvas: a patch names the canvas it is
     for, so the curve's shapes are not walked to find nothing changed."""
     chart = fee_chart()
+    chart._at = (500.0, 120.0)
     chart._redraw()
     curve = chart._canvas.shapes
 
@@ -432,7 +423,7 @@ def test_the_curve_is_not_resent_while_only_the_pointer_moves() -> None:
     chart._redraw()
 
     assert chart._canvas.shapes is curve
-    assert chart._overlay.shapes == [chart._cursor]
+    assert chart._overlay.shapes[-1] is chart._cursor
 
 
 def test_but_a_pan_does_resend_it() -> None:
@@ -446,50 +437,47 @@ def test_but_a_pan_does_resend_it() -> None:
     assert chart._canvas.shapes is not curve
 
 
-def test_and_the_band_arrives_once_it_stops() -> None:
+def test_everything_sits_on_the_sample_not_the_pointer() -> None:
+    """Which is what lets a frame be skipped: between two samples there is no
+    new picture to send."""
     chart = fee_chart()
-    chart._settled = True
-    over = chart._over(chart._profile, (500.0, 120.0))
-
-    assert len(over) > 1
-    assert over[-1] is chart._cursor
-
-
-def test_the_line_snaps_onto_the_sample_when_the_band_is_drawn() -> None:
-    """Otherwise the line, the dot and the band disagree by half a sample."""
-    chart = fee_chart()
-    chart._settled = True
     chart._over(chart._profile, (500.0, 120.0))
-    loose = chart._cursor.x1
 
-    assert loose != 500.0
-    assert abs(loose - 500.0) < 20.0
+    assert chart._cursor.x1 == chart._dot.x
+    assert chart._cursor.x1 != 500.0
+    assert abs(chart._cursor.x1 - 500.0) < 20.0
 
 
-async def test_the_band_follows_the_pointer_coming_to_rest() -> None:
+def test_a_move_inside_one_sample_is_not_a_frame() -> None:
+    """At 160 samples across the width, most of what a mouse reports falls
+    between them -- and an identical picture is not worth sending."""
     chart = fee_chart()
-    chart._hovered(Move(500.0, 120.0))
-    assert chart._settled is False
+    first = chart._over(chart._profile, (500.0, 120.0))
+    again = chart._over(chart._profile, (501.0, 120.0))
 
-    await asyncio.sleep(SETTLE * 2.5)
-    assert chart._settled is True
+    assert first is not None
+    assert again is None
 
 
-async def test_moving_again_takes_the_band_off_the_old_price() -> None:
+def test_but_crossing_into_the_next_one_is() -> None:
     chart = fee_chart()
-    chart._hovered(Move(500.0, 120.0))
-    await asyncio.sleep(SETTLE * 2.5)
-    assert chart._settled is True
+    chart._over(chart._profile, (500.0, 120.0))
 
-    chart._hovered(Move(560.0, 120.0))
-    assert chart._settled is False
+    assert chart._over(chart._profile, (700.0, 120.0)) is not None
 
 
-def test_a_finger_gets_the_band_at_once() -> None:
-    """There is no travel to draw on a touch screen: it arrives where it
-    means to, so waiting for it to hold still would only be a delay."""
+def test_and_so_is_the_window_moving_under_a_still_pointer() -> None:
     chart = fee_chart()
-    chart._hovered(Move(500.0, 120.0, touch=True))
+    chart._over(chart._profile, (500.0, 120.0))
+    chart._view = chart._view.panned(0.001, 0.0)
+    chart._backdrop(chart._profile)          # re-keys the window
 
-    assert chart._settled is True
-    assert chart._settler is None
+    assert chart._over(chart._profile, (500.0, 120.0)) is not None
+
+
+def test_leaving_clears_the_overlay_once_and_then_keeps_quiet() -> None:
+    chart = fee_chart()
+    chart._over(chart._profile, (500.0, 120.0))
+
+    assert chart._over(chart._profile, None) == []
+    assert chart._over(chart._profile, None) is None

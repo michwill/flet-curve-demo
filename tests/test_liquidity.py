@@ -385,3 +385,51 @@ def test_and_the_peak_sits_where_the_curve_is_pegged() -> None:
     at_spot = L.depth_at(skewed, 0, 1, L.spot_price(skewed, 0, 1)) * skewed.scale[0]
 
     assert at_peg > at_spot * 4
+
+
+
+#: tricrypto2's own parameters, and a pool shaped roughly as it holds.
+TRI_AMP, TRI_GAMMA = 1_707_629, 11_809_167_828_997
+TRI_SCALE = (100_000 * ONE, 4_000 * ONE)
+TRI_PRECISIONS = (10**12, 10**10, 1)          # 6, 8 and 18 decimals
+
+
+def tricrypto_tilted(tilt: float = 1.0):
+    """A tricrypto pool with coin 0 pushed off the others by `tilt`."""
+    balances = (int(4_000_000 * 10**6 * tilt), 40 * 10**8, 1_000 * ONE)
+    xp = [balances[0] * TRI_PRECISIONS[0],
+          balances[1] * TRI_PRECISIONS[1] * TRI_SCALE[0] // ONE,
+          balances[2] * TRI_PRECISIONS[2] * TRI_SCALE[1] // ONE]
+    d = int(L.crypto_invariant(xp, TRI_AMP / 10_000, TRI_GAMMA / 1e18))
+    curve = L.tricrypto_curve(balances, TRI_PRECISIONS, TRI_SCALE, d,
+                              TRI_AMP, TRI_GAMMA)
+    return curve, [v / (d / 3) for v in xp]
+
+
+def shoulder(curve, i: int, j: int, out: float = 1.0002) -> float:
+    """How much of the peak is left a little way off it."""
+    crest = L.peak_price(curve, i, j)
+    return L.depth_at(curve, i, j, crest * out) / L.depth_at(curve, i, j, crest)
+
+
+def test_a_balanced_tricrypto_is_the_same_width_in_every_pair() -> None:
+    curve, shares = tricrypto_tilted()
+    assert shares == pytest.approx([1.0, 1.0, 1.0], abs=1e-3)
+
+    widths = [shoulder(curve, i, j) for i, j in ((1, 2), (0, 2), (0, 1))]
+    assert widths == pytest.approx([widths[0]] * 3, rel=1e-6)
+
+
+def test_and_the_coin_a_pair_holds_fixed_is_what_sets_its_width() -> None:
+    """`K0` is a product over all three coins, so the one held out of the
+    trade decides the slice: above `D/N` it pushes `K0` toward 1 and the peak
+    widens.  On tricrypto2 that is the whole of why WETH/WBTC reads four times
+    wider than WETH/USDT -- it is the pair holding the surplus coin.
+    """
+    curve, shares = tricrypto_tilted(1.004)
+    assert shares[0] > 1.0 > shares[1]        # coin 0 is the surplus one
+
+    holding_surplus = shoulder(curve, 1, 2)   # the pair that holds coin 0
+    holding_short = shoulder(curve, 0, 2)     # and one that holds coin 1
+
+    assert holding_surplus > holding_short * 1.5

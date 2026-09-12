@@ -17,6 +17,7 @@ Reads endpoints the way `liquidity_survey.py` does.
 
 from __future__ import annotations
 
+import math
 import sys
 from pathlib import Path
 
@@ -34,8 +35,11 @@ from liquidity_survey import (
 from curve import depth
 from curve import liquidity as L
 
-#: Where along the curve to compare, as shares of the `i` balance.
-LADDER = (1e-6, 1e-5, 1e-4, 1e-3, 3e-3, 1e-2, 3e-2, 1e-1)
+#: Where along the curve to compare, as shares of the `i` balance.  Fine at
+#: the near end: an amplified peak can be a few basis points wide, and a
+#: ladder that steps over it says nothing about the width.
+LADDER = (1e-7, 3e-7, 1e-6, 3e-6, 1e-5, 3e-5, 1e-4, 3e-4,
+          1e-3, 3e-3, 1e-2, 3e-2, 1e-1)
 
 #: The step the chain's marginal price is differenced over, relative to the
 #: trade it is taken at.  Large enough that `get_dy` rounding does not show,
@@ -48,6 +52,10 @@ DEFAULT = [
     ("ethereum", "0xB576491F1E6e5E62f1d8F26062Ee822B40B0E0d4", None),  # CVX/ETH
     ("ethereum", "0x4dece678ceceb27446b35c672dc7d61f30bad69e", None),  # USDC/crvUSD
     ("gnosis", "0x056C6C5e684CeC248635eD86033378Cc444459B0", None),    # EURe/x3CRV
+    # tricrypto2, whose pairs read very different widths: the pair holding the
+    # surplus coin is the wide one.
+    ("ethereum", "0xD51a44d3FaE010294C616388b506AcdA1bfAAE46", (2, 0)),
+    ("ethereum", "0xD51a44d3FaE010294C616388b506AcdA1bfAAE46", (2, 1)),
 ]
 
 
@@ -125,26 +133,95 @@ def check(call, pool: str, pair) -> None:
               f"   chain {base:,.8f}")
         print(f"   {'trade of ' + names[i]:>20}   {'chain p/p0':>12}"
               f"   {'ours p/p0':>12}   {'apart':>8}")
+        walked = []
         for share in LADDER:
             dx = int(balances[i] * share)
             if dx < 1:
                 continue
             theirs = chain_slope(call, pool, decimals, i, j, dx)
             if theirs is None:
-                print(f"   {dx / 10 ** decimals[i]:>20,.4f}   "
-                      f"{'refused':>12}")
                 continue
-            # Our curve at the same displacement, in its own `xp` space.
             moved = curve.xp[i] + dx / 10 ** decimals[i] / curve.scale[i]
             try:
                 ours = curve.price_at(i, j, moved)
-            except (L.DepthError, ArithmeticError) as exc:
-                print(f"   {dx / 10 ** decimals[i]:>20,.4f}   "
-                      f"{theirs / base:>12.6f}   {type(exc).__name__}")
+            except (L.DepthError, ArithmeticError):
                 continue
-            print(f"   {dx / 10 ** decimals[i]:>20,.4f}   {theirs / base:>12.6f}"
+            walked.append((dx / 10 ** decimals[i], theirs, ours))
+            print(f"   {dx / 10 ** decimals[i]:>20,.6f}   {theirs / base:>12.6f}"
                   f"   {ours / spot_ours:>12.6f}"
                   f"   {abs(theirs / base / (ours / spot_ours) - 1) * 100:>7.3f}%")
+        fee = (reading.get("fee") or 0) / 1e10
+        width(curve, i, j, spot_ours, fee, names)
+        outputs(call, pool, decimals, curve, reading, i, j, names)
+
+
+def outputs(call, pool: str, decimals, curve, reading, i: int, j: int,
+            names) -> None:
+    """Trade to each place and see: what the pool pays, against our curve.
+
+    No differencing anywhere.  Our curve says how much `j` leaves when `dx` of
+    `i` arrives -- that is `y_at`, which is the curve itself -- and `get_dy`
+    says what the pool actually pays.  The gap between them is the fee, and if
+    it lands between `mid_fee` and `out_fee` and grows with the trade, the
+    curve is the pool's.
+    """
+    mid = (reading.get("mid_fee") or 0) / 1e10
+    out = (reading.get("out_fee") or 0) / 1e10
+    flat = (reading.get("fee") or 0) / 1e10
+    print(f"   {'trade of ' + names[i]:>20}   {'chain out':>16}"
+          f"   {'ours, gross':>16}   {'implied fee':>11}")
+    for share in LADDER:
+        dx = int(reading.balances[i] * share)
+        if dx < 1:
+            continue
+        paid = chain_dy(call, pool, i, j, dx)
+        if not paid:
+            continue
+        here = curve.xp[i]
+        there = here + dx / 10 ** decimals[i] / curve.scale[i]
+        try:
+            gross = ((curve.y_at(i, j, here) - curve.y_at(i, j, there))
+                     * curve.scale[j])
+        except (L.DepthError, ArithmeticError):
+            continue
+        if gross <= 0:
+            continue
+        net = paid / 10 ** decimals[j]
+        print(f"   {dx / 10 ** decimals[i]:>20,.6f}   {net:>16,.6f}"
+              f"   {gross:>16,.6f}   {1 - net / gross:>10.4%}")
+    band = f"{mid:.4%}..{out:.4%}" if out else f"{flat:.4%}"
+    print(f"   {'':20}   the pool charges between {band}")
+
+
+def width(curve, i: int, j: int, spot: float, fee: float, names) -> None:
+    """Where the depth has fallen to half its peak, against the fee.
+
+    The question the chart raises: a band of liquidity narrower than the fee
+    is one no arbitrage can ever reach into.
+    """
+    try:
+        crest = L.peak_price(curve, i, j)
+        peak = L.depth_at(curve, i, j, crest)
+    except (L.DepthError, ArithmeticError) as exc:
+        print(f"   no peak: {exc}")
+        return
+    floor = L.background(curve, i, j)
+    lo, hi = 1e-6, 2.0
+    for _ in range(60):
+        middle = math.sqrt(lo * hi)
+        try:
+            here = L.depth_at(curve, i, j, crest * (1 + middle)) - floor
+        except (L.DepthError, ArithmeticError):
+            hi = middle
+            continue
+        if here > (peak - floor) * 0.5:
+            lo = middle
+        else:
+            hi = middle
+    half = math.sqrt(lo * hi)
+    print(f"   peak at {crest / spot - 1:+.4%} from spot, half-width"
+          f" {half:.4%}, fee {fee:.4%}"
+          f"   -> {'NARROWER than the fee' if half < fee else 'wider than the fee'}")
 
 
 def main() -> int:

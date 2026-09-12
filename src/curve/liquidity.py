@@ -259,9 +259,12 @@ MARGIN_WIDTHS = 5.0
 #: pool it is the whole story, and the shape is a property of the curve: the
 #: same pool sitting anywhere along it reports the same depth at the same
 #: price.  On a tricrypto pool each *pair* sees a different slice of the same
-#: three-coin surface, and the three pairs of one measured 7.2e-3, 0.10 and
-#: 2.52 -- the last being the constant-product answer arriving on schedule,
-#: since away from the peg `x = sqrt(k/p)`.  So `auto_window` measures.
+#: three-coin surface, and which slice is set by the **third** coin: `K0` is a
+#: product over all three, so the one a pair holds fixed decides its width.
+#: Above `D/N` it pushes `K0` toward 1 and the peak widens, severely -- on
+#: tricrypto2 the pair holding a coin at 1.0043 of `D/3` was four times the
+#: width of the two holding coins at 0.9977.  Balance the pool and all three
+#: pairs come out identical.  So `auto_window` measures rather than trust this.
 CRYPTO_SEED = 0.05
 
 

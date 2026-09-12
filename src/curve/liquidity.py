@@ -73,6 +73,9 @@ class Curve:
     xp: tuple[float, ...]
     solve: Callable[[list[float], int, int], float]
     scale: tuple[float, ...]
+    #: The fee at a point on the curve, as a fraction. `None` where the
+    #: pool's fee fields were not read.
+    charge: Callable[[Sequence[float], int, int], float] | None = None
 
     def y_at(self, i: int, j: int, x: float) -> float:
         """`j`'s balance when `i` holds `x`, everything else untouched."""
@@ -99,6 +102,24 @@ class Curve:
         return slope * self.scale[j] / self.scale[i]
 
 
+    def fee_at(self, i: int, j: int, x: float) -> float:
+        """The fee a marginal trade pays where `i` holds `x`, as a fraction.
+
+        A dynamic fee is a function of the balances, so it has a value at
+        every price rather than one for the pool.  Zero rather than an error
+        where it cannot be had: a profile is worth drawing without it.
+        """
+        if self.charge is None:
+            return 0.0
+        try:
+            state = list(self.xp)
+            state[i] = x
+            state[j] = self.solve(state, i, j)
+            return self.charge(state, i, j)
+        except (DepthError, ArithmeticError, ValueError):
+            return 0.0
+
+
 @dataclass(frozen=True)
 class Sample:
     """One point of the profile."""
@@ -106,6 +127,8 @@ class Sample:
     price: float
     #: Coin `i` per 1% of price range, in whole tokens.
     depth: float
+    #: What a marginal trade pays here, as a fraction. 0 where unknown.
+    fee: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -445,7 +468,8 @@ def profile(curve: Curve, i: int, j: int, *, low: float, high: float,
         # Per 1%, whatever the grid step happens to be.
         per_band = abs(x1 - x0) * (BAND / width)
         samples.append(Sample(price=math.sqrt(p0 * p1),
-                              depth=per_band * curve.scale[i]))
+                              depth=per_band * curve.scale[i],
+                              fee=curve.fee_at(i, j, 0.5 * (x0 + x1))))
     return Profile(samples=tuple(samples), spot=spot, pair=(i, j))
 
 
@@ -542,7 +566,8 @@ def crypto_invariant(xp: Sequence[float], amp: float, gamma: float, *,
 
 
 def stableswap_curve(balances: Sequence[int], rates: Sequence[int], amp: int,
-                     decimals: Sequence[int], *, a_precision: int = 100) -> Curve:
+                     decimals: Sequence[int], *, a_precision: int = 100,
+                     fee: int = 0, offpeg_fee_multiplier: int = 0) -> Curve:
     """A stableswap pool, from what `parameters()` and `reserves()` return.
 
     `rates` are `stored_rates()` where the pool has them and `10**(36-dec)`
@@ -550,7 +575,13 @@ def stableswap_curve(balances: Sequence[int], rates: Sequence[int], amp: int,
     an LST's exchange rate folded in beside the decimals, so `xp` is value
     rather than counts and the curve is the one the pool actually trades on.
     """
-    from erouter.core.stableswap import StableSwapError, d_fast, solve_y_fast
+    from erouter.core.stableswap import (
+        FEE_DENOMINATOR,
+        StableSwap,
+        StableSwapError,
+        d_fast,
+        solve_y_fast,
+    )
 
     xp = [b * r / 1e18 for b, r in zip(balances, rates, strict=True)]
     if any(v <= 0 for v in xp):
@@ -570,7 +601,22 @@ def stableswap_curve(balances: Sequence[int], rates: Sequence[int], amp: int,
 
     scale = tuple(1e18 / (r * 10 ** dec)
                   for r, dec in zip(rates, decimals, strict=True))
-    return Curve(xp=tuple(xp), solve=solve, scale=scale)
+    charge = None
+    if fee > 0:
+        # The router's own `dynamic_fee`, not a fourth copy of it. Only the
+        # traded pair's balances set it, hence `i` and `j`.
+        model = StableSwap(
+            balances=tuple(int(b) for b in balances),
+            rates=tuple(int(r) for r in rates),
+            amp=int(amp), fee=int(fee),
+            offpeg_fee_multiplier=int(offpeg_fee_multiplier),
+            a_precision=int(a_precision),
+        )
+
+        def charge(state: Sequence[float], i: int, j: int) -> float:
+            return model.dynamic_fee_fast(state[i], state[j]) / FEE_DENOMINATOR
+
+    return Curve(xp=tuple(xp), solve=solve, scale=scale, charge=charge)
 
 
 def _crypto_scales(price_scale: Sequence[int], n: int) -> tuple[float, ...]:
@@ -593,20 +639,24 @@ def _crypto_scales(price_scale: Sequence[int], n: int) -> tuple[float, ...]:
 def twocrypto_curve(balances: Sequence[int], precisions: Sequence[int],
                     price_scale: int, d: int, amp: int, gamma: int, *,
                     stable: bool, v21: bool = True,
-                    legacy_pool: bool = False) -> Curve:
+                    legacy_pool: bool = False, mid_fee: int = 0,
+                    out_fee: int = 0, fee_gamma: int = 0) -> Curve:
     """A twocrypto-ng pool: cryptoswap, or the FX Swap's stableswap backend.
 
     `stable` is the pool's own `MATH()`, never a guess from its coins -- an FX
     Swap solves the stableswap invariant in `price_scale`-adjusted space, which
     is a different curve from the cryptoswap one at the same parameters.
     """
-    from erouter.core.twocrypto import Twocrypto, TwocryptoError
+    from erouter.core.twocrypto import FEE_PRECISION, Twocrypto, TwocryptoError
 
+    # The fees are carried but never reach the curve: `_y_fast` solves the
+    # invariant, which has no fee in it. `legacy_fee` stays default -- the two
+    # deployed `_fee` bodies differ by a part in ten million.
     model = Twocrypto(
         balances=(balances[0], balances[1]),
         precisions=(precisions[0], precisions[1]),
         price_scale=price_scale, d=d, amp=amp, gamma=gamma,
-        mid_fee=0, out_fee=0, fee_gamma=0,
+        mid_fee=mid_fee, out_fee=out_fee, fee_gamma=fee_gamma,
         stable=stable, v21=v21, legacy_pool=legacy_pool,
     )
     xp = [balances[0] * precisions[0],
@@ -620,16 +670,28 @@ def twocrypto_curve(balances: Sequence[int], precisions: Sequence[int],
         except (TwocryptoError, ArithmeticError) as exc:
             raise DepthError(str(exc)) from exc
 
+    charge = None
+    if mid_fee and out_fee and fee_gamma:
+        def charge(state: Sequence[float], _i: int, _j: int) -> float:
+            return model.fee([int(v) for v in state]) / FEE_PRECISION
+
     return Curve(xp=tuple(float(v) for v in xp), solve=solve,
-                 scale=_crypto_scales([price_scale], 2))
+                 scale=_crypto_scales([price_scale], 2), charge=charge)
 
 
 def tricrypto_curve(balances: Sequence[int], precisions: Sequence[int],
                     price_scale: Sequence[int], d: int, amp: int, gamma: int,
-                    *, legacy: bool = False,
-                    a_multiplier: int = 10_000) -> Curve:
+                    *, legacy: bool = False, a_multiplier: int = 10_000,
+                    mid_fee: int = 0, out_fee: int = 0,
+                    fee_gamma: int = 0) -> Curve:
     """A tricrypto pool, whose pairs are every ordered two of its three coins."""
-    from erouter.core.tricrypto import PRECISION, TricryptoError, newton_y_fast
+    from erouter.core.tricrypto import (
+        FEE_PRECISION,
+        PRECISION,
+        Tricrypto,
+        TricryptoError,
+        newton_y_fast,
+    )
 
     xp = [balances[0] * precisions[0]]
     for k in (1, 2):
@@ -649,8 +711,23 @@ def tricrypto_curve(balances: Sequence[int], precisions: Sequence[int],
         except TricryptoError as exc:
             raise DepthError(str(exc)) from exc
 
+    charge = None
+    if mid_fee and out_fee and fee_gamma:
+        # All three coins set the fee: the reduction coefficient is a
+        # product over the whole pool, not over the pair.
+        model = Tricrypto(
+            balances=(balances[0], balances[1], balances[2]),
+            precisions=(precisions[0], precisions[1], precisions[2]),
+            price_scale=(price_scale[0], price_scale[1]),
+            d=d, amp=amp, gamma=gamma, mid_fee=mid_fee, out_fee=out_fee,
+            fee_gamma=fee_gamma, legacy=legacy, a_multiplier=a_multiplier,
+        )
+
+        def charge(state: Sequence[float], _i: int, _j: int) -> float:
+            return model.fee([int(v) for v in state]) / FEE_PRECISION
+
     return Curve(xp=tuple(float(v) for v in xp), solve=solve,
-                 scale=_crypto_scales(price_scale, 3))
+                 scale=_crypto_scales(price_scale, 3), charge=charge)
 
 
 __all__ = ["BAND", "Curve", "DepthError", "Profile", "Sample",

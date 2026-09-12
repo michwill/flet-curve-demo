@@ -1236,7 +1236,9 @@ class PoolDetailView(ft.Column):
         return depth.Reading(
             balances=tuple(reserves),
             decimals=tuple(coin.decimals for coin in coins),
-            values=dict(readings.values),
+            # `fee` goes back in beside the rest: a stableswap's dynamic fee
+            # is the nominal one scaled, so the curve needs it too.
+            values={**readings.values, "fee": fee},
             rates=tuple(readings.rates),
         ), fee
 

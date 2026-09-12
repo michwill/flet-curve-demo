@@ -88,7 +88,9 @@ def _stableswap(reading: Reading) -> list[tuple[str, Curve, float]]:
         # read is preferred wherever it answered.
         rates = tuple(10 ** (36 - d) for d in reading.decimals)
     built = liquidity.stableswap_curve(
-        reading.balances, rates, amp, reading.decimals)
+        reading.balances, rates, amp, reading.decimals,
+        fee=reading.get("fee") or 0,
+        offpeg_fee_multiplier=reading.get("offpeg_fee_multiplier") or 0)
     return [("stableswap", built, liquidity.stableswap_seed(amp))]
 
 
@@ -99,6 +101,9 @@ def _crypto(reading: Reading) -> list[tuple[str, Curve, float]]:
         return []
     precisions = [10 ** (18 - d) for d in reading.decimals]
     seed = liquidity.crypto_seed(gamma, amp, n=reading.coins)
+    mid_fee = reading.get("mid_fee") or 0
+    out_fee = reading.get("out_fee") or 0
+    fee_gamma = reading.get("fee_gamma") or 0
     out: list[tuple[str, Curve, float]] = []
     if reading.coins == 3:
         scale = (reading.get("price_scale") or 0,
@@ -115,7 +120,8 @@ def _crypto(reading: Reading) -> list[tuple[str, Curve, float]]:
                        lambda inv=invariant, m=multiplier, lg=legacy:
                        liquidity.tricrypto_curve(
                            reading.balances, precisions, scale, inv, amp,
-                           gamma, legacy=lg, a_multiplier=m))
+                           gamma, legacy=lg, a_multiplier=m, mid_fee=mid_fee,
+                           out_fee=out_fee, fee_gamma=fee_gamma))
         return out
     pegged = reading.get("price_scale") or 0
     if not pegged:
@@ -132,6 +138,7 @@ def _crypto(reading: Reading) -> list[tuple[str, Curve, float]]:
         with_error(out, family, seed,
                    lambda inv=invariant, kind=shape: liquidity.twocrypto_curve(
                        reading.balances, precisions, pegged, inv, amp, gamma,
+                       mid_fee=mid_fee, out_fee=out_fee, fee_gamma=fee_gamma,
                        **kind))
     return out
 

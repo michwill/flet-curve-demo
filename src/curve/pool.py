@@ -44,6 +44,11 @@ ARRAY_PARAMETERS = ("stored_rates",)
 #: curve.
 CURVE_PARAMETERS = ("A", "A_precise", "gamma", "D")
 
+#: What the pool charges, as the shape of a curve rather than a number: the
+#: chart reads a fee at every price, and `fee()` alone is the one at spot.
+#: Free inside the same multicall the curve already makes.
+CURVE_FEES = ("mid_fee", "out_fee", "fee_gamma", "offpeg_fee_multiplier")
+
 #: A tricrypto pool prices two coins against its first, so the second scale is
 #: asked for by index as well.  Under its own key, or the first answer would
 #: keep the slot and the second coin would be priced as the first.
@@ -77,7 +82,8 @@ def _curve_plan(count: int) -> list[tuple[str, str]]:
     first answer would hold the slot and the second coin would be priced as
     the first.
     """
-    plan = [(key, abi.encode_parameter(key)) for key in CURVE_PARAMETERS]
+    plan = [(key, abi.encode_parameter(key))
+            for key in CURVE_PARAMETERS + CURVE_FEES]
     plan += [("price_scale", abi.encode_parameter("price_scale")),
              ("price_scale", abi.encode_indexed_parameter("price_scale", 0)),
              (SECOND_SCALE_KEY, abi.encode_indexed_parameter("price_scale", 1))]

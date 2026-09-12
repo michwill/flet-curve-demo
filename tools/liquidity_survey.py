@@ -58,8 +58,9 @@ def node(url: str):
 
 
 def number(call, to: str, signature: str, *args: int) -> int | None:
+    """One word back, or `None`. A pool with no such getter answers `0x`."""
     got = call(to, signature, *args)
-    return None if got is None else int(got, 16)
+    return int(got, 16) if got and got not in ("0x", "0X") else None
 
 
 def symbol(call, token: str) -> str:
@@ -116,17 +117,23 @@ def candidates(call, pool: str, decimals, balances):
     """Every model this pool might be, as `(name, crypto, build, seed)`."""
     count = len(balances)
     gamma = number(call, pool, "gamma()")
+    charged = number(call, pool, "fee()") or 0
     if gamma is None:
         amp = number(call, pool, "A()") or 0
         rates = stored_rates(call, pool, count) or [
             10 ** (36 - d) for d in decimals]
+        multiplier = number(call, pool, "offpeg_fee_multiplier()") or 0
         return [("stableswap", False,
-                 lambda: L.stableswap_curve(balances, rates, amp * 100, decimals),
+                 lambda: L.stableswap_curve(
+                     balances, rates, amp * 100, decimals, fee=charged,
+                     offpeg_fee_multiplier=multiplier),
                  L.stableswap_seed(amp * 100))]
     invariant = number(call, pool, "D()") or 0
     amp = number(call, pool, "A()") or 0
     precisions = [10 ** (18 - d) for d in decimals]
     seed = L.crypto_seed(gamma, amp, n=count)
+    fees = {name: number(call, pool, f"{name}()") or 0
+            for name in ("mid_fee", "out_fee", "fee_gamma")}
     if count == 3:
         scale = [number(call, pool, "price_scale(uint256)", k) or 0
                  for k in range(2)]
@@ -134,7 +141,8 @@ def candidates(call, pool: str, decimals, balances):
             (f"tricrypto{' legacy' if legacy else ''}", True,
              lambda legacy=legacy: L.tricrypto_curve(
                  balances, precisions, scale, invariant, amp, gamma,
-                 legacy=legacy, a_multiplier=100 if legacy else 10_000),
+                 legacy=legacy, a_multiplier=100 if legacy else 10_000,
+                 **fees),
              seed)
             for legacy in (False, True)
         ]
@@ -145,10 +153,26 @@ def candidates(call, pool: str, decimals, balances):
     return [
         (name, True,
          lambda kind=kind: L.twocrypto_curve(
-             balances, precisions, pegged, invariant, amp, gamma, **kind),
+             balances, precisions, pegged, invariant, amp, gamma, **kind,
+             **fees),
          seed)
         for name, kind in shapes
     ]
+
+
+def charged_on_chain(call, pool: str, i: int, j: int) -> float | None:
+    """What the pool says it charges right now, for this pair.
+
+    `dynamic_fee(i, j)` where an ng stableswap has it -- that is the off-peg
+    fee at the current balances -- and `fee()` otherwise, which is what the
+    crypto families compute from theirs.
+    """
+    for signature, args in (("dynamic_fee(int128,int128)", (i, j)),
+                            ("fee()", ())):
+        got = number(call, pool, signature, *args)
+        if got:
+            return got / 1e10
+    return None
 
 
 def stored_rates(call, pool: str, count: int) -> list[int] | None:
@@ -220,8 +244,12 @@ def survey(url: str, title: str, pools) -> None:
             continue
         row, mark = sparkline(found)
         width = high / found.spot - 1
+        here = curve.fee_at(i, j, curve.xp[i])
+        theirs = charged_on_chain(call, pool, i, j)
+        fee = (f"  fee {here * 100:.4f}% vs {theirs * 100:.4f}%"
+               if theirs else "")
         print(f"{head:34} spot {got:>16,.8f}  chain {want:>16,.8f}  "
-              f"err {error * 100:>7.3f}%  window +/-{width:.3e}")
+              f"err {error * 100:>7.3f}%  window +/-{width:.3e}{fee}")
         print(f"{'':34} {row}")
         print(f"{'':34} {mark} spot")
 

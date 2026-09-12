@@ -245,3 +245,86 @@ def test_the_crypto_seed_follows_gamma():
 def test_the_crypto_seed_survives_nonsense():
     assert L.crypto_seed(0, 400_000) == L.CRYPTO_SEED
     assert L.crypto_seed(10**16, 0) == L.CRYPTO_SEED
+
+
+# ------------------------------------------------------------------- fees
+
+
+#: A stableswap-ng's off-peg multiplier, as a fraction of `FEE_DENOMINATOR`.
+DOUBLE = 2 * 10**10
+
+
+def charging(balances, fee=4_000_000, multiplier=0, amp=1000):
+    """The same stableswap, with its fee fields filled in."""
+    return L.stableswap_curve(
+        [int(b * ONE) for b in balances], [10**18, 10**18], amp * 100,
+        (18, 18), fee=fee, offpeg_fee_multiplier=multiplier,
+    )
+
+
+def test_a_pool_whose_fee_was_never_read_says_nothing():
+    """Zero, not a guess: a profile is worth drawing without a fee."""
+    curve = stable([1_000_000, 1_000_000])
+    assert curve.charge is None
+    assert curve.fee_at(0, 1, curve.xp[0]) == 0.0
+
+
+def test_at_the_peg_the_dynamic_fee_is_the_nominal_one():
+    curve = charging([1_000_000, 1_000_000], multiplier=DOUBLE)
+    assert curve.fee_at(0, 1, curve.xp[0]) == pytest.approx(4e-4, rel=1e-9)
+
+
+def test_a_stableswap_charges_more_the_further_off_peg_it_is():
+    curve = charging([1_000_000, 1_000_000], multiplier=DOUBLE)
+    fees = [curve.fee_at(0, 1, L.balance_at_price(curve, 0, 1, price))
+            for price in (1.0, 1.001, 1.005, 1.02)]
+    assert fees == sorted(fees)
+    assert fees[-1] < 2 * 4e-4  # the multiplier is the ceiling
+
+
+def test_without_a_multiplier_the_fee_is_flat_wherever_the_pool_sits():
+    curve = charging([1_000_000, 1_000_000])
+    fees = {round(curve.fee_at(0, 1, L.balance_at_price(curve, 0, 1, price)), 12)
+            for price in (0.98, 1.0, 1.02)}
+    assert fees == {4e-4}
+
+
+def test_the_cheapest_price_is_the_deepest_one():
+    """The two halves of the chart agree: a stableswap is flattest at its peg
+    and that is also where it charges least."""
+    curve = charging([1_000_000, 1_000_000], multiplier=DOUBLE)
+    found = L.profile(curve, 0, 1, low=0.99, high=1.01, points=60)
+    assert all(sample.fee > 0 for sample in found.samples)
+    cheapest = min(found.samples, key=lambda s: s.fee)
+    deepest = max(found.samples, key=lambda s: s.depth)
+    assert cheapest.price == pytest.approx(deepest.price, rel=1e-9)
+
+
+def twocrypto(mid_fee=3_000_000, out_fee=30_000_000,
+              fee_gamma=20_000_000_000_000_000):
+    """A cryptoswap holding 3,000,000 of coin 0 against 1,000 of coin 1."""
+    amp, gamma, scale = 400_000, 145_000_000_000_000, 3000 * ONE
+    balances = (3_000_000 * ONE, 1000 * ONE)
+    xp = [balances[0], balances[1] * scale // ONE]
+    d = int(L.crypto_invariant(xp, amp / 10_000, gamma / 1e18))
+    return L.twocrypto_curve(balances, (1, 1), scale, d, amp, gamma,
+                             stable=False, mid_fee=mid_fee, out_fee=out_fee,
+                             fee_gamma=fee_gamma)
+
+
+def test_a_cryptoswap_slides_from_its_mid_fee_toward_its_out_fee():
+    curve = twocrypto()
+    spot = L.spot_price(curve, 0, 1)
+    fees = [curve.fee_at(0, 1, L.balance_at_price(curve, 0, 1, spot * away))
+            for away in (1.0, 1.05, 1.5, 8.0)]
+    assert fees == sorted(fees)
+    assert fees[0] == pytest.approx(3e-4, rel=1e-6)   # balanced: mid_fee
+    assert fees[-1] < 3e-3                            # and never past out_fee
+
+
+def test_the_fee_a_crypto_pool_charges_does_not_move_its_curve():
+    """The fee fields are carried on the model, and the invariant has none in
+    it -- so filling them in must leave the price exactly where it was."""
+    bare, charged = twocrypto(0, 0, 0), twocrypto()
+    assert bare.charge is None
+    assert L.spot_price(bare, 0, 1) == L.spot_price(charged, 0, 1)

@@ -1506,3 +1506,85 @@ def test_but_carries_on_where_files_are_merely_missing(monkeypatch) -> None:
     warm.warm_one("https://g", ["a", "b", "c", "d"], options)
 
     assert len(seen) > 1
+
+
+def test_the_node_route_needs_a_node(tmp_path: Path, monkeypatch) -> None:
+    """It is not the host -- it is how the build reaches Pinata by a route
+    that leaves a provider record behind it. Without one there is no route."""
+    monkeypatch.setattr(ipfs, "node_id", lambda binary: "")
+    options = SimpleNamespace(ipfs="ipfs", name="x")
+
+    with pytest.raises(SystemExit) as refused:
+        ipfs.publish_via_node(tmp_path, options, "jwt")
+
+    assert "ipfs daemon" in str(refused.value)
+
+
+def test_the_cid_is_read_off_the_add(tmp_path: Path, monkeypatch) -> None:
+    def run(cmd, **kwargs):
+        assert "--cid-version=1" in cmd
+        return SimpleNamespace(returncode=0, stdout="bafyROOT\n", stderr="")
+
+    monkeypatch.setattr(ipfs.subprocess, "run", run)
+
+    assert ipfs.node_add(tmp_path) == "bafyROOT"
+
+
+def test_a_failed_add_stops_the_publish(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(ipfs.subprocess, "run", lambda cmd, **kw: SimpleNamespace(
+        returncode=1, stdout="", stderr="merkledag: not found"))
+
+    with pytest.raises(SystemExit) as refused:
+        ipfs.node_add(tmp_path)
+
+    assert "not found" in str(refused.value)
+
+
+def pinata_by_hash(pinned_after: int):
+    """Pinata, answering `pinByHash` and then `pinList` after N polls."""
+    seen = {"polls": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/pinByHash"):
+            return httpx.Response(200, json={"id": "job"})
+        seen["polls"] += 1
+        rows = [{"ipfs_pin_hash": "bafyROOT"}] if seen["polls"] > pinned_after else []
+        return httpx.Response(200, json={"rows": rows})
+
+    return httpx.Client(transport=httpx.MockTransport(handler)), seen
+
+
+def test_it_waits_for_pinata_to_finish_fetching() -> None:
+    """They are pulling it over the network from us, which takes as long as it
+    takes -- reporting success before they have it would be a lie."""
+    client, seen = pinata_by_hash(pinned_after=3)
+    waits: list[float] = []
+
+    assert ipfs.pin_by_hash("bafyROOT", "jwt", "name", client=client,
+                            now=lambda: 0.0, sleep=waits.append) is True
+    assert seen["polls"] == 4
+    assert waits == [ipfs.BY_HASH_INTERVAL] * 3
+
+
+def test_and_says_so_rather_than_waiting_for_ever() -> None:
+    client, _seen = pinata_by_hash(pinned_after=10_000)
+    clock = {"t": 0.0}
+    said: list[str] = []
+
+    def sleep(seconds: float) -> None:
+        clock["t"] += seconds
+
+    assert ipfs.pin_by_hash("bafyROOT", "jwt", "name", client=client,
+                            deadline=60.0, now=lambda: clock["t"],
+                            sleep=sleep, say=said.append) is False
+    assert any("not finished" in line for line in said)
+
+
+def test_pinata_refusing_it_by_hash_stops_the_run() -> None:
+    client = httpx.Client(transport=httpx.MockTransport(
+        lambda r: httpx.Response(403, text="no")))
+
+    with pytest.raises(SystemExit) as refused:
+        ipfs.pin_by_hash("bafyROOT", "jwt", "name", client=client)
+
+    assert "by hash" in str(refused.value)

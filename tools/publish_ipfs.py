@@ -606,6 +606,113 @@ def pin(
     return response.json()
 
 
+#: The `ipfs` binary, when the build is published through a node of our own.
+IPFS_BINARY = "ipfs"
+
+#: How long to wait for Pinata to fetch a CID we are providing, and how often
+#: to ask.  It is their own retrieval, over the network, from us.
+BY_HASH_DEADLINE = 1800.0
+BY_HASH_INTERVAL = 20.0
+
+BY_HASH_URL = "https://api.pinata.cloud/pinning/pinByHash"
+
+
+def node_id(binary: str = IPFS_BINARY) -> str:
+    """The local node's peer id, or "" if there is no daemon to ask."""
+    try:
+        done = subprocess.run([binary, "id", "-f", "<id>"], capture_output=True,
+                              text=True, timeout=30, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return done.stdout.strip() if done.returncode == 0 else ""
+
+
+def node_add(root: Path, binary: str = IPFS_BINARY) -> str:
+    """Put the build in the local node and return its root CID."""
+    done = subprocess.run(
+        [binary, "add", "-rQ", "--cid-version=1", "--pin=true", str(root)],
+        capture_output=True, text=True, check=False)
+    if done.returncode != 0:
+        raise SystemExit(f"ipfs add failed: {done.stderr.strip()[:400]}")
+    cid = done.stdout.strip().splitlines()[-1].strip()
+    if not cid:
+        raise SystemExit("ipfs add returned no CID")
+    return cid
+
+
+def node_provide(cid: str, binary: str = IPFS_BINARY) -> None:
+    """Tell the DHT this node has it. Without this nobody can find us."""
+    subprocess.run([binary, "routing", "provide", cid],
+                   capture_output=True, text=True, check=False, timeout=600)
+
+
+def pin_by_hash(cid: str, jwt: str, name: str, *,
+                deadline: float = BY_HASH_DEADLINE,
+                interval: float = BY_HASH_INTERVAL,
+                client=None, now=time.monotonic, sleep=time.sleep,
+                say=print) -> bool:
+    """Have Pinata fetch `cid` from whoever is providing it, and wait.
+
+    This is the whole reason the node route exists.  Content uploaded through
+    `pinFileToIPFS` is stored by Pinata and announced by nobody -- measured,
+    zero providers on a pin hours old while a pin from before their v3
+    migration had three.  Content they *fetch* arrives through their
+    DHT-connected nodes, and those announce it: the same two peers that carry
+    the older pin turn up as providers within a minute.
+
+    So the local node is not the host.  It is how the build gets into Pinata
+    by a route that leaves a provider record behind it.
+    """
+    import httpx
+
+    owned = client is None
+    client = client or httpx.Client(timeout=90.0)
+    head = {"Authorization": f"Bearer {jwt}"}
+    try:
+        answer = client.post(BY_HASH_URL, headers=head, json={
+            "hashToPin": cid, "pinataMetadata": {"name": name}})
+        if answer.status_code >= 400:
+            raise SystemExit(
+                f"Pinata would not take it by hash ({answer.status_code}): "
+                f"{answer.text[:300]}")
+        started = now()
+        while True:
+            listed = client.get("https://api.pinata.cloud/data/pinList",
+                                headers=head,
+                                params={"hashContains": cid, "status": "pinned"})
+            if listed.status_code < 400 and listed.json().get("rows"):
+                return True
+            if now() - started >= deadline:
+                say(f"  Pinata has not finished fetching it after "
+                    f"{elapsed_text(now() - started)}.")
+                return False
+            sleep(interval)
+    finally:
+        if owned:
+            client.close()
+
+
+def publish_via_node(dist: Path, options, jwt: str) -> str:
+    """Add the build here, announce it, and have Pinata fetch it from us."""
+    peer = node_id(options.ipfs)
+    if not peer:
+        raise SystemExit(
+            "No IPFS node answered. This route needs one running locally:"
+            "\n    ipfs daemon"
+            "\n  It is not the host -- it is how the build reaches Pinata by a"
+            " route\n  that leaves a provider record behind it. Without it,"
+            " use the upload\n  path and expect nobody to be able to find the"
+            " pin.")
+    print(f"\nadding the build to the node at {peer[:16]}…")
+    cid = node_add(dist, options.ipfs)
+    print(f"  {cid}")
+    print("  announcing it")
+    node_provide(cid, options.ipfs)
+    print("  asking Pinata to fetch it from us")
+    if pin_by_hash(cid, jwt, options.name):
+        print("  Pinata has it")
+    return cid
+
 # -- proving the pin before a name points at it ----------------------------
 # Pinning does not publish anything anywhere.
 
@@ -982,6 +1089,18 @@ def main() -> int:
         "Adds nothing to the build.",
     )
     parser.add_argument(
+        "--via-node",
+        action="store_true",
+        help="publish through a local `ipfs daemon`: add it here, announce it,"
+        " and have Pinata fetch it. Slower, and the only way the pin ends up"
+        " with a provider record -- see `pin_by_hash`",
+    )
+    parser.add_argument(
+        "--ipfs",
+        default=IPFS_BINARY,
+        help="the ipfs binary, for --via-node",
+    )
+    parser.add_argument(
         "--no-verify",
         action="store_true",
         help="skip proving the pin is retrievable before you point ENS at it",
@@ -1173,12 +1292,16 @@ def main() -> int:
         print("--dry-run: stopping before the upload")
         return 0
 
-    answer = pin(parts, fields_for(options.name), jwt, timeout=options.timeout)
-    cid = answer.get("IpfsHash", "")
-    if not cid:
-        raise SystemExit(f"No CID in Pinata's answer: {answer}")
-
-    show_pin(cid, duplicate=bool(answer.get("isDuplicate")))
+    if options.via_node:
+        cid = publish_via_node(dist, options, jwt)
+        show_pin(cid)
+    else:
+        answer = pin(parts, fields_for(options.name), jwt,
+                     timeout=options.timeout)
+        cid = answer.get("IpfsHash", "")
+        if not cid:
+            raise SystemExit(f"No CID in Pinata's answer: {answer}")
+        show_pin(cid, duplicate=bool(answer.get("isDuplicate")))
     if options.no_verify:
         return 0
     paths = boot_files(dist)

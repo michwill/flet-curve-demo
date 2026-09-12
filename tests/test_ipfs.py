@@ -1363,3 +1363,52 @@ def test_html_the_origin_refuses_to_serve_is_not_missing() -> None:
         client=client)
 
     assert missing == []
+
+
+def test_a_name_that_starts_another_is_found(tmp_path: Path) -> None:
+    """Pinata keeps the longer and loses the shorter, saying nothing: a folder
+    holding `a.js` and `a.js.map` comes back 404ing `a.js`."""
+    (tmp_path / "a.js").write_text("x")
+    (tmp_path / "a.js.map").write_text("x")
+
+    assert ipfs.shadowed(tmp_path) == [("a.js", "a.js.map")]
+
+
+def test_and_is_found_in_a_subdirectory_too(tmp_path: Path) -> None:
+    (tmp_path / "assets").mkdir()
+    (tmp_path / "assets" / "AssetManifest.bin").write_text("x")
+    (tmp_path / "assets" / "AssetManifest.bin.json").write_text("x")
+
+    assert ipfs.shadowed(tmp_path) == [
+        ("assets/AssetManifest.bin", "assets/AssetManifest.bin.json")]
+
+
+def test_names_that_merely_look_alike_are_left_alone(tmp_path: Path) -> None:
+    """`flutter.js` and `flutter_bootstrap.js` share a stem and neither starts
+    the other, so both arrive."""
+    for name in ("flutter_bootstrap.js", "flutter_service_worker.js",
+                 "main.dart.js", "main.dart.wasm"):
+        (tmp_path / name).write_text("x")
+
+    assert ipfs.shadowed(tmp_path) == []
+
+
+def test_the_same_name_in_different_folders_is_not_a_pair(tmp_path: Path) -> None:
+    """Only siblings shadow: the upload rebuilds one directory at a time."""
+    (tmp_path / "one").mkdir()
+    (tmp_path / "two").mkdir()
+    (tmp_path / "one" / "a.js").write_text("x")
+    (tmp_path / "two" / "a.js.map").write_text("x")
+
+    assert ipfs.shadowed(tmp_path) == []
+
+
+def test_publishing_stops_rather_than_lose_one(tmp_path: Path) -> None:
+    (tmp_path / "a.js").write_text("x")
+    (tmp_path / "a.js.map").write_text("x")
+
+    with pytest.raises(SystemExit) as refused:
+        ipfs.refuse_shadowed(tmp_path)
+
+    assert "a.js" in str(refused.value)
+    assert "Nothing was uploaded" in str(refused.value)

@@ -251,7 +251,19 @@ def cdn_build(index: Path) -> bool:
 #: click and the app would report transactions as mined that never
 #: happened. index.html also refuses to load it off localhost; this is the
 #: half that means there is nothing to load.
-DEV_ONLY = ("mock_wallet.js",)
+#:
+#: The rest are Flutter's own leavings, and nothing in the app asks for any
+#: of them: `index.html` loads `flutter_bootstrap.js`, the only mention of
+#: `flutter.js` anywhere is a `sourceMappingURL` comment, and `main.dart.js`
+#: reads `AssetManifest.bin.json` rather than the `.bin` beside it.  They are
+#: dropped for their own sake and because of what they do to a *sibling* --
+#: see `shadowed`.
+DEV_ONLY = (
+    "mock_wallet.js",
+    "flutter.js",
+    "flutter.js.map",
+    "assets/AssetManifest.bin",
+)
 
 
 def drop_dev_files(root: Path) -> list[str]:
@@ -263,6 +275,22 @@ def drop_dev_files(root: Path) -> list[str]:
             path.unlink()
             gone.append(name)
     return gone
+
+
+def refuse_shadowed(root: Path) -> None:
+    """Stop if anything left would be eaten on the way up."""
+    if not (pairs := shadowed(root)):
+        return
+    raise SystemExit(
+        "These files would be lost in the upload without a word said, "
+        "because\n  a sibling's name begins with theirs and Pinata keeps only "
+        "the longer:\n    "
+        + "\n    ".join(f"{short}   (shadowed by {long.rsplit('/', 1)[-1]})"
+                         for short, long in pairs)
+        + "\n\n  Nothing was uploaded. Drop one of each pair -- add it to "
+        "DEV_ONLY if\n  nothing fetches it -- or the pin will be quietly "
+        "short of them."
+    )
 
 
 def drop_cdn_copies(root: Path) -> list[tuple[str, int]]:
@@ -417,6 +445,34 @@ def _members_holding(archive: tarfile.TarFile, needle: bytes) -> list[str]:
 
 
 # -- the request body ------------------------------------------------------
+
+
+def shadowed(root: Path) -> list[tuple[str, str]]:
+    """Pairs where one file's name is the start of a sibling's.
+
+    Pinata loses the shorter one.  Measured against it: a folder holding
+    `a.js` and `a.js.map` comes back serving the map and 404ing `a.js`; the
+    same folder holding `a.js` alone serves it.  `b.bin` beside
+    `b.bin.json` goes the same way, and nothing is reported -- the upload
+    succeeds, the CID looks fine, and the file is simply not there.
+
+    So this is not a preference.  Whatever is left here after the drops will
+    be silently eaten, and one day it will be a file that matters.
+    """
+    folders: dict[Path, list[str]] = {}
+    for path in root.rglob("*"):
+        if path.is_file():
+            folders.setdefault(path.parent, []).append(path.name)
+    found = []
+    for folder, names in sorted(folders.items()):
+        here = sorted(names)
+        for short in here:
+            for long in here:
+                if long != short and long.startswith(short):
+                    at = folder.relative_to(root).as_posix()
+                    here = "" if at == "." else f"{at}/"
+                    found.append((f"{here}{short}", f"{here}{long}"))
+    return found
 
 
 def too_deep(root: Path, folder: str) -> list[Path]:
@@ -1087,6 +1143,11 @@ def main() -> int:
             + f"\n\nNothing was uploaded. Move it to {SECRETS.name} at the repo root:"
             f" anything under src/ is bundled into the app, and a pin is forever."
         )
+
+    # Last, once everything that is going to leave has left: canvaskit and
+    # pyodide both hold shadowed pairs and both are usually dropped, so asking
+    # earlier refuses a build that was never going to carry them.
+    refuse_shadowed(dist)
 
     parts = uploads(dist, options.name)
     total = sum(path.stat().st_size for _name, path in parts)

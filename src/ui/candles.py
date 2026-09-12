@@ -285,8 +285,9 @@ class CandleChart(ft.Container):
         self._view = Viewport(0.0, 1.0, 0.0, 1.0)
         self._plot = Plot(800.0, height)
         self._last_hover = 0.0
-        #: How far apart the fingers were at the last pinch update.
-        self._pinch = 1.0
+        #: The window and finger position a gesture started from.
+        self._held: Viewport | None = None
+        self._held_at = (0.0, 0.0)
         self._on_capacity_change = on_capacity_change
         self._last_capacity = 0  # set below, once _plot exists
         self._auto_price = True
@@ -325,6 +326,7 @@ class CandleChart(ft.Container):
             mouse_cursor=ft.MouseCursor.PRECISE,
             drag_interval=16,
             hover_interval=16,
+            on_pan_update=self._panned,
             on_scale_start=self._grabbed,
             on_scale_update=self._scaled,
             on_scroll=self._scrolled,
@@ -394,8 +396,30 @@ class CandleChart(ft.Container):
                 return
         self._last_capacity = capacity
 
-    def _grabbed(self, _e: ft.ScaleStartEvent) -> None:
-        self._pinch = 1.0
+    def _panned(self, e: ft.DragUpdateEvent) -> None:
+        """Drag the chart with one pointer. The content follows the cursor.
+
+        Kept alongside the pinch handler because a drag recogniser honours
+        `drag_interval` and a scale one has no throttle at all: the same drag
+        measured 72 events through here against 551 through `_scaled`, and it
+        is the count that costs.
+        """
+        if not self._candles:
+            return
+        delta = getattr(e, "local_delta", None)
+        if delta is None or not (delta.x or delta.y):
+            return
+        view = self._view.panned(-self._plot.dx(delta.x, self._view),
+                                 self._plot.dy(delta.y, self._view))
+        if delta.y:
+            self._auto_price = False
+        self._view = view.clamped(len(self._candles))
+        self._clear_crosshair(redraw=False)
+        self._apply_view()
+
+    def _grabbed(self, e: ft.ScaleStartEvent) -> None:
+        self._held = self._view
+        self._held_at = (e.local_focal_point.x, e.local_focal_point.y)
 
     def _scaled(self, e: ft.ScaleUpdateEvent) -> None:
         """One pointer drags the chart, two pinch it in time.
@@ -405,30 +429,26 @@ class CandleChart(ft.Container):
         and scale reports a lone pointer as a drag, so one handler serves
         both.  Without it a phone can drag the chart but never zoom it.
         """
-        if not self._candles:
-            return
-        view = self._view
-        delta = getattr(e, "focal_point_delta", None)
-        if delta is not None and (delta.x or delta.y):
-            view = view.panned(-self._plot.dx(delta.x, view),
-                               self._plot.dy(delta.y, view))
-            if delta.y:
-                self._auto_price = False
-        pinching = e.pointer_count >= 2 and e.scale > 0.0
-        if pinching:
-            # `scale` is the spread since the gesture began, so the step is
-            # what it has changed by since the last update.
-            factor = self._pinch / e.scale
-            self._pinch = e.scale
-            focus = self._plot.data_x(e.local_focal_point.x, view)
-            zoomed = view.zoomed_x(factor, focus)
-            if zoomed.x_span >= MIN_VISIBLE or factor >= 1.0:
-                view = zoomed
-        if view is self._view:
+        held = self._held
+        if not self._candles or held is None or e.pointer_count < 2:
+            return                      # one pointer is `_panned`'s business
+        plot = self._plot
+        fx, fy = e.local_focal_point.x, e.local_focal_point.y
+        held_x, held_y = self._held_at
+        spread = e.scale if e.scale > 0.0 else 1.0
+        span = max(held.x_span / spread, MIN_VISIBLE)
+        # The candle the fingers started on stays under them.
+        anchor = plot.data_x(held_x, held)
+        reach = (fx - plot.left) / plot.inner_width
+        low = anchor - reach * span
+        shift = plot.dy(fy - held_y, held)
+        view = Viewport(low, low + span, held.y_min + shift, held.y_max + shift)
+        if fy != held_y:
+            self._auto_price = False
+        if view == self._view:
             return
         self._view = view.clamped(len(self._candles))
-        if pinching:
-            self._refit_price()
+        self._refit_price()
         self._clear_crosshair(redraw=False)
         self._apply_view()
 

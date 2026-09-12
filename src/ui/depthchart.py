@@ -177,8 +177,11 @@ class DepthChart(ft.Container):
         self._painter: asyncio.Task | None = None
         #: What a frame has been costing, smoothed, in seconds.
         self._cost = HOVER_FAST / 1000.0
-        #: How far apart the fingers were at the last pinch update.
-        self._pinch = 1.0
+        #: The window and the finger position a gesture started from, and
+        #: whether one is still in hand.
+        self._held: Viewport | None = None
+        self._held_at = 0.0
+        self._gesturing = False
         #: `log(price)` per sample, for finding the one under the pointer.
         self._logs: list[float] = []
         #: Which sample the overlay is drawn for, and for which window.
@@ -228,8 +231,11 @@ class DepthChart(ft.Container):
             mouse_cursor=ft.MouseCursor.PRECISE,
             drag_interval=16,
             hover_interval=16,
+            on_pan_update=self._panned,
+            on_pan_end=self._released,
             on_scale_start=self._grabbed,
             on_scale_update=self._scaled,
+            on_scale_end=self._released,
             on_scroll=self._scrolled,
             on_hover=self._hovered,
             on_exit=self._left,
@@ -291,8 +297,34 @@ class DepthChart(ft.Container):
         self._plot = Plot(float(e.width or 800.0), float(e.height or 340.0))
         self._paint()
 
-    def _grabbed(self, _e: ft.ScaleStartEvent) -> None:
-        self._pinch = 1.0
+    def _panned(self, e: ft.DragUpdateEvent) -> None:
+        """Drag the window with one pointer.
+
+        Kept alongside the pinch handler because a drag recogniser honours
+        `drag_interval` and a scale one has no throttle at all: the same drag
+        measured 72 events through here against 551 through `_scaled`, and
+        it is the count that costs -- the drawing is the same either way.
+        """
+        if self._profile is None:
+            return
+        delta = getattr(e, "local_delta", None)
+        if delta is None or not delta.x:
+            return
+        self._view = self._view.panned(-self._plot.dx(delta.x, self._view), 0.0)
+        self._paint()
+
+    def _grabbed(self, e: ft.ScaleStartEvent) -> None:
+        self._gesturing = True
+        self._held = self._view
+        self._held_at = e.local_focal_point.x
+
+    def _released(self, _e: ft.ScaleEndEvent | ft.DragEndEvent | None = None
+                  ) -> None:
+        """Draw it properly, and ask for the curve the window now wants."""
+        self._gesturing = False
+        self._held = None
+        self._settle()
+        self._paint()
 
     def _scaled(self, e: ft.ScaleUpdateEvent) -> None:
         """One pointer drags the window, two pinch it. The wheel is desktop's.
@@ -301,26 +333,32 @@ class DepthChart(ft.Container):
         not take a pan recogniser and a scale recogniser on one detector --
         and scale reports a lone pointer as a drag, so one handler serves
         both.  Without it a phone can reach the chart but never zoom it.
+        Only the two-finger case: one pointer is a drag, and a drag recogniser
+        can be throttled where this cannot.
+
+        Measured from where the gesture *began*, never from the last event.
+        `scale` and the focal point are both given that way, and it is what
+        makes an event safe to be late: a queued one describes the same
+        window the newest does rather than moving it again, so the chart
+        stops where the finger left it instead of drifting on while a backlog
+        of deltas plays out.
         """
-        if self._profile is None:
-            return
-        plot, view = self._plot, self._view
-        delta = getattr(e, "focal_point_delta", None)
-        if delta is not None and delta.x:
-            view = view.panned(-plot.dx(delta.x, view), 0.0)
-        if e.pointer_count >= 2 and e.scale > 0.0:
-            # `scale` is the spread since the gesture began, so the step is
-            # what it has changed by since the last update.
-            factor = self._pinch / e.scale
-            self._pinch = e.scale
-            focus = plot.data_x(e.local_focal_point.x, view)
-            zoomed = view.zoomed_x(factor, focus)
-            if MIN_LOG_SPAN <= zoomed.x_span <= MAX_LOG_SPAN:
-                view = zoomed
-        if view is self._view:
+        held = self._held
+        if self._profile is None or held is None or e.pointer_count < 2:
+            return                      # one pointer is `_panned`'s business
+        plot = self._plot
+        spread = e.scale if e.scale > 0.0 else 1.0
+        span = min(max(held.x_span / spread, MIN_LOG_SPAN), MAX_LOG_SPAN)
+        # The price the fingers started on stays under them, as a map does it.
+        anchor = plot.data_x(self._held_at, held)
+        reach = (e.local_focal_point.x - plot.left) / plot.inner_width
+        low = anchor - reach * span
+        view = Viewport(low, low + span, held.y_min, held.y_max)
+        if view == self._view:
             return
         self._view = view
-        self._settle()
+        # Not `_settle` -- that asks the page to solve the curve again, and
+        # the window is still moving.  `_released` asks once, at the end.
         self._paint()
 
     def _scrolled(self, e: ft.ScrollEvent) -> None:

@@ -485,72 +485,92 @@ def test_leaving_clears_the_overlay_once_and_then_keeps_quiet() -> None:
     assert chart._over(chart._profile, None) is None
 
 
-def pinch(x: float = 0.0, fingers: int = 1, spread: float = 1.0,
-          focus: float = 400.0):
+def grab(at: float = 400.0):
+    """A scale-start event, which is where the gesture is measured from."""
+    return SimpleNamespace(local_focal_point=SimpleNamespace(x=at, y=150.0),
+                           pointer_count=1)
+
+
+def pinch(at: float = 400.0, fingers: int = 1, spread: float = 1.0):
     """A scale update -- what Flutter calls a drag as well as a pinch."""
     return SimpleNamespace(
-        focal_point_delta=SimpleNamespace(x=x, y=0.0),
-        local_focal_point=SimpleNamespace(x=focus, y=150.0),
+        local_focal_point=SimpleNamespace(x=at, y=150.0),
+        focal_point_delta=SimpleNamespace(x=0.0, y=0.0),
         pointer_count=fingers, scale=spread,
     )
 
 
-def test_one_pointer_still_drags_the_window() -> None:
-    """Scale replaced pan, so the ordinary drag has to keep working."""
+def test_one_pointer_drags_through_the_throttled_handler() -> None:
+    """A drag recogniser honours `drag_interval` and a scale one has no
+    throttle at all -- the same drag is 72 events through here against 551
+    through `_scaled`, and it is the count that costs."""
     chart = fee_chart()
     before = chart.window
+    span = chart._view.x_span
 
-    chart._grabbed(None)
-    chart._scaled(pinch(x=-40.0))
+    chart._panned(SimpleNamespace(local_delta=SimpleNamespace(x=-40.0, y=0.0)))
 
     assert chart.window != before
-    assert chart._view.x_span == pytest.approx(
-        math.log(before[1] / before[0]), rel=1e-9)   # panned, not zoomed
+    assert chart._view.x_span == pytest.approx(span, rel=1e-9)  # moved, not zoomed
+
+
+def test_and_the_pinch_handler_leaves_one_pointer_alone() -> None:
+    """Both recognisers are registered; they must not both move the window."""
+    chart = fee_chart()
+    chart._grabbed(grab(600.0))
+    before = chart._view
+
+    chart._scaled(pinch(at=400.0, fingers=1))
+
+    assert chart._view == before
 
 
 def test_two_fingers_zoom_it() -> None:
     """A phone has no wheel: without this the chart can be dragged but never
     zoomed."""
     chart = fee_chart()
-    chart._grabbed(None)
     before = chart._view.x_span
 
+    chart._grabbed(grab())
     chart._scaled(pinch(fingers=2, spread=2.0))
 
-    assert chart._view.x_span < before
+    assert chart._view.x_span == pytest.approx(before / 2, rel=1e-9)
 
 
 def test_and_pinching_together_zooms_out() -> None:
     chart = fee_chart()
-    chart._grabbed(None)
     before = chart._view.x_span
 
+    chart._grabbed(grab())
     chart._scaled(pinch(fingers=2, spread=0.5))
 
-    assert chart._view.x_span > before
+    assert chart._view.x_span == pytest.approx(before * 2, rel=1e-9)
 
 
-def test_a_pinch_step_is_what_changed_since_the_last_one() -> None:
-    """`scale` counts from the start of the gesture, so holding still must
-    not keep zooming."""
+def test_a_late_event_does_not_move_the_window_again() -> None:
+    """The whole reason the gesture is measured from where it started: these
+    queue up where Python cannot drain them, and with incremental deltas the
+    chart would go on drifting after the finger had left the screen.
+    """
     chart = fee_chart()
-    chart._grabbed(None)
+    chart._grabbed(grab())
     chart._scaled(pinch(fingers=2, spread=2.0))
-    once = chart._view.x_span
+    settled = chart._view
 
-    chart._scaled(pinch(fingers=2, spread=2.0))
+    for _ in range(20):                  # a backlog draining
+        chart._scaled(pinch(fingers=2, spread=2.0))
 
-    assert chart._view.x_span == once
+    assert chart._view == settled
 
 
 def test_a_pinch_holds_the_price_under_the_fingers() -> None:
     """Zooming about the focal point, as every map does it."""
     chart = fee_chart()
-    chart._grabbed(None)
     focus = 300.0
     at = math.exp(chart._plot.data_x(focus, chart._view))
 
-    chart._scaled(pinch(fingers=2, spread=1.6, focus=focus))
+    chart._grabbed(grab(focus))
+    chart._scaled(pinch(at=focus, fingers=2, spread=1.6))
 
     assert math.exp(chart._plot.data_x(focus, chart._view)) == pytest.approx(
         at, rel=1e-9)
@@ -558,9 +578,27 @@ def test_a_pinch_holds_the_price_under_the_fingers() -> None:
 
 def test_a_pinch_cannot_zoom_past_what_the_curve_can_show() -> None:
     chart = fee_chart()
-    chart._grabbed(None)
-    for _ in range(40):
-        chart._scaled(pinch(fingers=2, spread=2.0))
-        chart._pinch = 1.0            # each step a fresh doubling
+    chart._grabbed(grab())
+    chart._scaled(pinch(fingers=2, spread=1e9))
 
-    assert chart._view.x_span >= MIN_LOG_SPAN
+    assert chart._view.x_span == pytest.approx(MIN_LOG_SPAN, rel=1e-9)
+
+
+def test_and_the_page_is_asked_for_a_new_curve_only_once() -> None:
+    """Solving it is the page's job and it is not cheap; asking on every
+    event of a gesture asks hundreds of times for one answer."""
+    asked: list[tuple[float, float]] = []
+    chart = DepthChart(on_window_change=lambda lo, hi: asked.append((lo, hi)))
+    chart.show(Profile(
+        samples=tuple(Sample(price=0.98 + i * 0.002, depth=1_000.0 + i, fee=0.004)
+                      for i in range(21)),
+        spot=1.0, pair=(0, 1)), unit="USD")
+    asked.clear()
+
+    chart._grabbed(grab())
+    for k in range(30):
+        chart._scaled(pinch(at=400.0 - k, fingers=2, spread=1.0 + k * 0.05))
+    assert asked == []
+
+    chart._released(None)
+    assert len(asked) == 1

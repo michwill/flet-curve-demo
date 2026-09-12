@@ -390,28 +390,52 @@ def test_price_stops_refitting_once_the_user_drags_it() -> None:
     assert (chart._view.y_min, chart._view.y_max) == before
 
 
-def drag(x: float, y: float, fingers: int = 1, spread: float = 1.0):
+def grab(x: float = 400.0, y: float = 150.0):
+    """A scale-start event: where the gesture is measured from."""
+    return SimpleNamespace(local_focal_point=SimpleNamespace(x=x, y=y),
+                           pointer_count=1)
+
+
+def drag(x: float = 400.0, y: float = 150.0, fingers: int = 1,
+         spread: float = 1.0):
     """A scale update, which is what Flutter calls a drag as well as a pinch."""
     return SimpleNamespace(
-        focal_point_delta=SimpleNamespace(x=x, y=y),
-        local_focal_point=SimpleNamespace(x=400.0, y=150.0),
+        local_focal_point=SimpleNamespace(x=x, y=y),
+        focal_point_delta=SimpleNamespace(x=0.0, y=0.0),
         pointer_count=fingers, scale=spread,
     )
+
+
+def pan(x: float = 0.0, y: float = 0.0):
+    """A drag update, which is the throttled handler one pointer goes to."""
+    return SimpleNamespace(local_delta=SimpleNamespace(x=x, y=y))
 
 
 def test_a_vertical_drag_takes_over_the_price_axis() -> None:
     chart = CandleChart()
     chart.set_candles(rising(100))
     assert chart._auto_price
-    chart._scaled(drag(0.0, -20.0))
+    chart._panned(pan(y=-20.0))
     assert not chart._auto_price
 
 
 def test_a_purely_horizontal_drag_leaves_auto_price_on() -> None:
     chart = CandleChart()
     chart.set_candles(rising(100))
-    chart._scaled(drag(-30.0, 0.0))
+    chart._panned(pan(x=-30.0))
     assert chart._auto_price
+
+
+def test_the_pinch_handler_leaves_one_pointer_alone() -> None:
+    """Both recognisers are registered; they must not both move the chart."""
+    chart = CandleChart()
+    chart.set_candles(rising(100))
+    chart._grabbed(grab())
+    before = chart._view
+
+    chart._scaled(drag(x=300.0, fingers=1))
+
+    assert chart._view == before
 
 
 def test_two_fingers_zoom_the_time_axis() -> None:
@@ -419,10 +443,10 @@ def test_two_fingers_zoom_the_time_axis() -> None:
     never zoomed."""
     chart = CandleChart()
     chart.set_candles(rising(200))
-    chart._grabbed(None)
+    chart._grabbed(grab())
     before = chart._view.x_span
 
-    chart._scaled(drag(0.0, 0.0, fingers=2, spread=2.0))   # fingers spread
+    chart._scaled(drag(fingers=2, spread=2.0))   # fingers spread
 
     assert chart._view.x_span < before
 
@@ -431,26 +455,28 @@ def test_and_pinching_them_together_zooms_out() -> None:
     chart = CandleChart()
     chart.set_candles(rising(200))
     chart._view = Viewport(80.0, 120.0, chart._view.y_min, chart._view.y_max)
-    chart._grabbed(None)
+    chart._grabbed(grab())
     before = chart._view.x_span
 
-    chart._scaled(drag(0.0, 0.0, fingers=2, spread=0.5))
+    chart._scaled(drag(fingers=2, spread=0.5))
 
     assert chart._view.x_span > before
 
 
-def test_a_pinch_step_is_what_changed_since_the_last_one() -> None:
-    """`scale` counts from the start of the gesture, so two updates at the
-    same spread must not zoom twice."""
+def test_a_late_event_does_not_move_the_chart_again() -> None:
+    """The gesture is measured from where it started, so a backlog draining
+    after the finger has gone describes the same window rather than carrying
+    the chart on past it."""
     chart = CandleChart()
     chart.set_candles(rising(200))
-    chart._grabbed(None)
-    chart._scaled(drag(0.0, 0.0, fingers=2, spread=2.0))
-    once = chart._view.x_span
+    chart._grabbed(grab())
+    chart._scaled(drag(fingers=2, spread=2.0))
+    settled = chart._view
 
-    chart._scaled(drag(0.0, 0.0, fingers=2, spread=2.0))
+    for _ in range(20):
+        chart._scaled(drag(fingers=2, spread=2.0))
 
-    assert chart._view.x_span == once
+    assert chart._view == settled
 
 
 def test_new_data_and_double_tap_both_restore_auto_price() -> None:

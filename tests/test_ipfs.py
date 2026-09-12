@@ -1276,3 +1276,48 @@ def test_the_count_includes_the_pin_folder(tmp_path: Path) -> None:
 
     assert ipfs.too_deep(tmp_path, "curve") == [deep]
     assert fine.exists()
+
+
+def warm_hosts(monkeypatch, gateway: str = "", staging: bool = True) -> list[str]:
+    """The gateways a warm run would visit, in order."""
+    from tools import warm_ipfs as warm
+
+    monkeypatch.setattr(warm, "config", lambda: {"gateway": gateway})
+    monkeypatch.setattr(warm, "_published_cid", lambda hosts: "bafyTEST")
+    named = warm.STAGING_GATEWAYS if staging else warm.GATEWAYS
+    hosts = [h.rstrip("/") for h in named]
+    cid = "bafyTEST"
+    ahead = []
+    if gateway:
+        ahead.append(warm.ORIGIN.format(gateway=gateway.rstrip("/"), cid=cid))
+    return ahead + [g.format(cid=cid) for g in warm.CID_GATEWAYS] + hosts
+
+
+def test_the_warm_starts_at_whoever_already_has_the_blocks(monkeypatch) -> None:
+    """Outward from the pin, not inward from the name.  Asked the other way
+    round every gateway spends its timeout hunting blocks nobody is offering,
+    which is a warm that reads as a hang."""
+    hosts = warm_hosts(monkeypatch, gateway="https://mine.mypinata.cloud")
+
+    assert hosts[0].startswith("https://mine.mypinata.cloud/ipfs/")
+    assert "ipfs.io" in hosts[1]
+    assert hosts[-1].endswith("eth.link")
+
+
+def test_and_without_an_origin_the_public_ones_still_go_first(monkeypatch) -> None:
+    """No dedicated gateway configured is not fatal -- the ENS names simply
+    stop being the thing that stalls before anything has been fetched."""
+    hosts = warm_hosts(monkeypatch)
+
+    assert "ipfs.io" in hosts[0]
+    assert all("eth.li" in h for h in hosts[-2:])
+
+
+def test_the_ens_names_are_still_all_warmed(monkeypatch) -> None:
+    """Last is not dropped: a visitor arrives through the name."""
+    from tools import warm_ipfs as warm
+
+    hosts = warm_hosts(monkeypatch, gateway="https://mine.mypinata.cloud")
+
+    for named in warm.STAGING_GATEWAYS:
+        assert named.rstrip("/") in hosts

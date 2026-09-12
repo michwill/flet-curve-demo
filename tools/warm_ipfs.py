@@ -15,6 +15,7 @@ from tools.publish_ipfs import (
     WARM_WORKERS,
     ProgressReporter,
     boot_files,
+    config,
     elapsed_text,
     resolved_cid,
     verify,
@@ -46,12 +47,29 @@ STAGING_GATEWAYS = (
     "https://staging.curve.eth.link",
 )
 
+#: The account's own gateway at Pinata, from `local_secrets.toml`, formatted
+#: with the CID.  Warmed first where it is set, because it is the one gateway
+#: that does not have to *find* the blocks -- they are already there, and
+#: asking for them is what gets the origin serving and announcing them.  Until
+#: that has happened the others are hunting something nobody is offering:
+#: measured on a fresh pin, ipfs.io and dweb.link each spent 28 seconds before
+#: giving up, eth.limo 17, and w3s.link refused in a tenth of one.
+ORIGIN = "{gateway}/ipfs/{cid}"
+
 #: Filled in with the CID being warmed.  These serve any CID, so a name is no
 #: use to them.
 CID_GATEWAYS = (
     "https://ipfs.io/ipfs/{cid}",
     "https://{cid}.ipfs.dweb.link",
     "https://{cid}.ipfs.w3s.link",
+)
+
+#: Said when there is no origin to start from.  Not fatal: the warm still
+#: works, it just begins with gateways that have to find the blocks.
+NO_ORIGIN = (
+    "  [pinata] gateway is empty in local_secrets.toml, so this starts at\n"
+    "  gateways that must find the blocks rather than at the one already\n"
+    "  holding them. Setting it makes the first pass much the fastest."
 )
 
 #: How long to wait for a gateway to notice the name has moved, and how
@@ -417,12 +435,22 @@ def main() -> int:
     named = STAGING_GATEWAYS if options.staging else GATEWAYS
     hosts = [h.rstrip("/") for h in (options.gateways or named)]
     if not options.gateways and not options.no_cid_gateways:
-        # The public ones too, addressed by CID.  Each gateway fetches from the
-        # network on its own, so the one nobody has asked is the one that
-        # answers 504 -- which is what a visitor arriving through it meets.
+        # Outward from the pin rather than inward from the name.  The origin
+        # holds the blocks; the public ones are big, well connected and need no
+        # ENS at all; the ENS names come last, by which time there is something
+        # to find and the record has had the whole run to propagate -- so
+        # `wait_for_flip` stops being the first thing that stalls.  Asked the
+        # other way round, every gateway spends its timeout hunting blocks
+        # nobody is offering yet, which is a warm that reads as a hang.
         cid = options.cid or _published_cid(hosts)
         if cid:
-            hosts += [g.format(cid=cid) for g in CID_GATEWAYS]
+            ahead = []
+            gateway = (config().get("gateway") or "").rstrip("/")
+            if gateway:
+                ahead.append(ORIGIN.format(gateway=gateway, cid=cid))
+            else:
+                print(NO_ORIGIN)
+            hosts = ahead + [g.format(cid=cid) for g in CID_GATEWAYS] + hosts
         else:
             print("  no CID to address the public gateways by; warming the "
                   "ENS names only")

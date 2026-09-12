@@ -287,16 +287,27 @@ def warm_one(host: str, paths: list[str], options) -> dict:
     bad: dict = {}
     done = done_bytes = 0
     for batch in batched(paths, options.chunk):
-        bad.update(
-            verify(
-                "",
-                batch,
-                gateway=host,
-                deadline=min(CHUNK_DEADLINE, options.deadline),
-                workers=options.workers,
-                whole=True,
-            )
+        answer = verify(
+            "",
+            batch,
+            gateway=host,
+            deadline=min(CHUNK_DEADLINE, options.deadline),
+            workers=options.workers,
+            whole=True,
         )
+        # A whole batch refused for asking too often is this gateway saying
+        # come back later, and there is no later inside one run.  Spending the
+        # rest of the deadline on it holds the limit open and delays the
+        # gateways that would have answered.
+        if (len(answer) == len(batch)
+                and all(v == "throttled" for v, _s, _t in answer.values())):
+            if report.inline:
+                print()
+            print(f"  throttled on every one of {len(batch)} -- moving on"
+                  " rather than holding this gateway's limit open")
+            bad.update(answer)
+            break
+        bad.update(answer)
         done += len(batch)
         done_bytes += weight(options.dist, batch)
         elapsed = time.monotonic() - started
@@ -310,7 +321,12 @@ def warm_one(host: str, paths: list[str], options) -> dict:
             break
     if report.inline:
         print()
-    if bad:
+    # A second ask helps a gateway that was still fetching. It does nothing
+    # for one that is refusing to be asked, which is the whole point of a 429.
+    if bad and all(v == "throttled" for v, _s, _t in bad.values()):
+        print(f"  {len(bad)} throttled -- not asking again, that is what it is"
+              " refusing")
+    elif bad:
         # The ask is what makes the content arrive: a gateway answers 504 when
         # it has started fetching and run out of patience, not when it has
         # decided against it.  Measured against ipfs.io on a live CID -- ten

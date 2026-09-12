@@ -661,6 +661,13 @@ THROTTLE_STATUSES = (429, 503)
 #: How long to keep retrying the ones that have not propagated.
 VERIFY_DEADLINE = 900.0
 VERIFY_INTERVAL = 20.0
+
+#: What to multiply the wait by after a round that was nothing but throttling,
+#: and how long it may grow to.  Polling a gateway that is refusing because it
+#: has been asked too often is what keeps it refusing: measured, ipfs.io and
+#: dweb.link both answered 429 in 0.1s for as long as the loop kept asking.
+THROTTLE_BACKOFF = 2.0
+THROTTLE_CEILING = 240.0
 VERIFY_TIMEOUT = 45.0
 VERIFY_WORKERS = 6
 
@@ -794,6 +801,7 @@ def verify(
     now=time.monotonic,
     sleep=time.sleep,
     on_round=None,
+    on_throttle=None,
 ) -> dict[str, tuple[str, int | str, float]]:
     """Poll until every path is retrievable, or until the deadline."""
     import httpx
@@ -838,6 +846,15 @@ def verify(
             outstanding = retry
             if not outstanding or now() - started >= deadline:
                 break
+            # A round that landed nothing and was throttled throughout is the
+            # gateway asking to be left alone, so leave it alone for longer.
+            # Asking again on the same beat is what holds the limit open.
+            stalled = bool(bad) and all(
+                verdict == "throttled" for verdict, _s, _t in bad.values())
+            if stalled:
+                interval = min(interval * THROTTLE_BACKOFF, THROTTLE_CEILING)
+                if on_throttle is not None:
+                    on_throttle(len(bad), interval)
             sleep(interval)
     finally:
         if owned:
@@ -1269,7 +1286,14 @@ def chosen_gateway(cid: str, options) -> str:
     # about it. Only every candidate answering with something that is not
     # the file leaves nothing to look with.
     real = [host for host, answer, _s in tried if answer != NOT_THIS_FILE]
-    if real:
+    if all(answer in THROTTLE_STATUSES for _h, answer, _s in tried) and tried:
+        print(
+            "  every one of them is throttling this client, which says nothing\n"
+            "  about the pin -- they are two operators between them and both\n"
+            "  have been asked too often. It clears on its own; the wait below\n"
+            "  backs off rather than holding the limit open."
+        )
+    elif real:
         print(
             "  none of them has it yet, which a fresh pin usually takes some\n"
             "  minutes to stop being true. Waiting on the first, and asking\n"
@@ -1296,6 +1320,17 @@ def wait_until_findable(cid: str, paths: list[str], options) -> int:
     print("  (token marks skipped -- lazily fetched, and there are 6,716)")
     started = time.monotonic()
     report = ProgressReporter(every=PIPED_INTERVAL)
+
+    def backing_off(count: int, wait: float) -> None:
+        """Say why the bar is not moving: a 429 does not look like one."""
+        if report.inline:
+            print()
+        print(
+            f"  all {count} came back throttled -- the gateway is refusing because"
+            "\n  it has been asked too often, not because the pin is short of"
+            f"\n  anything. Asking every {wait:.0f}s now; it clears on its own."
+        )
+
     try:
         bad = verify(
             cid,
@@ -1303,6 +1338,7 @@ def wait_until_findable(cid: str, paths: list[str], options) -> int:
             gateway=gateway,
             deadline=options.verify_deadline,
             on_round=report,
+            on_throttle=backing_off,
         )
     except KeyboardInterrupt:
         print(

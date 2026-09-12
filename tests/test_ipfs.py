@@ -1412,3 +1412,97 @@ def test_publishing_stops_rather_than_lose_one(tmp_path: Path) -> None:
 
     assert "a.js" in str(refused.value)
     assert "Nothing was uploaded" in str(refused.value)
+
+
+def throttling_verify(monkeypatch, answers):
+    """Run `verify` against canned answers, recording how long it waits."""
+    waits: list[float] = []
+    clock = {"t": 0.0}
+
+    def sleep(seconds: float) -> None:
+        waits.append(seconds)
+        clock["t"] += seconds
+
+    def probe(_client, url, whole=False):
+        status = answers(url)
+        # A quick refusal is not a miss: `classify` only calls it `unfound`
+        # once the gateway has spent long enough to have looked.
+        return status, 0.1 if status in ipfs.THROTTLE_STATUSES else 30.0
+
+    monkeypatch.setattr(ipfs, "probe", probe)
+    bad = ipfs.verify(
+        "CID", ["a.txt", "b.txt"], gateway="https://g/{cid}",
+        deadline=400.0, interval=20.0,
+        client=httpx.Client(transport=httpx.MockTransport(
+            lambda r: httpx.Response(200))),
+        now=lambda: clock["t"], sleep=sleep)
+    return bad, waits
+
+
+def test_a_throttled_round_waits_longer_next_time(monkeypatch) -> None:
+    """Asking a gateway that is refusing because it has been asked too often
+    is what holds the refusal open.  Measured: ipfs.io and dweb.link both
+    answered 429 in 0.1s for as long as the loop kept asking."""
+    _bad, waits = throttling_verify(monkeypatch, lambda url: 429)
+
+    assert waits == sorted(waits)
+    assert waits[0] > 20.0                 # already backing off on the first
+    assert waits[-1] > waits[0]
+    assert max(waits) <= ipfs.THROTTLE_CEILING
+
+
+def test_a_plain_miss_keeps_the_steady_beat(monkeypatch) -> None:
+    """A 504 is the gateway looking and not finding, which is what a fresh pin
+    does. Backing off there would only make the wait longer for no reason."""
+    _bad, waits = throttling_verify(monkeypatch, lambda url: 504)
+
+    assert set(waits) == {20.0}
+
+
+def test_and_a_mixture_does_not_back_off(monkeypatch) -> None:
+    """Something is still landing, so the gateway is not refusing wholesale."""
+    _bad, waits = throttling_verify(
+        monkeypatch, lambda url: 429 if url.endswith("a.txt") else 504)
+
+    assert set(waits) == {20.0}
+
+
+def test_a_warm_moves_on_from_a_gateway_that_is_throttling(monkeypatch) -> None:
+    """There is no later inside one run: spending the per-host deadline on a
+    gateway that is refusing holds its limit open and delays the ones that
+    would have answered."""
+    from tools import warm_ipfs as warm
+
+    seen: list[list[str]] = []
+
+    def fake_verify(_cid, batch, **kwargs):
+        seen.append(list(batch))
+        return dict.fromkeys(batch, ("throttled", 429, 0.1))
+
+    monkeypatch.setattr(warm, "verify", fake_verify)
+    monkeypatch.setattr(warm, "weight", lambda root, paths: 0)
+    options = SimpleNamespace(dist=Path("."), chunk=2, workers=2,
+                              deadline=600.0, show=5)
+    warm.warm_one("https://g", ["a", "b", "c", "d", "e", "f"], options)
+
+    assert len(seen) == 1, "kept asking a gateway that said no"
+
+
+def test_but_carries_on_where_files_are_merely_missing(monkeypatch) -> None:
+    """A 504 is the gateway looking and not finding, which asking again fixes
+    -- measured, ten of 305 timed out once and every one served on retry."""
+    from tools import warm_ipfs as warm
+
+    seen: list[list[str]] = []
+
+    def fake_verify(_cid, batch, **kwargs):
+        seen.append(list(batch))
+        return dict.fromkeys(batch, ("unfound", 504, 28.0))
+
+    monkeypatch.setattr(warm, "verify", fake_verify)
+    monkeypatch.setattr(warm, "weight", lambda root, paths: 0)
+    options = SimpleNamespace(dist=Path("."), chunk=2, workers=2,
+                              deadline=600.0, show=5)
+    warm.warm_one("https://g", ["a", "b", "c", "d"], options)
+
+    assert len(seen) > 1

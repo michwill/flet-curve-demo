@@ -328,3 +328,60 @@ def test_the_fee_a_crypto_pool_charges_does_not_move_its_curve():
     bare, charged = twocrypto(0, 0, 0), twocrypto()
     assert bare.charge is None
     assert L.spot_price(bare, 0, 1) == L.spot_price(charged, 0, 1)
+
+
+def on_the_same_curve(b0: float, d0: float, amp: int, gamma: int, scale: int):
+    """The `b1` that puts `b0` on the invariant `d0`, and the curve there."""
+    low, high = 1, int(1e9 * ONE)
+    for _ in range(200):
+        middle = (low + high) // 2
+        try:
+            here = L.crypto_invariant([int(b0), middle * scale // ONE],
+                                      amp / 10_000, gamma / 1e18)
+        except L.DepthError:
+            low = middle
+            continue
+        if here < d0:
+            low = middle
+        else:
+            high = middle
+    return L.twocrypto_curve((int(b0), high), (1, 1), scale, int(d0), amp,
+                             gamma, stable=False)
+
+
+def test_a_two_coin_pool_has_one_shape_wherever_it_sits() -> None:
+    """The depth at a price is a property of the curve, not of where the pool
+    happens to be on it: two coins, one invariant, one shape.  A pool far from
+    `price_scale` reads the same depth at the same price as a balanced one --
+    it is simply standing somewhere else on it.
+    """
+    amp, gamma, scale = 400_000, 145_000_000_000_000, ONE
+    balanced = on_the_same_curve(
+        1_000_000 * ONE,
+        L.crypto_invariant([1_000_000 * ONE, 1_000_000 * ONE],
+                           amp / 10_000, gamma / 1e18),
+        amp, gamma, scale)
+    invariant = L.crypto_invariant(list(balanced.xp), amp / 10_000, gamma / 1e18)
+
+    prices = (0.95, 0.99, 1.0, 1.01, 1.05)
+    here = [L.depth_at(balanced, 0, 1, p) * balanced.scale[0] for p in prices]
+    for ratio in (1.3, 2.0, 5.0):
+        moved = on_the_same_curve(1_000_000 * ONE * ratio, invariant,
+                                  amp, gamma, scale)
+        there = [L.depth_at(moved, 0, 1, p) * moved.scale[0] for p in prices]
+        for p, a, b in zip(prices, here, there, strict=True):
+            assert a == pytest.approx(b, rel=1e-4), f"{ratio} at {p}"
+
+
+def test_and_the_peak_sits_where_the_curve_is_pegged() -> None:
+    """Not at the pool's spot: a cryptoswap concentrates around `price_scale`,
+    and an imbalanced one is out on the constant-product shoulder."""
+    amp, gamma, scale = 400_000, 145_000_000_000_000, ONE
+    balanced = L.crypto_invariant([1_000_000 * ONE, 1_000_000 * ONE],
+                                  amp / 10_000, gamma / 1e18)
+    skewed = on_the_same_curve(5_000_000 * ONE, balanced, amp, gamma, scale)
+
+    at_peg = L.depth_at(skewed, 0, 1, 1.0) * skewed.scale[0]
+    at_spot = L.depth_at(skewed, 0, 1, L.spot_price(skewed, 0, 1)) * skewed.scale[0]
+
+    assert at_peg > at_spot * 4

@@ -254,13 +254,14 @@ MARGIN_WIDTHS = 5.0
 #: pools: the depth halves at 1.31/A, 0.87/A and 0.96/A, so `1/A` is the scale
 #: and the search below only has to find the constant.
 #:
-#: There is no such seed for the crypto families and it is not for want of
-#: algebra.  Their width is not a property of `A` and `gamma` alone -- it is
-#: where the *pair* sits relative to the amplified region, and the three pairs
-#: of one tricrypto pool measured 7.2e-3, 0.10 and 2.52.  The last of those is
-#: the constant-product answer arriving on schedule: away from the peg
-#: `x = sqrt(k/p)`, so the depth goes as `p**-0.5` and halves when the price
-#: quadruples.  So crypto pairs start from a plain guess and are measured.
+#: The crypto families have one too -- `sqrt(gamma) * N**N / A`, the width of
+#: the amplified region -- but it is a seed and not an answer.  On a two-coin
+#: pool it is the whole story, and the shape is a property of the curve: the
+#: same pool sitting anywhere along it reports the same depth at the same
+#: price.  On a tricrypto pool each *pair* sees a different slice of the same
+#: three-coin surface, and the three pairs of one measured 7.2e-3, 0.10 and
+#: 2.52 -- the last being the constant-product answer arriving on schedule,
+#: since away from the peg `x = sqrt(k/p)`.  So `auto_window` measures.
 CRYPTO_SEED = 0.05
 
 

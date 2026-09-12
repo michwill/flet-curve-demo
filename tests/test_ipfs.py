@@ -1278,19 +1278,16 @@ def test_the_count_includes_the_pin_folder(tmp_path: Path) -> None:
     assert fine.exists()
 
 
-def warm_hosts(monkeypatch, gateway: str = "", staging: bool = True) -> list[str]:
-    """The gateways a warm run would visit, in order."""
+def warm_hosts(monkeypatch, gateway: str = "", staging: bool = True,
+               cid_gateways: bool = False) -> list[str]:
+    """The gateways a warm run would visit, in order -- from the real code."""
     from tools import warm_ipfs as warm
 
     monkeypatch.setattr(warm, "config", lambda: {"gateway": gateway})
     monkeypatch.setattr(warm, "_published_cid", lambda hosts: "bafyTEST")
-    named = warm.STAGING_GATEWAYS if staging else warm.GATEWAYS
-    hosts = [h.rstrip("/") for h in named]
-    cid = "bafyTEST"
-    ahead = []
-    if gateway:
-        ahead.append(warm.ORIGIN.format(gateway=gateway.rstrip("/"), cid=cid))
-    return ahead + [g.format(cid=cid) for g in warm.CID_GATEWAYS] + hosts
+    options = SimpleNamespace(staging=staging, gateways=None, cid="",
+                              cid_gateways=cid_gateways)
+    return warm.warm_hosts(options)
 
 
 def test_the_warm_starts_at_whoever_already_has_the_blocks(monkeypatch) -> None:
@@ -1300,17 +1297,16 @@ def test_the_warm_starts_at_whoever_already_has_the_blocks(monkeypatch) -> None:
     hosts = warm_hosts(monkeypatch, gateway="https://mine.mypinata.cloud")
 
     assert hosts[0].startswith("https://mine.mypinata.cloud/ipfs/")
-    assert "ipfs.io" in hosts[1]
     assert hosts[-1].endswith("eth.link")
 
 
-def test_and_without_an_origin_the_public_ones_still_go_first(monkeypatch) -> None:
-    """No dedicated gateway configured is not fatal -- the ENS names simply
-    stop being the thing that stalls before anything has been fetched."""
+def test_without_an_origin_only_the_names_are_left(monkeypatch) -> None:
+    """Not fatal, but it is the slow way round: nothing is asked of the one
+    that already holds the blocks, because none is configured."""
     hosts = warm_hosts(monkeypatch)
 
-    assert "ipfs.io" in hosts[0]
-    assert all("eth.li" in h for h in hosts[-2:])
+    assert all("eth.li" in h for h in hosts)
+    assert len(hosts) == 2
 
 
 def test_the_ens_names_are_still_all_warmed(monkeypatch) -> None:
@@ -1616,3 +1612,55 @@ def test_and_a_running_one_is(monkeypatch) -> None:
     fake_ipfs(monkeypatch, online=True)
 
     assert ipfs.node_id() == "12D3KooWPEER"
+
+
+def test_the_public_gateways_are_not_warmed_unless_asked(monkeypatch) -> None:
+    """They throttle this client and were doing so while the ENS names served
+    happily, so a run spends its time on them and learns nothing."""
+    hosts = warm_hosts(monkeypatch, gateway="https://mine.test")
+
+    assert not [h for h in hosts if "ipfs.io" in h or "dweb.link" in h]
+    assert hosts[0].startswith("https://mine.test/ipfs/")
+    assert all("eth.li" in h for h in hosts[1:])
+
+
+def test_and_are_warmed_when_asked_for(monkeypatch) -> None:
+    """Still worth a look when the ENS names are the thing in doubt."""
+    hosts = warm_hosts(monkeypatch, gateway="https://mine.test",
+                       cid_gateways=True)
+
+    assert [h for h in hosts if "ipfs.io" in h]
+
+
+def test_html_the_origin_will_not_serve_is_not_a_warm_failure(monkeypatch) -> None:
+    """A `*.mypinata.cloud` subdomain serves no HTML whatever is behind it, so
+    `index.html` is a 403 there every time. Reporting it sends the reader
+    looking for a file that is present."""
+    from tools import warm_ipfs as warm
+
+    monkeypatch.setattr(warm, "config", lambda: {"gateway": "https://mine.test"})
+    monkeypatch.setattr(warm, "weight", lambda root, paths: 0)
+    monkeypatch.setattr(warm, "verify", lambda _cid, batch, **kw: {
+        "index.html": ("refused", 403, 0.2)} if "index.html" in batch else {})
+    options = SimpleNamespace(dist=Path("."), chunk=4, workers=2,
+                              deadline=600.0, show=5)
+
+    left = warm.warm_one("https://mine.test/ipfs/bafy", ["index.html", "a.js"],
+                         options)
+
+    assert left == {}
+
+
+def test_but_a_403_elsewhere_still_counts(monkeypatch) -> None:
+    from tools import warm_ipfs as warm
+
+    monkeypatch.setattr(warm, "config", lambda: {"gateway": "https://mine.test"})
+    monkeypatch.setattr(warm, "weight", lambda root, paths: 0)
+    monkeypatch.setattr(warm, "verify", lambda _cid, batch, **kw: {
+        "index.html": ("refused", 403, 0.2)} if "index.html" in batch else {})
+    options = SimpleNamespace(dist=Path("."), chunk=4, workers=2,
+                              deadline=600.0, show=5)
+
+    left = warm.warm_one("https://someone.else", ["index.html", "a.js"], options)
+
+    assert "index.html" in left

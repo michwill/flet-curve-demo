@@ -56,8 +56,12 @@ STAGING_GATEWAYS = (
 #: giving up, eth.limo 17, and w3s.link refused in a tenth of one.
 ORIGIN = "{gateway}/ipfs/{cid}"
 
-#: Filled in with the CID being warmed.  These serve any CID, so a name is no
-#: use to them.
+#: Filled in with the CID being warmed.  Off by default and behind
+#: `--cid-gateways`: both of these throttle this client and were doing so long
+#: before anything went wrong -- they refused while the ENS names were serving
+#: happily -- so a run spends its time on them and learns nothing. What they
+#: are still good for is a second opinion when the ENS names are the thing in
+#: doubt.
 CID_GATEWAYS = (
     "https://ipfs.io/ipfs/{cid}",
     "https://{cid}.ipfs.dweb.link",
@@ -275,6 +279,41 @@ def wait_for_flip(
             client.close()
 
 
+def warm_hosts(options, *, say=lambda _m: None) -> list[str]:
+    """Every gateway this run will visit, in the order it will visit them.
+
+    Outward from the pin rather than inward from the name.  The origin holds
+    the blocks; the ENS names come last, by which time there is something to
+    find and the record has had the whole run to propagate, so `wait_for_flip`
+    stops being the first thing that stalls.  Asked the other way round, every
+    gateway spends its timeout hunting blocks nobody is offering yet, which is
+    a warm that reads as a hang.
+    """
+    named = STAGING_GATEWAYS if options.staging else GATEWAYS
+    hosts = [h.rstrip("/") for h in (options.gateways or named)]
+    if options.gateways:
+        return hosts
+    cid = options.cid or _published_cid(hosts)
+    if not cid:
+        say("  no CID to address the public gateways by; warming the ENS "
+            "names only")
+        return hosts
+    ahead = []
+    if gateway := (config().get("gateway") or "").rstrip("/"):
+        ahead.append(ORIGIN.format(gateway=gateway, cid=cid))
+    else:
+        say(NO_ORIGIN)
+    public = ([g.format(cid=cid) for g in CID_GATEWAYS]
+              if options.cid_gateways else [])
+    return ahead + public + hosts
+
+
+def is_origin(host: str) -> bool:
+    """Is this the account's own gateway, rather than a third party?"""
+    gateway = (config().get("gateway") or "").rstrip("/")
+    return bool(gateway) and host.startswith(gateway)
+
+
 def warm_one(host: str, paths: list[str], options) -> dict:
     """One gateway, whole files, two at a time."""
     total_bytes = weight(options.dist, paths)
@@ -321,6 +360,17 @@ def warm_one(host: str, paths: list[str], options) -> dict:
             break
     if report.inline:
         print()
+    # A `*.mypinata.cloud` subdomain will not serve HTML whatever is behind
+    # it, so `index.html` is a 403 there every time and always will be. It is
+    # a policy, not a miss, and reporting it as one sends the reader looking
+    # for a file that is present.
+    if is_origin(host) and (refused := {
+            path for path, (_v, status, _t) in bad.items() if status == 403}):
+        for path in refused:
+            bad.pop(path, None)
+        print(f"  {len(refused)} not warmed here: this gateway serves no HTML"
+              " from a *.mypinata.cloud subdomain")
+
     # A second ask helps a gateway that was still fetching. It does nothing
     # for one that is refusing to be asked, which is the whole point of a 429.
     if bad and all(v == "throttled" for v, _s, _t in bad.values()):
@@ -420,9 +470,10 @@ def build_parser() -> argparse.ArgumentParser:
         "points at",
     )
     parser.add_argument(
-        "--no-cid-gateways",
+        "--cid-gateways",
         action="store_true",
-        help="only the ENS names, not the public gateways beside them",
+        help="also warm ipfs.io and dweb.link, which throttle this client and"
+        " have done for as long as the ENS names have been working",
     )
     parser.add_argument(
         "--no-wait",
@@ -448,28 +499,7 @@ def main() -> int:
 
     options.tiers = parse_tiers(options.tiers)
     options.chains = [c for c in options.chains.replace(",", " ").split() if c]
-    named = STAGING_GATEWAYS if options.staging else GATEWAYS
-    hosts = [h.rstrip("/") for h in (options.gateways or named)]
-    if not options.gateways and not options.no_cid_gateways:
-        # Outward from the pin rather than inward from the name.  The origin
-        # holds the blocks; the public ones are big, well connected and need no
-        # ENS at all; the ENS names come last, by which time there is something
-        # to find and the record has had the whole run to propagate -- so
-        # `wait_for_flip` stops being the first thing that stalls.  Asked the
-        # other way round, every gateway spends its timeout hunting blocks
-        # nobody is offering yet, which is a warm that reads as a hang.
-        cid = options.cid or _published_cid(hosts)
-        if cid:
-            ahead = []
-            gateway = (config().get("gateway") or "").rstrip("/")
-            if gateway:
-                ahead.append(ORIGIN.format(gateway=gateway, cid=cid))
-            else:
-                print(NO_ORIGIN)
-            hosts = ahead + [g.format(cid=cid) for g in CID_GATEWAYS] + hosts
-        else:
-            print("  no CID to address the public gateways by; warming the "
-                  "ENS names only")
+    hosts = warm_hosts(options, say=print)
 
     root = options.dist
     if not root.is_dir():

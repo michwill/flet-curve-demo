@@ -48,6 +48,14 @@ BYTECODE = "__pycache__"
 
 PIN_URL = "https://api.pinata.cloud/pinning/pinFileToIPFS"
 
+#: How many subdirectories Pinata will take in one pinned path, the pin's own
+#: folder name included.  Measured, not documented -- see `too_deep`.
+MAX_SUBDIRS = 6
+
+#: Where Flutter puts the assets of packages Flet bundles regardless of
+#: whether the app uses them.  Nothing of ours is written under here.
+VENDORED = "assets/packages/"
+
 #: Where to send someone once it is pinned. Every gateway the check would
 #: try, best first, because a fresh pin is not reachable through all of
 #: them at once and a dead link is worse than a list.
@@ -409,6 +417,23 @@ def _members_holding(archive: tarfile.TarFile, needle: bytes) -> list[str]:
 
 
 # -- the request body ------------------------------------------------------
+
+
+def too_deep(root: Path, folder: str) -> list[Path]:
+    """Files whose pinned path has more subdirectories than Pinata will take.
+
+    Measured against Pinata itself: a path with six subdirectories is
+    accepted and one with seven comes back
+    `FILES_V3_API_REJECTED ... file with too many subdirectories`.  The pin's
+    own folder name is one of the six, so the build has five to spend.
+
+    What reaches seven is never ours.  Flutter bundles the assets of every
+    package Flet depends on whether the app draws them or not, and those
+    nest -- `assets/packages/flutter_math_fork/lib/katex_fonts/fonts/` is a
+    set of maths fonts for a chart of pool depths.
+    """
+    return [path for name, path in uploads(root, folder)
+            if name.count("/") > MAX_SUBDIRS]
 
 
 def uploads(root: Path, folder: str) -> list[tuple[str, Path]]:
@@ -987,6 +1012,29 @@ def main() -> int:
         )
     if gone := drop_dev_files(dist):
         print(f"dropped {', '.join(gone)} -- development only, never published")
+
+    if deep := too_deep(dist, options.name):
+        ours = [path for path in deep
+                if not path.relative_to(dist).as_posix().startswith(VENDORED)]
+        if ours:
+            raise SystemExit(
+                "These would be pinned deeper than Pinata will take, and they "
+                "are ours:\n  "
+                + "\n  ".join(sorted(p.relative_to(dist).as_posix() for p in ours))
+                + f"\n\nNothing was uploaded. A pinned path may hold "
+                f"{MAX_SUBDIRS} subdirectories including the pin's own folder; "
+                "shorten these or the upload dies after the last byte."
+            )
+        saved = sum(path.stat().st_size for path in deep)
+        for path in deep:
+            path.unlink()
+        roots = sorted({path.relative_to(dist).parts[2] for path in deep})
+        print(
+            f"dropped {len(deep)} file(s), {saved / 1e6:.1f} MB, from "
+            f"{', '.join(roots)} -- Flutter bundles them and the app draws "
+            f"none of them, and Pinata refuses a path past {MAX_SUBDIRS} "
+            "subdirectories"
+        )
 
     if options.keep_cdn_copies:
         print("keeping the CDN-served directories, as asked")

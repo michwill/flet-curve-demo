@@ -1240,3 +1240,39 @@ def test_every_candidate_returns_bytes_for_a_plain_get() -> None:
     serves raw blocks and CARs, and answers a plain path GET with a 406.
     """
     assert not any("trustless" in gateway for gateway in ipfs.VERIFY_GATEWAYS)
+
+
+def build_at(root: Path, relative: str) -> Path:
+    """A build holding one file at `relative`."""
+    path = root / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("x")
+    return path
+
+
+def test_a_path_pinata_will_take_is_left_alone(tmp_path: Path) -> None:
+    """Six subdirectories including the pin's own folder, which is the most
+    it accepts -- measured against Pinata, not read in a document."""
+    build_at(tmp_path, "assets/packages/media_kit/assets/web/hls.js")
+
+    assert ipfs.too_deep(tmp_path, "curve") == []
+
+
+def test_and_one_past_it_is_found(tmp_path: Path) -> None:
+    """The KaTeX fonts Flutter bundles: seven, and the upload dies on the last
+    byte with `file with too many subdirectories`."""
+    deep = build_at(
+        tmp_path,
+        "assets/packages/flutter_math_fork/lib/katex_fonts/fonts/KaTeX_AMS.ttf")
+
+    assert ipfs.too_deep(tmp_path, "curve") == [deep]
+
+
+def test_the_count_includes_the_pin_folder(tmp_path: Path) -> None:
+    """It is a subdirectory like any other, and forgetting it is how a build
+    that measures fine on disk is refused after seventy megabytes."""
+    fine = build_at(tmp_path, "a/b/c/d/e/ok.txt")       # five, six once pinned
+    deep = build_at(tmp_path, "a/b/c/d/e/f/deep.txt")   # six, seven once pinned
+
+    assert ipfs.too_deep(tmp_path, "curve") == [deep]
+    assert fine.exists()

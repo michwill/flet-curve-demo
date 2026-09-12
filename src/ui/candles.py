@@ -285,6 +285,8 @@ class CandleChart(ft.Container):
         self._view = Viewport(0.0, 1.0, 0.0, 1.0)
         self._plot = Plot(800.0, height)
         self._last_hover = 0.0
+        #: How far apart the fingers were at the last pinch update.
+        self._pinch = 1.0
         self._on_capacity_change = on_capacity_change
         self._last_capacity = 0  # set below, once _plot exists
         self._auto_price = True
@@ -323,7 +325,8 @@ class CandleChart(ft.Container):
             mouse_cursor=ft.MouseCursor.PRECISE,
             drag_interval=16,
             hover_interval=16,
-            on_pan_update=self._panned,
+            on_scale_start=self._grabbed,
+            on_scale_update=self._scaled,
             on_scroll=self._scrolled,
             on_hover=self._hovered,
             on_exit=self._left,
@@ -391,20 +394,41 @@ class CandleChart(ft.Container):
                 return
         self._last_capacity = capacity
 
-    def _panned(self, e: ft.DragUpdateEvent) -> None:
-        """Drag the chart. The content follows the cursor, as it should."""
+    def _grabbed(self, _e: ft.ScaleStartEvent) -> None:
+        self._pinch = 1.0
+
+    def _scaled(self, e: ft.ScaleUpdateEvent) -> None:
+        """One pointer drags the chart, two pinch it in time.
+
+        `on_scale_update` rather than `on_pan_update`, because Flutter will
+        not take a pan recogniser and a scale recogniser on one detector --
+        and scale reports a lone pointer as a drag, so one handler serves
+        both.  Without it a phone can drag the chart but never zoom it.
+        """
         if not self._candles:
             return
-        delta = e.local_delta
-        if delta is None:
+        view = self._view
+        delta = getattr(e, "focal_point_delta", None)
+        if delta is not None and (delta.x or delta.y):
+            view = view.panned(-self._plot.dx(delta.x, view),
+                               self._plot.dy(delta.y, view))
+            if delta.y:
+                self._auto_price = False
+        pinching = e.pointer_count >= 2 and e.scale > 0.0
+        if pinching:
+            # `scale` is the spread since the gesture began, so the step is
+            # what it has changed by since the last update.
+            factor = self._pinch / e.scale
+            self._pinch = e.scale
+            focus = self._plot.data_x(e.local_focal_point.x, view)
+            zoomed = view.zoomed_x(factor, focus)
+            if zoomed.x_span >= MIN_VISIBLE or factor >= 1.0:
+                view = zoomed
+        if view is self._view:
             return
-        view = self._view.panned(
-            -self._plot.dx(delta.x, self._view),
-            self._plot.dy(delta.y, self._view),
-        )
-        if delta.y:
-            self._auto_price = False
         self._view = view.clamped(len(self._candles))
+        if pinching:
+            self._refit_price()
         self._clear_crosshair(redraw=False)
         self._apply_view()
 

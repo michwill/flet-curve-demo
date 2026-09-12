@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import math
 from itertools import pairwise
+from types import SimpleNamespace
 
 import flet as ft
 import pytest
@@ -13,6 +14,7 @@ from curve.liquidity import Profile, Sample
 from ui.depthchart import (
     HOVER_FAST,
     HOVER_SLOW,
+    MIN_LOG_SPAN,
     MIN_SPREAD,
     PRICE_LABELS,
     DepthChart,
@@ -481,3 +483,84 @@ def test_leaving_clears_the_overlay_once_and_then_keeps_quiet() -> None:
 
     assert chart._over(chart._profile, None) == []
     assert chart._over(chart._profile, None) is None
+
+
+def pinch(x: float = 0.0, fingers: int = 1, spread: float = 1.0,
+          focus: float = 400.0):
+    """A scale update -- what Flutter calls a drag as well as a pinch."""
+    return SimpleNamespace(
+        focal_point_delta=SimpleNamespace(x=x, y=0.0),
+        local_focal_point=SimpleNamespace(x=focus, y=150.0),
+        pointer_count=fingers, scale=spread,
+    )
+
+
+def test_one_pointer_still_drags_the_window() -> None:
+    """Scale replaced pan, so the ordinary drag has to keep working."""
+    chart = fee_chart()
+    before = chart.window
+
+    chart._grabbed(None)
+    chart._scaled(pinch(x=-40.0))
+
+    assert chart.window != before
+    assert chart._view.x_span == pytest.approx(
+        math.log(before[1] / before[0]), rel=1e-9)   # panned, not zoomed
+
+
+def test_two_fingers_zoom_it() -> None:
+    """A phone has no wheel: without this the chart can be dragged but never
+    zoomed."""
+    chart = fee_chart()
+    chart._grabbed(None)
+    before = chart._view.x_span
+
+    chart._scaled(pinch(fingers=2, spread=2.0))
+
+    assert chart._view.x_span < before
+
+
+def test_and_pinching_together_zooms_out() -> None:
+    chart = fee_chart()
+    chart._grabbed(None)
+    before = chart._view.x_span
+
+    chart._scaled(pinch(fingers=2, spread=0.5))
+
+    assert chart._view.x_span > before
+
+
+def test_a_pinch_step_is_what_changed_since_the_last_one() -> None:
+    """`scale` counts from the start of the gesture, so holding still must
+    not keep zooming."""
+    chart = fee_chart()
+    chart._grabbed(None)
+    chart._scaled(pinch(fingers=2, spread=2.0))
+    once = chart._view.x_span
+
+    chart._scaled(pinch(fingers=2, spread=2.0))
+
+    assert chart._view.x_span == once
+
+
+def test_a_pinch_holds_the_price_under_the_fingers() -> None:
+    """Zooming about the focal point, as every map does it."""
+    chart = fee_chart()
+    chart._grabbed(None)
+    focus = 300.0
+    at = math.exp(chart._plot.data_x(focus, chart._view))
+
+    chart._scaled(pinch(fingers=2, spread=1.6, focus=focus))
+
+    assert math.exp(chart._plot.data_x(focus, chart._view)) == pytest.approx(
+        at, rel=1e-9)
+
+
+def test_a_pinch_cannot_zoom_past_what_the_curve_can_show() -> None:
+    chart = fee_chart()
+    chart._grabbed(None)
+    for _ in range(40):
+        chart._scaled(pinch(fingers=2, spread=2.0))
+        chart._pinch = 1.0            # each step a fresh doubling
+
+    assert chart._view.x_span >= MIN_LOG_SPAN

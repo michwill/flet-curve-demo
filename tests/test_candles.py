@@ -390,19 +390,67 @@ def test_price_stops_refitting_once_the_user_drags_it() -> None:
     assert (chart._view.y_min, chart._view.y_max) == before
 
 
+def drag(x: float, y: float, fingers: int = 1, spread: float = 1.0):
+    """A scale update, which is what Flutter calls a drag as well as a pinch."""
+    return SimpleNamespace(
+        focal_point_delta=SimpleNamespace(x=x, y=y),
+        local_focal_point=SimpleNamespace(x=400.0, y=150.0),
+        pointer_count=fingers, scale=spread,
+    )
+
+
 def test_a_vertical_drag_takes_over_the_price_axis() -> None:
     chart = CandleChart()
     chart.set_candles(rising(100))
     assert chart._auto_price
-    chart._panned(SimpleNamespace(local_delta=SimpleNamespace(x=0.0, y=-20.0)))
+    chart._scaled(drag(0.0, -20.0))
     assert not chart._auto_price
 
 
 def test_a_purely_horizontal_drag_leaves_auto_price_on() -> None:
     chart = CandleChart()
     chart.set_candles(rising(100))
-    chart._panned(SimpleNamespace(local_delta=SimpleNamespace(x=-30.0, y=0.0)))
+    chart._scaled(drag(-30.0, 0.0))
     assert chart._auto_price
+
+
+def test_two_fingers_zoom_the_time_axis() -> None:
+    """A phone has no wheel, so without this the chart can be dragged but
+    never zoomed."""
+    chart = CandleChart()
+    chart.set_candles(rising(200))
+    chart._grabbed(None)
+    before = chart._view.x_span
+
+    chart._scaled(drag(0.0, 0.0, fingers=2, spread=2.0))   # fingers spread
+
+    assert chart._view.x_span < before
+
+
+def test_and_pinching_them_together_zooms_out() -> None:
+    chart = CandleChart()
+    chart.set_candles(rising(200))
+    chart._view = Viewport(80.0, 120.0, chart._view.y_min, chart._view.y_max)
+    chart._grabbed(None)
+    before = chart._view.x_span
+
+    chart._scaled(drag(0.0, 0.0, fingers=2, spread=0.5))
+
+    assert chart._view.x_span > before
+
+
+def test_a_pinch_step_is_what_changed_since_the_last_one() -> None:
+    """`scale` counts from the start of the gesture, so two updates at the
+    same spread must not zoom twice."""
+    chart = CandleChart()
+    chart.set_candles(rising(200))
+    chart._grabbed(None)
+    chart._scaled(drag(0.0, 0.0, fingers=2, spread=2.0))
+    once = chart._view.x_span
+
+    chart._scaled(drag(0.0, 0.0, fingers=2, spread=2.0))
+
+    assert chart._view.x_span == once
 
 
 def test_new_data_and_double_tap_both_restore_auto_price() -> None:

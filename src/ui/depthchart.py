@@ -177,6 +177,8 @@ class DepthChart(ft.Container):
         self._painter: asyncio.Task | None = None
         #: What a frame has been costing, smoothed, in seconds.
         self._cost = HOVER_FAST / 1000.0
+        #: How far apart the fingers were at the last pinch update.
+        self._pinch = 1.0
         #: `log(price)` per sample, for finding the one under the pointer.
         self._logs: list[float] = []
         #: Which sample the overlay is drawn for, and for which window.
@@ -226,7 +228,8 @@ class DepthChart(ft.Container):
             mouse_cursor=ft.MouseCursor.PRECISE,
             drag_interval=16,
             hover_interval=16,
-            on_pan_update=self._panned,
+            on_scale_start=self._grabbed,
+            on_scale_update=self._scaled,
             on_scroll=self._scrolled,
             on_hover=self._hovered,
             on_exit=self._left,
@@ -288,13 +291,35 @@ class DepthChart(ft.Container):
         self._plot = Plot(float(e.width or 800.0), float(e.height or 340.0))
         self._paint()
 
-    def _panned(self, e: ft.DragUpdateEvent) -> None:
+    def _grabbed(self, _e: ft.ScaleStartEvent) -> None:
+        self._pinch = 1.0
+
+    def _scaled(self, e: ft.ScaleUpdateEvent) -> None:
+        """One pointer drags the window, two pinch it. The wheel is desktop's.
+
+        `on_scale_update` rather than `on_pan_update`, because Flutter will
+        not take a pan recogniser and a scale recogniser on one detector --
+        and scale reports a lone pointer as a drag, so one handler serves
+        both.  Without it a phone can reach the chart but never zoom it.
+        """
         if self._profile is None:
             return
-        delta = e.local_delta
-        if delta is None:
+        plot, view = self._plot, self._view
+        delta = getattr(e, "focal_point_delta", None)
+        if delta is not None and delta.x:
+            view = view.panned(-plot.dx(delta.x, view), 0.0)
+        if e.pointer_count >= 2 and e.scale > 0.0:
+            # `scale` is the spread since the gesture began, so the step is
+            # what it has changed by since the last update.
+            factor = self._pinch / e.scale
+            self._pinch = e.scale
+            focus = plot.data_x(e.local_focal_point.x, view)
+            zoomed = view.zoomed_x(factor, focus)
+            if MIN_LOG_SPAN <= zoomed.x_span <= MAX_LOG_SPAN:
+                view = zoomed
+        if view is self._view:
             return
-        self._view = self._view.panned(-self._plot.dx(delta.x, self._view), 0.0)
+        self._view = view
         self._settle()
         self._paint()
 

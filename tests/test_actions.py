@@ -2612,3 +2612,117 @@ def test_a_batch_still_short_of_signatures_is_not_coloured_as_a_failure() \
 
     tab._failed(WalletError("The transaction was mined but reverted."))
     assert tab.status_panel.text.color == FAILED
+
+
+# -- a panel that cannot batch does not offer the one button ----------------
+
+
+def gauge_pool() -> Pool:
+    """`make_pool`, with somewhere to stake.  `Pool` is frozen, so the gauge
+    goes in when it is built rather than afterwards."""
+    return Pool.from_v2({
+        "address": POOL_ADDRESS,
+        "pool_type": "crvusd",
+        "lp_token_address": LP_TOKEN,
+        "gauges": [{"address": "0x" + "cc" * 20, "is_killed": False}],
+        "coins": [
+            {"symbol": "USDT", "address": "0x" + "aa" * 20, "decimals": 6},
+            {"symbol": "crvUSD", "address": "0x" + "bb" * 20, "decimals": 18},
+        ],
+    })
+
+
+def staking_deposit(provider: FakeProvider):
+    """A deposit that has to stake the long way: a gauge, and no stake zap."""
+    from curve.pool import PoolContract
+    from ui.actions import DepositTab
+
+    pool = gauge_pool()
+    contract = PoolContract(provider, pool, ACCOUNT)
+    tab = DepositTab(StubPage(), pool, lambda: contract, None)
+    tab.slippage.value = "1"
+    tab._quote_ok = True
+    tab._expected_lp = 10**18
+    tab.rows.fields[0].value = "1000"
+    tab.stake_box.value = True
+    tab.stake_zap = None                # no zap, so staking is the long way
+    return tab, contract
+
+
+async def test_an_action_that_cannot_be_collected_keeps_its_approve_button():
+    """The one button promises an approval inside the same prompt.  An action
+    that waits on its own transaction cannot carry one, and hiding the approve
+    button there left a Submit that spends an allowance nobody granted."""
+    tab, contract = staking_deposit(FakeProvider())
+    tab._batches = True
+
+    await tab._sync_approval(contract)
+
+    assert not tab.batchable, "staking the long way is not one call"
+    assert tab.approve_button.visible, "the step that has to go first"
+    assert tab.submit_button.disabled, "and Submit waits for it"
+    assert "Approve &" not in str(tab.submit_button.content)
+
+
+async def test_whereas_a_deposit_that_is_one_call_offers_it():
+    tab, contract = staking_deposit(FakeProvider())
+    tab.stake_box.value = False         # no staking, so one call
+    tab._batches = True
+
+    await tab._sync_approval(contract)
+
+    assert tab.batchable
+    assert not tab.approve_button.visible
+    assert tab.submit_button.content == "Approve & Deposit"
+
+
+async def test_a_withdrawal_that_unstakes_first_cannot_batch_either():
+    """The unstake has to land before what came out of the gauge can be
+    spent, so the zap's approval cannot ride with the withdrawal."""
+    from curve.pool import PoolContract
+    from ui.actions import WithdrawTab
+
+    pool = gauge_pool()
+    contract = PoolContract(FakeProvider(), pool, ACCOUNT)
+    tab = WithdrawTab(StubPage(), pool, lambda: contract, None)
+    tab.staked = 5 * 10**18
+    tab.lp_balance = 0
+    tab.use_staked.value = True
+    tab.amount.value = "1"
+
+    assert not tab.batchable, "the unstake has to land first"
+
+    # The same amount, held rather than staked: one call, and it batches.
+    tab.staked = 0
+    tab.lp_balance = 5 * 10**18
+    tab.use_staked.value = False
+    assert tab.batchable
+
+
+async def test_and_the_collection_is_still_the_backstop():
+    """`batchable` is what the drawing asks.  If a panel ever answers it
+    wrongly, the batch must fail rather than send the action with the
+    approval silently dropped."""
+    from wallet.base import WalletError
+
+    tab, contract = staking_deposit(FakeProvider())
+    tab._batches = True
+    tab._pending_approval = ("0x" + "aa" * 20, contract.pool.address, 1000)
+
+    with pytest.raises(WalletError, match="approved on its own"):
+        await tab._submit_as_batch(contract, "Deposited.")
+
+
+async def test_and_nothing_goes_out_unapproved_when_it_fires():
+    """The whole press, not just the batch: what must never happen is the
+    action reaching the chain with the approval it promised left unsent."""
+    provider = FakeProvider()
+    tab, contract = staking_deposit(provider)
+    tab.mount()
+    tab._batches = True
+    tab._pending_approval = ("0x" + "aa" * 20, contract.pool.address, 1000)
+
+    await tab._submit_clicked(None)
+
+    assert not provider.sent, "the deposit went out with no allowance behind it"
+    assert "approved on its own" in tab.status_panel.text.value

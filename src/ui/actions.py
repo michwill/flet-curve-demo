@@ -11,7 +11,7 @@ import flet as ft
 
 from curve.abi import FEE_DENOMINATOR, apply_slippage
 from curve.api import CurveApi
-from curve.confirm import POLL_INTERVAL, wait_for_batch, wait_for_confirmation
+from curve.confirm import POLL_INTERVAL, wait_for_confirmation
 from curve.format import (
     at_least,
     format_impact,
@@ -40,6 +40,7 @@ from wallet.erc20 import format_units, parse_units
 from . import AnyEvent, buttons, theme
 from .alarm import Alarm, Band
 from .assets import chain_name
+from .batching import Batching, NotBatchable
 from .logos import pool_stack, token_mark
 from .status import DONE, FAILED, NOTE, StatusPanel
 from .typography import BODY, LABEL, SMALL
@@ -156,16 +157,7 @@ def _aside(control: ft.Control) -> ft.Row:
     return ft.Row([control], alignment=ft.MainAxisAlignment.END, tight=True)
 
 
-class NotBatchable(Exception):
-    """This action cannot be handed over as one batch, and why.
-
-    Raised out of a collection rather than returned, because it has to stop
-    the action where it stands: everything after the wait it interrupted
-    would be built against state that has not moved.
-    """
-
-
-class ActionTab:
+class ActionTab(Batching):
     """Base for the four panels. Subclasses build fields and submit."""
 
     title = ""
@@ -236,10 +228,6 @@ class ActionTab:
         self.fee = ft.Text("", size=SMALL, color=ft.Colors.ON_SURFACE_VARIANT)
         self.fee_panel = self._band(self.fee, visible=False, kind="fee")
         self._pending_approval: tuple[str, str, int] | None = None
-        #: Whether this wallet takes several calls in one prompt (EIP-5792).
-        #: None until asked; a property of the wallet and the chain, so it is
-        #: asked once and kept for as long as the panel is open.
-        self._batches: bool | None = None
         self._fees: tuple[int, int, int, bool] | None = None
         self._fees_read_at = 0.0
         self._alarms = Alarm(self._page_of())
@@ -511,6 +499,21 @@ class ActionTab:
         single = await self.approval_needed(contract)
         return [single] if single is not None else []
 
+    @property
+    def batchable(self) -> bool:
+        """Can this panel's action share a prompt with its approval?
+
+        False where the action waits on one of its own transactions: what
+        comes after the wait is built out of what the wait produced, and
+        inside a collection nothing has been sent.  A panel that says yes
+        here hides its approve button, so saying it wrongly offers a button
+        that spends an allowance nobody granted -- which is why it is asked
+        of the panel's own state and not of a collection.  Collecting is what
+        would really settle it, and it costs a quote; this is asked on every
+        keystroke.
+        """
+        return True
+
     # -- shared behaviour -------------------------------------------------
 
     def mount(self) -> ft.Column:
@@ -722,41 +725,39 @@ class ActionTab:
         if not pending:
             return False
         try:
-            with contract.collecting() as calls:
-                await self.submit(contract)
-                action = list(calls)
-        except NotBatchable:
-            return False
-        if len(action) != 1:
-            # Nothing else should reach here -- a multi-send action waits
-            # between its sends and `_step` has already refused -- but an
-            # action that somehow sent twice without waiting is not one this
-            # knows how to promise anything about.
-            return False
+            action = await self.collected(contract, lambda: self.submit(contract))
+        except NotBatchable as exc:
+            # `batchable` is what keeps a panel from offering this at all, so
+            # reaching here means it answered wrongly -- and the approval the
+            # button promised has not been sent.  Sending the action anyway
+            # would spend an allowance that is not there.
+            raise WalletError(
+                "This one has to be approved on its own first."
+            ) from exc
         self._say("Confirm both in your wallet…" if len(pending) == 1
                   else f"Confirm all {len(pending) + 1} in your wallet…",
                   pending=True)
-        batch_id = await batch.send(
+        await self.one_prompt(
             contract.provider, contract.account, self.pool.chain_id,
-            [batch.Call(*contract.build_approve(token, spender, amount))
-             for token, spender, amount in pending] + action,
+            approvals=[batch.Call(*contract.build_approve(token, spender, amount))
+                       for token, spender, amount in pending],
+            action=action,
+            waiting=lambda batch_id: self._say(
+                f"Waiting for {batch_id[:14]}… to confirm.", pending=True),
+            interval=CONFIRM_INTERVAL,
         )
-        self._say(f"Waiting for {batch_id[:14]}… to confirm.", pending=True)
-        await wait_for_batch(contract.provider, batch_id, interval=CONFIRM_INTERVAL)
         self._say(done, DONE)
         return True
 
     async def _wallet_batches(self, contract: PoolContract) -> bool:
-        """Whether this wallet will take the pair in one go.
+        """Whether this wallet will take this panel's pair in one go.
 
-        Asked once per tab and remembered: it is a property of the wallet and
-        the chain, neither of which moves while a panel is open, and a prompt
-        should not wait on a capability read it has already done.
+        Kept for as long as the panel is open: neither the wallet nor the
+        chain moves under one, and a prompt should not wait on a capability
+        read already done.
         """
-        if self._batches is None:
-            self._batches = await batch.supported(
-                contract.provider, contract.account, self.pool.chain_id)
-        return self._batches
+        return await self.wallet_batches(
+            contract.provider, contract.account, self.pool.chain_id)
 
     async def _sync_approval(self, contract: PoolContract | None) -> None:
         """Show or hide the approve step based on the current allowance."""
@@ -774,7 +775,8 @@ class ActionTab:
         # no second step to wait for.  Without this the submit stayed disabled
         # until the approval had confirmed, which is the very wait batching
         # exists to remove -- and left the batch unreachable.
-        batched = pending is not None and await self._wallet_batches(contract)
+        batched = (pending is not None and self.batchable
+                   and await self._wallet_batches(contract))
         self.approve_button.visible = pending is not None and not batched
         self.approve_button.disabled = pending is None or self._sending
         if batched:
@@ -1032,6 +1034,16 @@ class DepositTab(ActionTab):
     def combined(self) -> bool:
         """Can this go in one transaction rather than two?"""
         return self.staking and self.stake_zap is not None
+
+    @property
+    def batchable(self) -> bool:
+        """Only where the deposit is a single call.
+
+        Staking without a zap deposits, waits, and reads the LP that minted
+        before it can stake it -- so the approval cannot ride along, and the
+        panel offers the two steps instead.
+        """
+        return not self.staking or self.combined
 
     @property
     def spender(self) -> str:
@@ -1528,6 +1540,15 @@ class WithdrawTab(ActionTab):
         if not self.drawing_on_gauge:
             return 0
         return max(0, min(amount - self.lp_balance, self.staked))
+
+    @property
+    def batchable(self) -> bool:
+        """Not where the LP has to come out of the gauge first.
+
+        That withdrawal waits for the unstake to land before it can spend
+        what came out, so the zap's approval cannot ride with it.
+        """
+        return self._to_unstake(self._lp_amount()) <= 0
 
     def _use_staked_toggled(self, _e: AnyEvent) -> None:
         self._use_staked_is_theirs = True

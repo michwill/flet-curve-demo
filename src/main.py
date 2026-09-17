@@ -22,7 +22,7 @@ from curve import (
     rewards,
 )
 from curve.api import PoolFeed
-from curve.confirm import wait_for_batch, wait_for_confirmation
+from curve.confirm import wait_for_confirmation
 from curve.format import compact_usd
 from curve.lite import LiteChain
 from curve.rpc import (
@@ -37,6 +37,7 @@ from curve.vecrv import VeCrvContract
 from ui import AnyEvent, buttons, logos, routing, safe_update, status
 from ui import theme as themes
 from ui.assets import chad_mark, chain_name, curve_logo
+from ui.batching import Batching
 from ui.logos import chain_mark
 from ui.pool_detail import PoolDetailView
 from ui.pool_list import PoolListView
@@ -334,7 +335,7 @@ def wallet_mark(icon: str | None, name: str, size: float = 28) -> ft.Control:
     )
 
 
-class CurveApp:
+class CurveApp(Batching):
     def __init__(self, page: ft.Page) -> None:
         self.page = page
         self.api = CurveApi()
@@ -1658,7 +1659,12 @@ class CurveApp:
             return
         what = "CRV" if crv else "rewards"
         try:
-            if count > 1 and await self.wallet_batches(wallet, chain_id):
+            # Asked at the press rather than kept, unlike the panels: a claim
+            # is a rare and deliberate thing, and one capability read costs
+            # less than a cache to drop whenever the wallet or the chain moves.
+            batches = await self.wallet_batches(
+                wallet.provider, wallet.address, chain_id, fresh=True)
+            if count > 1 and batches:
                 await self.claim_as_batch(wallet, chain_id, transactions, count)
             else:
                 view.claiming(
@@ -1685,18 +1691,6 @@ class CurveApp:
         view.claiming(f"Claimed {what}.", status.DONE)
         await self.reread_earnings(wallet.address, wallet.provider)
 
-    async def wallet_batches(self, wallet, chain_id: int) -> bool:
-        """Whether this wallet takes several calls in one prompt (EIP-5792).
-
-        Asked at the press rather than remembered, unlike the Swap tab, which
-        asks on every keystroke's worth of approval state.  A claim is a rare
-        and deliberate thing, and one capability read costs less than a cache
-        that has to be dropped whenever the wallet or the chain changes.
-        """
-        with contextlib.suppress(Exception):
-            return await batch.supported(wallet.provider, wallet.address, chain_id)
-        return False
-
     async def claim_as_batch(
         self, wallet, chain_id: int, transactions: list[tuple[str, str]], count: int
     ) -> None:
@@ -1711,12 +1705,12 @@ class CurveApp:
         self.portfolio_view.claiming(
             f"Confirm {count} claims in one prompt…"
         )
-        batch_id = await batch.send(
+        await self.one_prompt(
             wallet.provider, wallet.address, chain_id,
-            [batch.Call(to, data) for to, data in transactions],
+            action=[batch.Call(to, data) for to, data in transactions],
+            waiting=lambda batch_id: self.portfolio_view.claiming(
+                f"Waiting for {batch_id[:14]}…"),
         )
-        self.portfolio_view.claiming(f"Waiting for {batch_id[:14]}…")
-        await wait_for_batch(wallet.provider, batch_id)
 
     def loading(self, fraction: float | None = None) -> None:
         """Show the strip under the top bar, at `fraction` or indefinite."""

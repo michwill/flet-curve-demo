@@ -4801,9 +4801,12 @@ async def test_two_factories_are_claimed_in_one_prompt_when_the_wallet_batches(
     one call.  They can still be merged into one confirmation, which on a
     Safe is a round of cosigners rather than a click.
     """
-    import main as app_module
+    from curve import confirm
 
-    monkeypatch.setattr(app_module, "wait_for_batch", _batch_mined)
+    # The wait lives in `ui.batching` now, which every batching path goes
+    # through; `curve.confirm` is where it is defined and where it is stood in
+    # for.
+    monkeypatch.setattr(confirm, "wait_for_batch", _batch_mined)
     wallet = BatchingWallet()
     app = two_factory_app(wallet)
 

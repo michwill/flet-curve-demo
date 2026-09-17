@@ -47,6 +47,7 @@ from router.universe import CoinEntry, coins_by_volume, with_native
 from wallet import batch
 from wallet.base import WalletError
 
+from .batching import Batching
 from .responsive import Layout
 from .status import DONE, FAILED, NOTE
 from .swap import SwapView
@@ -70,7 +71,7 @@ PAIR_KEY = "swap.pair.{chain_id}"
 DUST_USD = 0.01
 
 
-class SwapPage:
+class SwapPage(Batching):
     """Everything the Swap tab does."""
 
     def __init__(self, page: ft.Page, *, api, chain_name, chain_id, provider_for,
@@ -89,9 +90,6 @@ class SwapPage:
         #: confirm in.  Every plan after that waits for the endpoint to reach
         #: it -- see `_confirm`.
         self._floor_block = 0
-        #: Whether the connected wallet takes several calls in one prompt.
-        #: None until asked; forgotten when the wallet or the chain changes.
-        self._batches: bool | None = None
         #: Whether the input token still needs approving, before batching is
         #: taken into account -- `show_approval` is told a different thing.
         self._unapproved = False
@@ -179,7 +177,7 @@ class SwapPage:
             self._owned = None
             # Batching is per chain as well as per wallet: a wallet may take
             # several calls on one network and not on the next.
-            self._forget_batching()
+            self.forget_batching()
             self.view.forget_chain()
         self.chain_id_now = chain_id
         await self._offer_coins(chain_id)
@@ -363,7 +361,7 @@ class SwapPage:
         Nor does what the wallet could *do*: whether it takes several calls in
         one prompt is a property of the wallet that just left.
         """
-        self._forget_batching()
+        self.forget_batching()
         self._owned = None
         self._balances = {}
         if self._coins:
@@ -780,20 +778,13 @@ class SwapPage:
         self.view.show_approval(needed, batched=batched)
 
     async def _wallet_batches(self, contract) -> bool:
-        """Whether this wallet takes several calls in one prompt (EIP-5792).
+        """Whether this wallet takes the approval and the swap in one prompt.
 
-        Asked once and kept: a property of the wallet and the chain, and a
-        press should not wait on a capability read already done.  Forgotten
-        when either changes -- see `_forget_batching`.
+        Kept once asked, and dropped by `forget_batching` when the wallet or
+        the chain moves -- both of which can, under an open tab.
         """
-        if self._batches is None:
-            self._batches = await batch.supported(
-                contract.provider, contract.account, self.chain_id_now or 0)
-        return self._batches
-
-    def _forget_batching(self) -> None:
-        """A different wallet, or a different chain, answers for itself."""
-        self._batches = None
+        return await self.wallet_batches(
+            contract.provider, contract.account, self.chain_id_now or 0)
 
     async def _send_as_batch(self, contract, plan) -> bool:
         """Send the approval and the swap together, if that is on offer.
@@ -814,18 +805,17 @@ class SwapPage:
         the reader sees it anyway, and is the same bargain the two-prompt path
         makes when it lets an approval through before pricing the swap.
         """
-        from curve.confirm import wait_for_batch
-
         if not self._unapproved or not await self._wallet_batches(contract):
             return False
         self.view.say("Confirm both in your wallet…", pending=True)
-        batch_id = await batch.send(
+        landed = await self.one_prompt(
             contract.provider, contract.account, self.chain_id_now or 0,
-            [batch.Call(*contract.build_approve(plan)),
-             batch.Call(plan.to, "0x" + bytes(plan.data).hex(), int(plan.value))],
+            approvals=[batch.Call(*contract.build_approve(plan))],
+            action=[batch.Call(plan.to, "0x" + bytes(plan.data).hex(),
+                               int(plan.value))],
+            waiting=lambda batch_id: self.view.say(
+                f"Waiting for {batch_id[:14]}… to confirm.", pending=True),
         )
-        self.view.say(f"Waiting for {batch_id[:14]}… to confirm.", pending=True)
-        landed = await wait_for_batch(contract.provider, batch_id)
         self._floor_block = max(self._floor_block, int(landed or 0))
         self.view.say("Swapped.", DONE)
         return True

@@ -3013,15 +3013,37 @@ a second description of the action -- the panel runs the action with its sends
 diverted into a list (`PoolContract.collecting`), so what goes in the batch is
 the call the button would have sent.
 
-**Not all of it can be.** *Deposit and stake* on a pool with no stake zap
-sends the deposit, waits for it, and only then knows how much LP it minted --
-so the gauge approval that follows cannot be built before the first
-transaction has landed. `ActionTab._step` refuses to wait inside a collection
-rather than let a call be built from state that has not moved, and the panel
-falls back to the sequence. `atomicRequired` is false throughout: an approval
-followed by a deposit does not have to land in one transaction to be worth one
-prompt, and demanding atomicity turns away every wallet that will do the
-sequence without promising it.
+**The rules live in one place.** `ui/batching.py` is a mixin the four callers
+share, because they have no ancestor in common: a panel, a page, a view and
+the app itself. It holds what must not drift between them -- the capability
+read and what is kept of it, the collection, approvals before the call that
+spends them, `atomicRequired` false, the refusal to send a batch that is
+approvals alone, and a wait that asks after the batch's own id rather than a
+transaction hash it may not have yet. Each caller keeps its own wording and
+its own idea of how long an answer is good for: a panel keeps it while it is
+open, the Swap tab drops it when the wallet or the chain moves, veCRV asks on
+every reload, and the claim asks at the press.
+
+`atomicRequired` is false throughout: an approval followed by a deposit does
+not have to land in one transaction to be worth one prompt, and demanding
+atomicity turns away every wallet that will do the sequence without promising
+it.
+
+**Not all of it can be batched, and the button has to know before it is
+drawn.** *Deposit and stake* on a pool with no stake zap sends the deposit,
+waits for it, and only then knows how much LP it minted, so the gauge approval
+that follows cannot be built before the first transaction has landed. A
+withdrawal that unstakes first is the same shape. Those panels answer
+`batchable` false and draw the numbered pair.
+
+This matters more than it sounds. The one button *promises* the approval, so
+the approve button is hidden behind it -- and the fallback, on an action that
+turned out not to be collectible, was to send the action on its own. That is
+`add_liquidity` with no allowance behind it: a revert, and a wallet prompt
+somebody signed for nothing. `batchable` is what keeps the offer honest;
+`ActionTab._step` refusing to wait inside a collection is the backstop behind
+it, and now fails the press rather than falling through to an unapproved
+send.
 
 **A queued batch is not a failed one.** A Safe answers `wallet_sendCalls` with
 a batch id and then sits at status 100 until its cosigners have signed, which

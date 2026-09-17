@@ -172,6 +172,20 @@ class Event:
         self.global_position = Point(width / 2, height / 2)
         self.local_delta = Point(1.0, 1.0)
         self.scroll_delta = Point(0.0, 1.0)
+        # The scale events, which the charts read for pinch and drag.  Two
+        # pointers and a scale of one, so a handler fired out of the blue
+        # takes the pinch path rather than returning at its first line.
+        self.local_focal_point = Point(width / 2, height / 2)
+        self.global_focal_point = Point(width / 2, height / 2)
+        self.pointer_count = 2
+        self.scale = 1.0
+
+    #: Every field Flet declares *without* a default belongs above: a real
+    #: event always carries one, and `__getattr__` handing back `None` for it
+    #: describes an event Flet does not send -- which is how the stateful test
+    #: came to report a crash in `_grabbed` that no pinch could produce.  The
+    #: `None` is for the fields Flet marks `Optional`, like `local_delta`,
+    #: which really can arrive missing and which handlers really do guard.
 
     #: Worked out the way `ft.OnScrollEvent` works them out, rather than
     #: passed in: a stub that lets these be set independently can describe a

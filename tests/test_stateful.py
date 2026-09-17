@@ -161,6 +161,24 @@ def handlers(control: Any, found: list[tuple[Any, str]], seen: set[int]) -> None
                 handlers(item, found, seen)
 
 
+def test_a_gesture_handler_fired_out_of_the_blue_is_not_a_crash() -> None:
+    """Which is what `fire_handler` does all day.
+
+    The stub answers `None` for anything nobody gave it, and it had not been
+    given `local_focal_point` -- so `_grabbed` read `None.x` and the machine
+    reported a crash in the app that no pinch could produce.  Flet marks that
+    field required (no default, unlike `local_delta`, which handlers do
+    guard), so the handler is right to read it straight and the stub was
+    wrong to omit it.
+    """
+    from ui.candles import CandleChart
+    from ui.depthchart import DepthChart
+
+    for chart in (CandleChart(), DepthChart()):
+        chart._grabbed(Event())
+        chart._scaled(Event())
+
+
 class AppMachine(RuleBasedStateMachine):
     def __init__(self) -> None:
         super().__init__()

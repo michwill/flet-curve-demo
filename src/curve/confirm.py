@@ -33,7 +33,16 @@ class TransactionFailed(WalletError):
 
 
 class StillPending(WalletError):
-    """Not mined within the time this app was willing to watch."""
+    """Not finished within the time this app was willing to watch.
+
+    Never a failure.  A multisig queues what it is handed and then waits for
+    its cosigners -- days, sometimes -- and the batch is in perfectly good
+    order the whole time.  All this says is that the app stopped looking.
+    """
+
+    @property
+    def still_waiting(self) -> bool:
+        return True
 
 
 async def wait_for_receipt(
@@ -143,8 +152,9 @@ async def wait_for_batch(
             return block
         if waited >= timeout:
             raise StillPending(
-                f"{batch_id[:14]}… has not been completed yet. It may still "
-                "land; this app has stopped watching."
+                f"{batch_id[:14]}… is still queued. A multisig waits for its "
+                "cosigners as long as they take, and the batch lands when "
+                "they are done; this app has stopped watching it."
             )
         await asyncio.sleep(interval)
         waited += interval

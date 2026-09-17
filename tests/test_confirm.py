@@ -142,3 +142,37 @@ async def test_a_failed_transaction_never_gets_as_far_as_the_block() -> None:
     with pytest.raises(TransactionFailed):
         await wait_for_confirmation(node, TX, interval=0)
     assert node.head_calls == 0
+
+
+# -- a batch a multisig has queued -----------------------------------------
+
+
+async def test_a_batch_nobody_has_finished_signing_is_not_a_failure() -> None:
+    """A Safe queues what it is handed and then collects signatures, which
+    can take days.  Giving up on watching says nothing about the batch, so
+    it is not reported in the colour the app keeps for things that broke."""
+    from curve.confirm import wait_for_batch
+
+    class Queued(WalletProvider):
+        async def request(self, method, params=None):
+            assert method == "wallet_getCallsStatus"
+            return {"status": 100, "receipts": []}
+
+    with pytest.raises(StillPending) as caught:
+        await wait_for_batch(Queued(), "0xba7c4", timeout=0, interval=0)
+
+    assert caught.value.still_waiting
+    assert "cosigners" in str(caught.value)
+
+
+async def test_whereas_a_batch_that_reverted_is_one() -> None:
+    from curve.confirm import wait_for_batch
+
+    class Reverted(WalletProvider):
+        async def request(self, method, params=None):
+            return {"status": 500, "receipts": []}
+
+    with pytest.raises(TransactionFailed) as caught:
+        await wait_for_batch(Reverted(), "0xba7c4", interval=0)
+
+    assert not caught.value.still_waiting

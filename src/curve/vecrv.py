@@ -27,6 +27,11 @@ from wallet.base import RpcError, WalletError, WalletProvider
 from . import abi
 from .multicall import MULTICALL3, decode_aggregate3, encode_aggregate3
 
+#: The one chain any of this is on.  Both contracts are Ethereum's, which is
+#: why the reads here take a provider already pointed at it -- but a batch
+#: has to name the chain it is for, so the number is spelled once, here.
+CHAIN_ID = 1
+
 #: The voting escrow, and the distributor that pays its holders.
 VOTING_ESCROW = "0x5f3b5DfEb7B28CDbD7FAba78963EE202a494e2A2"
 FEE_DISTRIBUTOR = "0xD16d5eC345Dd86Fb63C6a9C43c517210F1027914"

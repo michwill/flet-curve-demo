@@ -48,7 +48,7 @@ from wallet import batch
 from wallet.base import WalletError
 
 from .responsive import Layout
-from .status import DONE, FAILED
+from .status import DONE, FAILED, NOTE
 from .swap import SwapView
 
 #: How long after the last keystroke the route is *planned* rather than
@@ -1102,6 +1102,11 @@ class SwapPage:
         and a quote landing underneath used to take the only explanation off
         the screen -- so a swap that reverted on chain said nothing at all.
         """
+        if getattr(error, "still_waiting", False):
+            # Queued in a Safe and short of signatures. Nothing went wrong,
+            # so it is said in the plain colour rather than in the red one.
+            self.view.say(str(error), NOTE, sticky=True)
+            return
         self.view.say("" if getattr(error, "rejected_by_user", False) else str(error),
                       FAILED, sticky=True)
 

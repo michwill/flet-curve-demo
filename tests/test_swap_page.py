@@ -2958,3 +2958,29 @@ def test_no_price_to_judge_by_means_the_message_stands() -> None:
 
     assert page.view.sell_worth_usd() is None
     assert page._said(FLOW, 0).startswith("flow conservation")
+
+
+async def test_a_batch_a_safe_is_still_signing_is_not_reported_as_a_failure():
+    """A multisig queues the batch and collects signatures for as long as its
+    cosigners take.  The app stops watching well before that, which is a fact
+    about the app and not about the transaction."""
+    from curve.confirm import StillPending
+    from ui.status import FAILED, NOTE
+
+    class Queued(Sending):
+        async def execute(self, _plan) -> str:
+            raise StillPending("0xba7c4… is still queued. A multisig waits.")
+
+    queued = Queued()
+    page = swap_page_with(Wallet(), two_coins())
+    page._contract = lambda: queued
+    page._plan = Planned()
+    page._read_balances = lambda: _answer(None)
+    page.host = WatchedHost()
+
+    await page._swap()
+
+    assert "still queued" in page.view.status.text.value
+    assert page.view.status.text.color == NOTE
+    assert page.view.status.text.color != FAILED
+    assert not page._sending, "and the tab is usable again"

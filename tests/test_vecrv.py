@@ -530,6 +530,10 @@ class Recorder:
 
     can_send = True
     provider = object()
+    #: A real contract always has one, and the panel asks it whether the
+    #: wallet batches.  The provider above answers nothing, which `supported`
+    #: reads as "does not batch" -- which is what these tests are about.
+    account = "0x" + "11" * 20
 
     def __init__(self, log: list[str], before, after) -> None:
         self._log, self._before, self._after = log, before, after
@@ -773,3 +777,147 @@ def test_and_each_action_sits_under_the_field_it_acts_on() -> None:
 
     assert at["sequence"] == at["amount"] + 1
     assert at["extend"] == at["date"] + 1
+
+
+# -- the approval and the lock in one prompt (EIP-5792) --------------------
+
+
+class Batching(FakeProvider):
+    """A wallet that speaks 5792, and keeps whatever it was handed."""
+
+    def __init__(self, answers=None, *, supported: bool = True) -> None:
+        super().__init__(answers)
+        self.supported = supported
+        self.batches: list[dict] = []
+
+    async def request(self, method: str, params=None):
+        params = params or []
+        if method == "wallet_getCapabilities":
+            return ({"0x1": {"atomic": {"status": "supported"}}}
+                    if self.supported else {})
+        if method == "wallet_sendCalls":
+            self.batches.append(params[0])
+            return {"id": "0xba7c4"}
+        if method == "wallet_getCallsStatus":
+            return {"status": 200, "atomic": True,
+                    "receipts": [{"transactionHash": "0x" + "ab" * 32,
+                                  "blockNumber": "0x10"}]}
+        if method == "eth_blockNumber":
+            return "0x10"
+        if method == "eth_getTransactionReceipt":
+            # The unbatched path still goes through here, and these tests
+            # are about which path was taken rather than about the wait.
+            return {"transactionHash": params[0], "blockNumber": "0x10",
+                    "status": "0x1"}
+        return await super().request(method, params)
+
+
+#: Ten CRV in the wallet and no allowance on the escrow, which is the state
+#: the two steps exist for.
+HOLDS_TEN = {"0x" + abi.selector("balanceOf(address)"): word(10 * 10**18)}
+
+
+def batching_view(provider):
+    """The panel, reloaded against `provider`, with two CRV typed into it."""
+    import asyncio
+
+    from ui.vecrv import VeCrvView
+
+    v = VeCrvView(_StubPage(),
+                  contract_for=lambda: VeCrvContract(provider, ACCOUNT),
+                  now=lambda: NOW)
+    asyncio.run(v.reload())
+    v.amount.value = "2"
+    v.date.value = "2030-08-29"
+    v._sync()
+    return v
+
+
+def test_a_wallet_that_batches_is_offered_one_button_and_not_two() -> None:
+    """The step being saved is not a click.  On a Safe it is a round of
+    cosigners, which is what two prompts really cost."""
+    v = batching_view(Batching(HOLDS_TEN))
+
+    assert v.lock_button.content == "Approve & Create lock"
+    assert not v.lock_button.disabled, "the allowance rides in the same prompt"
+    assert not v.approve_button.visible
+    assert not v.step_arrow.visible
+
+
+def test_and_a_wallet_that_does_not_still_gets_the_two_steps() -> None:
+    v = batching_view(Batching(HOLDS_TEN, supported=False))
+
+    assert v.lock_button.content == "Create lock"
+    assert v.lock_button.disabled, "not approved yet"
+    assert v.approve_button.visible and not v.approve_button.disabled
+    assert v.step_arrow.visible
+
+
+def test_pressing_it_sends_the_approval_and_the_lock_as_one_batch() -> None:
+    import asyncio
+
+    provider = Batching(HOLDS_TEN)
+    v = batching_view(provider)
+
+    asyncio.run(v._lock(None))
+
+    assert provider.sent == [], "one prompt, not one transaction each"
+    [handed] = provider.batches
+    assert handed["from"] == ACCOUNT
+    assert handed["chainId"] == "0x1"
+    assert handed["atomicRequired"] is False, (
+        "a wallet that will do the sequence but not promise atomicity is "
+        "still worth batching to"
+    )
+    assert [call["to"] for call in handed["calls"]] == [CRV, VOTING_ESCROW]
+
+
+def test_and_the_approval_in_it_is_for_exactly_what_the_lock_spends() -> None:
+    """The escrow's `deposit_for` is public, so an allowance left standing on
+    it is one anybody may lock on your behalf.  The batch spends all of it."""
+    import asyncio
+
+    provider = Batching(HOLDS_TEN)
+    v = batching_view(provider)
+
+    asyncio.run(v._lock(None))
+
+    approval, lock = provider.batches[0]["calls"]
+    assert approval["data"].endswith(f"{2 * 10**18:064x}")
+    assert lock["data"].startswith("0x" + abi.selector("create_lock(uint256,uint256)"))
+
+
+def test_a_lock_that_is_already_approved_is_sent_on_its_own() -> None:
+    """Nothing to fold in, so nothing is folded: the batch is for the pair,
+    not a wrapper every send now goes through."""
+    import asyncio
+
+    provider = Batching({
+        **HOLDS_TEN,
+        "0x" + abi.selector("allowance(address,address)"): word(5 * 10**18),
+    })
+    v = batching_view(provider)
+
+    asyncio.run(v._lock(None))
+
+    assert provider.batches == []
+    assert len(provider.sent) == 1
+    assert provider.sent[0]["to"] == VOTING_ESCROW
+
+
+def test_a_batch_still_short_of_signatures_is_not_said_in_red(monkeypatch) \
+        -> None:
+    """It is queued, not broken.  A Safe collects signatures for as long as
+    its cosigners take, and the panel has only stopped watching."""
+    from curve.confirm import StillPending
+    from ui.status import FAILED, NOTE
+
+    async def queued(_provider, _tx):
+        raise StillPending("0xba7c4… is still queued. A multisig waits.")
+
+    _log, v = run_claim(monkeypatch, queued)
+
+    assert "still queued" in v.status.text.value
+    assert v.status.text.color == NOTE
+    assert v.status.text.color != FAILED
+    assert not v.claim_button.disabled

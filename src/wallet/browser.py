@@ -28,6 +28,12 @@ _INTERACTIVE = frozenset(
         "wallet_addEthereumChain",
         "wallet_switchEthereumChain",
         "wallet_connect",
+        # EIP-5792's send waits on a human like the rest of these: a Safe
+        # proposes the batch and then waits for its cosigners, who take as
+        # long as they take.  Left off this list it had a two-minute
+        # deadline -- the one prompt in the app least likely to fit inside
+        # one, since 5792 exists here for the multisig case.
+        "wallet_sendCalls",
     }
 )
 

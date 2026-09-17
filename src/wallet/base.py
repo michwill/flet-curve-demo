@@ -28,6 +28,17 @@ class WalletError(Exception):
         """
         return False
 
+    @property
+    def still_waiting(self) -> bool:
+        """Is this something unfinished, rather than something broken?
+
+        A Safe queues a transaction and then collects signatures, which can
+        take days and is exactly what it is for.  Giving up on watching says
+        nothing about the transaction, so a panel reports it as the plain
+        fact it is rather than in the red it uses for failures.
+        """
+        return False
+
 
 def quantity(value: Any, what: str) -> int:
     """A number from a wallet, whatever shape it arrived in."""

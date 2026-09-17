@@ -17,10 +17,11 @@ from collections.abc import Callable
 
 import flet as ft
 
-from curve.confirm import wait_for_confirmation
+from curve.confirm import wait_for_batch, wait_for_confirmation
 from curve.format import token_amount, units_to_float
 from curve.models import Coin
 from curve.vecrv import (
+    CHAIN_ID,
     CRV,
     CRVUSD,
     MAXTIME,
@@ -30,6 +31,7 @@ from curve.vecrv import (
     VeCrvContract,
     week_floor,
 )
+from wallet import batch
 from wallet.base import WalletError
 from wallet.erc20 import format_units, parse_units
 
@@ -38,7 +40,7 @@ from .actions import amount_field, stacked
 from .alarm import Band
 from .logos import token_mark
 from .responsive import Layout
-from .status import DONE, FAILED, StatusPanel
+from .status import DONE, FAILED, NOTE, StatusPanel
 from .typography import BODY, LABEL, METRIC, ROW_TITLE, SMALL
 
 #: The durations the buttons offer, in the order they are drawn.  A month is
@@ -139,6 +141,11 @@ class VeCrvView(ft.Column):
         #: buttons agree about which one is chosen.
         self._preset: int | None = None
         self._busy = False
+        #: Whether the connected wallet takes the approval and the lock in
+        #: one prompt.  Read in `reload`, which is also where a wallet that
+        #: has changed is noticed, and only read there: `_sync` runs on every
+        #: keystroke and must not go to the wallet.
+        self._batches = False
 
         self.status = StatusPanel(page)
         self.position = _Position(page)
@@ -195,7 +202,8 @@ class VeCrvView(ft.Column):
         # Approve *then* lock, drawn as the two steps it is: whichever one
         # is the reader's next move is the live one, and the other is dead
         # rather than missing.  Both stay on screen the whole way through,
-        # so neither step moves when the other becomes possible.
+        # so neither step moves when the other becomes possible.  Unless the
+        # wallet batches, where there are no two steps to draw -- see `_sync`.
         self.step_arrow = ft.Icon(ft.Icons.ARROW_RIGHT_ALT,
                                   color=ft.Colors.ON_SURFACE_VARIANT)
         self.sequence = ft.Row(
@@ -335,7 +343,6 @@ class VeCrvView(ft.Column):
         # The pair goes together: an expired lock takes neither step.
         self.sequence.visible = not expired
         self.lock_button.visible = not expired
-        self.lock_button.content = "Add CRV" if lock.exists else "Create lock"
         self.extend_button.visible = lock.exists and not expired
         self._sync()
 
@@ -375,6 +382,15 @@ class VeCrvView(ft.Column):
             f"Approve {token_amount(units_to_float(amount, 18))} CRV"
             if spendable else "Approve"
         )
+        # A wallet that batches is offered one button that does both, and no
+        # step to wait between: the approval rides in the same prompt as the
+        # lock.  Which is the point of it on a multisig, where the step that
+        # is saved is not a click but a round of cosigners.
+        batched = self._batches and self._needs_approval()
+        self.approve_button.visible = not batched
+        self.step_arrow.visible = not batched
+        verb = "Add CRV" if lock.exists else "Create lock"
+        self.lock_button.content = f"Approve & {verb}" if batched else verb
         self.amount.error = self._amount_error()
         self.lock_button.disabled = self._why_not_lock() is not None
         self.extend_button.disabled = self._why_not_extend() is not None
@@ -398,6 +414,11 @@ class VeCrvView(ft.Column):
             return "More than the wallet holds"
         return None
 
+    def _needs_approval(self) -> bool:
+        """Whether the escrow may not yet spend what has been typed."""
+        amount = self._amount()
+        return 0 < amount <= self._snapshot.crv and amount > self._snapshot.allowance
+
     def _why_not_lock(self) -> str | None:
         """Why the lock button is dead, or None if it is not."""
         snapshot, now = self._snapshot, self._now()
@@ -406,7 +427,7 @@ class VeCrvView(ft.Column):
             return "no amount"
         if amount > snapshot.crv:
             return "more than the wallet holds"
-        if amount > snapshot.allowance:
+        if amount > snapshot.allowance and not self._batches:
             return "not approved yet"
         if snapshot.lock.exists:
             return None if not snapshot.lock.expired(now) else "the lock has ended"
@@ -529,16 +550,21 @@ class VeCrvView(ft.Column):
 
     async def _lock(self, _e) -> None:
         amount = self._amount()
+        # Outstanding where the button says "Approve &", and zero otherwise:
+        # a wallet that does not batch has already been sent to the approve
+        # button by `_why_not_lock`, and never arrives here short.
+        approving = amount if self._needs_approval() else 0
         if self._snapshot.lock.exists:
             if await self._step("Adding to the lock…",
                                 lambda c: c.increase_amount(amount),
-                                "Added to your lock."):
+                                "Added to your lock.", approving=approving):
                 self._spent()
             return
         until = self._until()
         if await self._step("Creating the lock…",
                             lambda c: c.create_lock(amount, until),
-                            f"Locked until {say_date(until)}."):
+                            f"Locked until {say_date(until)}.",
+                            approving=approving):
             self._spent()
 
     async def _extend(self, _e) -> None:
@@ -569,8 +595,14 @@ class VeCrvView(ft.Column):
             f"Claimed {token_amount(units_to_float(amount, 18))} crvUSD.",
         )
 
-    async def _step(self, saying: str, send, done: str) -> bool:
+    async def _step(self, saying: str, send, done: str, *,
+                    approving: int = 0) -> bool:
         """One transaction, from the prompt to the figures it moves.
+
+        `approving` is the amount the escrow has yet to be allowed to spend.
+        Where the wallet batches, that approval goes in the same prompt as
+        the action instead of costing a second one -- which on a Safe is a
+        second round of cosigners and not a second click.
 
         The wait is the point.  `send` is finished the moment the wallet
         hands back a hash, and until that hash is mined every figure here is
@@ -588,15 +620,22 @@ class VeCrvView(ft.Column):
         self._sync()
         self.status.say(saying, pending=True)
         try:
-            tx = await send(contract)
-            # Empty while a batch is being collected: nothing has been sent,
-            # so there is nothing to wait for and nothing has moved.
-            if tx:
-                self.status.say(f"Waiting for {tx[:14]}… to confirm.",
-                                pending=True)
-                await wait_for_confirmation(contract.provider, tx)
+            if approving and self._batches:
+                await self._as_batch(contract, send, approving)
+            else:
+                tx = await send(contract)
+                # Empty while a batch is being collected: nothing has been
+                # sent, so there is nothing to wait for and nothing has moved.
+                if tx:
+                    self.status.say(f"Waiting for {tx[:14]}… to confirm.",
+                                    pending=True)
+                    await wait_for_confirmation(contract.provider, tx)
         except WalletError as exc:
-            self.status.say(str(exc), FAILED, sticky=True)
+            # Something still on its way is not something broken: a batch a
+            # Safe has queued waits for its cosigners, and saying that in red
+            # claims a failure that has not happened.
+            self.status.say(str(exc), NOTE if exc.still_waiting else FAILED,
+                            sticky=True)
             return False
         finally:
             self._busy = False
@@ -607,6 +646,47 @@ class VeCrvView(ft.Column):
         self.status.say(done, DONE, sticky=True)
         await self.reload()
         return True
+
+    async def _as_batch(self, contract: VeCrvContract, send, approving: int) -> None:
+        """The approval and what it is for, handed over in one prompt.
+
+        The action is not described a second time.  It is run with its send
+        diverted into a list -- `VeCrvContract.collecting`, the same way the
+        pool panels do it -- so the call that goes in the batch is the one
+        the button would have sent.
+
+        Sound because nothing here waits on anything: the escrow reads the
+        allowance when the lock call runs, and this batch is what grants it.
+        Not atomic, and it does not need to be; a wallet that will do the
+        sequence but not promise atomicity still saves the second prompt.
+        """
+        with contract.collecting() as collected:
+            await send(contract)
+            action = list(collected)
+        if len(action) != 1:
+            # An approval with nothing spending it is the standing allowance
+            # this escrow makes dangerous -- `deposit_for` is public, so it
+            # is an amount anybody may lock on your behalf.  Better no batch
+            # than one that could leave that behind.
+            raise WalletError("This could not be prepared as one batch.")
+        self.status.say("Confirm both in your wallet…", pending=True)
+        batch_id = await batch.send(
+            contract.provider, contract.account, CHAIN_ID,
+            [batch.Call(*contract.build_approve(approving)), *action],
+        )
+        self.status.say(f"Waiting for {batch_id[:14]}… to confirm.", pending=True)
+        await wait_for_batch(contract.provider, batch_id)
+
+    async def _wallet_batches(self, contract: VeCrvContract) -> bool:
+        """Whether this wallet takes several calls in one prompt (EIP-5792).
+
+        Asked on every reload rather than remembered for the life of the
+        panel: a reload is where a wallet that changed is noticed, and the
+        answer belongs to the wallet and not to the page.
+        """
+        if not contract.can_send:
+            return False
+        return await batch.supported(contract.provider, contract.account, CHAIN_ID)
 
     async def reload(self) -> None:
         """Read everything again, which is one request."""
@@ -624,6 +704,13 @@ class VeCrvView(ft.Column):
         self.status.say(
             "" if contract.can_send else "Connect a wallet to lock CRV or claim."
         )
+        # Asked after the figures are up, never before: this one goes to the
+        # wallet, which over WalletConnect is a phone, and what is locked
+        # should not wait behind it.  The buttons re-draw if it changes them.
+        batches = await self._wallet_batches(contract)
+        if batches != self._batches:
+            self._batches = batches
+            self._sync()
 
 
 class _Position(ft.Container):

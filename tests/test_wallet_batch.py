@@ -210,3 +210,41 @@ def test_an_answer_nobody_recognises_is_pending_rather_than_failed():
     for answer in (None, "", {"status": "WHAT"}, {}):
         got = batch.reads_as_batch(answer)
         assert got.pending and not got.failed
+
+
+# -- a batch is a signature, not a read -------------------------------------
+
+
+async def test_the_desktop_wallet_is_given_signing_time_to_answer_a_batch():
+    """A read gets thirty seconds and a signature ten minutes.  `wallet_sendCalls`
+    is a signature, and was being timed as a read."""
+    from wallet import desktop
+
+    handed: list[float] = []
+
+    def post(_payload, timeout):
+        handed.append(timeout)
+        return {"result": "0x1"}
+
+    provider = desktop.DesktopWalletProvider()
+    provider._post = post
+
+    await provider.request("wallet_sendCalls", [{}])
+    await provider.request("wallet_getCallsStatus", ["0x1"])
+
+    assert handed == [desktop.SIGNING_TIMEOUT, desktop.READ_TIMEOUT], (
+        "the send waits on a human; asking what became of it does not"
+    )
+
+
+def test_and_in_the_browser_it_waits_as_long_as_the_signing_does():
+    """Where the wallet is a Safe over WalletConnect the prompt is a proposal
+    a quorum has yet to sign, which is the one thing here least likely to be
+    answered inside a two-minute deadline."""
+    from wallet import browser
+
+    assert "wallet_sendCalls" in browser._INTERACTIVE
+    assert "eth_sendTransaction" in browser._INTERACTIVE, "the company it keeps"
+    # The reads are not: a poll that never comes back wedges the wait.
+    assert "wallet_getCallsStatus" not in browser._INTERACTIVE
+    assert "wallet_getCapabilities" not in browser._INTERACTIVE

@@ -13,6 +13,12 @@ from .typography import SMALL
 DONE = ft.Colors.GREEN_600
 FAILED = ft.Colors.ERROR
 
+#: What `say` uses when given no colour, named so a caller can ask for it.
+#: Something still on its way -- a batch a Safe has queued and not yet
+#: collected the signatures for -- is neither done nor broken, and saying it
+#: in red claims a failure that has not happened.
+NOTE = ft.Colors.ON_SURFACE_VARIANT
+
 
 def tint(colour: str | None, pending: bool) -> str:
     """The panel behind a status line, keyed to what it is saying."""

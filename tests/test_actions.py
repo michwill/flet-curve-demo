@@ -2595,3 +2595,20 @@ async def test_a_deposit_that_stakes_the_long_way_refuses_to_batch():
         await tab.submit(contract)
 
     assert not provider.sent
+
+
+def test_a_batch_still_short_of_signatures_is_not_coloured_as_a_failure() \
+        -> None:
+    """Every panel shares this line, and a Safe collecting signatures is the
+    one thing that reaches it having gone perfectly well."""
+    from curve.confirm import StillPending
+    from ui.status import FAILED, NOTE
+    from wallet.base import WalletError
+
+    tab = deposit_on(ReservedProvider(RESERVES))
+
+    tab._failed(StillPending("0xba7c4… is still queued."))
+    assert tab.status_panel.text.color == NOTE
+
+    tab._failed(WalletError("The transaction was mined but reverted."))
+    assert tab.status_panel.text.color == FAILED

@@ -1495,8 +1495,8 @@ fewer wallet confirmations, not less gas.
 **Several batches, one confirmation.** A chain with two live gauge factories
 needs one transaction per factory — each keeps its own `minted[user][gauge]`,
 so they cannot be folded into one call. They can be folded into one *prompt*,
-which is what the EIP-5792 support the Swap tab uses is for, and the claim
-asks for it the same way: `wallet_getCapabilities` at the press, one
+which is what the EIP-5792 support described in [One prompt, not
+two](#one-prompt-not-two) is for, and the claim asks for it the same way: `wallet_getCapabilities` at the press, one
 `wallet_sendCalls` if the answer is yes, and the one-prompt-each path if it
 is not. Most wallets say no and that path stays; a Safe over WalletConnect
 says yes, and there the saving is a round of cosigners per factory rather
@@ -2985,6 +2985,54 @@ change and encodes after it, at 5.00 bp with nothing unbounded.
   that would be quoting the cost of somebody else's swap.
 - **Chains without a deployed quoter.** The tab needs `Chain.quoter` and a
   committed slot cache, which is fifteen chains today.
+
+## One prompt, not two
+
+An approval and the thing it is for are two transactions, and the second is
+worthless without the first. On a browser wallet that is two clicks. On a
+multisig it is two rounds of cosigners, and that is the case EIP-5792 exists
+here for: `wallet_getCapabilities` at the press, one `wallet_sendCalls` if the
+answer is yes, and the two-step path untouched if it is not. Most wallets say
+no; a Safe over WalletConnect says yes. WalletConnect approves methods at
+connect time and refuses whatever was not proposed, so all four are named in
+the session as *optional* -- a wallet that has never heard of them declines
+and the session is unaffected.
+
+Every place that asks for an allowance folds it in:
+
+| where | what goes in the one prompt |
+|---|---|
+| Swap page | approve + the router's `execute` |
+| Deposit, Withdraw, Stake, and the pool page's swap | every missing allowance + the action |
+| veCRV | approve + `create_lock` or `increase_amount` |
+| Portfolio claim | one transaction per gauge factory, no approval involved |
+
+The button says which it is: `Approve & Deposit` where the wallet batches, and
+the numbered `1. Approve` / `2. Deposit` pair where it does not. None of it is
+a second description of the action -- the panel runs the action with its sends
+diverted into a list (`PoolContract.collecting`), so what goes in the batch is
+the call the button would have sent.
+
+**Not all of it can be.** *Deposit and stake* on a pool with no stake zap
+sends the deposit, waits for it, and only then knows how much LP it minted --
+so the gauge approval that follows cannot be built before the first
+transaction has landed. `ActionTab._step` refuses to wait inside a collection
+rather than let a call be built from state that has not moved, and the panel
+falls back to the sequence. `atomicRequired` is false throughout: an approval
+followed by a deposit does not have to land in one transaction to be worth one
+prompt, and demanding atomicity turns away every wallet that will do the
+sequence without promising it.
+
+**A queued batch is not a failed one.** A Safe answers `wallet_sendCalls` with
+a batch id and then sits at status 100 until its cosigners have signed, which
+can be days, and the batch is in perfectly good order the whole time. Two
+things had followed from treating that as a wait like any other: the browser
+transport gave the send a two-minute deadline, where `eth_sendTransaction` has
+none, and the desktop one gave it the thirty seconds it means for *reads*.
+Both now time it as the signature it is. And when the app stops watching --
+three minutes, which is a fact about the app and not about the transaction --
+it says so in the plain colour rather than the red it keeps for things that
+broke.
 
 ## Deliberately not built
 

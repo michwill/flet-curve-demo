@@ -41,7 +41,7 @@ from . import AnyEvent, buttons, theme
 from .alarm import Alarm, Band
 from .assets import chain_name
 from .logos import pool_stack, token_mark
-from .status import DONE, FAILED, StatusPanel
+from .status import DONE, FAILED, NOTE, StatusPanel
 from .typography import BODY, LABEL, SMALL
 
 #: How often to ask whether a transaction has been mined.
@@ -588,8 +588,17 @@ class ActionTab:
         self.page.update()
 
     def _failed(self, error: WalletError) -> None:
-        """Report a wallet failure -- or, for a refusal, report nothing."""
-        self._say("" if error.rejected_by_user else str(error), FAILED)
+        """Report a wallet failure -- or, for a refusal, report nothing.
+
+        A batch still waiting on a Safe's cosigners is not a failure and is
+        not coloured as one: nothing went wrong, and the red line said it had.
+        """
+        if error.rejected_by_user:
+            self._say("", FAILED)
+        elif error.still_waiting:
+            self._say(str(error), NOTE)
+        else:
+            self._say(str(error), FAILED)
 
     def _busy(self, busy: bool) -> None:
         """Hold the buttons down for the length of an action.

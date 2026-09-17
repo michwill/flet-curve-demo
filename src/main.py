@@ -32,6 +32,7 @@ from curve.rpc import (
     prefers_public_reads,
 )
 from curve.sort import DEFAULT_SORT
+from curve.vecrv import CHAIN_ID as VECRV_CHAIN_ID
 from curve.vecrv import VeCrvContract
 from ui import AnyEvent, buttons, logos, routing, safe_update, status
 from ui import theme as themes
@@ -184,11 +185,6 @@ PAGE_POOLS = "pools"
 PAGE_PORTFOLIO = "portfolio"
 PAGE_SWAP = "swap"
 PAGE_VECRV = "vecrv"
-
-#: The one chain veCRV is on.  The page is kept out of the nav everywhere
-#: else rather than shown and explained: the escrow is not deployed there,
-#: so there is nothing the page could say that is not "go to Ethereum".
-VECRV_CHAIN_ID = 1
 
 #: The glyph beside each page's name, in the nav and in the menu the nav
 #: becomes on a phone -- where the three theme rows already carry a mark,
@@ -1676,6 +1672,12 @@ class CurveApp:
                     view.claiming(f"Waiting for {index}/{len(sent)}: {tx[:14]}…")
                     await wait_for_confirmation(wallet.provider, tx)
         except WalletError as exc:
+            if exc.still_waiting:
+                # A Safe has the batch and is collecting signatures for it.
+                # Coloured rather than left to default, which would read as
+                # still-in-flight and leave the claim buttons disabled.
+                view.claiming(str(exc), status.NOTE)
+                return
             view.claiming(
                 "" if exc.rejected_by_user else str(exc), status.FAILED
             )

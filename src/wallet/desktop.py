@@ -38,6 +38,9 @@ _INTERACTIVE = frozenset(
         "eth_signTypedData_v3",
         "eth_signTypedData_v4",
         "wallet_addEthereumChain",
+        # EIP-5792's send: a signature like the rest of these, and not the
+        # 30-second read its absence here was making it.
+        "wallet_sendCalls",
     }
 )
 

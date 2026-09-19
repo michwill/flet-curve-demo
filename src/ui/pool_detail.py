@@ -241,6 +241,10 @@ class PoolDetailView(ft.Column):
         self._page = page
         self.api = api
         self.pool = pool
+        #: Whether this page can offer anything but the depth curve.  A Lite
+        #: chain has no trade indexing, so no candles and no trade tables --
+        #: but it has a pool, which is all the depth curve ever reads.
+        self._depth_only = bool(pool.lite) and len(pool.pool_coins) > 1
         self.get_contract = get_contract
         self._explorer = explorer
 
@@ -282,10 +286,18 @@ class PoolDetailView(ft.Column):
         self.chart_error = ft.Text("", size=LABEL, color=ft.Colors.ERROR)
         self._candle_size = DEFAULT_CANDLE_SIZE
 
+        options = self._series_options()
+        # `or LP_SERIES` for the type as much as the value: Flet has an
+        # option's key optional, and every one built here carries one.
+        opens_on = (
+            (options[0].key or LP_SERIES)
+            if self._depth_only and options
+            else LP_SERIES
+        )
         self.series = ft.Dropdown(
-            options=self._series_options(),
-            value=LP_SERIES,
-            leading_icon=self._field_mark(LP_SERIES),
+            options=options,
+            value=opens_on,
+            leading_icon=self._field_mark(opens_on),
             dense=True,
             # Room for the marks as well as the longest name: the box on
             # the left is 56 of it.
@@ -364,19 +376,29 @@ class PoolDetailView(ft.Column):
 
         self._controls_slot = ft.Container(self._chart_controls())
 
+        # A Lite chain has no trade indexing, so it has no candles and no
+        # trade tables.  The depth curve is not one of those: it is read off
+        # the pool itself -- `A`, the balances, one `get_dy` -- and has never
+        # needed an indexer.  It used to go out with the rest of the block,
+        # which left these chains with the one chart they could actually have
+        # replaced by a line saying they could not have any.
         chart_block: list[ft.Control] = (
             [
+                self._controls_slot,
                 ft.Container(
                     ft.Text(
                         "No price history: Curve Lite chains have no trade "
-                        "indexing behind them.",
+                        "indexing behind them. The depth curve below is read "
+                        "from the pool itself.",
                         size=SMALL,
                         color=ft.Colors.ON_SURFACE_VARIANT,
                     ),
-                    padding=ft.Padding.symmetric(vertical=10),
-                )
+                    padding=ft.Padding.only(bottom=6),
+                ),
+                self.depth_chart,
+                self.chart_error,
             ]
-            if pool.lite
+            if self._depth_only
             else [
                 self._controls_slot,
                 self.chart_caption,
@@ -1092,6 +1114,8 @@ class PoolDetailView(ft.Column):
         return min(longest + SERIES_CHROME, SERIES_MAX_WIDTH)
 
     def _series_options(self) -> list[ft.DropdownOption]:
+        if self._depth_only:
+            return self._depth_options()
         options = [
             ft.DropdownOption(
                 key=LP_SERIES,
@@ -1135,7 +1159,13 @@ class PoolDetailView(ft.Column):
             ft.DropdownOption(key=f"{SERIES_RULE}2", content=ft.Divider(height=1),
                               disabled=True)
         )
+        options.extend(self._depth_options())
+        return options
+
+    def _depth_options(self) -> list[ft.DropdownOption]:
+        """One entry per unordered pair, which the flip button turns round."""
         coins = self.pool.pool_coins
+        options: list[ft.DropdownOption] = []
         for i, main in enumerate(coins):
             for j in range(i):
                 key = f"{DEPTH_PREFIX}{i}:{j}"

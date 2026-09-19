@@ -1254,16 +1254,57 @@ def _texts(control, found=None) -> list:
     return found
 
 
-def test_a_lite_pool_page_shows_no_chart() -> None:
+def test_a_lite_pool_page_shows_no_candles() -> None:
     view = PoolDetailView(
         StubPage(), api=None, pool=make_lite_pool(),
         get_contract=lambda: None, on_back=lambda: None,
     )
-    assert not _contains(view._left, view.series)
     assert not _contains(view._left, view.chart)
+    assert not _contains(view._left, view.activity_box), "nor the trade tables"
     assert any(
         "No price history" in (text.value or "") for text in _texts(view._left)
     )
+
+
+def test_but_it_keeps_the_depth_curve() -> None:
+    """Which is read off the pool -- `A`, the balances, one `get_dy` -- and
+    never wanted an indexer.  It used to go out with the candles, leaving
+    these chains with the one chart they can have replaced by a line saying
+    they cannot have any."""
+    view = PoolDetailView(
+        StubPage(), api=None, pool=make_lite_pool(),
+        get_contract=lambda: None, on_back=lambda: None,
+    )
+
+    assert _contains(view._left, view.depth_chart)
+    assert _contains(view._left, view.series), "and the picker naming its pair"
+
+
+def test_and_its_menu_offers_nothing_it_cannot_draw() -> None:
+    from ui.pool_detail import DEPTH_PREFIX
+
+    view = PoolDetailView(
+        StubPage(), api=None, pool=make_lite_pool(),
+        get_contract=lambda: None, on_back=lambda: None,
+    )
+    keys = [option.key for option in view.series.options]
+
+    assert keys, "two coins is one curve"
+    assert all(key.startswith(DEPTH_PREFIX) for key in keys), keys
+    assert view.series.value == keys[0], "and it opens on one, not on a blank"
+
+
+def test_a_full_chain_still_opens_on_the_price() -> None:
+    from ui.pool_detail import LP_SERIES
+
+    view = PoolDetailView(
+        StubPage(), api=None, pool=make_pool(),
+        get_contract=lambda: None, on_back=lambda: None,
+    )
+
+    assert view.series.value == LP_SERIES
+    assert _contains(view._left, view.chart)
+    assert _contains(view._left, view.activity_box)
 
 
 def test_a_lite_pool_page_reports_no_volume() -> None:

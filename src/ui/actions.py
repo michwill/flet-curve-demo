@@ -1291,6 +1291,62 @@ class DepositTab(ActionTab):
             return await contract.zap_calc_token_amount(amounts, deposit=True)
         return await contract.calc_token_amount(amounts, deposit=True)
 
+    async def _seeding(self, contract: PoolContract) -> bool:
+        """Is this deposit the one that fills an empty pool?
+
+        Asked because the estimate cannot be: a cryptoswap pool holding
+        nothing has no invariant to price against, and `calc_token_amount`
+        reverts rather than answering zero.  Measured on Robinhood's empty
+        tricrypto and twocrypto pools -- both revert, while an empty
+        stableswap-ng answers perfectly well, which is why this asks what
+        the pool *holds* rather than what kind of pool it is.
+
+        A zap is never seeding: its amounts are the base pool's coins, and
+        the pool it deposits into holds that pool's LP token.
+        """
+        if self.underlying:
+            return False
+        reserves = await self._pool_reserves()
+        return bool(reserves) and not any(reserves)
+
+    def _say_seeding(self, amounts: list[int]) -> None:
+        """What a first deposit does, in place of a figure for it.
+
+        There is no exchange rate yet -- this deposit is what sets one -- so
+        there is nothing to quote and nothing a slippage bound could protect.
+        The LP that arrives is the pool's own invariant over these amounts,
+        and it is minted to whoever asks first.
+
+        A crypto pool wants all of them: `add_liquidity` asserts every amount
+        is non-zero while the supply is zero, so a partial seed is gas spent
+        on a revert.  Said here, and refused in `_why_not_seed`.
+        """
+        short = self._why_not_seed(amounts)
+        if short:
+            self.show_estimate(short, problem=True)
+            self._quote_ok = False
+            return
+        self.show_estimate(
+            "This pool is empty: your deposit sets its opening balances, and "
+            "the price they imply. There is no rate to quote against yet."
+        )
+
+    def _why_not_seed(self, amounts: list[int]) -> str:
+        """Why these amounts cannot seed this pool, or "" if they can."""
+        if self.pool.is_stableswap:
+            return ""
+        missing = [
+            coin.symbol
+            for coin, amount in zip(self.rows.coins, amounts)
+            if amount <= 0
+        ]
+        if not missing:
+            return ""
+        return (
+            "An empty crypto pool takes every coin at once, so it has a price "
+            f"to start from. Still to fill: {', '.join(missing)}."
+        )
+
     async def fee_units(self, contract: PoolContract) -> int:
         """A zap deposit passes through both pools, so it pays both fees."""
         fee = await contract.fee()
@@ -1315,7 +1371,9 @@ class DepositTab(ActionTab):
         self._expected_lp = 0
         self._quote_ok = True
         impact: float | None = None
-        if contract is not None and any(amounts):
+        if contract is not None and any(amounts) and await self._seeding(contract):
+            self._say_seeding(amounts)
+        elif contract is not None and any(amounts):
             try:
                 self._expected_lp = await self._quote(contract, amounts)
                 floor = token_amount(

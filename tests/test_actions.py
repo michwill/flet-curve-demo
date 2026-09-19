@@ -2726,3 +2726,130 @@ async def test_and_nothing_goes_out_unapproved_when_it_fires():
 
     assert not provider.sent, "the deposit went out with no allowance behind it"
     assert "approved on its own" in tab.status_panel.text.value
+
+
+# -- seeding a pool that holds nothing ---------------------------------------
+
+
+def empty_pool(registry: str = "factory_tricrypto") -> Pool:
+    """A pool with nothing in it, which is what a freshly created one is."""
+    pool = Pool.from_v2(
+        {
+            "address": POOL_ADDRESS,
+            "pool_type": registry,
+            "lp_token_address": LP_TOKEN,
+            "gauges": [],
+            "coins": [
+                {"symbol": "USDT", "address": "0x" + "aa" * 20, "decimals": 6},
+                {"symbol": "crvUSD", "address": "0x" + "bb" * 20, "decimals": 18},
+            ],
+        }
+    )
+    return pool.merge_detail({
+        "n_coins": 2,
+        "balances": [0, 0],
+        "coins": [
+            {"symbol": "USDT", "address": "0x" + "aa" * 20, "decimals": 6},
+            {"symbol": "crvUSD", "address": "0x" + "bb" * 20, "decimals": 18},
+        ],
+    })
+
+
+class EmptyCryptoProvider(ReservedProvider):
+    """A pool holding nothing, refusing the estimate as the real ones do.
+
+    Robinhood's empty tricrypto and twocrypto pools both revert
+    `calc_token_amount`; an empty stableswap-ng answers it.  This is the
+    crypto half, so a test can prove the panel never needed the answer.
+    """
+
+    def __init__(self) -> None:
+        super().__init__([0, 0])
+        self.quotes = 0
+
+    async def request(self, method: str, params=None):
+        if method == "eth_call":
+            data = (params or [{}])[0].get("data", "")
+            if data.startswith("0x" + abi.selector("calc_token_amount(uint256[2],bool)")):
+                self.quotes += 1
+                raise RpcError(-32000, "execution reverted")
+        return await super().request(method, params)
+
+
+def seeding_tab(registry: str = "factory_tricrypto"):
+    """A deposit panel over an empty pool, with both fields filled."""
+    from curve.pool import PoolContract
+    from ui.actions import DepositTab
+
+    pool = empty_pool(registry)
+    provider = EmptyCryptoProvider()
+    contract = PoolContract(provider, pool, ACCOUNT)
+    tab = DepositTab(StubPage(), pool, lambda: contract, None)
+    tab.mount()
+    tab.slippage.value = "1"
+    for index, coin in enumerate(tab.rows.coins):
+        tab.rows.set(index, 10**coin.decimals)
+    return tab, contract, provider
+
+
+async def test_an_empty_pool_is_not_asked_for_an_estimate_it_cannot_give():
+    """A cryptoswap pool holding nothing has no invariant to price against,
+    and `calc_token_amount` reverts rather than answering zero -- measured on
+    Robinhood's empty tricrypto and twocrypto pools.  Asking anyway is how a
+    freshly created pool could not be seeded at all: the revert came back as
+    a red line and the Deposit button stayed dead."""
+    tab, _contract, provider = seeding_tab()
+
+    await tab.refresh()
+
+    assert tab._quote_ok, "the panel is usable"
+    assert "empty" in tab.estimate.value.lower()
+    assert provider.quotes == 0, "and the pool was never asked what it cannot say"
+
+
+async def test_and_the_floor_it_sends_is_zero():
+    """There is no rate yet -- this deposit is what sets one -- so there is
+    nothing for a slippage bound to protect."""
+    tab, _contract, _provider = seeding_tab()
+
+    await tab.refresh()
+
+    assert tab._expected_lp == 0
+    assert tab.with_slippage(tab._expected_lp) == 0
+
+
+async def test_a_crypto_pool_wants_every_coin_before_it_will_take_any():
+    """`add_liquidity` asserts each amount is non-zero while the supply is,
+    so a partial seed is gas spent on a revert."""
+    tab, _contract, _provider = seeding_tab()
+    tab.rows.set(1, 0)
+
+    await tab.refresh()
+
+    assert not tab._quote_ok
+    assert "crvUSD" in tab.estimate.value, tab.estimate.value
+    assert tab.submit_button.disabled
+
+
+async def test_whereas_an_empty_stableswap_takes_what_it_is_given():
+    """It answers `calc_token_amount` on an empty pool perfectly well -- the
+    one on Robinhood quotes 2 LP for one of each -- so it never reaches the
+    seeding path, and its own rule about coins is its own."""
+    tab, _contract, _provider = seeding_tab("crvusd")
+    tab.rows.set(1, 0)
+
+    await tab.refresh()
+
+    assert tab._quote_ok
+
+
+async def test_a_pool_with_something_in_it_is_still_quoted():
+    tab = deposit_on(ReservedProvider(RESERVES))
+    tab._quote_ok = False
+    for index, coin in enumerate(tab.rows.coins):
+        tab.rows.set(index, 10**coin.decimals)
+
+    await tab.refresh()
+
+    assert tab._quote_ok
+    assert "empty" not in str(tab.estimate.value).lower()

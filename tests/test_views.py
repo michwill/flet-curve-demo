@@ -5036,3 +5036,88 @@ async def test_a_page_never_opened_is_not_woken_to_be_told() -> None:
     app.vecrv_view = None
 
     await app._tell_the_pages()      # nothing to tell, and nothing raised
+
+
+# -- what a pool holds, asked of the pool -----------------------------------
+
+
+class _Reserving:
+    """A contract that answers what the pool holds, or refuses to."""
+
+    def __init__(self, reserves=None, *, refuse: bool = False) -> None:
+        self._reserves = reserves or []
+        self._refuse = refuse
+        self.asked = 0
+
+    async def reserves(self, count: int) -> list[int]:
+        from wallet.base import WalletError
+
+        self.asked += 1
+        if self._refuse:
+            raise WalletError("no endpoint for this network")
+        return self._reserves[:count]
+
+
+def _as_contract(stub: object):
+    """`get_contract` is typed for a `PoolContract`; these want a stub.
+
+    Handed back as `Any` rather than ignored at three call sites, which is
+    the same trade the veCRV tests make one line at a time.
+    """
+    from typing import Any, cast
+
+    return cast(Any, lambda: stub)
+
+
+def _blinded(pool):
+    """The pool as an indexer that is behind its own chain reports it."""
+    for coin in pool.pool_coins:
+        coin.balance = 0.0
+        coin.balance_usd = 0.0
+    return pool
+
+
+async def test_the_balances_are_corrected_from_the_pool_itself() -> None:
+    """A Lite deployment serves them out of an indexer that can be behind its
+    own chain, and a pool holding both coins read as holding neither: a table
+    of zeros, a share column of nothing, and no ratio for a proportional
+    deposit.  The chain cannot be behind itself."""
+    pool = _blinded(make_lite_pool())
+    contract = _Reserving([3 * 10**18, 5 * 10**18])
+    view = PoolDetailView(
+        StubPage(), api=None, pool=pool,
+        get_contract=_as_contract(contract), on_back=lambda: None,
+    )
+
+    await view._read_reserves()
+
+    assert [coin.balance for coin in pool.pool_coins] == [3.0, 5.0]
+    assert [coin.balance_usd for coin in pool.pool_coins] == [3.0, 5.0]
+
+
+async def test_and_a_pool_that_will_not_answer_keeps_what_the_api_said() -> None:
+    """Better a figure that may be stale than a page of dashes."""
+    pool = make_lite_pool()
+    before = [coin.balance for coin in pool.pool_coins]
+    view = PoolDetailView(
+        StubPage(), api=None, pool=pool,
+        get_contract=_as_contract(_Reserving(refuse=True)), on_back=lambda: None,
+    )
+
+    await view._read_reserves()
+
+    assert [coin.balance for coin in pool.pool_coins] == before
+
+
+async def test_a_short_answer_is_not_spread_over_the_coins() -> None:
+    """Half an answer is not half a correction: it would name one coin's
+    balance against another's."""
+    pool = _blinded(make_lite_pool())
+    view = PoolDetailView(
+        StubPage(), api=None, pool=pool,
+        get_contract=_as_contract(_Reserving([7 * 10**18])), on_back=lambda: None,
+    )
+
+    await view._read_reserves()
+
+    assert all(coin.balance == 0.0 for coin in pool.pool_coins)

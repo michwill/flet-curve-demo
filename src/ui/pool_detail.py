@@ -1706,9 +1706,46 @@ class PoolDetailView(ft.Column):
         self.series.leading_icon = self._field_mark(self.selection)
         self._page.update()
 
+    async def _read_reserves(self) -> None:
+        """Correct the balances with what the pool actually holds.
+
+        The API's are an indexer's.  A Lite deployment serves them out of one
+        that can be behind its own chain, and a pool holding three coins was
+        reading as holding none of them -- which is a table of zeros, a share
+        column of nothing, and a proportional deposit with no ratio to match.
+        The chain cannot be behind itself.
+
+        Drawn from the payload first and corrected here rather than waited
+        for: this is one batched call, but it is a round trip, and a table
+        that appears late reads worse than one that appears and then sharpens.
+        The figures are written into the pool's own coins, so the panels built
+        after it -- which take their ratio from exactly these -- inherit them
+        without asking again.
+        """
+        contract = self.get_contract()
+        coins = self.pool.pool_coins
+        if contract is None or not coins:
+            return
+        try:
+            reserves = await contract.reserves(len(coins))
+        except WalletError:
+            return
+        except Exception:
+            return
+        if len(reserves) != len(coins):
+            return          # a pool that would not answer keeps the payload's
+        for coin, held in zip(coins, reserves):
+            coin.balance = held / 10**coin.decimals
+            coin.balance_usd = coin.balance * coin.usd_price
+        if self._composition_ready:
+            self._composition_slot.content = self._composition()
+            safe_update(self._composition_slot)
+
     async def load(self) -> None:
         # Detail first: the action panels read the LP token it supplies.
         await self._load_detail()
+        # Then the pool itself, before the panels are built off its coins.
+        await self._read_reserves()
         await self.load_selection()
         await self.refresh_actions()
         # Not the parameters: those wait for somebody to open the

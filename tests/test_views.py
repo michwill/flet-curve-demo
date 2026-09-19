@@ -5121,3 +5121,76 @@ async def test_a_short_answer_is_not_spread_over_the_coins() -> None:
     await view._read_reserves()
 
     assert all(coin.balance == 0.0 for coin in pool.pool_coins)
+
+
+async def test_a_coin_the_api_could_not_price_is_priced_by_the_pool() -> None:
+    """A blank in the Price column is the visible half.  The silent half is
+    the Share column, which adds to 100% over the coins that could be priced
+    -- two of Robinhood's SP-NVDA splitting a pool that holds three."""
+    pool = make_lite_pool()
+    coins = pool.pool_coins
+    coins[0].usd_price, coins[0].balance = 1.0, 100.0
+    coins[1].usd_price, coins[1].balance = 0.0, 2.0      # what the API gave
+    coins[1].balance_usd = 0.0
+
+    class Oracular:
+        async def price_oracles(self, count: int) -> list[float]:
+            return [1.0, 25.0][:count]
+
+    view = PoolDetailView(
+        StubPage(), api=None, pool=pool,
+        get_contract=_as_contract(Oracular()), on_back=lambda: None,
+    )
+
+    await view._fill_missing_prices()
+
+    assert coins[1].usd_price == 25.0
+    assert coins[1].balance_usd == 50.0, "and its share of the pool follows"
+    assert coins[0].usd_price == 1.0, "the one the API did price is left alone"
+
+
+async def test_a_pool_that_prices_nothing_is_left_as_it_was() -> None:
+    pool = make_lite_pool()
+    for coin in pool.pool_coins:
+        coin.usd_price = 0.0
+
+    class Oracular:
+        def __init__(self) -> None:
+            self.asked = 0
+
+        async def price_oracles(self, count: int) -> list[float]:
+            self.asked += 1
+            return [1.0, 25.0][:count]
+
+    oracle = Oracular()
+    view = PoolDetailView(
+        StubPage(), api=None, pool=pool,
+        get_contract=_as_contract(oracle), on_back=lambda: None,
+    )
+
+    await view._fill_missing_prices()
+
+    assert oracle.asked == 0, "ratios cannot say what anything is worth"
+    assert all(coin.usd_price == 0.0 for coin in pool.pool_coins)
+
+
+async def test_and_a_fully_priced_pool_is_never_asked() -> None:
+    pool = make_lite_pool()
+
+    class Counting:
+        def __init__(self) -> None:
+            self.asked = 0
+
+        async def price_oracles(self, count: int) -> list[float]:
+            self.asked += 1
+            return []
+
+    counting = Counting()
+    view = PoolDetailView(
+        StubPage(), api=None, pool=pool,
+        get_contract=_as_contract(counting), on_back=lambda: None,
+    )
+
+    await view._fill_missing_prices()
+
+    assert counting.asked == 0

@@ -96,6 +96,32 @@ def _curve_plan(count: int) -> list[tuple[str, str]]:
     return plan
 
 
+def implied_prices(
+    relative: list[float], known: list[float]
+) -> list[float]:
+    """The prices in `known`, with the missing ones filled from `relative`.
+
+    `relative` is what the pool says each coin is worth in the first one's
+    units; `known` is what the API carried, with a zero where it carried
+    nothing.  One priced coin anchors the rest -- the pool supplies every
+    ratio between them, so any one of them will do, and the first is taken.
+
+    Nothing is overwritten.  A price the API gave is the one shown, because
+    an oracle is this pool's opinion and the API's is the market's; this
+    fills gaps rather than second-guessing.
+    """
+    if len(relative) != len(known) or not any(known):
+        return list(known)
+    anchor = next(i for i, price in enumerate(known) if price > 0)
+    if relative[anchor] <= 0:
+        return list(known)
+    scale = known[anchor] / relative[anchor]
+    return [
+        price if price > 0 else relative[index] * scale
+        for index, price in enumerate(known)
+    ]
+
+
 class PoolCallFailed(WalletError):
     """A pool read returned nothing usable."""
 
@@ -230,6 +256,36 @@ class PoolContract:
                 return []
             reserves.append(found)
         return reserves
+
+    async def price_oracles(self, count: int) -> list[float]:
+        """Each coin's price in the first coin's units, as the pool sees it.
+
+        `price_oracle` is indexed on a tricrypto and on stableswap-ng, and
+        bare on a twocrypto, so both spellings go in and whichever answers is
+        kept -- the same trick `_curve_plan` plays for `price_scale`.  The
+        first coin is the unit, so it is 1.0 and is not asked for.
+
+        An EMA, not a spot rate, which is what makes it worth quoting: it is
+        the pool's own considered opinion rather than the last trade's.  Empty
+        where the pool answers neither spelling, because a partial list would
+        price one coin against a number that is not there.
+        """
+        if count < 2:
+            return []
+        plan: list[tuple[str, str]] = []
+        for index in range(count - 1):
+            plan.append((f"p{index}", abi.encode_indexed_parameter("price_oracle", index)))
+            plan.append((f"p{index}", abi.encode_parameter("price_oracle")))
+        answers = await self._read_many(plan)
+        out = [1.0]
+        for index in range(count - 1):
+            found = answers[index * 2]
+            if found is None:
+                found = answers[index * 2 + 1]
+            if found is None or found <= 0:
+                return []
+            out.append(found / 1e18)
+        return out
 
     async def fee(self) -> int:
         """The pool's swap fee, in Curve's 1e10 units."""

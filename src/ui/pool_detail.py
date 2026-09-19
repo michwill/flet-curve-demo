@@ -33,7 +33,7 @@ from curve.http import ApiError
 from curve.liquidity import DepthError
 from curve.merkl import MerklCampaign
 from curve.models import Coin, Pool
-from curve.pool import PoolCallFailed, PoolContract
+from curve.pool import PoolCallFailed, PoolContract, implied_prices
 from wallet.base import WalletError
 
 from . import AnyEvent, activity, safe_update, theme
@@ -1741,11 +1741,44 @@ class PoolDetailView(ft.Column):
             self._composition_slot.content = self._composition()
             safe_update(self._composition_slot)
 
+    async def _fill_missing_prices(self) -> None:
+        """Price a coin the API has nothing for, from the pool's own oracle.
+
+        A Lite deployment prices what it can and leaves the rest at nothing,
+        which is a blank in the Price column and -- worse, because it is
+        silent -- a Share column that adds to 100% over the coins it could
+        price.  On Robinhood's SP-NVDA that is SPY missing while USDG and
+        NVDA are shown, and the two of them splitting the pool between them.
+
+        The pool knows every ratio between its own coins, so one priced coin
+        is enough to place the others.  Asked only when one is actually
+        missing, and never over a price the API did give: an oracle is this
+        pool's opinion and the API's is the market's.
+        """
+        coins = self.pool.pool_coins
+        known = [coin.usd_price for coin in coins]
+        contract = self.get_contract()
+        if contract is None or all(price > 0 for price in known) or not any(known):
+            return
+        try:
+            relative = await contract.price_oracles(len(coins))
+        except (WalletError, PoolCallFailed):
+            return
+        if not relative:
+            return
+        for coin, filled in zip(coins, implied_prices(relative, known)):
+            coin.usd_price = filled
+            coin.balance_usd = coin.balance * filled
+        if self._composition_ready:
+            self._composition_slot.content = self._composition()
+            safe_update(self._composition_slot)
+
     async def load(self) -> None:
         # Detail first: the action panels read the LP token it supplies.
         await self._load_detail()
         # Then the pool itself, before the panels are built off its coins.
         await self._read_reserves()
+        await self._fill_missing_prices()
         await self.load_selection()
         await self.refresh_actions()
         # Not the parameters: those wait for somebody to open the

@@ -584,3 +584,49 @@ async def test_on_ethereum_the_gauges_factory_is_not_asked_to_mint():
     assert await pool.minter_for_gauge() == ""
     to, _data = pool.build_claim_crv(await pool.minter_for_gauge())
     assert to == "0xd061D61a4d941c39E5453435B6345Dc261C2fcE0", "not the Minter"
+
+
+# -- pricing a coin the API has nothing for ---------------------------------
+
+
+def test_a_missing_price_is_filled_from_the_pools_own_ratios() -> None:
+    """One priced coin is enough: the pool supplies every ratio between its
+    own, so the rest follow from whichever of them the API could price."""
+    from curve.pool import implied_prices
+
+    # SP-NVDA on Robinhood: USDG and NVDA priced, SPY not.
+    got = implied_prices([1.0, 762.2388, 222.4329], [1.0, 0.0, 222.2073])
+
+    assert got[1] == pytest.approx(762.2388)
+    assert got[0] == 1.0 and got[2] == pytest.approx(222.2073), "the rest untouched"
+
+
+def test_a_price_the_api_gave_is_never_second_guessed() -> None:
+    """An oracle is this pool's opinion; the API's is the market's.  This
+    fills gaps rather than overruling anybody."""
+    from curve.pool import implied_prices
+
+    got = implied_prices([1.0, 500.0], [1.0, 222.0])
+
+    assert got == [1.0, 222.0]
+
+
+def test_the_anchor_does_not_have_to_be_the_first_coin() -> None:
+    from curve.pool import implied_prices
+
+    got = implied_prices([1.0, 800.0], [0.0, 400.0])
+
+    assert got == [0.5, 400.0], "the unit coin priced off the one that was"
+
+
+def test_and_with_nothing_priced_nothing_is_invented() -> None:
+    """Ratios alone cannot say what anything is worth in dollars."""
+    from curve.pool import implied_prices
+
+    assert implied_prices([1.0, 762.0], [0.0, 0.0]) == [0.0, 0.0]
+
+
+def test_nor_when_the_pool_answered_a_different_number_of_coins() -> None:
+    from curve.pool import implied_prices
+
+    assert implied_prices([1.0], [1.0, 0.0]) == [1.0, 0.0]

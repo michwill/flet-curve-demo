@@ -63,14 +63,14 @@ dev = [
     # tools/build_assets.py resamples every mark and cuts the disc into its
     # alpha: Pillow for both, numpy for the resampler's averaging.
     "pillow==12.3.0",
-    "numpy==2.5.2",
+    "numpy==2.5.3",
     # tools/subset_icons.py, exercised by tests/test_ipfs.py.
-    "fonttools==4.63.0",
+    "fonttools==4.65.0",
     # pytest.ini sets asyncio_mode=auto, so pytest-asyncio is not optional.
     "pytest==9.1.1",
     "pytest-asyncio==1.4.0",
     # tests/test_stateful.py
-    "hypothesis==6.165.2",
+    "hypothesis==6.168.0",
     # `flet.testing`, which tests/integration/conftest.py imports at
     # collection time -- so without it a plain `pytest` cannot even collect,
     # though those tests are deselected by the `flet_ui` marker. Pulls scipy.
@@ -80,8 +80,8 @@ dev = [
     # scripts/build_wasm.sh builds.
     "maturin==1.15.0",
     # Both configured further down this file.
-    "ruff==0.16.2",
-    "mypy==2.3.0",
+    "ruff==0.16.8",
+    "mypy==2.3.1",
 ]
 
 [tool.flet]

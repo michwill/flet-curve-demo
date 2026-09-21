@@ -106,3 +106,34 @@ def test_asking_for_no_mock_does_not_load_one() -> None:
 
     assert '.get("mock")' in source
     assert '"0"' in source and '"false"' in source
+
+
+#: The two keys that must not name a local path here.
+#:
+#: `flet publish` in CDN mode -- the default, and what this app ships --
+#: *deletes* `canvaskit/` and `pyodide/` from `dist`, and
+#: `tools/publish_ipfs.py` drops them again for the pin. Flutter resolves
+#: both from their own CDNs when these are unset, and `patch_index.py` fills
+#: them in with local paths when a build really does carry them (`--no-cdn`).
+#:
+#: Pinning one here therefore points the page at a directory that is not in
+#: the build. Flet 0.86 ignored the values and 1.0 honours them, so a stale
+#: pin turned into a blank page: `/canvaskit/chromium/canvaskit.js` 404,
+#: CanvasKit never loads, nothing draws. Nothing in the Python test suite
+#: can see that -- it takes a browser -- so it is pinned here instead.
+CDN_RESOLVED = ("canvasKitBaseUrl", "fontFallbackBaseUrl")
+
+
+@pytest.mark.parametrize("key", CDN_RESOLVED)
+def test_the_cdn_resolved_urls_are_left_unset(key: str) -> None:
+    source = INDEX.read_text(encoding="utf-8")
+    declared = [
+        line.strip()
+        for line in source.splitlines()
+        if line.strip().startswith(f"{key}:")
+    ]
+
+    assert declared, f"{key} is not declared at all"
+    assert declared == [f"{key}: null,"], (
+        f"{key} names a path the CDN build does not ship: {declared}"
+    )

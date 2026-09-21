@@ -68,10 +68,16 @@
       entrypointBaseUrl: "/",
       assetBase: "/",
       routeUrlStrategy: "path",
-      canvasKitBaseUrl: "/canvaskit/",
+      // Both null on purpose, which is what Flet's own index.html does now.
+      // A CDN build *deletes* `canvaskit/` and `pyodide/` from `dist` -- and
+      // `tools/publish_ipfs.py` drops them too -- so a local path pinned here
+      // is a path to a directory that is not there. Flutter resolves CanvasKit
+      // and the Noto fallbacks from their CDNs when these are unset, and
+      // `patch_index.py` fills both in with local paths for `--no-cdn`.
+      canvasKitBaseUrl: null,
       pyodideUrl: "/pyodide/pyodide.mjs",
       webRenderer: "auto",
-      fontFallbackBaseUrl: "assets/fonts/",
+      fontFallbackBaseUrl: null,
       appPackageUrl: "app.tar.gz"
     }
 

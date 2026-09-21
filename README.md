@@ -2353,10 +2353,11 @@ and the exception that actually failed the test scrolls off it, leaving nothing
 but `Test failed. See exception logs above.` Set `FLET_TEST_VERBOSE=1` to stream
 it live instead.
 
-## Flet 0.86 notes
+## Flet notes
 
 Things that cost a debugging round here, beyond the ones already in
-flet-pay-example's README:
+flet-pay-example's README. Written against 0.86 and still true on 1.0 unless
+a bullet says otherwise; what the 1.0 move itself cost is at the end.
 
 - **A `key` makes a control read-only after its first rebuild.** When Flet
   re-diffs a list and matches an old item to a new one by `key`, the survivor
@@ -2366,9 +2367,10 @@ flet-pay-example's README:
   are for finding controls (integration tests, in this app); state that
   handlers mutate belongs on an unkeyed control that outlives the rebuild.
 - **`SharedPreferences.get`/`set` are coroutines**, and `page.shared_preferences`
-  is deprecated in 0.86 (removed in 0.90) in favour of constructing
+  was deprecated in 0.86 and is gone in 1.0, in favour of constructing
   `ft.SharedPreferences()`, which registers itself with the page. Calling either
   method without `await` fails silently — see the themes section.
+  Every page service went the same way; see the 1.0 notes below.
 - **Charts are not in core — they are in `flet-charts`.** An earlier version of
   this app drew candles by hand on `flet.canvas` because core has no chart
   controls and I did not check for a separate package. `flet-charts` is official,
@@ -2426,6 +2428,32 @@ flet-pay-example's README:
   `pyproject.toml`, shipped a requirements list of just `flet`, and the app
   failed in the browser with `ModuleNotFoundError`. Run `flet publish` from the
   project root with no path; it reads `[tool.flet.app] path` and writes `./dist`.
+
+### Moving to 1.0
+
+Smaller than it sounds: three lines of app code and one of test. The changelog
+removes `ConstrainedControl`, `ElevatedButton`, `Page.go`, `app()`/`app_async`,
+`DragTargetEvent.x/y`, the non-underscored `Colors` aliases and all five page
+service accessors — and this app used **none** of them. `ft.run(main)` was
+already the 1.0 spelling.
+
+What did apply:
+
+- **`page.clipboard` is gone**, like every other service accessor. Instantiate
+  `ft.Clipboard()` and hang it on `page.services`, which is what `ui/download.py`
+  already did with its file picker. `set` is still a coroutine.
+- **An input's `border_radius` is deprecated** (removed in 1.3) in favour of
+  `border=OutlineInputBorder(border_radius=…)`. The two are *not* the same
+  object: setting `border_radius` leaves `border` at `None`, so a test asserting
+  on one will not see the other. Only the pool search box set it.
+- `InputBorder` stopped being an enum and became a class hierarchy, so
+  `InputBorder.OUTLINE` is `OutlineInputBorder()` and instances compare with
+  `==` rather than `is`. Nothing here held one.
+
+Verified by rendering rather than by reasoning: the list, the veCRV page, a
+pool page with its candlestick canvas, the series menu and the depth curve,
+each compared against the same screen on 0.86. The unit suite and the UI suite
+come back with exactly what they did before the move.
 
 ## What was verified
 

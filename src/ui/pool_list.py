@@ -433,7 +433,9 @@ class PoolListView(ft.Column):
             ),
             on_change=self._search_changed,
             dense=True,
-            border_radius=FIELD_RADIUS,
+            # `border_radius` on an input went deprecated in Flet 1.0 and
+            # goes for good in 1.3; the radius rides on the border itself now.
+            border=ft.OutlineInputBorder(border_radius=FIELD_RADIUS),
             content_padding=ft.Padding.symmetric(horizontal=12, vertical=FIELD_INSET),
         )
         self.count_label = ft.Text(

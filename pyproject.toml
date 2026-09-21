@@ -21,8 +21,8 @@ requires-python = ">=3.12"
 # gets installed is the one in Pyodide's lock (2.4.3 today) and pinning the
 # dev group's 2.5.2 here would make micropip fail to resolve it at boot.
 dependencies = [
-    "flet==0.86.5",
-    "flet-charts==0.86.5",
+    "flet==1.0.0",
+    "flet-charts==1.0.0",
     "numpy>=2,<3",
     # The router's state cache is msgpack under zstd: 1.5 MB against 5.1 as
     # json.gz, and 32 ms to decode in Pyodide against 96.  Both specs match
@@ -59,7 +59,7 @@ dev = [
     # either. They belong here rather than in `project.dependencies`
     # because that list is installed inside Pyodide, where a CLI and a
     # desktop binary are nonsense.
-    "flet[all]==0.86.5",
+    "flet[all]==1.0.0",
     # tools/build_assets.py resamples every mark and cuts the disc into its
     # alpha: Pillow for both, numpy for the resampler's averaging.
     "pillow==12.3.0",

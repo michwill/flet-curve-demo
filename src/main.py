@@ -2122,7 +2122,16 @@ class CurveApp(Batching):
         note = ft.Text("", size=SMALL, color=ft.Colors.ON_SURFACE_VARIANT)
 
         async def copy(_e: AnyEvent) -> None:
-            await self.page.clipboard.set(wallet.address)
+            # `page.clipboard` went in Flet 1.0: the services are instantiated
+            # and hung on the page now, which is what `ui.download` already
+            # does with its file picker.
+            clipboard = ft.Clipboard()
+            self.page.services.append(clipboard)
+            try:
+                await clipboard.set(wallet.address)
+            finally:
+                with contextlib.suppress(ValueError):
+                    self.page.services.remove(clipboard)
             note.value = "Address copied."
             self.page.update()
 

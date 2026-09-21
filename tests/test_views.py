@@ -465,7 +465,8 @@ def test_the_search_box_keeps_the_toolbar_to_itself() -> None:
     view = PoolListView(StubPage(), on_open=lambda _p: None)
     bar = view.controls[0].controls
 
-    assert view.search.border_radius == FIELD_RADIUS
+    # On the border itself since Flet 1.0, not on the field.
+    assert view.search.border.border_radius == FIELD_RADIUS
     assert view.search.content_padding.top == FIELD_INSET
     assert view.search.content_padding.bottom == FIELD_INSET
     assert bar[0].content is view.search and bar[0].expand

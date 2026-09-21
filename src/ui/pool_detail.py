@@ -1728,9 +1728,10 @@ class PoolDetailView(ft.Column):
             return
         try:
             reserves = await contract.reserves(len(coins))
-        except WalletError:
-            return
         except Exception:
+            # `WalletError` is the expected one; the net is wider because
+            # this runs inside `load`, and anything escaping here takes the
+            # whole page down over figures the page already has.
             return
         if len(reserves) != len(coins):
             return          # a pool that would not answer keeps the payload's
@@ -1762,8 +1763,8 @@ class PoolDetailView(ft.Column):
             return
         try:
             relative = await contract.price_oracles(len(coins))
-        except (WalletError, PoolCallFailed):
-            return
+        except Exception:
+            return          # as wide as `_read_reserves`, and for its reason
         if not relative:
             return
         for coin, filled in zip(coins, implied_prices(relative, known)):

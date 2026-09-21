@@ -524,6 +524,10 @@ class CurveApp(Batching):
         )
         self.menu = ft.PopupMenuButton(
             icon=ft.Icons.MENU,
+            # Keyed because it is the only way to sort in the cards layout,
+            # which is the layout the UI harness always gets: the headings
+            # that carry the sort everywhere wider are not drawn there.
+            key="page-menu",
             visible=False,
             tooltip="Pages",
         )

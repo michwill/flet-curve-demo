@@ -73,11 +73,24 @@ async def test_the_list_opens_on_one_page_of_fifty(flet_app) -> None:
 
 
 async def test_the_list_offers_a_way_to_sort(flet_app) -> None:
+    """Whichever way this width offers.
+
+    `pool-sort` used to stand here and is a key nothing has ever set -- so
+    the dropdown half of this could not match, and the heading half cannot
+    either: the harness always gets the cards layout, which has no headings.
+    It asked two questions that were both always no, and passed only when
+    one of them happened to be yes.
+
+    Where the headings go, the sort goes into the page menu -- see
+    `PoolListView.menu_items` -- so that is the other thing to look for.
+    """
     tester = flet_app.tester
     await wait_for_pools(tester)
+
     headings = (await tester.find_by_text("Volume")).count
-    dropdown = (await tester.find_by_key("pool-sort")).count
-    assert headings or dropdown, "no way to change the sort"
+    menu = (await tester.find_by_key("page-menu")).count
+
+    assert headings or menu, "no way to change the sort at this width"
 
 
 #: 3pool, at this address since 2020.  A *pool* address matches exactly one
@@ -114,18 +127,17 @@ async def test_searching_by_address_asks_the_server_and_narrows_the_list(
 
 async def test_sorting_by_tvl_reloads_the_list(flet_app) -> None:
     """Whichever way this width offers: the column heading where there are
-    headings, and the dropdown where the cards layout replaced them."""
+    headings, and the page menu where the cards layout replaced them."""
     tester = flet_app.tester
     await wait_for_pools(tester)
 
-    picker = await tester.find_by_key("pool-sort")
-    if picker.count:
-        await tester.tap(picker)
-        await tester.pump_and_settle()
-        # The option, not the closed dropdown's own label -- both read "TVL",
-        # and the option is the one that appeared just now.
+    menu = await tester.find_by_key("page-menu")
+    if menu.count:
+        # The cards layout, which is what the harness gets: the sort lives in
+        # the page menu because there are no headings to carry it.
+        await tester.tap(menu)
         option = await wait_for(tester, lambda: tester.find_by_text("TVL"))
-        assert option.count >= 2, "the dropdown never opened"
+        assert option.count >= 1, "the menu never opened"
         await tester.tap(option.last)
     else:
         heading = await tester.find_by_text("TVL")

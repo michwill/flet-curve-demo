@@ -96,6 +96,37 @@ def _curve_plan(count: int) -> list[tuple[str, str]]:
     return plan
 
 
+def basket_from_rates(rates: list[int]) -> list[int]:
+    """A balanced basket from `stored_rates`, in each coin's own units.
+
+    Stableswap scales a balance into the invariant with `xp[i] = balance[i]
+    * stored_rates[i] / 1e18`, and the rate carries the coin's decimals as
+    well as whatever its oracle says -- so one expression covers a pool with
+    rate oracles and a plain one without them, where the rates are the
+    precision multipliers alone and this comes out as par.
+    """
+    if not rates or not all(rates):
+        return []
+    return [10**36 // rate for rate in rates]
+
+
+def basket_from_scales(scales: list[int], decimals: list[int]) -> list[int]:
+    """The same, from a cryptoswap's `price_scale`.
+
+    `scales` is 1e18-based and starts with the unit coin's own 1e18, so it is
+    one entry per coin rather than the N-1 the contract answers. Cryptoswap
+    scales with `xp[i] = balance[i] * 10**(18 - decimals) * price_scale[i] /
+    1e18`, which is the same equal-value basket written against a different
+    pair of coefficients.
+    """
+    if len(scales) != len(decimals) or not all(scales):
+        return []
+    return [
+        10**decimal * 10**18 // scale
+        for scale, decimal in zip(scales, decimals)
+    ]
+
+
 def implied_prices(
     relative: list[float], known: list[float]
 ) -> list[float]:
@@ -286,6 +317,54 @@ class PoolContract:
                 return []
             out.append(found / 1e18)
         return out
+
+    async def peak_weights(self, count: int) -> list[int]:
+        """A balanced basket at the price this pool's liquidity is peaked at.
+
+        What a proportional deposit needs when there are no balances to take
+        a ratio from, which is every pool nobody has seeded yet. The amounts
+        come back in each coin's own units and are equal in value at that
+        price, so filling one field scales the rest the way `reserves` does
+        for a pool that already holds something.
+
+        Stableswap answers `stored_rates`, and a pool without rate oracles
+        answers the precision multipliers alone, which is par -- so the one
+        read covers both and needs no flag. A cryptoswap answers
+        `price_scale` instead: indexed on a tricrypto, bare on a twocrypto,
+        and the bare spelling is only tried where there is one price to have.
+        Both were read off Robinhood's empty pools, which answer them with
+        the price they were deployed at.
+        """
+        coins = self.pool.pool_coins[:count]
+        if len(coins) != count or count < 2:
+            return []
+        decimals = [coin.decimals for coin in coins]
+        if self.pool.is_stableswap:
+            raw = await self._maybe_data(abi.encode_parameter("stored_rates"))
+            rates = abi.decode_uint_array(raw)[:count] if raw else []
+            if len(rates) == count and (basket := basket_from_rates(rates)):
+                return basket
+            # Nothing to scale by is not nothing to say: a stableswap with no
+            # rates is a pool that holds its coins at par.
+            return [10**decimal for decimal in decimals]
+        plan: list[tuple[str, str]] = []
+        for index in range(count - 1):
+            plan.append((f"s{index}",
+                         abi.encode_indexed_parameter("price_scale", index)))
+            plan.append((f"s{index}",
+                         abi.encode_parameter("price_scale") if count == 2
+                         else abi.encode_indexed_parameter("price_scale", index)))
+        answers = await self._read_many(plan)
+        scales = [10**18]
+        for index in range(count - 1):
+            # `or`, not a None check: the spelling a pool does not have
+            # usually reverts, and a node that answers it with zero instead
+            # means the same thing -- try the other one rather than give up.
+            found = answers[index * 2] or answers[index * 2 + 1]
+            if not found:
+                return []
+            scales.append(found)
+        return basket_from_scales(scales, decimals)
 
     async def fee(self) -> int:
         """The pool's swap fee, in Curve's 1e10 units."""

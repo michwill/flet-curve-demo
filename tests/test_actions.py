@@ -2853,3 +2853,91 @@ async def test_a_pool_with_something_in_it_is_still_quoted():
 
     assert tab._quote_ok
     assert "empty" not in str(tab.estimate.value).lower()
+
+
+# -- proportional into a pool that holds nothing ----------------------------
+
+
+class PeakedProvider(ReservedProvider):
+    """An empty pool that still names the price it was deployed at."""
+
+    def __init__(self, scales: list[int] | None = None,
+                 rates: list[int] | None = None) -> None:
+        super().__init__([0, 0])
+        self._scales = scales or []
+        self._rates = rates or []
+
+    async def request(self, method: str, params=None):
+        if method == "eth_call":
+            data = (params or [{}])[0].get("data", "")
+            if data.startswith("0x" + abi.selector("price_scale()")) and self._scales:
+                return word(self._scales[0])
+            if data.startswith("0x" + abi.selector("stored_rates()")) and self._rates:
+                body = "".join(f"{rate:064x}" for rate in self._rates)
+                return "0x" + f"{32:064x}{len(self._rates):064x}" + body
+        return await super().request(method, params)
+
+
+def empty_deposit(provider, registry: str):
+    """A deposit panel over a pool that holds nothing."""
+    from curve.pool import PoolContract
+    from ui.actions import DepositTab
+
+    pool = empty_pool(registry)
+    contract = PoolContract(provider, pool, ACCOUNT)
+    tab = DepositTab(StubPage(), pool, lambda: contract, None)
+    tab.mount()
+    tab.slippage.value = "1"
+    return tab
+
+
+async def test_an_empty_pool_fills_at_the_price_it_is_peaked_at() -> None:
+    """There are no balances to match, and the pool still knows where its
+    liquidity sits: the price it was deployed at. A seed off that price is
+    one the pool reprices immediately, at the seeder's expense."""
+    # USDT at 6dp is the unit; crvUSD at 18dp is worth half of one.
+    tab = empty_deposit(PeakedProvider(scales=[2 * 10**18]), "factory_twocrypto")
+    tab.proportional_box.value = True
+
+    tab.rows.set(0, 100 * 10**6)                 # 100 USDT
+    await tab._spread_from(0)
+
+    assert not tab.proportional_box.disabled
+    assert "peaked" in (tab.proportional_box.tooltip or "")
+    assert tab._amounts()[1] == 50 * 10**18, "half as many of the dearer coin"
+
+
+async def test_an_empty_stableswap_fills_at_par() -> None:
+    """No rate oracle is not no answer: it holds its coins at par."""
+    tab = empty_deposit(PeakedProvider(rates=[10**30, 10**18]), "crvusd")
+    tab.proportional_box.value = True
+
+    tab.rows.set(0, 100 * 10**6)                 # 100 USDT, 6dp
+    await tab._spread_from(0)
+
+    assert not tab.proportional_box.disabled
+    assert tab._amounts()[1] == 100 * 10**18, "100 crvUSD, 18dp"
+
+
+async def test_a_pool_that_names_no_price_still_cannot_be_matched() -> None:
+    """An empty pool answering nothing is the one case left with no
+    proportion to offer."""
+    tab = empty_deposit(PeakedProvider(), "factory_twocrypto")
+
+    await tab._proportions()
+
+    assert tab.proportional_box.disabled
+    assert "no proportion" in (tab.proportional_box.tooltip or "")
+
+
+async def test_a_funded_pool_still_matches_its_balances() -> None:
+    """The price is for a pool with nothing in it; a pool with something in
+    it has a ratio of its own and that is the one to match."""
+    tab = deposit_on(ReservedProvider(RESERVES))
+    tab.proportional_box.value = True
+
+    tab.rows.set(0, 10**6)
+    await tab._spread_from(0)
+
+    assert tab.proportional_box.tooltip and "balances" in tab.proportional_box.tooltip
+    assert tab._amounts()[1] == 2 * 10**18, "the pool holds 1m to 2m"

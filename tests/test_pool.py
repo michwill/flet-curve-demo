@@ -630,3 +630,60 @@ def test_nor_when_the_pool_answered_a_different_number_of_coins() -> None:
     from curve.pool import implied_prices
 
     assert implied_prices([1.0], [1.0, 0.0]) == [1.0, 0.0]
+
+
+# -- where an empty pool's liquidity is peaked ------------------------------
+
+
+def test_a_stableswap_basket_is_equal_value_at_its_stored_rates() -> None:
+    """`xp[i] = balance[i] * stored_rates[i] / 1e18`, so a basket that makes
+    every `xp` equal is the one a balanced deposit fills."""
+    from curve.pool import basket_from_rates
+
+    # 18dp at par, and 6dp whose rate carries the precision multiplier.
+    basket = basket_from_rates([10**18, 10**30])
+
+    assert basket[0] / 10**18 == 1.0
+    assert basket[1] / 10**6 == 1.0, "par, with the decimals folded in"
+
+
+def test_and_follows_a_rate_oracle_where_there_is_one() -> None:
+    from curve.pool import basket_from_rates
+
+    # A coin worth two of the first, both 18dp.
+    basket = basket_from_rates([10**18, 2 * 10**18])
+
+    assert basket[1] * 2 == basket[0], "half as many of the dearer coin"
+
+
+def test_a_cryptoswap_basket_follows_price_scale() -> None:
+    """Robinhood's empty tricrypto: SNDK, then AMD at 0.271 and NVDA at 0.1,
+    all 18dp. Equal value means 1 : 3.69 : 10."""
+    from curve.pool import basket_from_scales
+
+    basket = basket_from_scales(
+        [10**18, 271 * 10**15, 10**17], [18, 18, 18])
+
+    assert basket[0] / 10**18 == pytest.approx(1.0)
+    assert basket[1] / 10**18 == pytest.approx(1 / 0.271, rel=1e-9)
+    assert basket[2] / 10**18 == pytest.approx(10.0)
+
+
+def test_and_carries_the_decimals_itself() -> None:
+    """The empty twocrypto beside it: COIN at 18dp against USDG at 6."""
+    from curve.pool import basket_from_scales
+
+    basket = basket_from_scales([10**18, 6059 * 10**12], [18, 6])
+
+    assert basket[0] / 10**18 == pytest.approx(1.0)
+    assert basket[1] / 10**6 == pytest.approx(1 / 0.006059, rel=1e-6)
+
+
+def test_a_price_of_nothing_is_no_basket() -> None:
+    """A pool that answered zero for a scale names no price to fill at, and
+    a basket built from it would divide by it."""
+    from curve.pool import basket_from_rates, basket_from_scales
+
+    assert basket_from_rates([10**18, 0]) == []
+    assert basket_from_scales([10**18, 0], [18, 18]) == []
+    assert basket_from_scales([10**18], [18, 18]) == [], "one short"

@@ -999,6 +999,10 @@ class DepositTab(ActionTab):
         #: number that matters, the LP a deposit mints, is quoted on chain
         #: every time regardless.
         self._reserves: list[int] | None = None
+        #: The basket a proportional deposit fills by where the pool holds
+        #: nothing -- `PoolContract.peak_weights`. Read once, and only for a
+        #: pool that turns out to be empty.
+        self._weights: list[int] | None = None
         #: Which wallet, chain and route the balances on screen were read
         #: for.  A balance only moves when this wallet spends or is paid, so
         #: re-reading it on every keystroke bought nothing and cost a serial
@@ -1099,18 +1103,45 @@ class DepositTab(ActionTab):
         the reason, the way `balanced_radio` handles the mirror of this on the
         withdrawal side.
         """
-        reserves = self._reserves
-        empty = reserves is not None and (not reserves or any(r <= 0 for r in reserves))
-        self.proportional_box.disabled = self.underlying or empty
+        source = self._proportion_source()
+        self.proportional_box.disabled = self.underlying or not source
         self.proportional_box.tooltip = (
             "A zap deposit is denominated in the base pool's coins, which the"
             " pool's own balances do not give a proportion for."
             if self.underlying
+            else "Fill the other coins to match the pool's own balances."
+            if source == "balances"
+            else "This pool is empty, so the other coins are filled at the"
+            " price its liquidity is peaked at."
+            if source == "price"
             else "This pool holds none of one of its coins, so there is no"
             " proportion to match."
-            if empty
-            else "Fill the other coins to match the pool's own balances."
         )
+
+    def _proportion_source(self) -> str:
+        """Where a proportional fill would take its ratio from, if anywhere.
+
+        `"balances"` where the pool holds all of its coins, which is the
+        ratio a deposit should match and the one the composition table
+        shows. `"price"` where it holds *none* of them: there is no ratio
+        then and there is still a right answer, the price its liquidity is
+        peaked at. `""` where it holds some and not others -- that ratio
+        says to deposit nothing of one coin, which is not a proportion
+        anybody wants matched.
+
+        A pool nobody has asked about yet reads as the usual case, so the
+        box is not greyed out and then un-greyed a round trip later.
+        """
+        reserves = self._reserves
+        if reserves is None:
+            return "balances"
+        if not reserves:
+            return ""
+        if all(value > 0 for value in reserves):
+            return "balances"
+        if any(reserves):
+            return ""
+        return "price" if self._weights is None or self._weights else ""
 
     @property
     def proportional(self) -> bool:
@@ -1173,6 +1204,41 @@ class DepositTab(ActionTab):
         self._sync_proportional()
         return self._reserves
 
+    async def _peak_weights(self) -> list[int]:
+        """Where this pool's liquidity is peaked, as a basket. Asked once."""
+        if self._weights is not None:
+            return self._weights
+        contract = self.get_contract()
+        if contract is None:
+            return []
+        try:
+            self._weights = await contract.peak_weights(self.pool.n_coins)
+        except Exception:
+            self._weights = []
+        self._sync_proportional()
+        return self._weights
+
+    async def _proportions(self) -> list[int]:
+        """What to fill the other fields by.
+
+        What the pool holds, where it holds anything -- that is the ratio a
+        deposit should match, and it is the one the reader can see in the
+        composition table. Where it holds nothing there is no such ratio and
+        there is still a right answer: the price the pool was deployed at,
+        which is where its liquidity is peaked and what the first deposit is
+        expected to arrive at. A seed off that price is a seed the pool
+        immediately reprices, at the seeder's expense.
+        """
+        reserves = await self._pool_reserves()
+        if reserves and all(value > 0 for value in reserves):
+            return reserves
+        if not reserves or any(reserves):
+            # Unreadable, or holding some and not others: no proportion at
+            # all. "Could not read" is not "empty", so it does not fall
+            # through to a price either.
+            return []
+        return await self._peak_weights()
+
     async def _spread_from(self, driver: int) -> None:
         """Fill every other field to the pool's ratio against `driver`.
 
@@ -1181,7 +1247,7 @@ class DepositTab(ActionTab):
         amounts, with no decimals to reconcile.
         """
         rows = self.rows
-        reserves = await self._pool_reserves()
+        reserves = await self._proportions()
         if not self.proportional or len(reserves) != len(rows.coins):
             await self.refresh()
             return
@@ -1207,7 +1273,7 @@ class DepositTab(ActionTab):
         about a deposit that has to carry all of them.
         """
         rows = self.rows
-        reserves = await self._pool_reserves()
+        reserves = await self._proportions()
         if not self.proportional or len(reserves) != len(rows.coins):
             await self.refresh()
             return

@@ -22,6 +22,29 @@ SETTLE_ATTEMPTS = 60
 LAST_ROW_OF_PAGE = "pool-row-49"
 FIRST_ROW_PAST_PAGE = "pool-row-50"
 
+#: **The two pool-page tests below error in teardown, and their bodies pass.**
+#:
+#: `runFletDeviceTest` runs the whole live app inside one `testWidgets` body,
+#: and `testWidgets` is built for hermetic widget tests: anything still
+#: scheduled when the body ends fails the test. A pool page leaves plenty
+#: scheduled -- the nav's 160ms animation, a spinner, whatever the chart is
+#: doing -- so the Flutter process exits 1 after every Python-side assertion
+#: has passed, and `FletTestApp.teardown` surfaces that as an error.
+#:
+#: Reduced to the smallest thing that shows it:
+#:
+#:     tap(pool-row-0)                      -> passes
+#:     tap(pool-row-0); pump() x 80         -> errors
+#:     tap(pool-row-0); pump_and_settle()   -> errors
+#:
+#: So it is the frames, not the settling: opening the page is fine until the
+#: page is actually built. Identical on Flet 0.86.5 and 1.0.0, so it is not
+#: the version. The exception itself is never emitted to any stream this side
+#: can read -- not with `FLET_TEST_VERBOSE=1`, and not through a
+#: `FlutterError.onError` hook compiled into `app_test.dart` (which a
+#: deliberate syntax error proved is the file being built). It belongs
+#: upstream; leaving the tests in place keeps their assertions, which work.
+
 
 async def wait_for(tester, finder_call, attempts: int = SETTLE_ATTEMPTS):
     """Pump until a finder matches something, then return it."""

@@ -3520,6 +3520,7 @@ async def test_a_confirmed_claim_updates_the_numbers_it_was_made_against(
     seed = Earning(pool="0x" + "11" * 20, gauge=gauge, staked=1000)
     app._earning_seeds = ([seed], {token: ("ARB", 18, 1.5)}, 0.5, 1)
     app._claim_minters = {}
+    app._earnings_lock = asyncio.Lock()
     await app.reread_earnings(app.wallet.address, chain)
 
     assert app.portfolio_view.claim_rewards.content == "Claim rewards ($6.00)"
@@ -3769,6 +3770,7 @@ async def test_a_pool_withdrawn_from_is_still_asked_what_it_owes() -> None:
     app._earnings = []
     app._earning_seeds = None
     app._claim_minters = {}
+    app._earnings_lock = asyncio.Lock()
     app.portfolio_view = portfolio_view(app.page)
 
     async def reread(_account, _provider) -> None:
@@ -3808,6 +3810,7 @@ async def test_the_rates_are_asked_for_once_however_many_pools() -> None:
     app._earnings = []
     app._earning_seeds = None
     app._claim_minters = {}
+    app._earnings_lock = asyncio.Lock()
     app.portfolio_view = portfolio_view(app.page)
 
     async def reread(_account, _provider) -> None:
@@ -3828,7 +3831,9 @@ async def test_the_rates_are_asked_for_once_however_many_pools() -> None:
     assert all(seed.crv_apr == 3.0 for seed in seeds)
 
 
-async def test_rates_that_cannot_be_read_still_leave_the_claim_working() -> None:
+async def test_rates_that_cannot_be_read_still_leave_the_claim_working(
+    monkeypatch,
+) -> None:
     import main as app_module
     from curve.http import ApiError
 
@@ -3846,13 +3851,15 @@ async def test_rates_that_cannot_be_read_still_leave_the_claim_working() -> None
     app._earnings = []
     app._earning_seeds = None
     app._claim_minters = {}
+    app._earnings_lock = asyncio.Lock()
     app.portfolio_view = portfolio_view(app.page)
     read = []
 
-    async def reread(_account, _provider) -> None:
+    async def read_earnings(_provider, _account, positions, **_kw):
         read.append(True)
+        return positions
 
-    app.reread_earnings = reread      # type: ignore[method-assign]
+    monkeypatch.setattr(app_module.earnings, "read_earnings", read_earnings)
 
     await app.load_earnings(
         [make_holding(gauge="0x" + "22" * 20, staked=10**18)],
@@ -3886,6 +3893,7 @@ async def test_declining_a_claim_leaves_no_red_line_behind() -> None:
         earning(rewards=(arb_reward(4.0),)),
     ]
     app._claim_minters = {}
+    app._earnings_lock = asyncio.Lock()
 
     await app.claim_portfolio(False)
 
@@ -5195,3 +5203,167 @@ async def test_and_a_fully_priced_pool_is_never_asked() -> None:
     await view._fill_missing_prices()
 
     assert counting.asked == 0
+
+
+# -- a portfolio load: per account, and each pool asked once ---------------
+
+
+class MemoryStorage:
+    def __init__(self) -> None:
+        self.saved: dict[str, str] = {}
+        self.gate: asyncio.Event | None = None
+
+    async def get(self, key):
+        if self.gate is not None:
+            await self.gate.wait()
+        return self.saved.get(key)
+
+    async def set(self, key, value):
+        self.saved[key] = value
+
+
+def portfolio_app(monkeypatch, account: str, *, scan=None, full=None):
+    """An app with just enough behind `load_portfolio` to drive it."""
+    import main as app_module
+    from curve import portfolio as portfolio_module
+
+    app = app_module.CurveApp.__new__(app_module.CurveApp)
+    app.page = StubPage()
+    app.chain = "ethereum"
+    app.chains = {"ethereum": 1}
+    app.storage = MemoryStorage()
+    app.portfolio_view = portfolio_view(app.page)
+    app.wallet = SimpleNamespace(address=account, provider=object())
+    app._earnings = []
+    app._earning_seeds = None
+    app._claim_minters = {}
+    app._earnings_lock = asyncio.Lock()
+    app._portfolio_run = 0
+    app._portfolio_for = None
+    app.loading = lambda *_a: None      # type: ignore[method-assign]
+    app.loaded = lambda: None           # type: ignore[method-assign]
+    app.reader = lambda _chain_id, provider: provider  # type: ignore[method-assign]
+
+    async def current_chain_id():
+        return 1
+
+    app.current_chain_id = current_chain_id  # type: ignore[method-assign]
+    app.api = SimpleNamespace(portfolio_targets=_targets)
+
+    async def quick(_provider, _targets, _account, **_kw):
+        return list(scan or [])
+
+    async def everything(_provider, _targets, _account, **_kw):
+        return list(full or []), []
+
+    monkeypatch.setattr(portfolio_module, "scan", quick)
+    monkeypatch.setattr(portfolio_module, "scan_targets", everything)
+    return app
+
+
+async def _targets(_chain, _chain_id):
+    return []
+
+
+async def _settle() -> None:
+    for _ in range(10):
+        await asyncio.sleep(0)
+
+
+async def test_the_remembered_portfolio_is_one_per_account(monkeypatch) -> None:
+    """One slot for everybody meant the second account overwrote the first,
+    and switching back started from nothing again."""
+    first, second = "0x" + "a1" * 20, "0x" + "b2" * 20
+    app = portfolio_app(monkeypatch, first)
+    await app._remember_portfolio([make_holding()], first, "ethereum")
+
+    assert await app._remembered_portfolio(first, "ethereum")
+    assert await app._remembered_portfolio(second, "ethereum") == []
+    await app._remember_portfolio([], second, "ethereum")
+    assert await app._remembered_portfolio(first, "ethereum"), (
+        "the second account's scan wrote over the first's")
+
+
+async def test_another_accounts_rows_are_gone_before_anything_is_read(
+    monkeypatch,
+) -> None:
+    """Switching wallets left the last account's positions on screen until
+    the new one's full scan came back."""
+    app = portfolio_app(monkeypatch, "0x" + "b2" * 20)
+    app._portfolio_for = ("0x" + "a1" * 20, "ethereum")
+    app.portfolio_view.show([make_holding()])
+    app.storage.gate = asyncio.Event()
+
+    loading = asyncio.ensure_future(app.load_portfolio())
+    await _settle()
+
+    assert not app.portfolio_view.rows.controls, "the old account is still shown"
+    app.storage.gate.set()
+    await loading
+
+
+async def test_a_load_the_wallet_moved_on_from_draws_nothing(monkeypatch) -> None:
+    app = portfolio_app(monkeypatch, "0x" + "a1" * 20, full=[make_holding()])
+    app.storage.gate = asyncio.Event()
+
+    loading = asyncio.ensure_future(app.load_portfolio())
+    await _settle()
+    app._portfolio_run += 1               # what the next load does first
+    app.storage.gate.set()
+    await loading
+
+    assert not app.portfolio_view.rows.controls
+    assert not app.storage.saved, "and remembered nothing either"
+
+
+async def test_remembered_rows_are_asked_what_they_owe_first(monkeypatch) -> None:
+    """The quick refresh reads rewards as well as balances, and the full scan
+    then asks only about pools it did not already cover."""
+    import main as app_module
+
+    account = "0x" + "a1" * 20
+    kept = make_holding(address="0x" + "c1" * 20, gauge="0x" + "d1" * 20,
+                        staked=10**18)
+    new = make_holding(address="0x" + "c2" * 20, gauge="0x" + "d2" * 20,
+                       staked=10**18)
+    app = portfolio_app(monkeypatch, account, scan=[kept], full=[kept, new])
+    await app._remember_portfolio([kept], account, "ethereum")
+
+    async def pool_rates(_chain_id, _addresses):
+        return {}
+
+    async def usd_price(_chain, _address):
+        return 0.5
+
+    app.api.pool_rates = pool_rates
+    app.api.usd_price = usd_price
+
+    async def resolve(_provider, _chain_id, seeds):
+        return seeds, {}
+
+    asked: list[list[str]] = []
+
+    async def read_earnings(_provider, _account, positions, **_kw):
+        asked.append([p.pool for p in positions])
+        return positions
+
+    monkeypatch.setattr(app_module.earnings, "resolve_gauges", resolve)
+    monkeypatch.setattr(app_module.earnings, "read_earnings", read_earnings)
+    swept = asyncio.Event()
+
+    async def sweep(*_a, **_kw):
+        swept.set()
+        return []
+
+    from curve import portfolio as portfolio_module
+
+    monkeypatch.setattr(portfolio_module, "sweep_unclaimed", sweep)
+
+    await app.load_portfolio()
+    await asyncio.wait_for(swept.wait(), 1)
+    await _settle()
+
+    assert asked[0] == [kept.address], "the remembered row was not asked first"
+    assert sorted(pool for batch in asked for pool in batch) == sorted([kept.address, new.address]), (
+        "a pool was asked twice, or not at all")
+    assert {e.pool for e in app._earnings} == {kept.address, new.address}

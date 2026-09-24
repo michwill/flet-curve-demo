@@ -602,3 +602,48 @@ async def test_without_a_chain_nothing_is_resolved():
     await portfolio.scan(provider, targets, "0x" + "9" * 40)
 
     assert not any(MADE_FOR in round for round in provider.rounds)
+
+
+async def test_the_sweep_is_handed_the_gauge_that_is_here():
+    """The sweep reads `claimable_tokens` at the gauge it is given.  Given the
+    root gauge the pool list names -- every one on BSC and Sonic -- it reads
+    an address with no code, and a batch of those reads as a refusal."""
+    lp, root, child = "0x" + "1" * 40, "0x" + "2" * 40, "0x" + "d" * 40
+    targets = [Target(address="0x" + "a" * 40, name="A", chain="arbitrum",
+                      lp_token=lp, gauge=root)]
+    provider = ResolvingProvider(
+        balances={lp: 0, child: 0},
+        made={f"{ARB_FACTORY.lower()}:{lp}": child},
+    )
+
+    holdings, here = await portfolio.scan_targets(
+        provider, targets, "0x" + "9" * 40, chain_id=42161)
+
+    assert holdings == [], "nothing held, and the sweep is for exactly that"
+    assert [t.gauge.lower() for t in here] == [child]
+
+
+async def test_a_gauge_that_is_not_here_is_not_swept():
+    """No code, and no factory made another: asking it answers nothing."""
+    lp, root = "0x" + "1" * 40, "0x" + "2" * 40
+    targets = [Target(address="0x" + "a" * 40, name="A", chain="arbitrum",
+                      lp_token=lp, gauge=root)]
+    provider = ResolvingProvider(balances={lp: 0})
+
+    _holdings, here = await portfolio.scan_targets(
+        provider, targets, "0x" + "9" * 40, chain_id=42161)
+
+    assert [t.gauge for t in here] == [""]
+
+
+async def test_a_refused_batch_keeps_its_gauges_for_the_sweep():
+    """Where the LP token beside it said nothing too, the endpoint refused,
+    and a gauge dropped on that is a pool the sweep never asks about."""
+    lp, gauge = "0x" + "1" * 40, "0x" + "2" * 40
+    targets = [Target(address="0x" + "a" * 40, name="A", chain="ethereum",
+                      lp_token=lp, gauge=gauge)]
+
+    _holdings, here = await portfolio.scan_targets(
+        ResolvingProvider(balances={}), targets, "0x" + "9" * 40)
+
+    assert [t.gauge for t in here] == [gauge]

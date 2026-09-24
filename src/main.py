@@ -157,8 +157,14 @@ TOTALS_REFRESH = 600.0
 CHAINLIST_TICK = 900.0
 
 #: Where the last portfolio scan is remembered, so the page has something to
-#: show while the next one runs.
+#: show while the next one runs.  One per account and chain, under this.
 PORTFOLIO_KEY = "flet-curve.portfolio"
+
+
+def portfolio_key(account: str, chain: str) -> str:
+    """Where one account's portfolio on one chain is remembered."""
+    return f"{PORTFOLIO_KEY}.{chain}.{account.lower()}"
+
 
 #: Where the chosen theme is remembered, per browser or per desktop install.
 THEME_KEY = "flet-curve.theme"
@@ -650,6 +656,13 @@ class CurveApp(Batching):
             ]
             | None
         ) = None
+        #: Bumped by each `load_portfolio`, so a run the wallet has moved on
+        #: from does not draw or remember what it read.
+        self._portfolio_run = 0
+        #: `(account, chain)` the portfolio table was last filled for.
+        self._portfolio_for: tuple[str, str] | None = None
+        #: `load_earnings` extends what earlier calls seeded; one at a time.
+        self._earnings_lock = asyncio.Lock()
         self.progress = ft.ProgressBar(visible=False)
         self.error = ft.Text("", size=SMALL, color=ft.Colors.ERROR, visible=False)
         # Empty where the link named another page: the body is filled by
@@ -1451,17 +1464,28 @@ class CurveApp(Batching):
         """Remembered rows first, then those refreshed, then everything."""
         view = self.portfolio_view
         wallet = self.wallet
+        self._portfolio_run += 1
+        run = self._portfolio_run
         self._earnings = []
         self._earning_seeds = None
         self._claim_minters = {}
         view.forget_earnings()
         if wallet is None or not wallet.address:
+            self._portfolio_for = None
             view.say("Connect a wallet to see what it holds.")
             return
         account = wallet.address
+        chain = self.chain
+        # Before anything is awaited: rows read for another account or chain
+        # stay on screen until something replaces them.
+        if self._portfolio_for != (account.lower(), chain):
+            view.say("Looking for deposits…")
+        self._portfolio_for = (account.lower(), chain)
         chain_id = await self.current_chain_id()
 
-        remembered = await self._remembered_portfolio(account)
+        remembered = await self._remembered_portfolio(account, chain)
+        if self._stale(run):
+            return
         if remembered:
             view.show(remembered)
 
@@ -1469,13 +1493,19 @@ class CurveApp(Batching):
         self.loading(0.0)
         try:
             if remembered:
-                view.show(await portfolio.scan(
+                quick = await portfolio.scan(
                     provider, portfolio.targets_for(remembered), account,
                     chain_id=chain_id,
-                ))
-            targets = await self.api.portfolio_targets(self.chain, chain_id)
+                )
+                if self._stale(run):
+                    return
+                view.show(quick)
+                self.page.run_task(
+                    self.load_earnings, quick, account, chain_id, provider, run
+                )
+            targets = await self.api.portfolio_targets(chain, chain_id)
             self.loading(PORTFOLIO_DISCOVERY_SHARE)
-            holdings = await portfolio.scan(
+            holdings, here = await portfolio.scan_targets(
                 provider,
                 targets,
                 account,
@@ -1486,35 +1516,49 @@ class CurveApp(Batching):
                 ),
             )
         except (WalletError, ApiError) as exc:
+            if self._stale(run):
+                return
             if not remembered:
                 view.say(f"Could not read this chain: {exc}")
             self.loaded()
             return
 
+        if self._stale(run):
+            return
         self.loaded()
         if holdings:
             view.show(holdings)
         else:
-            view.say(f"No deposits in any {chain_name(self.chain)} pool.")
-        self.page.run_task(self._remember_portfolio, holdings, account)
-        self.page.run_task(self.load_earnings, holdings, account, chain_id, provider)
-        # Behind the first answer, not in front of it: what this address is
-        # still in is the question it came with, and it is on screen above
-        # before the pools it has left are asked about at all.
+            view.say(f"No deposits in any {chain_name(chain)} pool.")
+        self.page.run_task(self._remember_portfolio, holdings, account, chain)
         self.page.run_task(
-            self.sweep_unclaimed, holdings, account, chain_id, provider, targets
+            self._owed_after_scan, holdings, account, chain_id, provider, here, run
         )
 
+    def _stale(self, run: int | None) -> bool:
+        """A portfolio load a later one has replaced."""
+        return run is not None and run != self._portfolio_run
+
+    async def _owed_after_scan(self, held, account: str, chain_id: int,
+                               provider, targets, run: int | None) -> None:
+        """What the holdings owe, then what the pools this address left owe.
+
+        Behind the first answer, not in front of it: what this address is
+        still in is the question it came with.
+        """
+        await self.load_earnings(held, account, chain_id, provider, run)
+        await self.sweep_unclaimed(held, account, chain_id, provider, targets, run)
+
     async def sweep_unclaimed(self, held, account: str, chain_id: int,
-                              provider, targets) -> None:
+                              provider, targets, run: int | None = None) -> None:
         """Rewards left behind in pools this address has withdrawn from.
 
         Reads per gauge over the whole chain, so it runs after the holdings
         are drawn rather than before -- somebody with nothing left behind has
         their portfolio already, and the strip under the top bar says the
         rest is still coming.  What it finds joins the table as a row holding
-        nothing, and `load_earnings` fills in what each one owes exactly as
-        it does for a position still open.
+        nothing, and `load_earnings` reads what those rows owe, and only
+        those.
         """
         view = self.portfolio_view
         self.loading(0.0)
@@ -1526,29 +1570,42 @@ class CurveApp(Batching):
                 ),
             )
         except (WalletError, ApiError) as exc:
+            if self._stale(run):
+                return
             self.loaded()
             view.sweeping(f"Could not ask what the pools you left still owe: {exc}")
+            return
+        if self._stale(run):
             return
         self.loaded()
         if not found:
             return
-        holdings = list(held) + found
-        view.show(holdings)
-        self.page.run_task(
-            self.load_earnings, holdings, account, chain_id, provider
-        )
+        view.show(list(held) + found)
+        await self.load_earnings(found, account, chain_id, provider, run)
 
-    async def load_earnings(self, holdings, account: str, chain_id: int, provider) -> None:
-        """What each position earns, and what it has earned but not taken."""
+    async def load_earnings(self, holdings, account: str, chain_id: int, provider,
+                            run: int | None = None) -> None:
+        """What each position earns, and what it has earned but not taken.
+
+        Adds to what earlier calls in the same load read, and asks only about
+        pools they did not: the remembered rows are read first, then the
+        full scan's, then the sweep's, and each pool is asked once.
+        """
+        async with self._earnings_lock:
+            await self._extend_earnings(holdings, account, chain_id, provider, run)
+
+    async def _extend_earnings(self, holdings, account: str, chain_id: int,
+                               provider, run: int | None) -> None:
         # Every holding with a gauge, whatever it holds.  A gauge goes on
         # owing after the LP has been taken out of it: unstaking without
         # claiming leaves rewards behind, and so does withdrawing outright --
         # which is what `sweep_unclaimed` puts on the table, with nothing in
         # the wallet and nothing staked.  Gated on a balance, those rows came
         # back from the sweep and then reported no rewards at all.
-        staked = [h for h in holdings if h.gauge]
+        seeded = self._earning_seeds
+        known = {seed.pool.lower() for seed in seeded[0]} if seeded else set()
+        staked = [h for h in holdings if h.gauge and h.address.lower() not in known]
         if not staked:
-            self._earning_seeds = None
             return
 
         try:
@@ -1574,9 +1631,9 @@ class CurveApp(Batching):
                 token_meta.update(meta)
             seeds.append(seed)
 
-        crv_price = 0.0
+        crv_price = seeded[2] if seeded else 0.0
         entry = rewards.REWARDS.get(chain_id)
-        if entry is not None:
+        if entry is not None and not seeded:
             with contextlib.suppress(ApiError):
                 crv_price = await self.api.usd_price(self.chain, entry.crv)
         # The pool list names the Ethereum root gauge for whole chains --
@@ -1585,12 +1642,32 @@ class CurveApp(Batching):
         # resolved before anything is asked of them, and the factory that
         # resolved each one is the minter to claim it through.
         try:
-            seeds, self._claim_minters = await earnings.resolve_gauges(
-                provider, chain_id, seeds)
+            seeds, minters = await earnings.resolve_gauges(provider, chain_id, seeds)
         except Exception:
-            self._claim_minters = {}
-        self._earning_seeds = (seeds, token_meta, crv_price, chain_id)
-        await self.reread_earnings(account, provider)
+            minters = {}
+        if self._stale(run):
+            return
+        before = self._earning_seeds
+        token_meta = {**(before[1] if before else {}), **token_meta}
+        self._earning_seeds = (
+            (before[0] if before else []) + seeds, token_meta, crv_price, chain_id)
+        self._claim_minters = {**self._claim_minters, **minters}
+        try:
+            filled = await earnings.read_earnings(
+                provider, account, seeds,
+                crv_price=crv_price, token_meta=token_meta,
+            )
+        except WalletError as exc:
+            if not self._stale(run):
+                self.portfolio_view.claiming(
+                    f"Could not read what these gauges owe: {exc}", status.FAILED
+                )
+            return
+        if self._stale(run):
+            return
+        self._earnings = self._earnings + filled
+        self.portfolio_view.show_earnings(
+            self._earnings, chain_id, self._claim_minters)
 
     async def reread_earnings(self, account: str, provider) -> None:
         """Ask the chain again what is owed, on the seeds already gathered."""
@@ -1726,20 +1803,22 @@ class CurveApp(Batching):
         self.progress.visible = False
         safe_update(self.progress)
 
-    async def _remembered_portfolio(self, account: str) -> list[portfolio.Holding]:
+    async def _remembered_portfolio(
+        self, account: str, chain: str
+    ) -> list[portfolio.Holding]:
         with contextlib.suppress(Exception):
-            saved = await self.storage.get(PORTFOLIO_KEY)
+            saved = await self.storage.get(portfolio_key(account, chain))
             if isinstance(saved, str) and saved:
-                return portfolio.from_json(json.loads(saved), account, self.chain)
+                return portfolio.from_json(json.loads(saved), account, chain)
         return []
 
     async def _remember_portfolio(
-        self, holdings: list[portfolio.Holding], account: str
+        self, holdings: list[portfolio.Holding], account: str, chain: str
     ) -> None:
         with contextlib.suppress(Exception):
             await self.storage.set(
-                PORTFOLIO_KEY,
-                json.dumps(portfolio.to_json(holdings, account, self.chain)),
+                portfolio_key(account, chain),
+                json.dumps(portfolio.to_json(holdings, account, chain)),
             )
 
     # -- the address bar ---------------------------------------------------

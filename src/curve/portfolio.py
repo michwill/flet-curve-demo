@@ -152,17 +152,55 @@ async def scan(
     concurrency: int = CONCURRENCY,
 ) -> list[Holding]:
     """Read every balance and return what is not zero."""
+    holdings, _here = await scan_targets(
+        provider, targets, account, chain_id=chain_id, on_progress=on_progress,
+        chunk=chunk, concurrency=concurrency,
+    )
+    return holdings
+
+
+async def scan_targets(
+    provider: WalletProvider,
+    targets: Sequence[Target],
+    account: str,
+    *,
+    chain_id: int = 0,
+    on_progress: Callable[[int, int], None] | None = None,
+    chunk: int = CHUNK,
+    concurrency: int = CONCURRENCY,
+) -> tuple[list[Holding], list[Target]]:
+    """`scan`, and the targets as they are on this chain, for `sweep_unclaimed`.
+
+    Each gauge as resolved, and none where the listed one has no code and no
+    factory made another: a sweep asking that address gets nothing back, and
+    a batch of nothing reads to it as a refusal.  Absent only where the LP
+    token beside it answered -- a refused batch says nothing about either.
+    """
     plan = calls_for(targets)
     if not plan:
-        return []
+        return [], []
     balances = await _batched(
         provider, plan, encode_balance_of(account), chunk, concurrency, on_progress
     )
     targets, balances = await resolve_absent_gauges(
         provider, chain_id, targets, balances, account, chunk, concurrency
     )
+    here: list[Target] = []
+    position = 0
+    for target in targets:
+        position += 1
+        if target.gauge:
+            absent = (
+                position < len(balances)
+                and balances[position - 1] is not None
+                and balances[position] is None
+            )
+            here.append(dataclasses.replace(target, gauge="") if absent else target)
+            position += 1
+        else:
+            here.append(target)
     holdings = holdings_from(targets, balances)
-    return await with_supply(provider, holdings)
+    return await with_supply(provider, holdings), here
 
 
 async def sweep_unclaimed(
@@ -183,9 +221,10 @@ async def sweep_unclaimed(
     on the page then says they are there, and the only route back is
     remembering which pool it was.
 
-    Reads per gauge, which is why this is asked for rather than part of every
-    load: on Ethereum it is the same order of reads again as the whole
-    balance scan.
+    Reads per gauge -- on Ethereum the same order of reads again as the whole
+    balance scan -- which is why it runs behind the holdings, not before them.
+    Give it `scan_targets`' targets: the pool list names gauges that are not
+    on this chain, and asking those answers nothing.
 
     CRV is not enough on its own.  A gauge can pay incentive tokens and no
     CRV at all -- the pool list marks those `hasNoCrv` -- so asking only

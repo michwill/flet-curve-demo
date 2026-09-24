@@ -161,6 +161,12 @@ CHAINLIST_TICK = 900.0
 PORTFOLIO_KEY = "flet-curve.portfolio"
 
 
+def _with_left(holdings, left):
+    """`holdings`, and the remembered rows a scan of balances leaves out."""
+    have = {holding.address.lower() for holding in holdings}
+    return list(holdings) + [h for h in left if h.address.lower() not in have]
+
+
 def portfolio_key(account: str, chain: str) -> str:
     """Where one account's portfolio on one chain is remembered."""
     return f"{PORTFOLIO_KEY}.{chain}.{account.lower()}"
@@ -1488,6 +1494,10 @@ class CurveApp(Batching):
             return
         if remembered:
             view.show(remembered)
+        # Rows the last sweep found: nothing held, something owed.  Shown
+        # and asked what they owe from the start, and left for this load's
+        # sweep to keep or drop -- a scan of balances would drop them.
+        left = [h for h in remembered if h.gauge and not h.total]
 
         provider = self.reader(chain_id, wallet.provider)
         self.loading(0.0)
@@ -1499,6 +1509,7 @@ class CurveApp(Batching):
                 )
                 if self._stale(run):
                     return
+                quick = _with_left(quick, left)
                 view.show(quick)
                 self.page.run_task(
                     self.load_earnings, quick, account, chain_id, provider, run
@@ -1526,31 +1537,40 @@ class CurveApp(Batching):
         if self._stale(run):
             return
         self.loaded()
-        if holdings:
-            view.show(holdings)
+        shown = _with_left(holdings, left)
+        if shown:
+            view.show(shown)
         else:
             view.say(f"No deposits in any {chain_name(chain)} pool.")
-        self.page.run_task(self._remember_portfolio, holdings, account, chain)
+        self.page.run_task(self._remember_portfolio, shown, account, chain)
         self.page.run_task(
-            self._owed_after_scan, holdings, account, chain_id, provider, here, run
+            self._owed_after_scan, holdings, account, chain, chain_id, provider,
+            here, run,
         )
 
     def _stale(self, run: int | None) -> bool:
         """A portfolio load a later one has replaced."""
         return run is not None and run != self._portfolio_run
 
-    async def _owed_after_scan(self, held, account: str, chain_id: int,
-                               provider, targets, run: int | None) -> None:
+    async def _owed_after_scan(self, held, account: str, chain: str,
+                               chain_id: int, provider, targets,
+                               run: int | None) -> None:
         """What the holdings owe, then what the pools this address left owe.
 
         Behind the first answer, not in front of it: what this address is
-        still in is the question it came with.
+        still in is the question it came with.  The sweep's rows are
+        remembered too, so the next visit shows them before it sweeps.
         """
         await self.load_earnings(held, account, chain_id, provider, run)
-        await self.sweep_unclaimed(held, account, chain_id, provider, targets, run)
+        found = await self.sweep_unclaimed(
+            held, account, chain_id, provider, targets, run)
+        if found is not None and not self._stale(run):
+            await self._remember_portfolio(list(held) + found, account, chain)
 
-    async def sweep_unclaimed(self, held, account: str, chain_id: int,
-                              provider, targets, run: int | None = None) -> None:
+    async def sweep_unclaimed(
+        self, held, account: str, chain_id: int, provider, targets,
+        run: int | None = None,
+    ) -> list[portfolio.Holding] | None:
         """Rewards left behind in pools this address has withdrawn from.
 
         Reads per gauge over the whole chain, so it runs after the holdings
@@ -1558,7 +1578,9 @@ class CurveApp(Batching):
         their portfolio already, and the strip under the top bar says the
         rest is still coming.  What it finds joins the table as a row holding
         nothing, and `load_earnings` reads what those rows owe, and only
-        those.
+        those.  Rows remembered from the last sweep that owe nothing now go.
+
+        What it found, or None where it could not ask or was replaced.
         """
         view = self.portfolio_view
         self.loading(0.0)
@@ -1571,17 +1593,21 @@ class CurveApp(Batching):
             )
         except (WalletError, ApiError) as exc:
             if self._stale(run):
-                return
+                return None
             self.loaded()
             view.sweeping(f"Could not ask what the pools you left still owe: {exc}")
-            return
+            return None
         if self._stale(run):
-            return
+            return None
         self.loaded()
-        if not found:
-            return
-        view.show(list(held) + found)
+        rows = list(held) + found
+        if rows != view.holdings:
+            if rows:
+                view.show(rows)
+            else:
+                view.say(f"No deposits in any {chain_name(self.chain)} pool.")
         await self.load_earnings(found, account, chain_id, provider, run)
+        return found
 
     async def load_earnings(self, holdings, account: str, chain_id: int, provider,
                             run: int | None = None) -> None:

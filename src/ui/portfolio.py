@@ -474,6 +474,8 @@ class PortfolioView(ft.Column):
 
     def say(self, message: str) -> None:
         """The page has nothing to show, and this is why."""
+        # Or a sort would draw the last rows back.
+        self._holdings = []
         self.rows.controls = []
         self.total.value = ""
         # Not hidden outright: with no deposits at all, looking for what a

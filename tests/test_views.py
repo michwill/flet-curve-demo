@@ -5367,3 +5367,90 @@ async def test_remembered_rows_are_asked_what_they_owe_first(monkeypatch) -> Non
     assert sorted(pool for batch in asked for pool in batch) == sorted([kept.address, new.address]), (
         "a pool was asked twice, or not at all")
     assert {e.pool for e in app._earnings} == {kept.address, new.address}
+
+
+def _earnings_recorder(monkeypatch, app) -> list[list[str]]:
+    """Every `read_earnings` call's pools, with nothing else behind it."""
+    import main as app_module
+
+    async def pool_rates(_chain_id, _addresses):
+        return {}
+
+    async def usd_price(_chain, _address):
+        return 0.5
+
+    app.api.pool_rates = pool_rates
+    app.api.usd_price = usd_price
+
+    async def resolve(_provider, _chain_id, seeds):
+        return seeds, {}
+
+    asked: list[list[str]] = []
+
+    async def read_earnings(_provider, _account, positions, **_kw):
+        asked.append([p.pool for p in positions])
+        return positions
+
+    monkeypatch.setattr(app_module.earnings, "resolve_gauges", resolve)
+    monkeypatch.setattr(app_module.earnings, "read_earnings", read_earnings)
+    return asked
+
+
+async def test_a_pool_left_with_rewards_is_there_before_the_sweep(
+    monkeypatch,
+) -> None:
+    """Only positions with a balance were remembered, so a pool withdrawn
+    from and still owing turned up only when the sweep found it again --
+    the last thing a load does, and the slowest."""
+    from curve import portfolio as portfolio_module
+
+    account = "0x" + "a1" * 20
+    left = make_holding(address="0x" + "c3" * 20, gauge="0x" + "d3" * 20,
+                        wallet=0, staked=0)
+    app = portfolio_app(monkeypatch, account)
+    await app._remember_portfolio([left], account, "ethereum")
+    asked = _earnings_recorder(monkeypatch, app)
+    release = asyncio.Event()
+    sweeping = asyncio.Event()
+    sweep_answer: list = []
+
+    async def sweep(*_a, **_kw):
+        sweeping.set()
+        await release.wait()
+        return sweep_answer
+
+    monkeypatch.setattr(portfolio_module, "sweep_unclaimed", sweep)
+
+    await app.load_portfolio()
+    await asyncio.wait_for(sweeping.wait(), 1)
+
+    assert [h.address for h in app.portfolio_view.holdings] == [left.address], (
+        "the full scan dropped it before the sweep could say")
+    assert [left.address] in asked, "and it was not asked what it owes"
+
+    release.set()                         # it has been claimed since
+    await _settle()
+
+    assert app.portfolio_view.holdings == [], "a row owing nothing stayed"
+    assert await app._remembered_portfolio(account, "ethereum") == []
+
+
+async def test_what_the_sweep_finds_is_remembered(monkeypatch) -> None:
+    from curve import portfolio as portfolio_module
+
+    account = "0x" + "a1" * 20
+    left = make_holding(address="0x" + "c3" * 20, gauge="0x" + "d3" * 20,
+                        wallet=0, staked=0)
+    app = portfolio_app(monkeypatch, account)
+    _earnings_recorder(monkeypatch, app)
+
+    async def sweep(*_a, **_kw):
+        return [left]
+
+    monkeypatch.setattr(portfolio_module, "sweep_unclaimed", sweep)
+
+    await app.load_portfolio()
+    await _settle()
+
+    kept = await app._remembered_portfolio(account, "ethereum")
+    assert [h.address for h in kept] == [left.address]

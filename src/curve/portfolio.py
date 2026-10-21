@@ -8,7 +8,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from wallet.base import WalletError, WalletProvider
+from wallet.base import RpcError, WalletError, WalletProvider
 from wallet.erc20 import encode_balance_of, to_checksum_address
 
 from . import abi
@@ -20,6 +20,11 @@ from .rewards import REWARDS, gauge_lookup, gauges_from_batch
 #: is deliberately conservative: a chunk this size is ~67KB of calldata,
 #: which no reasonable RPC refuses.
 CHUNK = 300
+
+#: Calls per batch of `claimable_tokens`, which checkpoints the gauge week by
+#: week: twenty came to 13.5M gas at worst on Ethereum, under the 2**24 that
+#: many nodes now hold one eth_call to (EIP-7825).
+CLAIM_CHUNK = 20
 
 #: Batches in flight. Six was the fastest measured and is polite enough for
 #: a public endpoint that rate-limits by request.
@@ -260,8 +265,8 @@ async def sweep_unclaimed(
     # Strict: this round is what decides whether anything is owed anywhere,
     # so an endpoint that would not answer it has to say so rather than come
     # back as "nothing".
-    answers = await _calls(provider, first, chunk, concurrency, on_progress,
-                           strict=True)
+    answers = await _calls(provider, first, min(chunk, CLAIM_CHUNK), concurrency,
+                           on_progress, strict=True)
     owed: dict[str, int] = {}
     counts: dict[str, int] = {}
     for index, target in enumerate(gauged):
@@ -460,44 +465,54 @@ async def _calls(
     answers: list[list[int | None]] = [[] for _ in batches]
     done = 0
     refused = 0
+    why = "the endpoint would not take them."
     gate = asyncio.Semaphore(max(1, concurrency))
 
-    async def run(number: int, batch: Sequence[tuple[str, str]]) -> None:
-        nonlocal done, refused
+    async def ask(batch: Sequence[tuple[str, str]], tries: int) -> list[int | None]:
+        nonlocal refused, why
         values: list[int | None] = [None] * len(batch)
-        for attempt in range(ATTEMPTS):
+        for attempt in range(tries):
             try:
                 async with gate:
                     result = await provider.call(
                         MULTICALL3, encode_aggregate3(list(batch))
                     )
                 values = decode_uints(result, len(batch))
+            except RpcError as exc:
+                # Refused whole -- usually a node's eth_call gas cap -- so the
+                # same batch would be refused again.  Halves keep the tries left.
+                why = exc.message or why
+                values = [None] * len(batch)
+                left = tries - attempt - 1
+                if len(batch) > 1 and left:
+                    half = len(batch) // 2
+                    first, second = await asyncio.gather(
+                        ask(batch[:half], left), ask(batch[half:], left)
+                    )
+                    return first + second
             except Exception:
                 values = [None] * len(batch)
             if any(value is not None for value in values):
-                break
-            # Only where the caller cannot live with `None`.  `scan` reads
-            # gauges that legitimately have no code and gets a batch of
-            # nothing back as the honest answer -- `resolve_absent_gauges`
-            # exists to chase exactly those -- so retrying there is 1.2
-            # seconds of sleeping for an answer already had.
-            if not strict:
-                break
-            if attempt + 1 < ATTEMPTS:
+                return values
+            if attempt + 1 < tries:
                 await asyncio.sleep(BACKOFF * 2**attempt)
-        else:
+        if strict:
             refused += len(batch)
-        answers[number] = values
+        return values
+
+    async def run(number: int, batch: Sequence[tuple[str, str]]) -> None:
+        nonlocal done
+        # One try where the caller can live with `None`: `scan` reads gauges
+        # that legitimately have no code, and `resolve_absent_gauges` chases
+        # exactly those, so retrying there is sleeping for an answer had.
+        answers[number] = await ask(batch, ATTEMPTS if strict else 1)
         done += len(batch)
         if on_progress is not None:
             on_progress(done, len(calls))
 
     await asyncio.gather(*[run(n, batch) for n, batch in enumerate(batches)])
     if strict and refused:
-        raise WalletError(
-            f"{refused} of {len(calls)} reads went unanswered -- the endpoint "
-            f"would not take them."
-        )
+        raise WalletError(f"{refused} of {len(calls)} reads went unanswered -- {why}")
     return [value for group in answers for value in group]
 
 

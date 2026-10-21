@@ -331,6 +331,62 @@ async def test_a_sweep_says_so_rather_than_finding_nothing() -> None:
         await portfolio.sweep_unclaimed(chain, [gauged("A")], address("me"))
 
 
+class GasCapped:
+    """A node that refuses any batch over `cap` calls, as a gas cap does."""
+
+    def __init__(self, cap: int, answer: int = 7) -> None:
+        self.cap = cap
+        self.answer = answer
+        self.sizes: list[int] = []
+
+    async def call(self, _to: str, data: str) -> str:
+        from tests.test_parameters import aggregate3_response
+        from wallet.base import RpcError
+
+        count = int(data[10:][64:128], 16)
+        self.sizes.append(count)
+        if count > self.cap:
+            raise RpcError(-32000, "out of gas: gas required exceeds: 50000000")
+        return aggregate3_response([self.answer] * count)
+
+
+async def test_a_batch_a_node_refuses_whole_is_asked_in_halves() -> None:
+    """Asked again whole, a batch over a node's eth_call gas cap is refused
+    every time: 1,200 of 1,554 sweep reads went unanswered that way."""
+    chain = GasCapped(cap=2)
+
+    answers = await portfolio._calls(
+        chain, [("0x" + "aa" * 20, "0x1122")] * 8, chunk=8, concurrency=1,
+        on_progress=None, strict=True,
+    )
+
+    assert answers == [7] * 8
+    assert sorted(chain.sizes) == [2, 2, 2, 2, 4, 4, 8]
+
+
+async def test_halving_spends_the_tries_a_batch_has_left() -> None:
+    """A node that refuses everything costs what retrying did, and says why."""
+    from wallet.base import WalletError
+
+    chain = GasCapped(cap=0)
+
+    with pytest.raises(WalletError, match="out of gas"):
+        await portfolio._calls(
+            chain, [("0x" + "aa" * 20, "0x1122")] * 8, chunk=8, concurrency=1,
+            on_progress=None, strict=True,
+        )
+    assert len(chain.sizes) == 1 + 2 + 4
+
+
+async def test_the_sweep_asks_what_is_owed_in_batches_a_gas_cap_takes() -> None:
+    chain = GasCapped(cap=portfolio.CLAIM_CHUNK, answer=0)
+    targets = [gauged(str(n)) for n in range(2 * portfolio.CLAIM_CHUNK)]
+
+    await portfolio.sweep_unclaimed(chain, targets, address("me"))
+
+    assert chain.sizes == [portfolio.CLAIM_CHUNK] * 4, "none refused, none halved"
+
+
 async def test_progress_is_reported_in_calls() -> None:
     targets = [target(str(n)) for n in range(250)]
     seen: list[tuple[int, int]] = []

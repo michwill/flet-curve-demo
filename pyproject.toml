@@ -21,8 +21,8 @@ requires-python = ">=3.12"
 # gets installed is the one in Pyodide's lock (2.4.3 today) and pinning the
 # dev group's 2.5.2 here would make micropip fail to resolve it at boot.
 dependencies = [
-    "flet==1.0.0",
-    "flet-charts==1.0.0",
+    "flet==1.0.4",
+    "flet-charts==1.0.4",
     "numpy>=2,<3",
     # The router's state cache is msgpack under zstd: 1.5 MB against 5.1 as
     # json.gz, and 32 ms to decode in Pyodide against 96.  Both specs match
@@ -59,18 +59,18 @@ dev = [
     # either. They belong here rather than in `project.dependencies`
     # because that list is installed inside Pyodide, where a CLI and a
     # desktop binary are nonsense.
-    "flet[all]==1.0.0",
+    "flet[all]==1.0.4",
     # tools/build_assets.py resamples every mark and cuts the disc into its
     # alpha: Pillow for both, numpy for the resampler's averaging.
     "pillow==12.3.0",
-    "numpy==2.5.3",
+    "numpy==2.5.4",
     # tools/subset_icons.py, exercised by tests/test_ipfs.py.
-    "fonttools==4.65.0",
+    "fonttools==4.66.1",
     # pytest.ini sets asyncio_mode=auto, so pytest-asyncio is not optional.
     "pytest==9.1.1",
     "pytest-asyncio==1.4.0",
     # tests/test_stateful.py
-    "hypothesis==6.168.0",
+    "hypothesis==6.169.1",
     # `flet.testing`, which tests/integration/conftest.py imports at
     # collection time -- so without it a plain `pytest` cannot even collect,
     # though those tests are deselected by the `flet_ui` marker. Pulls scipy.
@@ -80,8 +80,8 @@ dev = [
     # scripts/build_wasm.sh builds.
     "maturin==1.15.0",
     # Both configured further down this file.
-    "ruff==0.16.8",
-    "mypy==2.3.1",
+    "ruff==0.17.0",
+    "mypy==2.4.0",
 ]
 
 [tool.flet]

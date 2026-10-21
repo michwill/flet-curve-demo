@@ -17,10 +17,11 @@ it feel wrong when they are broken:
 from __future__ import annotations
 
 import asyncio
+import itertools
 
 import pytest
 
-from router.host import REFRESH_SECONDS, RouterHost, Stage
+from router.host import REFRESH_SECONDS, RETRY_SECONDS, RouterHost, Stage
 
 
 class FakeReport:
@@ -229,6 +230,188 @@ async def test_a_pair_a_refresh_could_not_redo_is_tried_again():
     await host.refresh()
 
     assert host.pair == ("0xa", "0xb"), "the pair came back on the next refresh"
+    host.close()
+
+
+class SlowRefresh(FakeSession):
+    """A refresh whose sweep is out until `swept` is set, as on mainnet for 2-3 s."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.swept = asyncio.Event()
+        self.sweeping = False
+        self.quoted_mid_sweep: list[int] = []
+
+    async def refresh(self):
+        self.sweeping = True
+        await self.swept.wait()
+        self.sweeping = False
+        return await super().refresh()
+
+    def quote(self, amount):
+        if self.sweeping:
+            self.quoted_mid_sweep.append(amount)
+        return super().quote(amount)
+
+
+async def ready_with(session, pair=("0xa", "0xb"), **kw):
+    host, _session, seen = build(session, **kw)
+    await host.open(1)
+    host._refresher.cancel()            # refreshes are driven by hand
+    await host.set_pair(*pair)
+    return host, seen
+
+
+async def test_a_pair_picked_during_a_refresh_is_the_one_it_leaves_prepared():
+    """The refresh took the pair before its sweep and re-prepared that after
+    it: the widget showed the coins just picked, the router held the old ones,
+    and every keystroke was answered for the old pair and dropped."""
+    session = SlowRefresh()
+    host, seen = await ready_with(session)
+    refresh = asyncio.ensure_future(host.refresh())
+    await asyncio.sleep(0)
+
+    picking = asyncio.ensure_future(host.set_pair("0xc", "0xd"))
+    for _ in range(4):
+        await asyncio.sleep(0)
+    assert not picking.done(), "the pick waits for the re-read"
+    session.swept.set()
+    await refresh
+    assert await picking
+
+    assert host.pair == ("0xc", "0xd")
+    assert session.pairs[-1] == ("0xc", "0xd"), "and the session is prepared for it"
+    host.request(5)
+    for _ in range(6):
+        await asyncio.sleep(0)
+    assert [q.amount_in for q in seen["quotes"]] == [5]
+    host.close()
+
+
+async def test_a_keystroke_during_a_refresh_is_answered_after_it():
+    """A solve during the sweep rebuilt the models from balances the sweep had
+    not replaced yet, and the refresh's own rebuild then saw nothing to do."""
+    session = SlowRefresh()
+    host, seen = await ready_with(session)
+    refresh = asyncio.ensure_future(host.refresh())
+    await asyncio.sleep(0)
+
+    host.request(7)
+    for _ in range(6):
+        await asyncio.sleep(0)
+    assert seen["quotes"] == [], "parked while the state is being replaced"
+    session.swept.set()
+    await refresh
+    await host.settle()
+
+    assert session.quoted_mid_sweep == []
+    assert [q.amount_in for q in seen["quotes"]] == [7]
+    host.close()
+
+
+async def test_a_pick_during_the_refreshs_own_re_preparation_is_not_undone():
+    """Two preparations in flight finished in either order, and the session
+    could end on the old pair while the host said the new one -- the one way
+    a route for coins nobody chose could be drawn and sent."""
+    session = FakeSession()
+    host, _seen = await ready_with(session)
+    slow = asyncio.Event()
+    prepare = session.set_pair
+
+    async def set_pair(src, dst, progress=None):
+        if (src, dst) == ("0xa", "0xb"):
+            await slow.wait()
+        return await prepare(src, dst, progress)
+
+    session.set_pair = set_pair
+    refresh = asyncio.ensure_future(host.refresh())
+    for _ in range(3):
+        await asyncio.sleep(0)
+    picking = asyncio.ensure_future(host.set_pair("0xc", "0xd"))
+    await asyncio.sleep(0)
+    slow.set()
+    await refresh
+    await picking
+
+    assert host.pair == ("0xc", "0xd")
+    assert session.pairs[-1] == ("0xc", "0xd")
+    host.close()
+
+
+async def test_a_background_refresh_does_not_raise_the_loading_bar():
+    """Nothing ever lowered it: the bar sat full under the header from the
+    first refresh on, and the tab looked busy for good."""
+    host, seen = await ready_with(FakeSession())
+    seen["progress"].clear()
+
+    await host.refresh()
+
+    assert seen["progress"] == []
+    host.close()
+
+
+async def test_a_refresh_that_fails_waits_before_trying_again():
+    """Unstamped, a failed refresh was due again at once: one try and one red
+    line a second, for as long as the endpoint was down."""
+    now = [1000.0]
+
+    async def sleep(seconds):
+        now[0] += seconds
+        await asyncio.sleep(0)
+
+    session = FakeSession()
+    tries: list[float] = []
+
+    async def down():
+        tries.append(now[0])
+        raise RuntimeError("could not read the latest block header")
+
+    host, _session, seen = build(session, sleep=sleep, clock=lambda: now[0])
+    await host.open(1)
+    session.refresh = down
+    start = now[0]
+    while now[0] - start < 600:
+        await asyncio.sleep(0)
+
+    assert len(tries) > 10
+    assert {round(b - a, 3) for a, b in itertools.pairwise(tries)} == {RETRY_SECONDS}
+    assert len(seen["errors"]) == len(tries)
+    host.close()
+
+
+async def test_state_left_by_a_sleeping_machine_is_re_read_before_it_is_quoted():
+    """The monotonic clock stops while the machine sleeps, so after a night
+    with the lid shut the state looked seconds old."""
+    wall = [1_000_000.0]
+    session = FakeSession()
+    host, seen = await ready_with(session, wall=lambda: wall[0])
+    before = session.refreshes
+
+    wall[0] += 8 * 3600
+    host.request(5)
+    for _ in range(8):
+        await asyncio.sleep(0)
+
+    assert session.refreshes == before + 1
+    assert [q.amount_in for q in seen["quotes"]] == [5], "answered after the re-read"
+    host.close()
+
+
+async def test_returning_to_a_chain_with_old_state_re_reads_it():
+    """The timer only refreshes the chain on screen, so a chain left and come
+    back to kept whatever it had when it was left."""
+    now = [1000.0]
+    session = FakeSession()
+    host, _seen = await ready_with(session, clock=lambda: now[0])
+    await host.open(2)
+    before = session.refreshes
+
+    now[0] += REFRESH_SECONDS + 1
+    await host.open(1)
+    for _ in range(4):
+        await asyncio.sleep(0)
+
+    assert session.refreshes == before + 1
     host.close()
 
 

@@ -9,7 +9,7 @@ The router's own shape is three costs, each paid at a different rate:
 A frontend has to make that felt as one thing.  What this owns is the timing:
 the loading bar during a warm, a background re-read every two minutes and
 after a swap of our own lands, and the rule that a keystroke never waits for
-the keystroke before it.
+the keystroke before it -- only for a re-read, which it must not run inside.
 
 Flet-free on purpose.  It reports progress and results through callbacks, so
 the view decides what a stage looks like and this decides when one happens.
@@ -36,8 +36,8 @@ REFRESH_SECONDS = 120.0
 CATCH_UP_TRIES = 8
 CATCH_UP_PAUSE = 1.5
 
-#: How long a failed warm waits before trying again.  The endpoint is a load
-#: balancer and a raised warm is usually a bad backend.
+#: How long a failed refresh waits before trying again.  The endpoint is a load
+#: balancer and a raised read is usually a bad backend.
 RETRY_SECONDS = 20.0
 
 
@@ -69,9 +69,14 @@ class _Chain:
     stage: Stage = Stage.COLD
     error: str = ""
     pair: tuple[str, str] | None = None
-    #: A pair whose re-preparation failed, to try again on the next refresh.
-    retry_pair: tuple[str, str] | None = None
+    #: The pair last asked for, prepared or not: what a refresh redoes.
+    asked: tuple[str, str] | None = None
     warmed_at: float = 0.0
+    #: The same moment by the wall clock, which goes on while the machine sleeps.
+    warmed_wall: float = 0.0
+    #: Held across a refresh and every preparation, so a pick or a solve waits
+    #: for the re-read instead of running against state it is replacing.
+    busy: asyncio.Lock = field(default_factory=asyncio.Lock)
     coins: list = field(default_factory=list)
 
 
@@ -100,7 +105,7 @@ class RouterHost:
     """The router, from the tab's point of view."""
 
     def __init__(self, *, make_session, on_stage=None, on_progress=None,
-                 on_quote=None, on_error=None, sleep=None, clock=None):
+                 on_quote=None, on_error=None, sleep=None, clock=None, wall=None):
         #: `async (chain_id) -> (RouterSession, coins)`.  Injected so this can
         #: be driven by a fake in tests and by the real thing in the app.
         self._make_session = make_session
@@ -110,6 +115,7 @@ class RouterHost:
         self._on_error = on_error or (lambda *_: None)
         self._sleep = sleep or asyncio.sleep
         self._clock = clock or time.monotonic
+        self._wall = wall or time.time
 
         self._chains: dict[int, _Chain] = {}
         self.chain_id = 0
@@ -122,6 +128,7 @@ class RouterHost:
         self._quoting = False
         self._quoter: asyncio.Task | None = None
         self._refresher: asyncio.Task | None = None
+        self._overdue: asyncio.Task | None = None
 
     # ------------------------------------------------------------- the chain
 
@@ -161,6 +168,7 @@ class RouterHost:
         held = self._held
         if held.stage is Stage.READY:
             self._say(held.stage)
+            self._refresh_if_overdue()
             return
         if held.stage is Stage.WARMING:
             return
@@ -198,7 +206,7 @@ class RouterHost:
             return
         held.session = session
         held.coins = coins
-        held.warmed_at = self._clock()
+        self._stamp(held)
         held.stage = Stage.READY
         held.pair = None
         self._say(Stage.READY)
@@ -216,6 +224,7 @@ class RouterHost:
         if held.stage is not Stage.READY or held.session is None:
             return False
         pair = (src.lower(), dst.lower())
+        held.asked = pair
         if held.pair == pair:
             return True
         self._generation += 1
@@ -227,8 +236,23 @@ class RouterHost:
         # rate read "1 crvUSD = 0 sDOLA" because the old pair's numbers were
         # being formatted with the new coin's decimals.
         held.pair = None
+        async with held.busy:
+            if held.pair == pair:
+                ready = True        # a refresh prepared it while this waited
+            elif generation != self._generation:
+                return False        # overtaken while it waited
+            else:
+                ready = await self._prepare(held, pair, generation)
+        if ready:
+            self._pump()
+        return ready
+
+    async def _prepare(self, held: _Chain, pair: tuple[str, str], generation: int,
+                       *, quiet: bool = False) -> bool:
+        """Prepare `pair` under `held.busy`.  `quiet` draws nothing for it."""
         try:
-            await held.session.set_pair(*pair, progress=self._pair_progress)
+            await held.session.set_pair(
+                *pair, progress=None if quiet else self._pair_progress)
         except Exception as exc:
             if generation == self._generation:
                 self._on_error(exc)
@@ -236,9 +260,8 @@ class RouterHost:
         if generation != self._generation:
             return False
         held.pair = pair
-        self._on_progress("ready", 1.0)
-        if self._wanted is not None:
-            self._pump()
+        if not quiet:
+            self._on_progress("ready", 1.0)
         return True
 
     # ------------------------------------------------------------ the amount
@@ -256,14 +279,14 @@ class RouterHost:
         if self._wanted is None:
             self._on_quote(None)
             return
+        self._refresh_if_overdue()
         self._pump()
 
     def _pump(self) -> None:
         if self._quoting or self._wanted is None:
             return
-        held = self._held
-        if held.stage is not Stage.READY or held.pair is None:
-            return          # parked until the warm, or the pair, is done
+        if not self._can_quote(self._held):
+            return          # parked until the warm, the pair or the re-read is done
         self._quoting = True
         # Held, so it is not collected mid-flight -- asyncio keeps only a weak
         # reference to a running task.
@@ -273,14 +296,15 @@ class RouterHost:
         """Answer the newest amount until nothing new has arrived."""
         try:
             while True:
+                # The solve is synchronous and ~300 ms; yield first so the
+                # keystroke that asked for it has been drawn.  Everything is
+                # read after the yield: a pair or a re-read can land during it.
+                await self._sleep(0)
                 held = self._held
                 amount = self._wanted
-                if amount is None or held.session is None:
+                if amount is None or not self._can_quote(held):
                     return
                 generation = self._generation
-                # The solve is synchronous and ~300 ms; yield first so the
-                # keystroke that asked for it has been drawn.
-                await self._sleep(0)
                 started = self._clock()
                 try:
                     result = held.session.quote(amount)
@@ -312,6 +336,11 @@ class RouterHost:
         finally:
             self._quoting = False
 
+    @staticmethod
+    def _can_quote(held: _Chain) -> bool:
+        return (held.stage is Stage.READY and held.session is not None
+                and held.pair is not None and not held.busy.locked())
+
     # ------------------------------------------------------------- refreshing
 
     def _start_refresher(self) -> None:
@@ -321,9 +350,9 @@ class RouterHost:
     async def _refresh_loop(self) -> None:
         """Re-read the swept state on a timer, with nothing drawn for it.
 
-        Timestamped rather than locked, the way `CurveApp.refresh_totals`
-        does it: the loop sleeps until the state is actually due, so a refresh
-        forced by a confirmed swap resets the clock instead of racing it.
+        Timestamped, the way `CurveApp.refresh_totals` does it: the loop sleeps
+        until the state is actually due, so a refresh forced by a confirmed
+        swap resets the clock instead of racing it.
         """
         while True:
             held = self._held
@@ -331,38 +360,68 @@ class RouterHost:
             held = self._held
             if held.stage is not Stage.READY or held.session is None:
                 continue
-            if self._age(held) < REFRESH_SECONDS:
+            if not self._due(held):
                 continue
-            await self.refresh()
+            await self.refresh(only_if_due=True)
+
+    def _refresh_if_overdue(self) -> None:
+        """Re-read now, not at the next tick, when the state is past due.
+
+        The tick sleeps on a clock that stops while the machine does, and only
+        ever refreshes the chain that was on screen when it went to sleep.
+        """
+        held = self._held
+        if held.stage is not Stage.READY or held.busy.locked():
+            return
+        if not self._due(held):
+            return
+        if self._overdue is None or self._overdue.done():
+            self._overdue = asyncio.ensure_future(self.refresh(only_if_due=True))
 
     def _age(self, held: _Chain) -> float:
-        return self._clock() - held.warmed_at if held.warmed_at else REFRESH_SECONDS
+        """Seconds since the last read, by whichever clock says more."""
+        if not held.warmed_at:
+            return REFRESH_SECONDS
+        return max(self._clock() - held.warmed_at, self._wall() - held.warmed_wall)
 
-    async def refresh(self) -> int:
+    def _due(self, held: _Chain) -> bool:
+        # Within the loop's one-second floor counts: the two clocks never agree
+        # to the microsecond, and short of due by one it slept a second more.
+        return self._age(held) > REFRESH_SECONDS - 1.0
+
+    def _stamp(self, held: _Chain, ago: float = 0.0) -> None:
+        held.warmed_at = self._clock() - ago
+        held.warmed_wall = self._wall() - ago
+
+    async def refresh(self, *, only_if_due: bool = False) -> int:
         """Re-read the state at the newest block, and re-quote if anything is
         showing.  Nothing is drawn for this: it is not a wait anyone asked for.
         """
         held = self._held
         if held.stage is not Stage.READY or held.session is None:
             return 0
-        pair = held.pair or held.retry_pair
-        try:
-            block = await held.session.refresh()
-        except Exception as exc:
-            self._on_error(exc)
-            return 0
-        held.warmed_at = self._clock()
-        # A refresh drops the preparation, because probes fitted at one block
-        # are a fit against a state that has moved.  Redo it now rather than
-        # on the next keystroke, which is where it would be felt.
-        held.pair = None
-        if pair is not None:
-            # A re-preparation that failed used to leave nothing behind: the
-            # next refresh had no pair to redo, `_pump` will not quote without
-            # one, and the tab quoted nothing until the coins were changed.
-            held.retry_pair = None if await self.set_pair(*pair) else pair
-        elif self._wanted is not None:
-            self._pump()
+        async with held.busy:
+            if only_if_due and not self._due(held):
+                return 0        # done while this waited
+            try:
+                block = await held.session.refresh()
+            except Exception as exc:
+                # Due again in RETRY_SECONDS.  Unstamped, it was due again at
+                # once, and the loop retried every second for as long as the
+                # endpoint was down.
+                self._stamp(held, ago=REFRESH_SECONDS - RETRY_SECONDS)
+                self._on_error(exc)
+                return 0
+            self._stamp(held)
+            # A refresh drops the preparation, because probes fitted at one
+            # block are a fit against a state that has moved.  Redo it now
+            # rather than on the next keystroke, which is where it would be
+            # felt -- and redo the pair asked for last, which a pick made
+            # during the re-read has changed.
+            held.pair = None
+            if held.asked is not None:
+                await self._prepare(held, held.asked, self._generation, quiet=True)
+        self._pump()
         return block
 
     async def settle(self) -> None:
@@ -405,10 +464,10 @@ class RouterHost:
         return block
 
     def close(self) -> None:
-        for task in (self._refresher, self._quoter):
+        for task in (self._refresher, self._quoter, self._overdue):
             if task is not None:
                 task.cancel()
-        self._refresher = self._quoter = None
+        self._refresher = self._quoter = self._overdue = None
 
     # ------------------------------------------------------------- reporting
 

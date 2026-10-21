@@ -72,7 +72,7 @@ def served(monkeypatch):
 
 async def test_a_scanned_chain_costs_nothing_to_rate(served) -> None:
     server, api, pools = served(120)
-    await api._all_gauges(CHAIN)
+    await api._list_pools(CHAIN)
     asked = len(server.list_pages)
 
     rates = await api.pool_rates(CHAIN, [p["address"] for p in pools])
@@ -85,7 +85,7 @@ async def test_a_scanned_chain_costs_nothing_to_rate(served) -> None:
 
 async def test_a_handful_of_pools_is_asked_for_one_at_a_time(served) -> None:
     server, api, pools = served(600)
-    await api._all_gauges(CHAIN)
+    await api._list_pools(CHAIN)
     api.invalidate()          # rates expired; the page count is still known
     server.list_pages.clear()
 
@@ -97,7 +97,7 @@ async def test_a_handful_of_pools_is_asked_for_one_at_a_time(served) -> None:
 
 async def test_more_pools_than_pages_takes_the_list(served) -> None:
     server, api, pools = served(100)
-    await api._all_gauges(CHAIN)
+    await api._list_pools(CHAIN)
     api.invalidate()
     server.list_pages.clear()
 

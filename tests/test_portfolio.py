@@ -496,6 +496,67 @@ async def test_a_page_that_never_loads_is_reported_not_dropped() -> None:
         await api._list_pools(1)
 
 
+def _targets_api(monkeypatch, priced: list[dict], listed: list[dict]):
+    """A `CurveApi` whose price listing and v2 list say these."""
+    from curve import api as api_module
+    from curve.api import CurveApi
+
+    async def prices(url, timeout=None):
+        return {"data": priced}
+
+    async def v2_list(chain_id):
+        return listed
+
+    monkeypatch.setattr(api_module, "get_json", prices)
+    api = CurveApi()
+    api._store("lite:chains", {})
+    api._list_pools = v2_list  # type: ignore[method-assign]
+    return api
+
+
+def _v2_row(tag: str, *, tvl: float | None, age: float = 365 * 86_400.0) -> dict:
+    import time
+
+    return {"address": address(tag), "name": tag, "tvl_usd": tvl,
+            "creation_date": int(time.time() - age),
+            "coins": [{"address": "0x" + "aa" * 20, "symbol": "A"}],
+            "gauges": [{"address": address("g" + tag), "is_killed": False}]}
+
+
+async def test_a_pool_made_minutes_ago_is_read_though_no_index_has_it(monkeypatch):
+    """crvUSD/WETH, made and deposited into at once: the price listing had not
+    seen it, and the v2 list said it held $0 -- so nobody asked."""
+    new = _v2_row("new", tvl=0.0, age=1_200.0)
+    api = _targets_api(monkeypatch, priced=[], listed=[new])
+
+    targets = await api.portfolio_targets("ethereum", 1)
+
+    assert [t.address for t in targets] == [new["address"]]
+    assert targets[0].lp_token == new["address"], "an NG pool is its own LP token"
+    assert targets[0].gauge == address("gnew")
+
+
+async def test_a_pool_the_price_listing_leaves_out_is_read_by_its_v2_tvl(monkeypatch):
+    held, empty = _v2_row("held", tvl=37_798.9), _v2_row("empty", tvl=0.0)
+    api = _targets_api(monkeypatch, priced=[], listed=[held, empty])
+
+    targets = await api.portfolio_targets("ethereum", 1)
+
+    assert [t.address for t in targets] == [held["address"]]
+    assert targets[0].tvl == 37_798.9
+
+
+async def test_a_new_pool_the_listing_calls_empty_is_read_once(monkeypatch):
+    new = _v2_row("new", tvl=0.0, age=60.0)
+    priced = {"address": new["address"], "name": "new", "balances_usd": [0, 0],
+              "lp_token_address": address("lp"), "coins": new["coins"]}
+    api = _targets_api(monkeypatch, priced=[priced], listed=[new])
+
+    targets = await api.portfolio_targets("ethereum", 1)
+
+    assert [t.lp_token for t in targets] == [address("lp")], "the listing's, once"
+
+
 async def test_every_chains_tvl_arrives_in_one_request(monkeypatch) -> None:
     """The per-chain totals endpoint answers with the chain's whole pool
     list attached -- 2.3 MB for Ethereum -- so asking it twenty-six times

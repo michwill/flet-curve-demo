@@ -66,6 +66,10 @@ DEFAULT_MIN_TVL = 1_000.0
 #: Prices data is cached at the edge for ~5 minutes; match it.
 CACHE_TTL = 300.0
 
+#: A pool this young is read by the portfolio whatever its TVL says: both
+#: indexers report one made minutes ago, and deposited into, as empty.
+NEW_POOL_AGE = 7 * 86_400.0
+
 #: The figures on a pool that move, and the only ones worth keeping off a
 #: chain payload. Named as the v2 pool payload names them, because that is
 #: what `Pool.from_v2` reads.
@@ -173,6 +177,35 @@ def pool_composition(raw: dict[str, Any]) -> float:
     if isinstance(balances, list) and balances:
         return sum(float(value or 0.0) for value in balances)
     return float(raw.get("tvl_usd") or 0.0)
+
+
+def _is_new(raw: dict[str, Any] | None, now: float) -> bool:
+    """Young enough that an indexer may still be reporting it empty."""
+    created = _float((raw or {}).get("creation_date"))
+    return created > 0 and now - created < NEW_POOL_AGE
+
+
+def _target_coins(raw: dict[str, Any]) -> tuple[tuple[str, str], ...]:
+    return tuple(
+        (coin.get("address") or "", coin.get("symbol") or "?")
+        for coin in raw.get("coins") or []
+    )
+
+
+def _gauges_by_pool(pools: Sequence[dict[str, Any]]) -> dict[str, str]:
+    """Pool address -> the gauge to read balances from.
+
+    Live where there is one, and a killed one otherwise: a killed gauge that
+    still holds somebody's LP is exactly the balance they most need to see.
+    """
+    gauges: dict[str, str] = {}
+    for raw in pools:
+        gauge = _first_live_gauge(raw.get("gauges")) or _first_dead_gauge(
+            raw.get("gauges")
+        )
+        if gauge:
+            gauges[(raw.get("address") or "").lower()] = gauge
+    return gauges
 
 
 def _rates_key(chain_id: int, address: str) -> str:
@@ -673,16 +706,21 @@ class CurveApi:
                 if pool.tvl > 0
             ]
 
-        listing, gauges = await asyncio.gather(
+        listing, pools = await asyncio.gather(
             get_json(build_url(PRICES_V1, f"/chains/{chain}"), timeout=120.0),
-            self._all_gauges(chain_id),
+            self._list_pools(chain_id),
         )
+        gauges = _gauges_by_pool(pools)
+        listed = {(raw.get("address") or "").lower(): raw for raw in pools}
+        now = time.time()
         targets = []
+        priced: set[str] = set()
         for raw in (listing or {}).get("data") or []:
-            held = pool_composition(raw)
-            if held <= 0:
-                continue
             address = raw.get("address") or ""
+            priced.add(address.lower())
+            held = pool_composition(raw)
+            if held <= 0 and not _is_new(listed.get(address.lower()), now):
+                continue
             targets.append(
                 Target(
                     address=address,
@@ -691,29 +729,31 @@ class CurveApi:
                     lp_token=raw.get("lp_token_address") or address,
                     gauge=gauges.get(address.lower(), ""),
                     tvl=held,
-                    coins=tuple(
-                        (coin.get("address") or "", coin.get("symbol") or "?")
-                        for coin in raw.get("coins") or []
-                    ),
+                    coins=_target_coins(raw),
+                )
+            )
+        # The price listing has yet to index a new pool, and leaves some out
+        # for good: $90k across twelve of them on Ethereum.
+        for address, raw in listed.items():
+            if address in priced:
+                continue
+            tvl = _float(raw.get("tvl_usd"))
+            if tvl <= 0 and not _is_new(raw, now):
+                continue
+            targets.append(
+                Target(
+                    address=raw.get("address") or "",
+                    name=raw.get("name") or "",
+                    chain=chain,
+                    # v2 names no LP token.  An NG pool is its own; any other
+                    # reads as nothing, never as somebody else's balance.
+                    lp_token=raw.get("address") or "",
+                    gauge=gauges.get(address, ""),
+                    tvl=tvl,
+                    coins=_target_coins(raw),
                 )
             )
         return targets
-
-    async def _all_gauges(self, chain_id: int) -> dict[str, str]:
-        """Pool address -> the gauge to read balances from.
-
-        Live where there is one, and a killed one otherwise: this feeds
-        the portfolio scan, and a killed gauge that still holds somebody's
-        LP is exactly the balance they most need to see.
-        """
-        gauges: dict[str, str] = {}
-        for raw in await self._list_pools(chain_id):
-            gauge = _first_live_gauge(raw.get("gauges")) or _first_dead_gauge(
-                raw.get("gauges")
-            )
-            if gauge:
-                gauges[(raw.get("address") or "").lower()] = gauge
-        return gauges
 
     async def _list_pools(self, chain_id: int) -> list[dict[str, Any]]:
         """Every pool on the chain, as the list endpoint describes it.

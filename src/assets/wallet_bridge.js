@@ -191,11 +191,50 @@
     "net_version",
   ]);
 
+  // What the wallet approved: chains read off its `eip155:<chain>:<address>`
+  // accounts, and methods. Only the wallet can widen either.
+  function sessionScope(provider) {
+    const spaces = Object.entries(provider.session?.namespaces || {})
+      .filter(([key]) => key.split(":")[0] === "eip155")
+      .map(([, space]) => space);
+    const chains = spaces
+      .flatMap((space) => space.accounts || [])
+      .map((account) => Number(account.split(":")[1]));
+    return {
+      chains: [...new Set(chains)],
+      methods: new Set(spaces.flatMap((space) => space.methods || [])),
+    };
+  }
+
+  // A restore puts back the last chain from storage without checking the
+  // session covers it; moving to one it does is local.
+  async function settleOnApprovedChain(provider) {
+    const { chains } = sessionScope(provider);
+    if (!chains.length || chains.includes(Number(provider.chainId))) return;
+    await provider.request({
+      method: "wallet_switchEthereumChain",
+      params: [{ chainId: `0x${chains[0].toString(16)}` }],
+    });
+  }
+
   function wrapWalletConnect(provider) {
     return {
       on: (...args) => provider.on(...args),
       removeListener: (...args) => provider.removeListener(...args),
       async request({ method, params }) {
+        if (method === "wallet_switchEthereumChain") {
+          // Outside the session, WalletConnect refuses without asking the
+          // wallet unless it approved this method -- and blames the wallet.
+          const wanted = Number(params?.[0]?.chainId);
+          const { chains, methods } = sessionScope(provider);
+          if (chains.length && !chains.includes(wanted) && !methods.has(method)) {
+            throw {
+              code: 4901,
+              message: `This WalletConnect session does not cover chain ${wanted}`,
+              data: { chains },
+            };
+          }
+        }
         if (WC_LOCAL_METHODS.has(method)) {
           switch (method) {
             case "eth_accounts":
@@ -265,10 +304,14 @@
                   ],
                 },
                 optionalChains: wcChains(),
+                // Replaces WalletConnect's defaults rather than adding to
+                // them, so the chain methods must be named here.
                 optionalMethods: [
                   "eth_sendTransaction",
                   "personal_sign",
                   "eth_signTypedData_v4",
+                  "wallet_switchEthereumChain",
+                  "wallet_addEthereumChain",
                   // EIP-5792, for a wallet that takes an approval and the
                   // thing it is for in one prompt.  WalletConnect approves
                   // methods at connect time and refuses whatever was not
@@ -298,6 +341,7 @@
               }
               await wcProvider.enable();
             }
+            await settleOnApprovedChain(wcProvider);
             log("session established, accounts:", wcProvider.accounts);
             return wrapWalletConnect(wcProvider);
           },

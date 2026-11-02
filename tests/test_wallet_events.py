@@ -458,6 +458,7 @@ class SwitchingProvider(WalletProvider):
         *,
         knows: set[int] | None = None,
         rejects_add: bool = False,
+        covers: list[int] | None = None,
     ) -> None:
         self.chain = chain
         self.knows = {1} if knows is None else knows
@@ -465,6 +466,7 @@ class SwitchingProvider(WalletProvider):
         self.added: list[dict] = []
         self.refuse = False
         self.rejects_add = rejects_add
+        self.covers = covers
 
     async def request(self, method, params=None):
         params = params or []
@@ -474,6 +476,8 @@ class SwitchingProvider(WalletProvider):
             wanted = int(params[0]["chainId"], 16)
             if self.refuse:
                 raise RpcError(4001, "User rejected the request")
+            if self.covers is not None and wanted not in self.covers:
+                raise RpcError(4901, "not in this session", {"chains": self.covers})
             if wanted not in self.knows:
                 raise RpcError(4902, f"Unrecognized chain ID {hex(wanted)}")
             self.switched.append(wanted)
@@ -575,6 +579,22 @@ async def test_a_refusal_is_reported_and_nothing_else_happens() -> None:
     assert provider.added == []
     assert app.error.visible is True
     assert "rejected" in app.error.value.lower()
+
+
+async def test_a_chain_outside_the_session_says_to_reconnect() -> None:
+    """A stale WalletConnect session approved for Robinhood alone read as
+    "Your wallet stayed on Chain 4663", with the wallet on Ethereum all along.
+    """
+    provider = SwitchingProvider(chain=4663, knows={1, 4663}, covers=[4663])
+    app = curve_app(provider, chains={"ethereum": 1, "robinhood": 4663})
+
+    await app.align_wallet_chain()
+
+    assert provider.added == [], "adding a chain cannot widen a session"
+    assert app.error.value == (
+        "Your wallet's session covers only Robinhood, not Ethereum. "
+        "Disconnect and connect again to add it."
+    )
 
 
 async def test_an_unknown_lite_chain_is_offered_to_the_wallet() -> None:

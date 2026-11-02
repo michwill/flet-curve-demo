@@ -70,6 +70,20 @@ now what the *picker* offers, pushed to the bridge as a default when the chain
 list lands: 26 chains rather than 5, and it cannot drift from what someone can
 actually pick.  A `[walletconnect] chains` in `local_config.toml` still wins.
 
+**Proposing a chain is not the wallet approving it.** A Safe approves only the
+chain it is open on, and a session restored from storage keeps whatever it was
+approved for back then, along with the last chain WalletConnect used.  That
+chain is restored even when the session no longer covers it.  One such
+session, approved for Robinhood alone, came back reading "Your wallet stayed
+on Chain 4663" with the wallet on Ethereum the whole time.  The bridge
+therefore reads the session's own accounts.  It moves off a restored chain
+the session lacks.  A switch to a chain outside the session fails with 4901
+and the list of chains the session does cover, and the app says to reconnect.
+WalletConnect is not left to refuse in words that blame the wallet.  The
+proposal names `wallet_switchEthereumChain` itself, because naming any
+`optionalMethods` replaces WalletConnect's defaults rather than adding to
+them.
+
 ### Testing WalletConnect without a phone
 
 WalletConnect looks untestable — it wants a projectId, a relay and a phone to

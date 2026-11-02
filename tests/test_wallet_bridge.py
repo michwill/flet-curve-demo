@@ -48,3 +48,49 @@ def test_two_tabs_keep_their_own_wallets() -> None:
     assert result["afterA"]["result"] == "answered by alpha"
     assert result["afterB"]["result"] == "answered by beta"
     assert (result["alphaCalls"], result["betaCalls"]) == (1, 1)
+
+
+WC_HARNESS = Path(__file__).resolve().parent / "js" / "walletconnect_harness.mjs"
+SAFE = "0x7a16fF8270133F063aAb6C9977183D9e72835428"
+
+
+def run_walletconnect(chains: list[int], stored: int, methods=("eth_sendTransaction",)) -> dict:
+    """Restore a WalletConnect session approved for `chains`, storage on `stored`."""
+    scenario = {
+        "accounts": [f"eip155:{chain}:{SAFE}" for chain in chains],
+        "methods": list(methods),
+        "storedChain": stored,
+    }
+    done = subprocess.run(
+        ["node", str(WC_HARNESS), str(BRIDGE), json.dumps(scenario)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=True,
+    )
+    return json.loads(done.stderr.strip().splitlines()[-1])
+
+
+def test_a_chain_outside_the_session_is_named_as_such() -> None:
+    """WalletConnect's own refusal reads as the wallet having stayed put."""
+    result = run_walletconnect([4663], stored=4663)
+
+    error = result["switchToEthereum"]["error"]
+    assert error["code"] == 4901
+    assert error["data"] == {"chains": [4663]}
+
+
+def test_a_stored_chain_the_session_lacks_is_not_reported() -> None:
+    result = run_walletconnect([1, 4663], stored=10)
+
+    assert result["chainBefore"]["result"] == "0x1"
+
+
+def test_a_wallet_that_can_switch_is_asked() -> None:
+    """A proposal naming its own methods drops WalletConnect's defaults."""
+    result = run_walletconnect(
+        [4663], stored=4663, methods=("eth_sendTransaction", "wallet_switchEthereumChain")
+    )
+
+    assert "wallet_switchEthereumChain" in result["proposedMethods"]
+    assert result["forwarded"] == [1]

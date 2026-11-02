@@ -54,7 +54,7 @@ from wallet import (
     batch,
     is_browser,
 )
-from wallet.base import RpcError
+from wallet.base import CHAIN_DISCONNECTED, RpcError
 
 DEFAULT_CHAIN = "ethereum"
 #: Shown first in the picker; anything else the API reports is appended.
@@ -1016,6 +1016,9 @@ class CurveApp(Batching):
             await wallet.provider.switch_chain(chain_id)
             return
         except RpcError as exc:
+            if exc.code == CHAIN_DISCONNECTED:
+                self._say_chain(self._outside_session(exc.data))
+                return
             if exc.code != UNKNOWN_CHAIN:
                 self._say_chain(f"Your wallet stayed on {wallet.chain.name}: {exc.message}")
                 return
@@ -1042,6 +1045,19 @@ class CurveApp(Batching):
             self._say_chain(
                 f"Could not add {params['chainName']} to your wallet: {exc}"
             )
+
+    def _outside_session(self, data: Any) -> str:
+        """A WalletConnect session approved for other chains: only a new one helps."""
+        names = {chain_id: name for name, chain_id in self.chains.items()}
+        ids = data.get("chains", []) if isinstance(data, dict) else []
+        covered = ", ".join(
+            chain_name(names[i]) if i in names else f"chain {i}" for i in ids
+        )
+        scope = f"covers only {covered}, not" if covered else "does not cover"
+        return (
+            f"Your wallet's session {scope} {chain_name(self.chain)}. "
+            "Disconnect and connect again to add it."
+        )
 
     async def _teachable(self, chain_id: int) -> dict | None:
         """What this network would have to say to be added to a wallet.

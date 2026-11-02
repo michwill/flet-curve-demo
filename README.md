@@ -15,7 +15,7 @@ compiled to WebAssembly and run in the browser. See
 ```bash
 git lfs install                      # once per user, before the submodules
 git submodule update --init          # curve-assets, and electric-router
-uv venv && uv pip install -r pyproject.toml --group dev
+uv sync --locked                     # .venv from uv.lock; re-sync with --inexact, or lose --native's build
 sudo apt install cmake ninja-build clang libgtk-3-dev   # only for `pytest -m flet_ui`
 .venv/bin/python tools/build_assets.py   # compile the subset the app needs
 .venv/bin/python tools/build_router.py   # the router: package, caches, wasm

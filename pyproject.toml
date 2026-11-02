@@ -78,7 +78,7 @@ dev = [
     # tools/build_router.py --native shells out to it for the desktop
     # extensions. Not needed for the browser, whose wasm the router's own
     # scripts/build_wasm.sh builds.
-    "maturin==1.15.0",
+    "maturin==1.16.0",
     # Both configured further down this file.
     "ruff==0.17.0",
     "mypy==2.4.0",

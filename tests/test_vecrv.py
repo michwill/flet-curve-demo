@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+from typing import cast
 
 import pytest
 
@@ -568,7 +569,8 @@ def run_claim(monkeypatch, waiter) -> tuple[list[str], object]:
         return await waiter(provider, tx)
 
     monkeypatch.setattr(ui_vecrv, "wait_for_confirmation", waited)
-    v = ui_vecrv.VeCrvView(_StubPage(), contract_for=lambda: contract,
+    v = ui_vecrv.VeCrvView(_StubPage(),
+                           contract_for=lambda: cast(VeCrvContract, contract),
                            now=lambda: NOW)
     v.show(before)
     asyncio.run(v._claim(None))
@@ -721,7 +723,8 @@ def run_add(monkeypatch) -> object:
 
     monkeypatch.setattr(ui_vecrv, "wait_for_confirmation", waited)
     contract = Adder(log, before, after)
-    v = ui_vecrv.VeCrvView(_StubPage(), contract_for=lambda: contract,
+    v = ui_vecrv.VeCrvView(_StubPage(),
+                           contract_for=lambda: cast(VeCrvContract, contract),
                            now=lambda: NOW)
     v.show(before)
     v._max_clicked(None)

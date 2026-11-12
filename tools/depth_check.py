@@ -21,9 +21,12 @@ import math
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from liquidity_survey import (
+from curve import depth
+from curve import liquidity as L
+from tools.liquidity_survey import (
     endpoints,
     node,
     number,
@@ -31,9 +34,6 @@ from liquidity_survey import (
     stored_rates,
     symbol,
 )
-
-from curve import depth
-from curve import liquidity as L
 
 #: Where along the curve to compare, as shares of the `i` balance.  Fine at
 #: the near end: an amplified peak can be a few basis points wide, and a

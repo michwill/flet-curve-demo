@@ -191,7 +191,7 @@ def test_the_readout_says_what_the_fee_is_there() -> None:
 
     chart = fee_chart(0.004)
     at = chart._profile.samples[10]
-    texts = [s.value for s in chart._readout(chart._profile, at)
+    texts = [s.value or "" for s in chart._readout(chart._profile, at)
              if isinstance(s, cv.Text)]
 
     assert texts and "fee 0.4000%" in texts[0]
@@ -202,7 +202,7 @@ def test_and_leaves_it_out_where_there_is_none() -> None:
 
     chart = fee_chart(0.0)
     at = chart._profile.samples[10]
-    texts = [s.value for s in chart._readout(chart._profile, at)
+    texts = [s.value or "" for s in chart._readout(chart._profile, at)
              if isinstance(s, cv.Text)]
 
     assert texts and "fee" not in texts[0]

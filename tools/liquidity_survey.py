@@ -154,7 +154,8 @@ def candidates(call, pool: str, decimals, balances):
         (name, True,
          lambda kind=kind: L.twocrypto_curve(
              balances, precisions, pegged, invariant, amp, gamma, **kind,
-             **fees),
+             mid_fee=fees["mid_fee"], out_fee=fees["out_fee"],
+             fee_gamma=fees["fee_gamma"]),
          seed)
         for name, kind in shapes
     ]

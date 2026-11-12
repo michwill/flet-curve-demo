@@ -229,6 +229,7 @@ disallow_untyped_defs = false
 [[tool.mypy.overrides]]
 # `fontTools` and `flet_web` are build-time only -- neither ships a
 # py.typed marker, and neither is imported by anything the app runs.
+# `msgpack` ships no marker either, and typeshed has no stubs for it.
 #
 # `erouter` is excluded above and so has no stubs to check against here;
 # `erouter_evm` and `erouter_solve` are compiled extensions built from
@@ -236,7 +237,7 @@ disallow_untyped_defs = false
 # `tools/build_router.py --native`.
 module = [
     "flet_charts.*", "pyodide.*", "js", "fontTools.*", "flet_web",
-    "erouter.*", "erouter_evm", "erouter_solve",
+    "erouter.*", "erouter_evm", "erouter_solve", "msgpack",
 ]
 ignore_missing_imports = true
 

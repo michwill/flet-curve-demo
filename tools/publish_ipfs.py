@@ -470,8 +470,8 @@ def shadowed(root: Path) -> list[tuple[str, str]]:
             for long in here:
                 if long != short and long.startswith(short):
                     at = folder.relative_to(root).as_posix()
-                    here = "" if at == "." else f"{at}/"
-                    found.append((f"{here}{short}", f"{here}{long}"))
+                    prefix = "" if at == "." else f"{at}/"
+                    found.append((f"{prefix}{short}", f"{prefix}{long}"))
     return found
 
 

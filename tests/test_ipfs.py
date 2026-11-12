@@ -1379,6 +1379,16 @@ def test_and_is_found_in_a_subdirectory_too(tmp_path: Path) -> None:
         ("assets/AssetManifest.bin", "assets/AssetManifest.bin.json")]
 
 
+def test_every_pair_in_one_folder_is_found(tmp_path: Path) -> None:
+    """Not just the first: the folder's prefix once overwrote its name list."""
+    (tmp_path / "assets").mkdir()
+    for name in ("a.js", "a.js.map", "b.bin", "b.bin.json"):
+        (tmp_path / "assets" / name).write_text("x")
+
+    assert ipfs.shadowed(tmp_path) == [("assets/a.js", "assets/a.js.map"),
+                                       ("assets/b.bin", "assets/b.bin.json")]
+
+
 def test_names_that_merely_look_alike_are_left_alone(tmp_path: Path) -> None:
     """`flutter.js` and `flutter_bootstrap.js` share a stem and neither starts
     the other, so both arrive."""

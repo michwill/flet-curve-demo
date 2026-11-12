@@ -16,7 +16,11 @@ those files; a browser fetches them over HTTP instead of reading them.
 
 The **wasm module** (`src/assets/router/`) is the solver and the EVM.  It is
 built by the submodule's own `scripts/build_wasm.sh`, which needs a rustup
-toolchain -- see `vendor/electric-router/rust/README.md`.
+toolchain -- see `vendor/electric-router/rust/README.md`.  The wasm-bindgen
+CLI it also needs is cargo-installed here when PATH has the wrong one.
+
+A failed step does not stop the others: `--native` builds even when the wasm
+cannot, and the exit status reports every failure at the end.
 
 Everything written here is gitignored: it is a build product, like
 `src/assets/curve/`.
@@ -32,6 +36,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -63,6 +68,10 @@ DATA = (
 #: `.d.ts` files are for a TypeScript caller and would only be dead weight in
 #: the bundle.
 WASM_FILES = ("erouter_wasm.js", "erouter_wasm_bg.wasm")
+
+
+class BuildError(Exception):
+    """A step that failed; `main` runs the rest before reporting it."""
 
 
 def _use_source(path: Path) -> None:
@@ -141,6 +150,47 @@ def wasm_is_stale(pkg: Path) -> bool:
     return False
 
 
+def wasm_bindgen_pin() -> str:
+    """The version `rust/wasm/Cargo.toml` pins with `=`, which the CLI must equal."""
+    manifest = tomllib.loads((SOURCE / "rust" / "wasm" / "Cargo.toml").read_text())
+    spec = manifest["dependencies"]["wasm-bindgen"]
+    if isinstance(spec, dict):
+        spec = spec["version"]
+    return str(spec).lstrip("=")
+
+
+def wasm_bindgen_version(path: str) -> str | None:
+    """The version of the `wasm-bindgen` that `path` finds first, or None."""
+    exe = shutil.which("wasm-bindgen", path=path)
+    if exe is None:
+        return None
+    done = subprocess.run([exe, "--version"], check=False,
+                          capture_output=True, text=True)
+    words = done.stdout.split()  # "wasm-bindgen 0.2.129"
+    return words[1] if len(words) >= 2 else None
+
+
+def ensure_wasm_bindgen(env: dict[str, str]) -> None:
+    """Cargo-install the CLI the crate pins when PATH finds another; PyPI has none."""
+    want = wasm_bindgen_pin()
+    have = wasm_bindgen_version(env["PATH"])
+    if have == want:
+        return
+    print(f"  wasm:    wasm-bindgen {have or 'missing'}, the crate pins {want}"
+          f" -- cargo install")
+    # From rust/ so rustup picks the pinned toolchain; it lands in ~/.cargo/bin,
+    # which build_wasm.sh puts first on PATH.
+    done = subprocess.run(
+        ["cargo", "install", "wasm-bindgen-cli", "--version", f"={want}", "--locked"],
+        cwd=SOURCE / "rust", env=env, check=False,
+    )
+    if done.returncode != 0:
+        raise BuildError(f"cargo install wasm-bindgen-cli {want} failed, see above")
+    have = wasm_bindgen_version(env["PATH"])
+    if have != want:
+        raise BuildError(f"installed wasm-bindgen {want}, but PATH still finds {have}")
+
+
 def build_wasm(rebuild: bool) -> int:
     """The wasm module, built if it is missing or out of date.
 
@@ -158,10 +208,11 @@ def build_wasm(rebuild: bool) -> int:
         env = dict(os.environ)
         env["PATH"] = (f"{Path.home()}/.cargo/bin:{Path.home()}/.local/bin:"
                        + env.get("PATH", ""))
+        ensure_wasm_bindgen(env)
         done = subprocess.run([str(script)], env=env, check=False,
                               capture_output=True, text=True)
         if done.returncode != 0:
-            sys.exit(
+            raise BuildError(
                 f"{script} failed:\n{done.stderr[-2000:]}\n"
                 f"See vendor/electric-router/rust/README.md for the toolchain."
             )
@@ -170,7 +221,7 @@ def build_wasm(rebuild: bool) -> int:
     for name in WASM_FILES:
         source = pkg / name
         if not source.exists():
-            sys.exit(f"{source} was not built")
+            raise BuildError(f"{source} was not built")
         shutil.copy2(source, ASSETS / name)
         size += source.stat().st_size
     return size
@@ -186,7 +237,7 @@ def build_native() -> None:
     """
     venv = ROOT / ".venv"
     if not venv.exists():
-        sys.exit(f"no venv at {venv}")
+        raise BuildError(f"no venv at {venv}")
     env = dict(os.environ)
     env["VIRTUAL_ENV"] = str(venv)
     # The venv's bin leads: maturin is a dev dependency, and running this
@@ -199,7 +250,7 @@ def build_native() -> None:
             env=env, check=False, capture_output=True, text=True,
         )
         if done.returncode != 0:
-            sys.exit(f"maturin failed for {manifest}:\n{done.stderr[-2000:]}")
+            raise BuildError(f"maturin failed for {manifest}:\n{done.stderr[-2000:]}")
         print(f"  built {manifest}")
 
 
@@ -223,10 +274,21 @@ def main() -> None:
     files, total = copy_data()
     print(f"  data:    {files} files, {total / 1e6:.1f} MB -> "
           f"{(ASSETS / 'data').relative_to(ROOT)}")
-    size = build_wasm(args.rebuild_wasm)
-    print(f"  wasm:    {size / 1e6:.2f} MB -> {ASSETS.relative_to(ROOT)}")
+    failures: list[str] = []
+    # Native first: the desktop build needs nothing from the browser's toolchain.
     if args.native:
-        build_native()
+        try:
+            build_native()
+        except BuildError as exc:
+            failures.append(str(exc))
+    try:
+        size = build_wasm(args.rebuild_wasm)
+    except BuildError as exc:
+        failures.append(str(exc))
+    else:
+        print(f"  wasm:    {size / 1e6:.2f} MB -> {ASSETS.relative_to(ROOT)}")
+    if failures:
+        sys.exit("\n\n".join(failures))
 
 
 if __name__ == "__main__":

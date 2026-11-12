@@ -2646,7 +2646,17 @@ is 335 kB more to fetch.
 
 All three outputs are gitignored build products, like `src/assets/curve`.  The
 toolchain is user-local and needs no root; `vendor/electric-router/rust/README.md`
-has the four commands.
+has the four commands, but the wasm-bindgen download can be skipped.  The CLI
+must *equal* the crate's `=` pin and PyPI has no wheel for it, so
+`pyproject.toml` cannot carry it beside maturin.  Instead, a build that
+rebuilds the wasm reads the pin and, when the `wasm-bindgen` on the build
+script's PATH differs, runs `cargo install wasm-bindgen-cli --version =<pin>
+--locked` into `~/.cargo/bin`, which that PATH searches first.
+
+`--native` runs before the wasm and is not stopped by it, so a broken browser
+toolchain cannot leave a desktop build on stale extensions -- the
+`module 'erouter_solve' has no attribute` failure.  Every failed step is
+reported at the end, with a non-zero exit.
 
 ### Slippage is per leg, and it is not a number you type
 

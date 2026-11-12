@@ -77,7 +77,8 @@ dev = [
     "scikit-image==0.26.0",
     # tools/build_router.py --native shells out to it for the desktop
     # extensions. Not needed for the browser, whose wasm the router's own
-    # scripts/build_wasm.sh builds.
+    # scripts/build_wasm.sh builds. That needs a wasm-bindgen CLI, which has
+    # no PyPI wheel, so build_router.py cargo-installs the pinned one instead.
     "maturin==1.16.0",
     # Both configured further down this file.
     "ruff==0.17.3",
